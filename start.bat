@@ -1,13 +1,15 @@
 @echo off
 title MIG ECOMMERCE
 
+set PYTHON="C:\Users\vinic\AppData\Local\Programs\Python\Python311\python.exe"
+
 echo ============================================
 echo   MIG ECOMMERCE - Iniciando Sistema
 echo ============================================
 
-:: Backend (FastAPI + Uvicorn via python -m)
+:: Backend (FastAPI + Uvicorn via Python 3.11)
 echo Iniciando Backend...
-start "MIG BACKEND" cmd /k "cd /d c:\Sistema_Drop\BACKEND && python -m uvicorn main:socket_app --host 0.0.0.0 --port 8000 --reload"
+start "MIG BACKEND" cmd /k "cd /d c:\Sistema_Drop\BACKEND && %PYTHON% -m uvicorn main:socket_app --host 0.0.0.0 --port 8000 --reload"
 
 :: Aguarda 2s para o backend subir antes de abrir o frontend
 timeout /t 2 /nobreak >nul
