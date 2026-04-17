@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from database import get_db
@@ -12,6 +13,22 @@ from dependencies import get_current_user
 from datetime import datetime, timezone
 
 router = APIRouter()
+
+
+@router.post("/token", include_in_schema=False)
+async def oauth2_token(
+    form: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db),
+):
+    """OAuth2-compatible login used by Swagger UI Authorize button."""
+    result = await db.execute(select(User).where(User.email == form.username))
+    user = result.scalar_one_or_none()
+    if not user or not verify_password(form.password, user.password_hash):
+        raise HTTPException(status_code=400, detail="E-mail ou senha incorretos")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Conta desativada")
+    access_token = create_access_token(user.id, user.role)
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
 @router.post("/login", response_model=TokenResponse)
