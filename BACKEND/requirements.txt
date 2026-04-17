@@ -10,10 +10,11 @@ oracledb==2.3.0
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 
-# Validation
+# Validation / Form data
 pydantic==2.10.4
 pydantic-settings==2.7.0
 email-validator==2.2.0
+python-multipart==0.0.26
 
 # HTTP client (ViaCEP, ML API, Shopee API)
 httpx==0.28.1
