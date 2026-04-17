@@ -1,0 +1,28 @@
+# FastAPI + ASGI
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# Database
+sqlalchemy[asyncio]==2.0.30
+oracledb==2.3.0
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Validation
+pydantic==2.7.1
+pydantic-settings==2.3.0
+email-validator==2.1.1
+
+# HTTP client (ViaCEP, ML API, Shopee API)
+httpx==0.27.0
+
+# WebSocket / Socket.io
+python-socketio==5.11.2
+
+# Background jobs
+apscheduler==3.10.4
+
+# CORS
+# (built into FastAPI/Starlette)

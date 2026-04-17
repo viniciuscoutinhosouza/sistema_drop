@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+*.env
+!.env.example
+
+# Oracle wallet (never commit credentials)
+wallet/
+Wallet_*/
+*.p12
+*.sso
+*.ora
+tnsnames.ora
+sqlnet.ora
+cwallet.sso
+
+# Node / Frontend
+FRONTEND/node_modules/
+FRONTEND/dist/
+FRONTEND/.vite/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
