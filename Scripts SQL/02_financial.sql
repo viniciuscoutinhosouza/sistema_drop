@@ -15,7 +15,7 @@ CREATE TABLE financial_transactions (
     balance_after   NUMBER(15,2)    NOT NULL,
     pix_key         VARCHAR2(255),
     pix_txid        VARCHAR2(255),
-    status          VARCHAR2(20)    NOT NULL DEFAULT 'completed'
+    status          VARCHAR2(20)    DEFAULT 'completed' NOT NULL
                         CONSTRAINT chk_ft_status CHECK (status IN ('pending','completed','failed','reversed')),
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     CONSTRAINT fk_ft_dropshipper FOREIGN KEY (dropshipper_id) REFERENCES users(id)

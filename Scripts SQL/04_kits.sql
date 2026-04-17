@@ -9,7 +9,7 @@ CREATE TABLE kits (
     title           VARCHAR2(500)   NOT NULL,
     description     CLOB,
     color           VARCHAR2(100),
-    size            VARCHAR2(100),
+    size_label      VARCHAR2(100),
     width_cm        NUMBER(8,2),
     height_cm       NUMBER(8,2),
     length_cm       NUMBER(8,2),
@@ -18,7 +18,7 @@ CREATE TABLE kits (
     cest            VARCHAR2(7),
     origin          NUMBER(1)       DEFAULT 0,
     category_id     NUMBER,
-    is_active       NUMBER(1)       NOT NULL DEFAULT 1
+    is_active       NUMBER(1)       DEFAULT 1 NOT NULL
                         CONSTRAINT chk_kit_active CHECK (is_active IN (0,1)),
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     CONSTRAINT uq_kit_sku   UNIQUE (dropshipper_id, sku),
@@ -31,7 +31,7 @@ CREATE TABLE kit_components (
     kit_id      NUMBER  NOT NULL,
     product_id  NUMBER,
     variant_id  NUMBER,
-    quantity    NUMBER  NOT NULL DEFAULT 1,
+    quantity    NUMBER  DEFAULT 1 NOT NULL,
     CONSTRAINT fk_kc_kit        FOREIGN KEY (kit_id) REFERENCES kits(id) ON DELETE CASCADE,
     CONSTRAINT fk_kc_product    FOREIGN KEY (product_id) REFERENCES catalog_products(id),
     CONSTRAINT fk_kc_variant    FOREIGN KEY (variant_id) REFERENCES catalog_product_variants(id)

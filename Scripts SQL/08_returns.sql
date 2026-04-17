@@ -16,7 +16,7 @@ CREATE TABLE returns (
     carrier         VARCHAR2(100),
     expected_date   DATE,
     security_code   VARCHAR2(100),      -- Código de segurança do marketplace
-    status          VARCHAR2(20)    NOT NULL DEFAULT 'analyzing'
+    status          VARCHAR2(20)    DEFAULT 'analyzing' NOT NULL
                         CONSTRAINT chk_ret_status CHECK (status IN ('analyzing','returned','rejected')),
     supplier_notes  CLOB,               -- Notas do fornecedor ao analisar
     credit_amount   NUMBER(15,2),       -- Valor creditado de volta (se devolvido)

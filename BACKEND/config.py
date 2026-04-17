@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     ORACLE_PASSWORD: str
     ORACLE_DSN: str                      # e.g. "(description=(address=(protocol=tcps)...)"
     ORACLE_WALLET_DIR: str = ""          # path to unzipped Oracle Cloud Wallet folder
+    ORACLE_WALLET_PASSWORD: str = ""     # password set when downloading the wallet from Oracle Cloud
 
     # JWT
     JWT_SECRET: str

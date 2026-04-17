@@ -8,7 +8,7 @@ CREATE TABLE webhook_events (
     event_id        VARCHAR2(200)   NOT NULL,   -- ID único do evento no marketplace
     event_type      VARCHAR2(100),
     payload         CLOB,                       -- JSON original
-    processed       NUMBER(1)       NOT NULL DEFAULT 0
+    processed       NUMBER(1)       DEFAULT 0 NOT NULL
                         CONSTRAINT chk_we_processed CHECK (processed IN (0,1)),
     error_message   VARCHAR2(1000),
     received_at     TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,

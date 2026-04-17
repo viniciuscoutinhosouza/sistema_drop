@@ -27,8 +27,8 @@ CREATE TABLE catalog_products (
     brand           VARCHAR2(100),
     origin          NUMBER(1)       DEFAULT 0,
     category_id     NUMBER,
-    stock_quantity  NUMBER          NOT NULL DEFAULT 0,
-    is_active       NUMBER(1)       NOT NULL DEFAULT 1
+    stock_quantity  NUMBER          DEFAULT 0 NOT NULL,
+    is_active       NUMBER(1)       DEFAULT 1 NOT NULL
                         CONSTRAINT chk_cp_active CHECK (is_active IN (0,1)),
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at      TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
@@ -52,8 +52,8 @@ CREATE TABLE catalog_product_variants (
     sku             VARCHAR2(100)   NOT NULL,
     variant_name    VARCHAR2(255),
     color           VARCHAR2(100),
-    size            VARCHAR2(100),
-    stock_quantity  NUMBER          NOT NULL DEFAULT 0,
+    size_label      VARCHAR2(100),
+    stock_quantity  NUMBER          DEFAULT 0 NOT NULL,
     price_modifier  NUMBER(15,2)    DEFAULT 0,
     CONSTRAINT uq_cpv_sku       UNIQUE (sku),
     CONSTRAINT fk_cpv_product   FOREIGN KEY (product_id) REFERENCES catalog_products(id) ON DELETE CASCADE

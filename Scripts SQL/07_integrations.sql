@@ -15,7 +15,7 @@ CREATE TABLE marketplace_integrations (
     platform_username   VARCHAR2(200),
     shop_id             NUMBER,             -- Shopee shop ID
     api_key             VARCHAR2(500),      -- Para Bling
-    is_active           NUMBER(1)       NOT NULL DEFAULT 1
+    is_active           NUMBER(1)       DEFAULT 1 NOT NULL
                             CONSTRAINT chk_mi_active CHECK (is_active IN (0,1)),
     last_sync_at        TIMESTAMP WITH TIME ZONE,
     created_at          TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,

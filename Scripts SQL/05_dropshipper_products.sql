@@ -22,7 +22,7 @@ CREATE TABLE dropshipper_products (
     -- Bling
     bling_product_id    NUMBER,
     -- General
-    status              VARCHAR2(20)    NOT NULL DEFAULT 'draft'
+    status              VARCHAR2(20)    DEFAULT 'draft' NOT NULL
                             CONSTRAINT chk_dp_status CHECK (status IN ('draft','active','paused','closed')),
     created_at          TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at          TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,

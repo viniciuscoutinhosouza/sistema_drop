@@ -11,13 +11,13 @@ CREATE TABLE orders (
     platform_order_id   VARCHAR2(200),       -- ID do pedido no marketplace
     platform_order_ref  VARCHAR2(200),       -- Ref visível ao comprador
     platform_status     VARCHAR2(50),        -- Status original do marketplace
-    status              VARCHAR2(30)    NOT NULL DEFAULT 'downloaded'
+    status              VARCHAR2(30)    DEFAULT 'downloaded' NOT NULL
                             CONSTRAINT chk_ord_status CHECK (status IN (
                                 'downloaded','paid','label_generated',
                                 'label_printed','separated','shipped',
                                 'cancelled','returned'
                             )),
-    payment_status      VARCHAR2(20)    NOT NULL DEFAULT 'pending'
+    payment_status      VARCHAR2(20)    DEFAULT 'pending' NOT NULL
                             CONSTRAINT chk_ord_payment CHECK (payment_status IN ('pending','paid','failed')),
     buyer_name          VARCHAR2(255),
     buyer_email         VARCHAR2(255),
@@ -50,7 +50,7 @@ CREATE TABLE order_items (
     catalog_variant_id      NUMBER,
     sku                     VARCHAR2(100),
     title                   VARCHAR2(500),
-    quantity                NUMBER          NOT NULL DEFAULT 1,
+    quantity                NUMBER          DEFAULT 1 NOT NULL,
     unit_price              NUMBER(15,2),   -- Preço de venda unitário
     unit_cost               NUMBER(15,2),   -- Custo unitário ao fornecedor
     CONSTRAINT fk_oi_order      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,

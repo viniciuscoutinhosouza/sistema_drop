@@ -10,7 +10,7 @@ CREATE TABLE notifications (
     body            VARCHAR2(1000),
     reference_type  VARCHAR2(50),       -- 'order' | 'return' | 'product'
     reference_id    NUMBER,
-    is_read         NUMBER(1)       NOT NULL DEFAULT 0
+    is_read         NUMBER(1)       DEFAULT 0 NOT NULL
                         CONSTRAINT chk_notif_read CHECK (is_read IN (0,1)),
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     CONSTRAINT fk_notif_dropshipper FOREIGN KEY (dropshipper_id) REFERENCES users(id)

@@ -9,14 +9,14 @@ CREATE TABLE users (
     id                  NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     email               VARCHAR2(255)   NOT NULL,
     password_hash       VARCHAR2(255)   NOT NULL,
-    role                VARCHAR2(20)    NOT NULL DEFAULT 'dropshipper'
+    role                VARCHAR2(20)    DEFAULT 'dropshipper' NOT NULL
                             CONSTRAINT chk_users_role CHECK (role IN ('supplier','dropshipper','admin')),
     full_name           VARCHAR2(255)   NOT NULL,
     whatsapp            VARCHAR2(20),
     cpf_cnpj            VARCHAR2(18),
-    is_active           NUMBER(1)       NOT NULL DEFAULT 1
+    is_active           NUMBER(1)       DEFAULT 1 NOT NULL
                             CONSTRAINT chk_users_active CHECK (is_active IN (0,1)),
-    dark_mode           NUMBER(1)       NOT NULL DEFAULT 0
+    dark_mode           NUMBER(1)       DEFAULT 0 NOT NULL
                             CONSTRAINT chk_users_dark CHECK (dark_mode IN (0,1)),
     created_at          TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at          TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
@@ -30,18 +30,18 @@ CREATE TABLE dropshipper_profiles (
     user_id                 NUMBER          NOT NULL,
     zip_code                VARCHAR2(9),
     street                  VARCHAR2(255),
-    number                  VARCHAR2(20),
+    address_number          VARCHAR2(20),
     complement              VARCHAR2(100),
     neighborhood            VARCHAR2(100),
     city                    VARCHAR2(100),
     state                   VARCHAR2(2),
-    subscription_status     VARCHAR2(20)    NOT NULL DEFAULT 'active'
+    subscription_status     VARCHAR2(20)    DEFAULT 'active' NOT NULL
                                 CONSTRAINT chk_sub_status CHECK (
                                     subscription_status IN ('active','overdue','suspended')
                                 ),
     subscription_due_date   DATE,
-    balance                 NUMBER(15,2)    NOT NULL DEFAULT 0,
-    balance_reserved        NUMBER(15,2)    NOT NULL DEFAULT 0,
+    balance                 NUMBER(15,2)    DEFAULT 0 NOT NULL,
+    balance_reserved        NUMBER(15,2)    DEFAULT 0 NOT NULL,
     CONSTRAINT fk_dp_user   FOREIGN KEY (user_id) REFERENCES users(id),
     CONSTRAINT uq_dp_user   UNIQUE (user_id)
 );
@@ -52,7 +52,7 @@ CREATE TABLE refresh_tokens (
     user_id     NUMBER          NOT NULL,
     token       VARCHAR2(500)   NOT NULL,
     expires_at  TIMESTAMP WITH TIME ZONE NOT NULL,
-    revoked     NUMBER(1)       NOT NULL DEFAULT 0
+    revoked     NUMBER(1)       DEFAULT 0 NOT NULL
                     CONSTRAINT chk_rt_revoked CHECK (revoked IN (0,1)),
     created_at  TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     CONSTRAINT fk_rt_user   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
