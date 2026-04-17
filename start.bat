@@ -5,16 +5,16 @@ echo ============================================
 echo   MIG ECOMMERCE - Iniciando Sistema
 echo ============================================
 
-:: Backend (FastAPI + Uvicorn)
+:: Backend (FastAPI + Uvicorn via python -m)
 echo Iniciando Backend...
-start "MIG BACKEND" cmd /k "cd /d c:\Sistema_Drop\BACKEND && uvicorn main:socket_app --host 0.0.0.0 --port 8000 --reload"
+start "MIG BACKEND" cmd /k "cd /d c:\Sistema_Drop\BACKEND && python -m uvicorn main:socket_app --host 0.0.0.0 --port 8000 --reload"
 
 :: Aguarda 2s para o backend subir antes de abrir o frontend
 timeout /t 2 /nobreak >nul
 
-:: Frontend (Vite)
+:: Frontend (instala dependencias se necessario, depois inicia Vite)
 echo Iniciando Frontend...
-start "MIG FRONTEND" cmd /k "cd /d c:\Sistema_Drop\FRONTEND && npm run dev"
+start "MIG FRONTEND" cmd /k "cd /d c:\Sistema_Drop\FRONTEND && if not exist node_modules (echo Instalando dependencias... && npm install) && npm run dev"
 
 echo.
 echo ============================================
