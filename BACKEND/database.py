@@ -9,6 +9,10 @@ from config import get_settings
 
 settings = get_settings()
 
+# Force thin mode — no Oracle Instant Client required.
+# Thin mode supports Oracle ATP with mTLS wallet natively.
+oracledb.defaults.fetch_lobs = False
+
 
 def _parse_tnsnames(wallet_dir: str, alias: str):
     """Read tnsnames.ora and return (host, port, service_name) for the alias."""
@@ -20,7 +24,6 @@ def _parse_tnsnames(wallet_dir: str, alias: str):
     if not match:
         return None
 
-    # Extract balanced-paren block
     start, depth, end = match.end(), 0, match.end()
     for i, ch in enumerate(content[start:], start):
         if ch == "(":
@@ -41,14 +44,11 @@ def _parse_tnsnames(wallet_dir: str, alias: str):
     return None
 
 
-# Build DATABASE_URL — prefer explicit host/port parsed from tnsnames.ora so
-# SQLAlchemy never needs to resolve a TNS alias at runtime.
 _user = quote_plus(settings.ORACLE_USER)
 _pwd  = quote_plus(settings.ORACLE_PASSWORD)
+_dsn  = settings.ORACLE_DSN.strip()
 
-_dsn = settings.ORACLE_DSN.strip()
 if settings.ORACLE_WALLET_DIR and not _dsn.startswith("("):
-    # Alias: resolve via tnsnames.ora
     _params = _parse_tnsnames(settings.ORACLE_WALLET_DIR, _dsn)
     if _params:
         _host, _port, _svc = _params
@@ -58,11 +58,13 @@ if settings.ORACLE_WALLET_DIR and not _dsn.startswith("("):
 else:
     DATABASE_URL = f"oracle+oracledb://{_user}:{_pwd}@{_dsn}"
 
-connect_args = {}
+connect_args: dict = {}
 if settings.ORACLE_WALLET_DIR:
     connect_args = {
         "wallet_location": settings.ORACLE_WALLET_DIR,
         "wallet_password": settings.ORACLE_WALLET_PASSWORD,
+        # Thin mode: pass config_dir so oracledb finds sqlnet.ora / tnsnames.ora
+        "config_dir": settings.ORACLE_WALLET_DIR,
     }
 
 engine = create_async_engine(
