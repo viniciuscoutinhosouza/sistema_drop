@@ -1,86 +1,97 @@
-import os
-import re
-from urllib.parse import quote_plus
+"""
+Database setup for Oracle ATP using oracledb (thin mode).
+
+Uses a SQLAlchemy sync engine with a custom creator function that calls
+oracledb.connect() directly — same parameters that work in the sync test.
+DB operations run in asyncio.to_thread() so FastAPI async routes work as-is.
+"""
+import asyncio
 
 import oracledb
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
 from config import get_settings
 
 settings = get_settings()
-
-# Force thin mode — no Oracle Instant Client required.
-# Thin mode supports Oracle ATP with mTLS wallet natively.
 oracledb.defaults.fetch_lobs = False
 
 
-def _parse_tnsnames(wallet_dir: str, alias: str):
-    """Read tnsnames.ora and return (host, port, service_name) for the alias."""
-    tns_path = os.path.join(wallet_dir, "tnsnames.ora")
-    with open(tns_path, encoding="utf-8") as f:
-        content = f.read()
-
-    match = re.compile(rf"(?i)^{re.escape(alias)}\s*=\s*", re.MULTILINE).search(content)
-    if not match:
-        return None
-
-    start, depth, end = match.end(), 0, match.end()
-    for i, ch in enumerate(content[start:], start):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-
-    block = content[start:end]
-    host = re.search(r"\bhost=([^\s)]+)", block, re.IGNORECASE)
-    port = re.search(r"\bport=(\d+)", block, re.IGNORECASE)
-    svc  = re.search(r"\bservice_name=([^\s)]+)", block, re.IGNORECASE)
-
-    if host and port and svc:
-        return host.group(1).strip(), int(port.group(1).strip()), svc.group(1).strip()
-    return None
+def _make_oracle_connection():
+    """Create a synchronous Oracle connection using the wallet (thin mode)."""
+    kwargs = dict(
+        user=settings.ORACLE_USER,
+        password=settings.ORACLE_PASSWORD,
+        dsn=settings.ORACLE_DSN,
+    )
+    if settings.ORACLE_WALLET_DIR:
+        kwargs["config_dir"]       = settings.ORACLE_WALLET_DIR
+        kwargs["wallet_location"]  = settings.ORACLE_WALLET_DIR
+        kwargs["wallet_password"]  = settings.ORACLE_WALLET_PASSWORD
+    return oracledb.connect(**kwargs)
 
 
-_user = quote_plus(settings.ORACLE_USER)
-_pwd  = quote_plus(settings.ORACLE_PASSWORD)
-_dsn  = settings.ORACLE_DSN.strip()
-
-if settings.ORACLE_WALLET_DIR and not _dsn.startswith("("):
-    _params = _parse_tnsnames(settings.ORACLE_WALLET_DIR, _dsn)
-    if _params:
-        _host, _port, _svc = _params
-        DATABASE_URL = f"oracle+oracledb://{_user}:{_pwd}@{_host}:{_port}/{_svc}"
-    else:
-        DATABASE_URL = f"oracle+oracledb://{_user}:{_pwd}@{_dsn}"
-else:
-    DATABASE_URL = f"oracle+oracledb://{_user}:{_pwd}@{_dsn}"
-
-connect_args: dict = {}
-if settings.ORACLE_WALLET_DIR:
-    connect_args = {
-        "wallet_location": settings.ORACLE_WALLET_DIR,
-        "wallet_password": settings.ORACLE_WALLET_PASSWORD,
-        # Thin mode: pass config_dir so oracledb finds sqlnet.ora / tnsnames.ora
-        "config_dir": settings.ORACLE_WALLET_DIR,
-    }
-
-engine = create_async_engine(
-    DATABASE_URL,
+_sync_engine = create_engine(
+    "oracle+oracledb://",
+    creator=_make_oracle_connection,
     pool_size=5,
     max_overflow=10,
     pool_pre_ping=True,
     echo=False,
-    connect_args=connect_args,
 )
 
-AsyncSessionLocal = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
+_SyncSession = sessionmaker(_sync_engine, autocommit=False, autoflush=False)
+
+
+class AsyncSyncSession:
+    """
+    Async-compatible wrapper around a synchronous SQLAlchemy Session.
+    Runs blocking DB operations in a thread pool so FastAPI async routes
+    can use 'await db.execute(...)' without modification.
+    """
+
+    def __init__(self, session: Session):
+        self._s = session
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        await self.close()
+
+    async def execute(self, statement, *args, **kwargs):
+        return await asyncio.to_thread(self._s.execute, statement, *args, **kwargs)
+
+    async def scalar(self, statement, *args, **kwargs):
+        return await asyncio.to_thread(self._s.scalar, statement, *args, **kwargs)
+
+    async def flush(self, objects=None):
+        return await asyncio.to_thread(self._s.flush, objects)
+
+    async def commit(self):
+        return await asyncio.to_thread(self._s.commit)
+
+    async def rollback(self):
+        return await asyncio.to_thread(self._s.rollback)
+
+    async def close(self):
+        return await asyncio.to_thread(self._s.close)
+
+    async def refresh(self, instance, *args, **kwargs):
+        return await asyncio.to_thread(self._s.refresh, instance, *args, **kwargs)
+
+    def add(self, instance):
+        self._s.add(instance)
+
+    def delete(self, instance):
+        self._s.delete(instance)
+
+    def expunge(self, instance):
+        self._s.expunge(instance)
+
+
+# Keep these aliases for any code that imports them
+AsyncSession = AsyncSyncSession
+AsyncSessionLocal = _SyncSession
 
 
 class Base(DeclarativeBase):
@@ -88,8 +99,12 @@ class Base(DeclarativeBase):
 
 
 async def get_db():
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+    session = _SyncSession()
+    db = AsyncSyncSession(session)
+    try:
+        yield db
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
