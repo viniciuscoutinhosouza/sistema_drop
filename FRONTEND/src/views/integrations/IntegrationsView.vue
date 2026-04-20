@@ -76,6 +76,25 @@
                 <i class="fas fa-key mr-1"></i>
                 {{ acc.is_active ? 'Atualizar API Key' : 'Configurar Bling' }}
               </button>
+
+              <!-- Ações de sincronização (apenas contas conectadas) -->
+              <div v-if="acc.is_active" class="mt-2 d-flex gap-1" style="gap:6px">
+                <button class="btn btn-sm btn-outline-primary flex-fill"
+                        :disabled="syncing[acc.id]"
+                        @click="syncOrders(acc)"
+                        title="Baixar pedidos agora">
+                  <i :class="syncing[acc.id] ? 'fas fa-spinner fa-spin' : 'fas fa-shopping-bag'" class="mr-1"></i>
+                  {{ syncing[acc.id] === 'orders' ? 'Baixando...' : 'Baixar Pedidos' }}
+                </button>
+                <button v-if="acc.platform === 'mercadolivre'"
+                        class="btn btn-sm btn-outline-secondary flex-fill"
+                        :disabled="syncing[acc.id]"
+                        @click="importListings(acc)"
+                        title="Importar anúncios ativos do ML">
+                  <i :class="syncing[acc.id] === 'listings' ? 'fas fa-spinner fa-spin' : 'fas fa-tag'" class="mr-1"></i>
+                  {{ syncing[acc.id] === 'listings' ? 'Importando...' : 'Importar Anúncios' }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -139,7 +158,12 @@
             <button class="close" @click="modal.otp = false"><span>&times;</span></button>
           </div>
           <div class="modal-body">
-            <div v-if="otpError" class="alert alert-danger">{{ otpError }}</div>
+            <div v-if="otpError" class="alert alert-danger py-2">
+              <i class="fas fa-exclamation-circle mr-1"></i>{{ otpError }}
+            </div>
+            <div v-if="otpResent" class="alert alert-success py-2">
+              <i class="fas fa-check-circle mr-1"></i>Novo código gerado! Consulte o terminal do backend (uvicorn).
+            </div>
             <p>
               Digite o código de 6 dígitos enviado para
               <strong>{{ otpTarget?.email }}</strong>.
@@ -157,6 +181,11 @@
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="modal.otp = false">Cancelar</button>
+            <button class="btn btn-outline-warning" :disabled="resendingOtp" @click="resendOtp">
+              <i v-if="resendingOtp" class="fas fa-spinner fa-spin mr-1"></i>
+              <i v-else class="fas fa-redo mr-1"></i>
+              {{ resendingOtp ? 'Reenviando...' : 'Reenviar Código' }}
+            </button>
             <button class="btn btn-success" :disabled="verifyingOtp || otpCode.length !== 6" @click="verifyOtp">
               <i v-if="verifyingOtp" class="fas fa-spinner fa-spin mr-1"></i>
               {{ verifyingOtp ? 'Verificando...' : 'Confirmar' }}
@@ -200,12 +229,13 @@ import { ref, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 
-const { add: toast } = useToast()
+const { show: toast } = useToast()
 
 const accounts = ref([])
 const loading  = ref(false)
 
-const modal = ref({ newConta: false, otp: false, bling: false })
+const modal   = ref({ newConta: false, otp: false, bling: false })
+const syncing = ref({})   // { [account_id]: 'orders' | 'listings' | false }
 
 // Nova CONTA
 const newContaForm   = ref({ platform: '', email: '', phone: '', description: '' })
@@ -216,7 +246,9 @@ const savingNewConta = ref(false)
 const otpTarget    = ref(null)
 const otpCode      = ref('')
 const otpError     = ref('')
+const otpResent    = ref(false)
 const verifyingOtp = ref(false)
+const resendingOtp = ref(false)
 
 // Bling
 const blingTarget  = ref(null)
@@ -272,7 +304,23 @@ function openOtpModal(account) {
   otpTarget.value = account
   otpCode.value = ''
   otpError.value = ''
+  otpResent.value = false
   modal.value.otp = true
+}
+
+async function resendOtp() {
+  resendingOtp.value = true
+  otpError.value = ''
+  otpResent.value = false
+  try {
+    await api.post(`/accounts/${otpTarget.value.id}/resend-otp`)
+    otpCode.value = ''
+    otpResent.value = true
+  } catch (err) {
+    otpError.value = err.response?.data?.detail || 'Erro ao reenviar código'
+  } finally {
+    resendingOtp.value = false
+  }
 }
 
 async function verifyOtp() {
@@ -287,6 +335,32 @@ async function verifyOtp() {
     otpError.value = err.response?.data?.detail || 'Código inválido ou expirado'
   } finally {
     verifyingOtp.value = false
+  }
+}
+
+async function syncOrders(account) {
+  syncing.value[account.id] = 'orders'
+  try {
+    await api.post(`/accounts/${account.id}/sync-orders`)
+    toast('Pedidos sincronizados com sucesso!', 'success')
+    await loadAccounts()
+  } catch (err) {
+    toast(err.response?.data?.detail || 'Erro ao sincronizar pedidos', 'danger')
+  } finally {
+    syncing.value[account.id] = false
+  }
+}
+
+async function importListings(account) {
+  syncing.value[account.id] = 'listings'
+  try {
+    const { data } = await api.post(`/accounts/${account.id}/import-listings`)
+    toast(data.message || 'Anúncios importados!', 'success')
+    await loadAccounts()
+  } catch (err) {
+    toast(err.response?.data?.detail || 'Erro ao importar anúncios', 'danger')
+  } finally {
+    syncing.value[account.id] = false
   }
 }
 

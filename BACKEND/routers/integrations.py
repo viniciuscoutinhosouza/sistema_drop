@@ -9,6 +9,14 @@ import random
 import string
 from datetime import datetime, timezone, timedelta
 
+
+def _trunc_bytes(s: str, max_bytes: int) -> str:
+    """Truncate string so its UTF-8 encoding fits within max_bytes."""
+    encoded = s.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return s
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +26,7 @@ from database import get_db
 from dependencies import get_current_user, get_active_ac, require_role
 from models.user import User, AccountAdministrator
 from models.integration import MarketplaceAccount, AccountBalance, OTPVerification
+from models.product import DropshipperProduct, ProductListing
 from services import ml_service, shopee_service, bling_service
 from config import get_settings
 
@@ -495,6 +504,125 @@ async def shopee_callback(
 
     frontend_url = f"{settings.FRONTEND_URL}/oauth/success?platform=shopee&status=connected"
     return RedirectResponse(frontend_url)
+
+
+# ─── Sincronização manual ─────────────────────────────────────────────────────
+
+@router.post("/{account_id}/sync-orders")
+async def sync_orders_now(
+    account_id: int,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dispara sincronização de pedidos imediatamente para esta conta."""
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    if not account.access_token:
+        raise HTTPException(status_code=400, detail="Conta sem token de acesso. Faça o OAuth primeiro.")
+
+    from tasks.sync_orders import _sync_ml_integration, _sync_shopee_integration
+    if account.platform == "mercadolivre":
+        await _sync_ml_integration(db, account)
+    elif account.platform == "shopee":
+        await _sync_shopee_integration(db, account)
+    else:
+        raise HTTPException(status_code=400, detail="Sincronização não disponível para esta plataforma.")
+
+    return {"message": "Sincronização de pedidos concluída."}
+
+
+@router.post("/{account_id}/import-listings")
+async def import_listings(
+    account_id: int,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Importa todos os anúncios ativos desta conta do Mercado Livre."""
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    if account.platform != "mercadolivre":
+        raise HTTPException(status_code=400, detail="Importação de anúncios disponível apenas para Mercado Livre.")
+    if not account.access_token or not account.platform_user_id:
+        raise HTTPException(status_code=400, detail="Conta sem token ou ID. Faça o OAuth primeiro.")
+
+    # 1. Buscar todos os IDs de anúncios ativos
+    item_ids = await ml_service.get_seller_item_ids(account.access_token, account.platform_user_id)
+    if not item_ids:
+        return {"imported": 0, "updated": 0, "message": "Nenhum anúncio ativo encontrado no Mercado Livre."}
+
+    # 2. Buscar detalhes em lote
+    items = await ml_service.get_items_bulk(account.access_token, item_ids)
+
+    imported, updated = 0, 0
+    for item in items:
+        ml_id       = str(item.get("id", ""))
+        title       = item.get("title", "")[:500]
+        price       = float(item.get("price") or 0)
+        category    = item.get("category_id", "")
+        listing_type = item.get("listing_type_id", "")
+        thumbnail   = item.get("thumbnail", "")
+        pictures    = item.get("pictures", [])
+
+        # 3. Verificar se produto já existe pelo ml_item_id
+        res = await db.execute(
+            select(DropshipperProduct).where(
+                DropshipperProduct.dropshipper_id == current_user.id,
+                DropshipperProduct.ml_item_id == ml_id,
+            )
+        )
+        product = res.scalar_one_or_none()
+
+        if not product:
+            product = DropshipperProduct(
+                dropshipper_id=current_user.id,
+                title=title,
+                title_ml=_trunc_bytes(title, 60),
+                sale_price_ml=price,
+                ml_item_id=ml_id,
+                ml_category_id=category,
+                ml_listing_type=listing_type,
+                status="active",
+            )
+            db.add(product)
+            await db.flush()
+            imported += 1
+        else:
+            product.title_ml = _trunc_bytes(title, 60)
+            product.sale_price_ml = price
+            product.ml_category_id = category
+            updated += 1
+
+        # 4. Criar ou atualizar ProductListing
+        res2 = await db.execute(
+            select(ProductListing).where(
+                ProductListing.product_id == product.id,
+                ProductListing.account_id == account_id,
+            )
+        )
+        listing = res2.scalar_one_or_none()
+        if not listing:
+            db.add(ProductListing(
+                product_id=product.id,
+                account_id=account_id,
+                platform_item_id=ml_id,
+                sale_price=price,
+                category_id=category,
+                listing_type=listing_type,
+                status="published",
+                published_at=datetime.now(timezone.utc),
+                last_sync_at=datetime.now(timezone.utc),
+            ))
+        else:
+            listing.sale_price = price
+            listing.platform_item_id = ml_id
+            listing.status = "published"
+            listing.last_sync_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    return {
+        "imported": imported,
+        "updated": updated,
+        "total": len(items),
+        "message": f"{imported} anúncios importados, {updated} atualizados.",
+    }
 
 
 # ─── Bling ────────────────────────────────────────────────────────────────────

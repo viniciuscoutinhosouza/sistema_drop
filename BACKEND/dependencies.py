@@ -52,7 +52,7 @@ async def get_active_ac(
     from models.user import ACProfile
     from datetime import date
 
-    if current_user.role not in ("ac",):
+    if current_user.role not in ("ac", "admin"):
         raise HTTPException(status_code=403, detail="Acesso apenas para Gestores de Conta (AC)")
 
     result = await db.execute(
