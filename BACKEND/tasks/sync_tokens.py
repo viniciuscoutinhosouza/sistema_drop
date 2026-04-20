@@ -4,21 +4,20 @@ Runs every hour.
 """
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
-from database import AsyncSessionLocal
-from models.integration import MarketplaceIntegration
+from database import task_db
+from models.integration import MarketplaceAccount
 from services import ml_service, shopee_service
 
 
 async def refresh_expiring_tokens():
-    """Refresh tokens that expire in less than 1 hour."""
     threshold = datetime.now(timezone.utc) + timedelta(hours=1)
 
-    async with AsyncSessionLocal() as db:
+    async with task_db() as db:
         result = await db.execute(
-            select(MarketplaceIntegration).where(
-                MarketplaceIntegration.is_active == True,
-                MarketplaceIntegration.token_expires_at <= threshold,
-                MarketplaceIntegration.refresh_token.isnot(None),
+            select(MarketplaceAccount).where(
+                MarketplaceAccount.is_active == True,
+                MarketplaceAccount.token_expires_at <= threshold,
+                MarketplaceAccount.refresh_token.isnot(None),
             )
         )
         for integration in result.scalars().all():
@@ -36,7 +35,6 @@ async def refresh_expiring_tokens():
                     )
                     integration.access_token = data.get("access_token")
                     integration.refresh_token = data.get("refresh_token", integration.refresh_token)
-                    from datetime import timedelta
                     integration.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=3600 * 4)
 
                 await db.commit()

@@ -2,14 +2,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from database import get_db
-from models.user import User, DropshipperProfile, RefreshToken
-from schemas.auth import LoginRequest, RegisterRequest, TokenResponse, RefreshRequest, ChangePasswordRequest
+from models.user import User, ACProfile, RefreshToken
+from schemas.auth import (
+    LoginRequest, RegisterUGORequest, RegisterACRequest,
+    TokenResponse, RefreshRequest, ChangePasswordRequest,
+)
 from services.auth_service import (
     hash_password, verify_password,
     create_access_token, create_refresh_token, verify_token
 )
-from dependencies import get_current_user
+from dependencies import get_current_user, require_role
 from datetime import datetime, timezone
 
 router = APIRouter()
@@ -20,7 +24,7 @@ async def oauth2_token(
     form: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
-    """OAuth2-compatible login used by Swagger UI Authorize button."""
+    """OAuth2-compatible login usado pelo Swagger UI."""
     result = await db.execute(select(User).where(User.email == form.username))
     user = result.scalar_one_or_none()
     if not user or not verify_password(form.password, user.password_hash):
@@ -66,17 +70,58 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     )
 
 
-@router.post("/register", response_model=TokenResponse, status_code=201)
-async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    # Check email uniqueness
+@router.post("/register/ugo", status_code=201)
+async def register_ugo(
+    body: RegisterUGORequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """Cadastra um novo Operador Logístico (UGO). Apenas o Admin pode executar."""
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="E-mail já cadastrado")
 
-    # Check CPF/CNPJ uniqueness
-    result = await db.execute(select(User).where(User.cpf_cnpj == body.cpf_cnpj))
+    user = User(
+        email=body.email,
+        password_hash=hash_password(body.password),
+        full_name=body.full_name,
+        whatsapp=body.whatsapp,
+        role="ugo",
+    )
+    db.add(user)
+    try:
+        await db.commit()
+        await db.refresh(user)
+    except IntegrityError as e:
+        await db.rollback()
+        err_str = str(e).lower()
+        if "unique" in err_str or "dup_val" in err_str:
+            raise HTTPException(status_code=400, detail="E-mail já cadastrado")
+        if "check constraint" in err_str or "ck_" in err_str or "chk_" in err_str:
+            raise HTTPException(
+                status_code=500,
+                detail="Erro de banco de dados: constraint de role inválida. Execute o script de migração 12_migration_roles.sql."
+            )
+        raise HTTPException(status_code=500, detail=f"Erro de banco de dados: {str(e)}")
+
+    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role}
+
+
+@router.post("/register/ac", response_model=TokenResponse, status_code=201)
+async def register_ac(
+    body: RegisterACRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ugo", "admin")),
+):
+    """Cadastra um novo Gestor de Conta (AC). Apenas UGO ou Admin podem executar."""
+    result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="CPF/CNPJ já cadastrado")
+        raise HTTPException(status_code=400, detail="E-mail já cadastrado")
+
+    if body.cpf_cnpj:
+        result = await db.execute(select(User).where(User.cpf_cnpj == body.cpf_cnpj))
+        if result.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="CPF/CNPJ já cadastrado")
 
     user = User(
         email=body.email,
@@ -84,43 +129,38 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         full_name=body.full_name,
         whatsapp=body.whatsapp,
         cpf_cnpj=body.cpf_cnpj,
-        role="dropshipper",
+        role="ac",
     )
     db.add(user)
-    await db.flush()  # Get user.id before committing
+    try:
+        await db.flush()
+    except IntegrityError as e:
+        await db.rollback()
+        err_str = str(e).lower()
+        if "unique" in err_str or "dup_val" in err_str:
+            raise HTTPException(status_code=400, detail="E-mail ou CPF/CNPJ já cadastrado")
+        raise HTTPException(status_code=500, detail=f"Erro de banco de dados: {str(e)}")
 
-    profile = DropshipperProfile(
+    profile = ACProfile(
         user_id=user.id,
         zip_code=body.zip_code,
         street=body.street,
-        number=body.number,
+        address_number=body.number,
         complement=body.complement,
         neighborhood=body.neighborhood,
         city=body.city,
         state=body.state,
+        plan_id=body.plan_id,
     )
     db.add(profile)
+    try:
+        await db.commit()
+        await db.refresh(user)
+    except IntegrityError as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Erro de banco de dados: {str(e)}")
 
-    access_token = create_access_token(user.id, user.role)
-    refresh_token_str, refresh_expires = create_refresh_token(user.id)
-
-    db_refresh = RefreshToken(
-        user_id=user.id,
-        token=refresh_token_str,
-        expires_at=refresh_expires,
-    )
-    db.add(db_refresh)
-    await db.commit()
-
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token_str,
-        user_id=user.id,
-        full_name=user.full_name,
-        email=user.email,
-        role=user.role,
-        dark_mode=False,
-    )
+    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role}
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -147,17 +187,11 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Usuário inativo")
 
-    # Revoke old token and issue new pair
     db_token.revoked = True
     access_token = create_access_token(user.id, user.role)
     new_refresh_str, new_refresh_expires = create_refresh_token(user.id)
 
-    new_db_refresh = RefreshToken(
-        user_id=user.id,
-        token=new_refresh_str,
-        expires_at=new_refresh_expires,
-    )
-    db.add(new_db_refresh)
+    db.add(RefreshToken(user_id=user.id, token=new_refresh_str, expires_at=new_refresh_expires))
     await db.commit()
 
     return TokenResponse(

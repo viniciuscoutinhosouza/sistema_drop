@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from models.webhook import WebhookEvent
 from models.order import Order, OrderItem
-from models.integration import MarketplaceIntegration
+from models.integration import MarketplaceAccount
 from models.product import DropshipperProduct
 from services.notification_service import create_notification
 from config import get_settings
@@ -61,11 +61,11 @@ async def record_webhook(
 async def process_ml_order(
     db: AsyncSession,
     ml_order_data: dict,
-    integration: MarketplaceIntegration,
+    integration: MarketplaceAccount,
 ):
     """
     Process a Mercado Livre order webhook.
-    Creates Order and OrderItem records. Notifies the dropshipper.
+    Creates Order and OrderItem records. Notifies the AC owner.
     """
     ml_order_id = str(ml_order_data.get("id", ""))
 
@@ -74,7 +74,7 @@ async def process_ml_order(
         select(Order).where(
             Order.platform == "mercadolivre",
             Order.platform_order_id == ml_order_id,
-            Order.dropshipper_id == integration.dropshipper_id,
+            Order.dropshipper_id == integration.owner_id,
         )
     )
     if existing.scalar_one_or_none():
@@ -84,8 +84,8 @@ async def process_ml_order(
     shipping = ml_order_data.get("shipping", {})
 
     order = Order(
-        dropshipper_id=integration.dropshipper_id,
-        integration_id=integration.id,
+        dropshipper_id=integration.owner_id,
+        account_id=integration.id,
         platform="mercadolivre",
         platform_order_id=ml_order_id,
         platform_order_ref=str(ml_order_data.get("order_id", ml_order_id)),
@@ -107,7 +107,7 @@ async def process_ml_order(
         dp_result = await db.execute(
             select(DropshipperProduct).where(
                 DropshipperProduct.ml_item_id == ml_item_id,
-                DropshipperProduct.dropshipper_id == integration.dropshipper_id,
+                DropshipperProduct.dropshipper_id == integration.owner_id,
             )
         )
         dp = dp_result.scalar_one_or_none()
@@ -124,10 +124,10 @@ async def process_ml_order(
 
     await db.commit()
 
-    # Notify dropshipper
+    # Notify AC owner
     await create_notification(
         db=db,
-        dropshipper_id=integration.dropshipper_id,
+        dropshipper_id=integration.owner_id,
         type="new_order",
         title=f"Novo pedido #{order.id} – Mercado Livre",
         body=f"Pedido de {order.buyer_name} no valor de R$ {float(order.sale_amount):.2f}",
@@ -139,7 +139,7 @@ async def process_ml_order(
 async def process_shopee_order(
     db: AsyncSession,
     shopee_order_data: dict,
-    integration: MarketplaceIntegration,
+    integration: MarketplaceAccount,
 ):
     """Process a Shopee order webhook event."""
     shopee_order_id = str(shopee_order_data.get("ordersn", ""))
@@ -148,7 +148,7 @@ async def process_shopee_order(
         select(Order).where(
             Order.platform == "shopee",
             Order.platform_order_id == shopee_order_id,
-            Order.dropshipper_id == integration.dropshipper_id,
+            Order.dropshipper_id == integration.owner_id,
         )
     )
     if existing.scalar_one_or_none():
@@ -157,8 +157,8 @@ async def process_shopee_order(
     recipient_address = shopee_order_data.get("recipient_address", {})
 
     order = Order(
-        dropshipper_id=integration.dropshipper_id,
-        integration_id=integration.id,
+        dropshipper_id=integration.owner_id,
+        account_id=integration.id,
         platform="shopee",
         platform_order_id=shopee_order_id,
         platform_status=shopee_order_data.get("order_status", ""),
@@ -176,7 +176,7 @@ async def process_shopee_order(
         dp_result = await db.execute(
             select(DropshipperProduct).where(
                 DropshipperProduct.shopee_item_id == shopee_item_id,
-                DropshipperProduct.dropshipper_id == integration.dropshipper_id,
+                DropshipperProduct.dropshipper_id == integration.owner_id,
             )
         )
         dp = dp_result.scalar_one_or_none()
@@ -195,7 +195,7 @@ async def process_shopee_order(
 
     await create_notification(
         db=db,
-        dropshipper_id=integration.dropshipper_id,
+        dropshipper_id=integration.owner_id,
         type="new_order",
         title=f"Novo pedido #{order.id} – Shopee",
         body=f"Pedido de {order.buyer_name}",

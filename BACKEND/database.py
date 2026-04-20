@@ -94,6 +94,22 @@ AsyncSession = AsyncSyncSession
 AsyncSessionLocal = _SyncSession
 
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def task_db():
+    """Async context manager for background tasks (APScheduler jobs)."""
+    session = _SyncSession()
+    db = AsyncSyncSession(session)
+    try:
+        yield db
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+
 class Base(DeclarativeBase):
     pass
 

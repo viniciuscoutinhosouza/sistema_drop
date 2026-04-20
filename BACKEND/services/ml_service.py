@@ -112,3 +112,41 @@ async def update_item_stock(access_token: str, item_id: str, quantity: int) -> N
         )
     if resp.status_code not in (200, 201):
         raise HTTPException(status_code=400, detail=f"Erro ao atualizar estoque ML: {resp.text}")
+
+
+async def get_item(access_token: str, item_id: str) -> dict:
+    """Fetch an existing ML listing (used to validate a linked MLB ID)."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"Anúncio {item_id} não encontrado no Mercado Livre")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=400, detail=f"Erro ao buscar anúncio ML: {resp.text}")
+    return resp.json()
+
+
+async def update_item_price(access_token: str, item_id: str, price: float) -> None:
+    """Update the price of an existing ML listing."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"price": price},
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(status_code=400, detail=f"Erro ao atualizar preço ML: {resp.text}")
+
+
+async def pause_item(access_token: str, item_id: str) -> None:
+    """Pause (close) an active ML listing."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"status": "paused"},
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(status_code=400, detail=f"Erro ao pausar anúncio ML: {resp.text}")

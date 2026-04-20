@@ -18,6 +18,7 @@ export function useSocket() {
     socket = io('/', {
       path: '/ws/socket.io',
       auth: { token: accessToken },
+      query: { token: accessToken },
       transports: ['websocket'],
       reconnection: true,
       reconnectionDelay: 3000,

@@ -23,12 +23,12 @@ class Settings(BaseSettings):
     # Mercado Livre
     ML_APP_ID: str = "6712718703908494"
     ML_CLIENT_SECRET: str = ""
-    ML_REDIRECT_URI: str = "http://localhost:8000/api/v1/integrations/ml/callback"
+    ML_REDIRECT_URI: str = "http://localhost:8000/api/v1/accounts/ml/callback"
 
     # Shopee
     SHOPEE_PARTNER_ID: str = ""
     SHOPEE_PARTNER_KEY: str = ""
-    SHOPEE_REDIRECT_URI: str = "http://localhost:8000/api/v1/integrations/shopee/callback"
+    SHOPEE_REDIRECT_URI: str = "http://localhost:8000/api/v1/accounts/shopee/callback"
 
     # Platform fee (R$) charged per order payment
     PLATFORM_FEE: float = 2.00

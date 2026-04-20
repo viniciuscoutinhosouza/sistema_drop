@@ -70,7 +70,7 @@ async def create_return(
 async def update_return_status(
     return_id: int,
     body: dict,
-    current_user: User = Depends(require_role("supplier", "admin")),
+    current_user: User = Depends(require_role("ugo", "admin")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Return).where(Return.id == return_id))

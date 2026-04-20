@@ -2,22 +2,20 @@
 Background task: Check for overdue subscriptions.
 Runs daily at midnight.
 """
-from datetime import date
+from datetime import date, timedelta
 from sqlalchemy import select
-from database import AsyncSessionLocal
-from models.user import DropshipperProfile, User
+from database import task_db
+from models.user import ACProfile
 from services.notification_service import create_notification
 
 
 async def check_overdue_subscriptions():
-    """Flag subscriptions past due and notify dropshippers."""
     today = date.today()
-
-    async with AsyncSessionLocal() as db:
+    async with task_db() as db:
         result = await db.execute(
-            select(DropshipperProfile).where(
-                DropshipperProfile.subscription_due_date < today,
-                DropshipperProfile.subscription_status == "active",
+            select(ACProfile).where(
+                ACProfile.subscription_due_date < today,
+                ACProfile.subscription_status == "active",
             )
         )
         for profile in result.scalars().all():
@@ -30,12 +28,10 @@ async def check_overdue_subscriptions():
                 body="Sua mensalidade está vencida. Regularize para continuar usando o sistema.",
             )
 
-        # Suspend those overdue for more than 7 days
-        from datetime import timedelta
         result2 = await db.execute(
-            select(DropshipperProfile).where(
-                DropshipperProfile.subscription_due_date < today - timedelta(days=7),
-                DropshipperProfile.subscription_status == "overdue",
+            select(ACProfile).where(
+                ACProfile.subscription_due_date < today - timedelta(days=7),
+                ACProfile.subscription_status == "overdue",
             )
         )
         for profile in result2.scalars().all():

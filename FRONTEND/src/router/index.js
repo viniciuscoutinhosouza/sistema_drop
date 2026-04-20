@@ -46,8 +46,12 @@ const ReturnCreateView = () => import('@/views/returns/ReturnCreateView.vue')
 // Notifications
 const NotificationsView = () => import('@/views/notifications/NotificationsView.vue')
 
-// Supplier
+// Supplier / PG
 const SupplierProductListView = () => import('@/views/supplier/SupplierProductListView.vue')
+
+// Settings
+const UsersView     = () => import('@/views/settings/UsersView.vue')
+const WarehouseView = () => import('@/views/settings/WarehouseView.vue')
 
 
 const routes = [
@@ -103,11 +107,23 @@ const routes = [
 
       { path: 'notifications', component: NotificationsView, meta: { title: 'Notificações' } },
 
-      // Supplier-only
+      // UGO-only (Operador Logístico — Produto Geral)
       {
-        path: 'supplier/products',
+        path: 'pg',
         component: SupplierProductListView,
-        meta: { title: 'Gestão do Catálogo', role: 'supplier' },
+        meta: { title: 'Produto Geral (PG)', role: 'ugo' },
+      },
+
+      // Configurações — Admin e UGO
+      {
+        path: 'settings/users',
+        component: UsersView,
+        meta: { title: 'Usuários', role: 'ugo' },
+      },
+      {
+        path: 'settings/warehouse',
+        component: WarehouseView,
+        meta: { title: 'Galpão', role: 'admin' },
       },
     ],
   },
@@ -137,7 +153,7 @@ router.beforeEach((to, from, next) => {
 
   if (to.meta.role) {
     const user = JSON.parse(stored || '{}').user
-    if (!user || user.role !== to.meta.role) {
+    if (!user || (user.role !== to.meta.role && !(to.meta.role === 'ugo' && user.role === 'admin'))) {
       return next('/dashboard')
     }
   }

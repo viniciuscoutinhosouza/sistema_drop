@@ -44,25 +44,43 @@ def require_role(*roles: str):
     return checker
 
 
-async def get_active_dropshipper(
+async def get_active_ac(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Returns the current user if they are an active dropshipper with valid subscription."""
-    from models.user import DropshipperProfile
+    """Retorna o usuário atual se for um AC ativo com assinatura em dia."""
+    from models.user import ACProfile
     from datetime import date
 
-    if current_user.role != "dropshipper":
-        raise HTTPException(status_code=403, detail="Acesso apenas para dropshippers")
+    if current_user.role not in ("ac",):
+        raise HTTPException(status_code=403, detail="Acesso apenas para Gestores de Conta (AC)")
 
     result = await db.execute(
-        select(DropshipperProfile).where(DropshipperProfile.user_id == current_user.id)
+        select(ACProfile).where(ACProfile.user_id == current_user.id)
     )
     profile = result.scalar_one_or_none()
 
     if profile and profile.subscription_status == "suspended":
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Mensalidade vencida. Regularize para continuar.",
+            detail="Mensalidade vencida. Regularize seu plano para continuar.",
         )
+    return current_user
+
+
+async def get_active_ugo(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Retorna o usuário atual se for um Operador Logístico (UGO) ativo."""
+    if current_user.role not in ("ugo", "admin"):
+        raise HTTPException(status_code=403, detail="Acesso apenas para Operadores Logísticos (UGO)")
+    return current_user
+
+
+async def get_ac_or_ugo(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Permite acesso tanto para AC quanto para UGO/admin."""
+    if current_user.role not in ("ac", "ugo", "admin"):
+        raise HTTPException(status_code=403, detail="Acesso não autorizado")
     return current_user

@@ -12,7 +12,7 @@ router = APIRouter()
 @router.get("")
 async def list_supplier_products(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("supplier", "admin")),
+    current_user: User = Depends(require_role("ugo", "admin")),
 ):
     result = await db.execute(
         select(CatalogProduct).order_by(CatalogProduct.created_at.desc())
@@ -35,7 +35,7 @@ async def list_supplier_products(
 async def create_product(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("supplier", "admin")),
+    current_user: User = Depends(require_role("ugo", "admin")),
 ):
     product = CatalogProduct(
         sku=body["sku"],
@@ -74,7 +74,7 @@ async def update_product(
     product_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("supplier", "admin")),
+    current_user: User = Depends(require_role("ugo", "admin")),
 ):
     result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
     product = result.scalar_one_or_none()
@@ -96,7 +96,7 @@ async def update_stock(
     product_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("supplier", "admin")),
+    current_user: User = Depends(require_role("ugo", "admin")),
 ):
     result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
     product = result.scalar_one_or_none()
@@ -111,7 +111,7 @@ async def update_stock(
 async def delete_product(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("supplier", "admin")),
+    current_user: User = Depends(require_role("ugo", "admin")),
 ):
     result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
     product = result.scalar_one_or_none()

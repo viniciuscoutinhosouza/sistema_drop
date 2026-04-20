@@ -4,7 +4,7 @@ from sqlalchemy import select, func
 from decimal import Decimal
 from datetime import datetime, timezone
 from database import get_db
-from dependencies import get_active_dropshipper
+from dependencies import get_active_ac
 from models.user import User
 from models.order import Order, OrderItem
 from services.financial_service import debit_balance
@@ -23,7 +23,7 @@ async def list_orders(
     platform: str = None,
     payment_status: str = None,
     search: str = None,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Order).where(
@@ -69,7 +69,7 @@ async def list_orders(
 @router.get("/{order_id}")
 async def get_order(
     order_id: int,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -122,7 +122,7 @@ async def get_order(
 @router.post("/{order_id}/pay")
 async def pay_order(
     order_id: int,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -176,7 +176,7 @@ async def pay_order(
 async def update_order_status(
     order_id: int,
     body: dict,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     valid_statuses = ["label_printed", "separated", "shipped"]
@@ -201,7 +201,7 @@ async def update_order_status(
 @router.post("/{order_id}/hide")
 async def hide_order(
     order_id: int,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(

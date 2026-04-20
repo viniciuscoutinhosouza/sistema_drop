@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from database import get_db
-from models.integration import MarketplaceIntegration
+from models.integration import MarketplaceAccount
 from models.webhook import WebhookEvent
 from services import webhook_service, ml_service, shopee_service
 from config import get_settings
@@ -48,10 +48,10 @@ async def ml_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     try:
         # Find the integration for this ML user
         result = await db.execute(
-            select(MarketplaceIntegration).where(
-                MarketplaceIntegration.platform_user_id == ml_user_id,
-                MarketplaceIntegration.platform == "mercadolivre",
-                MarketplaceIntegration.is_active == True,
+            select(MarketplaceAccount).where(
+                MarketplaceAccount.platform_user_id == ml_user_id,
+                MarketplaceAccount.platform == "mercadolivre",
+                MarketplaceAccount.is_active == True,
             )
         )
         integration = result.scalar_one_or_none()
@@ -122,10 +122,10 @@ async def shopee_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     try:
         result = await db.execute(
-            select(MarketplaceIntegration).where(
-                MarketplaceIntegration.shop_id == int(shop_id),
-                MarketplaceIntegration.platform == "shopee",
-                MarketplaceIntegration.is_active == True,
+            select(MarketplaceAccount).where(
+                MarketplaceAccount.shop_id == int(shop_id),
+                MarketplaceAccount.platform == "shopee",
+                MarketplaceAccount.is_active == True,
             )
         )
         integration = result.scalar_one_or_none()

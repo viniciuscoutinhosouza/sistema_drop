@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from database import get_db
-from dependencies import get_active_dropshipper
+from dependencies import get_active_ac
 from models.user import User
 from models.kit import Kit, KitComponent
 from services.kit_service import calculate_kit_stock
@@ -14,7 +14,7 @@ router = APIRouter()
 async def list_kits(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Kit).where(Kit.dropshipper_id == current_user.id, Kit.is_active == True)
@@ -38,7 +38,7 @@ async def list_kits(
 @router.post("", status_code=201)
 async def create_kit(
     body: dict,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     sku = body.get("sku", "")
@@ -80,7 +80,7 @@ async def create_kit(
 @router.get("/{kit_id}/stock")
 async def get_kit_stock(
     kit_id: int,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -97,7 +97,7 @@ async def get_kit_stock(
 async def update_kit(
     kit_id: int,
     body: dict,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -116,7 +116,7 @@ async def update_kit(
 @router.delete("/{kit_id}", status_code=204)
 async def delete_kit(
     kit_id: int,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(

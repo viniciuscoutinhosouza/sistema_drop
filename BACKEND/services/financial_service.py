@@ -2,7 +2,7 @@ from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, text
-from models.user import DropshipperProfile
+from models.user import ACProfile
 from models.financial import FinancialTransaction
 from socket_manager import emit_to_user
 
@@ -14,7 +14,7 @@ class InsufficientBalanceError(Exception):
 async def get_balance(db: AsyncSession, dropshipper_id: int) -> tuple[Decimal, Decimal]:
     """Returns (balance, balance_reserved) for a dropshipper."""
     result = await db.execute(
-        select(DropshipperProfile).where(DropshipperProfile.user_id == dropshipper_id)
+        select(ACProfile).where(ACProfile.user_id == dropshipper_id)
     )
     profile = result.scalar_one_or_none()
     if not profile:
@@ -35,13 +35,13 @@ async def credit_balance(
     """Credit an amount to a dropshipper's balance. Thread-safe via FOR UPDATE."""
     # Lock the row to prevent race conditions
     result = await db.execute(
-        select(DropshipperProfile)
-        .where(DropshipperProfile.user_id == dropshipper_id)
+        select(ACProfile)
+        .where(ACProfile.user_id == dropshipper_id)
         .with_for_update()
     )
     profile = result.scalar_one_or_none()
     if not profile:
-        raise HTTPException(status_code=404, detail="Perfil de dropshipper não encontrado")
+        raise HTTPException(status_code=404, detail="Perfil do Gestor de Conta não encontrado")
 
     balance_before = profile.balance
     profile.balance += amount
@@ -87,13 +87,13 @@ async def debit_balance(
     """
     # NOWAIT: immediately fail if another transaction holds the lock
     result = await db.execute(
-        select(DropshipperProfile)
-        .where(DropshipperProfile.user_id == dropshipper_id)
+        select(ACProfile)
+        .where(ACProfile.user_id == dropshipper_id)
         .with_for_update(nowait=True)
     )
     profile = result.scalar_one_or_none()
     if not profile:
-        raise HTTPException(status_code=404, detail="Perfil de dropshipper não encontrado")
+        raise HTTPException(status_code=404, detail="Perfil do Gestor de Conta não encontrado")
 
     available = profile.balance - profile.balance_reserved
     if available < amount:

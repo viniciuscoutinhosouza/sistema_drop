@@ -120,6 +120,80 @@ async def verify_push_signature(partner_key: str, authorization: str, body: byte
     return hmac.compare_digest(authorization, expected)
 
 
+async def get_item_base_info(access_token: str, shop_id: int, item_id: int) -> dict:
+    """Fetch base info for a Shopee listing (used to validate a linked item_id)."""
+    path = "/api/v2/product/get_item_base_info"
+    ts = int(time.time())
+    sign = _sign(path, ts, access_token, shop_id)
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{SHOPEE_API_BASE}/product/get_item_base_info",
+            params={
+                "partner_id": settings.SHOPEE_PARTNER_ID,
+                "shop_id": shop_id,
+                "access_token": access_token,
+                "timestamp": ts,
+                "sign": sign,
+                "item_id_list": item_id,
+            },
+        )
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(status_code=404, detail=f"Item Shopee não encontrado: {data.get('message')}")
+    items = data.get("response", {}).get("item_list", [])
+    if not items:
+        raise HTTPException(status_code=404, detail=f"Item {item_id} não encontrado na Shopee")
+    return items[0]
+
+
+async def create_item(access_token: str, shop_id: int, item_data: dict) -> int:
+    """Create a new product listing on Shopee. Returns item_id."""
+    path = "/api/v2/product/add_item"
+    ts = int(time.time())
+    sign = _sign(path, ts, access_token, shop_id)
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{SHOPEE_API_BASE}/product/add_item",
+            params={
+                "partner_id": settings.SHOPEE_PARTNER_ID,
+                "shop_id": shop_id,
+                "access_token": access_token,
+                "timestamp": ts,
+                "sign": sign,
+            },
+            json=item_data,
+        )
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(status_code=400, detail=f"Erro ao criar anúncio Shopee: {data.get('message')}")
+    return data["response"]["item_id"]
+
+
+async def update_item_price(access_token: str, shop_id: int, item_id: int, price: float) -> None:
+    """Update price for a Shopee listing."""
+    path = "/api/v2/product/update_price"
+    ts = int(time.time())
+    sign = _sign(path, ts, access_token, shop_id)
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{SHOPEE_API_BASE}/product/update_price",
+            params={
+                "partner_id": settings.SHOPEE_PARTNER_ID,
+                "shop_id": shop_id,
+                "access_token": access_token,
+                "timestamp": ts,
+                "sign": sign,
+            },
+            json={
+                "item_id": item_id,
+                "price_list": [{"model_id": 0, "original_price": price}],
+            },
+        )
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(status_code=400, detail=f"Erro ao atualizar preço Shopee: {data.get('message')}")
+
+
 async def update_item_stock(access_token: str, shop_id: int, item_id: int, stock: int) -> None:
     """Update stock for a Shopee listing."""
     path = "/api/v2/product/update_stock"

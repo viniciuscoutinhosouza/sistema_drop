@@ -57,20 +57,25 @@ import AppTopbar from '@/components/common/AppTopbar.vue'
 import AppSidebar from '@/components/common/AppSidebar.vue'
 import { useFinancialStore } from '@/stores/financial'
 import { useNotificationsStore } from '@/stores/notifications'
+import { useAuthStore } from '@/stores/auth'
 import { useSocket } from '@/composables/useSocket'
 import { useToast } from '@/composables/useToast'
 
 const route = useRoute()
 const financialStore = useFinancialStore()
 const notificationsStore = useNotificationsStore()
+const authStore = useAuthStore()
 const { connect } = useSocket()
 const { toasts, remove: removeToast } = useToast()
 
 onMounted(async () => {
+  const tasks = [notificationsStore.fetchNotifications()]
+  // fetchBalance só é válido para Gestores de Conta (AC)
+  if (authStore.user?.role === 'ac') {
+    tasks.push(financialStore.fetchBalance())
+  }
+  await Promise.allSettled(tasks)
+  // Conecta o socket APÓS as requisições — garante que o token está fresco
   connect()
-  await Promise.all([
-    financialStore.fetchBalance(),
-    notificationsStore.fetchNotifications(),
-  ])
 })
 </script>

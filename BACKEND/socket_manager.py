@@ -16,8 +16,10 @@ async def connect(sid, environ, auth):
     if auth and isinstance(auth, dict):
         token = auth.get("token")
     if not token:
-        # Try query string
+        # Try query string (ASGI passes QUERY_STRING as bytes)
         qs = environ.get("QUERY_STRING", "")
+        if isinstance(qs, bytes):
+            qs = qs.decode("utf-8")
         for part in qs.split("&"):
             if part.startswith("token="):
                 token = part[6:]

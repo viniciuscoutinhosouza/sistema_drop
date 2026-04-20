@@ -7,23 +7,41 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class RegisterRequest(BaseModel):
+class RegisterUGORequest(BaseModel):
+    """Cadastro de Operador Logístico (UGO) — realizado apenas pelo Admin."""
     full_name: str
     email: EmailStr
     whatsapp: str
-    person_type: str          # "fisica" | "juridica"
-    cpf_cnpj: str
     password: str
     password_confirm: str
 
-    # Address
-    zip_code: str
-    street: str
-    number: str
+    @field_validator("password_confirm")
+    @classmethod
+    def passwords_match(cls, v, info):
+        if "password" in info.data and v != info.data["password"]:
+            raise ValueError("As senhas não coincidem")
+        return v
+
+
+class RegisterACRequest(BaseModel):
+    """Cadastro de Gestor de Conta (AC) — realizado apenas por UGO."""
+    full_name: str
+    email: EmailStr
+    whatsapp: str
+    person_type: str           # "fisica" | "juridica"
+    cpf_cnpj: str
+    password: str
+    password_confirm: str
+    plan_id: int | None = None
+
+    # Endereço
+    zip_code: str = ""
+    street: str = ""
+    number: str = ""
     complement: str = ""
-    neighborhood: str
-    city: str
-    state: str                # 2-letter UF
+    neighborhood: str = ""
+    city: str = ""
+    state: str = ""
 
     @field_validator("person_type")
     @classmethod
@@ -35,9 +53,9 @@ class RegisterRequest(BaseModel):
     @field_validator("state")
     @classmethod
     def validate_state(cls, v):
-        if len(v) != 2:
+        if v and len(v) != 2:
             raise ValueError("Estado deve ter 2 letras (UF)")
-        return v.upper()
+        return v.upper() if v else v
 
     @field_validator("password_confirm")
     @classmethod

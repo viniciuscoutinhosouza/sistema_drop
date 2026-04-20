@@ -1,53 +1,413 @@
+"""
+Gestão de CONTAs de Marketplace (antigo: integrations).
+
+Uma CONTA é identificada unicamente por (platform, email, phone).
+Pode ser co-administrada por múltiplos ACs via AccountAdministrator.
+"""
 import secrets
+import random
+import string
 from datetime import datetime, timezone, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+
 from database import get_db
-from dependencies import get_current_user
-from models.user import User
-from models.integration import MarketplaceIntegration
+from dependencies import get_current_user, get_active_ac, require_role
+from models.user import User, AccountAdministrator
+from models.integration import MarketplaceAccount, AccountBalance, OTPVerification
 from services import ml_service, shopee_service, bling_service
 from config import get_settings
 
 settings = get_settings()
 router = APIRouter()
 
-# In-memory state store for OAuth CSRF protection
-# In production, use Redis with TTL
-_oauth_states: dict[str, int] = {}
+# In-memory state store para CSRF do OAuth (produção: use Redis com TTL)
+_oauth_states: dict[str, dict] = {}
 
+
+def _generate_otp() -> str:
+    return "".join(random.choices(string.digits, k=6))
+
+
+async def _assert_ac_can_access(account_id: int, user_id: int, db: AsyncSession) -> MarketplaceAccount:
+    """Verifica se o usuário é co-administrador da CONTA."""
+    result = await db.execute(
+        select(MarketplaceAccount)
+        .join(AccountAdministrator, MarketplaceAccount.id == AccountAdministrator.account_id)
+        .where(
+            MarketplaceAccount.id == account_id,
+            AccountAdministrator.user_id == user_id,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Conta não encontrada ou sem permissão")
+    return account
+
+
+def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
+    return {
+        "id": acc.id,
+        "platform": acc.platform,
+        "description": acc.description,
+        "email": acc.email,
+        "phone": acc.phone,
+        "platform_username": acc.platform_username,
+        "is_active": acc.is_active,
+        "otp_verified": acc.otp_verified,
+        "is_owner": is_owner,
+        "last_sync_at": acc.last_sync_at.isoformat() if acc.last_sync_at else None,
+        "created_at": acc.created_at.isoformat() if acc.created_at else None,
+    }
+
+
+# ─── Listar CONTAs do AC ──────────────────────────────────────────────────────
 
 @router.get("")
-async def list_integrations(
-    current_user: User = Depends(get_current_user),
+async def list_accounts(
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
+    """Lista todas as CONTAs que o AC co-administra."""
     result = await db.execute(
-        select(MarketplaceIntegration).where(MarketplaceIntegration.dropshipper_id == current_user.id)
+        select(MarketplaceAccount, AccountAdministrator.is_owner)
+        .join(AccountAdministrator, MarketplaceAccount.id == AccountAdministrator.account_id)
+        .where(AccountAdministrator.user_id == current_user.id)
+        .order_by(MarketplaceAccount.created_at)
     )
-    integrations = result.scalars().all()
-    return [
-        {
-            "id": i.id,
-            "platform": i.platform,
-            "description": i.description,
-            "platform_username": i.platform_username,
-            "is_active": i.is_active,
-            "last_sync_at": i.last_sync_at.isoformat() if i.last_sync_at else None,
-            "created_at": i.created_at.isoformat() if i.created_at else None,
-        }
-        for i in integrations
-    ]
+    return [_serialize_account(acc, is_owner) for acc, is_owner in result.all()]
 
 
-# ─── Mercado Livre ────────────────────────────────────────────────────────────
+# ─── Criar CONTA com verificação OTP ─────────────────────────────────────────
 
-@router.get("/ml/authorize")
-async def ml_authorize(current_user: User = Depends(get_current_user)):
+@router.post("", status_code=201)
+async def create_account(
+    body: dict,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Cria/registra uma nova CONTA de marketplace.
+    Body: platform, description, email, phone
+    Após criação, o sistema envia OTP para confirmar o vínculo.
+    """
+    platform = body.get("platform")
+    email = body.get("email", "")
+    phone = body.get("phone", "")
+    description = body.get("description", "")
+
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform é obrigatório")
+
+    # Verificar duplicata pelo identificador único (platform + email + phone)
+    dup = await db.execute(
+        select(MarketplaceAccount).where(
+            MarketplaceAccount.platform == platform,
+            MarketplaceAccount.email == email,
+            MarketplaceAccount.phone == phone,
+        )
+    )
+    existing = dup.scalar_one_or_none()
+    if existing:
+        # Conta já existe — verificar se este AC já é co-admin
+        admin_check = await db.execute(
+            select(AccountAdministrator).where(
+                AccountAdministrator.account_id == existing.id,
+                AccountAdministrator.user_id == current_user.id,
+            )
+        )
+        if admin_check.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Você já administra esta conta")
+        # Adicionar este AC como co-admin (sem OTP duplicado)
+        db.add(AccountAdministrator(
+            user_id=current_user.id,
+            account_id=existing.id,
+            is_owner=False,
+        ))
+        await db.commit()
+        return {"id": existing.id, "message": "Conta vinculada como co-administrador"}
+
+    # Nova CONTA
+    account = MarketplaceAccount(
+        owner_id=current_user.id,
+        platform=platform,
+        description=description,
+        email=email,
+        phone=phone,
+        otp_verified=False,
+    )
+    db.add(account)
+    await db.flush()
+
+    # Criar saldo operacional zerado
+    db.add(AccountBalance(account_id=account.id))
+
+    # Registrar AC como owner e primeiro administrador
+    db.add(AccountAdministrator(
+        user_id=current_user.id,
+        account_id=account.id,
+        is_owner=True,
+    ))
+
+    # Gerar OTP de verificação
+    otp_code = _generate_otp()
+    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+    db.add(OTPVerification(
+        account_id=account.id,
+        code=otp_code,
+        channel="email",
+        destination=email,
+        expires_at=expires,
+    ))
+
+    await db.commit()
+
+    # DEV: exibe o OTP no log do backend até SMTP estar configurado
+    print(f"\n{'='*50}")
+    print(f"  OTP para conta '{email}' [{platform}]: {otp_code}")
+    print(f"  Válido por 15 minutos.")
+    print(f"{'='*50}\n")
+
+    return {
+        "id": account.id,
+        "message": "Conta criada. Verifique o e-mail/WhatsApp para confirmar o vínculo.",
+        "otp_required": True,
+    }
+
+
+@router.post("/{account_id}/verify-otp")
+async def verify_otp(
+    account_id: int,
+    body: dict,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirma o vínculo da CONTA via código OTP."""
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    code = body.get("code", "").strip()
+
+    otp_result = await db.execute(
+        select(OTPVerification).where(
+            OTPVerification.account_id == account_id,
+            OTPVerification.code == code,
+            OTPVerification.is_used == False,
+        )
+    )
+    otp = otp_result.scalar_one_or_none()
+    if not otp:
+        # DEV: mostrar OTPs ativos para diagnóstico
+        all_otps = await db.execute(
+            select(OTPVerification).where(
+                OTPVerification.account_id == account_id,
+                OTPVerification.is_used == False,
+            )
+        )
+        active = all_otps.scalars().all()
+        if active:
+            print(f"\n[OTP DEBUG] Códigos ativos para account_id={account_id}:")
+            for o in active:
+                print(f"  código={o.code}  expira={o.expires_at}  canal={o.channel}")
+            print()
+        else:
+            print(f"\n[OTP DEBUG] Nenhum OTP ativo para account_id={account_id}\n")
+        raise HTTPException(status_code=400, detail="Código OTP inválido")
+    expires = otp.expires_at if otp.expires_at.tzinfo else otp.expires_at.replace(tzinfo=timezone.utc)
+    if expires < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Código OTP expirado")
+
+    otp.is_used = True
+    account.otp_verified = True
+    await db.commit()
+    return {"message": "Conta verificada com sucesso"}
+
+
+@router.post("/{account_id}/resend-otp")
+async def resend_otp(
+    account_id: int,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gera um novo OTP e invalida os anteriores."""
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    if account.otp_verified:
+        raise HTTPException(status_code=400, detail="Conta já verificada")
+
+    # Invalidar OTPs anteriores
+    old_otps = await db.execute(
+        select(OTPVerification).where(
+            OTPVerification.account_id == account_id,
+            OTPVerification.is_used == False,
+        )
+    )
+    for old in old_otps.scalars().all():
+        old.is_used = True
+
+    otp_code = _generate_otp()
+    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+    db.add(OTPVerification(
+        account_id=account_id,
+        code=otp_code,
+        channel="email",
+        destination=account.email or "",
+        expires_at=expires,
+    ))
+    await db.commit()
+
+    print(f"\n{'='*50}")
+    print(f"  NOVO OTP para conta '{account.email}' [{account.platform}]: {otp_code}")
+    print(f"  Válido por 15 minutos.")
+    print(f"{'='*50}\n")
+
+    return {"message": "Novo código OTP gerado. Verifique o log do backend."}
+
+
+# ─── Co-administração ─────────────────────────────────────────────────────────
+
+@router.post("/{account_id}/admins")
+async def add_co_admin(
+    account_id: int,
+    body: dict,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Adiciona outro AC como co-administrador desta CONTA."""
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+
+    target_user_id = body.get("user_id")
+    if not target_user_id:
+        raise HTTPException(status_code=400, detail="user_id é obrigatório")
+
+    target_result = await db.execute(
+        select(User).where(User.id == target_user_id, User.role == "ac", User.is_active == True)
+    )
+    if not target_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Gestor de Conta não encontrado")
+
+    dup = await db.execute(
+        select(AccountAdministrator).where(
+            AccountAdministrator.account_id == account_id,
+            AccountAdministrator.user_id == target_user_id,
+        )
+    )
+    if dup.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Usuário já é administrador desta conta")
+
+    db.add(AccountAdministrator(
+        user_id=target_user_id,
+        account_id=account_id,
+        is_owner=False,
+    ))
+    await db.commit()
+    return {"message": "Co-administrador adicionado com sucesso"}
+
+
+@router.delete("/{account_id}/admins/{user_id}", status_code=204)
+async def remove_co_admin(
+    account_id: int,
+    user_id: int,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove um co-administrador desta CONTA (apenas owner pode fazer isso)."""
+    # Verificar que o solicitante é o owner
+    owner_check = await db.execute(
+        select(AccountAdministrator).where(
+            AccountAdministrator.account_id == account_id,
+            AccountAdministrator.user_id == current_user.id,
+            AccountAdministrator.is_owner == True,
+        )
+    )
+    if not owner_check.scalar_one_or_none():
+        raise HTTPException(status_code=403, detail="Apenas o owner pode remover co-administradores")
+
+    result = await db.execute(
+        select(AccountAdministrator).where(
+            AccountAdministrator.account_id == account_id,
+            AccountAdministrator.user_id == user_id,
+            AccountAdministrator.is_owner == False,
+        )
+    )
+    admin = result.scalar_one_or_none()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Co-administrador não encontrado")
+    await db.delete(admin)
+    await db.commit()
+
+
+# ─── Detalhes e desconexão ────────────────────────────────────────────────────
+
+@router.get("/{account_id}")
+async def get_account(
+    account_id: int,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    owner_check = await db.execute(
+        select(AccountAdministrator).where(
+            AccountAdministrator.account_id == account_id,
+            AccountAdministrator.user_id == current_user.id,
+            AccountAdministrator.is_owner == True,
+        )
+    )
+    return _serialize_account(account, is_owner=bool(owner_check.scalar_one_or_none()))
+
+
+@router.put("/{account_id}")
+async def update_account(
+    account_id: int,
+    body: dict,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    if "description" in body:
+        account.description = body["description"]
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/{account_id}", status_code=204)
+async def disconnect_account(
+    account_id: int,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Desativa uma CONTA (apenas owner pode fazer isso)."""
+    owner_check = await db.execute(
+        select(AccountAdministrator).where(
+            AccountAdministrator.account_id == account_id,
+            AccountAdministrator.user_id == current_user.id,
+            AccountAdministrator.is_owner == True,
+        )
+    )
+    if not owner_check.scalar_one_or_none():
+        raise HTTPException(status_code=403, detail="Apenas o owner pode desativar a conta")
+
+    result = await db.execute(
+        select(MarketplaceAccount).where(MarketplaceAccount.id == account_id)
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Conta não encontrada")
+    account.is_active = False
+    await db.commit()
+
+
+# ─── OAuth – Mercado Livre ────────────────────────────────────────────────────
+
+@router.get("/{account_id}/ml/authorize")
+async def ml_authorize(
+    account_id: int,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    await _assert_ac_can_access(account_id, current_user.id, db)
     state = secrets.token_urlsafe(16)
-    _oauth_states[state] = current_user.id
+    _oauth_states[state] = {"user_id": current_user.id, "account_id": account_id}
     url = ml_service.get_authorization_url(state)
     return {"auth_url": url}
 
@@ -58,163 +418,100 @@ async def ml_callback(
     state: str,
     db: AsyncSession = Depends(get_db),
 ):
-    user_id = _oauth_states.pop(state, None)
-    if not user_id:
+    ctx = _oauth_states.pop(state, None)
+    if not ctx:
         raise HTTPException(status_code=400, detail="Estado OAuth inválido ou expirado")
 
+    account_id = ctx["account_id"]
     token_data = await ml_service.exchange_code(code)
     user_info = await ml_service.get_user_info(token_data["access_token"])
-
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expires_in", 21600))
 
-    # Upsert integration
-    result = await db.execute(
-        select(MarketplaceIntegration).where(
-            MarketplaceIntegration.dropshipper_id == user_id,
-            MarketplaceIntegration.platform == "mercadolivre",
-            MarketplaceIntegration.platform_user_id == str(user_info.get("id")),
-        )
-    )
-    integration = result.scalar_one_or_none()
+    result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Conta não encontrada")
 
-    if integration:
-        integration.access_token = token_data["access_token"]
-        integration.refresh_token = token_data.get("refresh_token")
-        integration.token_expires_at = expires_at
-        integration.is_active = True
-    else:
-        integration = MarketplaceIntegration(
-            dropshipper_id=user_id,
-            platform="mercadolivre",
-            description=f"ML – {user_info.get('nickname', '')}",
-            access_token=token_data["access_token"],
-            refresh_token=token_data.get("refresh_token"),
-            token_expires_at=expires_at,
-            platform_user_id=str(user_info.get("id")),
-            platform_username=user_info.get("nickname"),
-        )
-        db.add(integration)
-
+    account.access_token = token_data["access_token"]
+    account.refresh_token = token_data.get("refresh_token")
+    account.token_expires_at = expires_at
+    account.platform_user_id = str(user_info.get("id"))
+    account.platform_username = user_info.get("nickname")
+    account.is_active = True
     await db.commit()
+
     frontend_url = f"{settings.FRONTEND_URL}/oauth/success?platform=mercadolivre&status=connected"
     return RedirectResponse(frontend_url)
 
 
-@router.delete("/ml/{integration_id}", status_code=204)
-async def ml_disconnect(
-    integration_id: int,
-    current_user: User = Depends(get_current_user),
+# ─── OAuth – Shopee ───────────────────────────────────────────────────────────
+
+@router.get("/{account_id}/shopee/authorize")
+async def shopee_authorize(
+    account_id: int,
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(MarketplaceIntegration).where(
-            MarketplaceIntegration.id == integration_id,
-            MarketplaceIntegration.dropshipper_id == current_user.id,
-            MarketplaceIntegration.platform == "mercadolivre",
-        )
-    )
-    integration = result.scalar_one_or_none()
-    if integration:
-        integration.is_active = False
-        await db.commit()
-
-
-# ─── Shopee ───────────────────────────────────────────────────────────────────
-
-@router.get("/shopee/authorize")
-async def shopee_authorize(current_user: User = Depends(get_current_user)):
-    url = shopee_service.get_authorization_url(settings.SHOPEE_REDIRECT_URI)
+    await _assert_ac_can_access(account_id, current_user.id, db)
+    state = secrets.token_urlsafe(16)
+    _oauth_states[state] = {"user_id": current_user.id, "account_id": account_id}
+    redirect_uri_with_state = f"{settings.SHOPEE_REDIRECT_URI}?state={state}"
+    url = shopee_service.get_authorization_url(redirect_uri_with_state)
     return {"auth_url": url}
 
 
 @router.get("/shopee/callback")
 async def shopee_callback(
     code: str,
-    shop_id: int,
+    state: str,
+    shop_id: int = Query(None),
+    shopid: int = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    # Note: Shopee callback doesn't return state – use shop_id as identifier
-    # In production, associate shop_id with a pending auth session from Redis
-    token_data = await shopee_service.exchange_code(code, shop_id)
+    resolved_shop_id = shop_id or shopid
+    if not resolved_shop_id:
+        raise HTTPException(status_code=400, detail="shop_id ausente no callback Shopee")
 
-    # We need to know which dropshipper initiated – store state in Redis in production
-    # For now, raise error if no pending session found
-    raise HTTPException(
-        status_code=501,
-        detail="Shopee callback: implementar controle de sessão OAuth com Redis para associar shop_id ao dropshipper"
-    )
+    ctx = _oauth_states.pop(state, None)
+    if not ctx:
+        raise HTTPException(status_code=400, detail="Estado OAuth inválido ou expirado")
 
+    account_id = ctx["account_id"]
+    token_data = await shopee_service.exchange_code(code, resolved_shop_id)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expire_in", 14400))
 
-@router.delete("/shopee/{integration_id}", status_code=204)
-async def shopee_disconnect(
-    integration_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(
-        select(MarketplaceIntegration).where(
-            MarketplaceIntegration.id == integration_id,
-            MarketplaceIntegration.dropshipper_id == current_user.id,
-            MarketplaceIntegration.platform == "shopee",
-        )
-    )
-    integration = result.scalar_one_or_none()
-    if integration:
-        integration.is_active = False
-        await db.commit()
+    result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Conta não encontrada")
+
+    account.access_token = token_data["access_token"]
+    account.refresh_token = token_data.get("refresh_token")
+    account.token_expires_at = expires_at
+    account.platform_user_id = str(resolved_shop_id)
+    account.shop_id = resolved_shop_id
+    account.is_active = True
+    await db.commit()
+
+    frontend_url = f"{settings.FRONTEND_URL}/oauth/success?platform=shopee&status=connected"
+    return RedirectResponse(frontend_url)
 
 
 # ─── Bling ────────────────────────────────────────────────────────────────────
 
-@router.post("/bling")
+@router.post("/{account_id}/bling/connect")
 async def bling_connect(
+    account_id: int,
     body: dict,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
     api_key = body.get("api_key")
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key é obrigatório")
-
     await bling_service.validate_api_key(api_key)
-
-    result = await db.execute(
-        select(MarketplaceIntegration).where(
-            MarketplaceIntegration.dropshipper_id == current_user.id,
-            MarketplaceIntegration.platform == "bling",
-        )
-    )
-    integration = result.scalar_one_or_none()
-    if integration:
-        integration.api_key = api_key
-        integration.is_active = True
-    else:
-        integration = MarketplaceIntegration(
-            dropshipper_id=current_user.id,
-            platform="bling",
-            description=body.get("description", "Bling V3"),
-            api_key=api_key,
-        )
-        db.add(integration)
-
+    account.api_key = api_key
+    account.is_active = True
     await db.commit()
     return {"message": "Bling conectado com sucesso"}
-
-
-@router.delete("/bling/{integration_id}", status_code=204)
-async def bling_disconnect(
-    integration_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(
-        select(MarketplaceIntegration).where(
-            MarketplaceIntegration.id == integration_id,
-            MarketplaceIntegration.dropshipper_id == current_user.id,
-            MarketplaceIntegration.platform == "bling",
-        )
-    )
-    integration = result.scalar_one_or_none()
-    if integration:
-        integration.is_active = False
-        await db.commit()

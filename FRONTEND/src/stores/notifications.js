@@ -11,9 +11,13 @@ export const useNotificationsStore = defineStore('notifications', () => {
   )
 
   async function fetchNotifications(page = 1) {
-    const { data } = await api.get('/notifications', { params: { page, page_size: 10 } })
-    notifications.value = data.items
-    total.value = data.total
+    try {
+      const { data } = await api.get('/notifications', { params: { page, page_size: 10 } })
+      notifications.value = data.items
+      total.value = data.total
+    } catch {
+      // Silencia erros de rede ao carregar notificações
+    }
   }
 
   function addNotification(notification) {

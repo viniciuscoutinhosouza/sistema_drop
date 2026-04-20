@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from database import get_db
-from dependencies import get_active_dropshipper
+from dependencies import get_active_ac
 from models.user import User
 from models.order import Order, OrderItem
 from models.product import CatalogProduct
@@ -13,7 +13,7 @@ router = APIRouter()
 @router.post("", status_code=201)
 async def create_manual_order(
     body: dict,
-    current_user: User = Depends(get_active_dropshipper),
+    current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
     """

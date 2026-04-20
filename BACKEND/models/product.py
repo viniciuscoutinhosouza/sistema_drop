@@ -99,6 +99,8 @@ class DropshipperProduct(Base):
 
     images = relationship("DropshipperProductImage", back_populates="product",
                           cascade="all, delete-orphan")
+    listings = relationship("ProductListing", back_populates="product",
+                            cascade="all, delete-orphan")
 
 
 class DropshipperProductImage(Base):
@@ -111,3 +113,26 @@ class DropshipperProductImage(Base):
     is_primary = Column(Boolean, default=False)
 
     product = relationship("DropshipperProduct", back_populates="images")
+
+
+class ProductListing(Base):
+    __tablename__ = "product_listings"
+
+    id               = Column(Integer, primary_key=True)
+    product_id       = Column(Integer, ForeignKey("dropshipper_products.id", ondelete="CASCADE"), nullable=False)
+    account_id       = Column(Integer, ForeignKey("marketplace_accounts.id", ondelete="CASCADE"), nullable=False)
+    platform_item_id = Column(String(200))
+    sale_price       = Column(Numeric(15, 2), nullable=False)
+    title_override   = Column(String(500))
+    category_id      = Column(String(100))
+    listing_type     = Column(String(20))
+    status           = Column(String(20), nullable=False, default="draft")
+    error_message    = Column(String(2000))
+    published_at     = Column(TIMESTAMP(timezone=True))
+    last_sync_at     = Column(TIMESTAMP(timezone=True))
+    created_at       = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at       = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
+                              onupdate=text("SYSTIMESTAMP"))
+
+    product  = relationship("DropshipperProduct", back_populates="listings")
+    account  = relationship("MarketplaceAccount")

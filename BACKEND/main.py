@@ -28,8 +28,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="MIG ECOMMERCE API",
-    description="Sistema de Gestão de Dropshipping – MIG ECOMMERCE",
-    version="1.0.0",
+    description="Sistema de Gestão de Contas de Marketplace – MIG ECOMMERCE",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -55,9 +55,11 @@ from routers import (
     orders,
     manual_orders,
     integrations,
+    listings,
     returns,
     notifications,
     webhooks,
+    warehouse,
 )
 
 PREFIX = "/api/v1"
@@ -67,15 +69,17 @@ app.include_router(users.router,             prefix=f"{PREFIX}/users",          
 app.include_router(dashboard.router,         prefix=f"{PREFIX}/dashboard",      tags=["Dashboard"])
 app.include_router(financial.router,         prefix=f"{PREFIX}/financial",      tags=["Financial"])
 app.include_router(catalog.router,           prefix=f"{PREFIX}/catalog",        tags=["Catalog"])
-app.include_router(supplier_products.router, prefix=f"{PREFIX}/supplier",       tags=["Supplier"])
+app.include_router(supplier_products.router, prefix=f"{PREFIX}/pg",            tags=["PG - Produto Geral"])
 app.include_router(products.router,          prefix=f"{PREFIX}/products",       tags=["Products"])
 app.include_router(kits.router,              prefix=f"{PREFIX}/kits",           tags=["Kits"])
 app.include_router(orders.router,            prefix=f"{PREFIX}/orders",         tags=["Orders"])
 app.include_router(manual_orders.router,     prefix=f"{PREFIX}/manual-orders",  tags=["ManualOrders"])
-app.include_router(integrations.router,      prefix=f"{PREFIX}/integrations",   tags=["Integrations"])
+app.include_router(integrations.router,      prefix=f"{PREFIX}/accounts",       tags=["Accounts"])
+app.include_router(listings.router,          prefix=f"{PREFIX}/products/{{product_id}}/listings", tags=["Listings"])
 app.include_router(returns.router,           prefix=f"{PREFIX}/returns",        tags=["Returns"])
 app.include_router(notifications.router,     prefix=f"{PREFIX}/notifications",  tags=["Notifications"])
 app.include_router(webhooks.router,          prefix=f"{PREFIX}/webhooks",       tags=["Webhooks"])
+app.include_router(warehouse.router,         prefix=f"{PREFIX}/warehouse",      tags=["Warehouse"])
 
 
 @app.get("/")
@@ -83,5 +87,5 @@ async def root():
     return {"status": "ok", "system": "MIG ECOMMERCE"}
 
 
-# Mount Socket.io as ASGI sub-application at /ws
-socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
+# Mount Socket.io as ASGI sub-application at /ws/socket.io
+socket_app = socketio.ASGIApp(sio, other_asgi_app=app, socketio_path="ws/socket.io")

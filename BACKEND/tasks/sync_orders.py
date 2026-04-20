@@ -5,36 +5,33 @@ Runs every 15 minutes via APScheduler.
 import time
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
-from database import AsyncSessionLocal
-from models.integration import MarketplaceIntegration
+from database import task_db
+from models.integration import MarketplaceAccount
 from services import ml_service, shopee_service, webhook_service
 
 
 async def sync_all_orders():
-    """Sync orders for all active integrations."""
-    async with AsyncSessionLocal() as db:
-        # ML integrations
+    async with task_db() as db:
         result = await db.execute(
-            select(MarketplaceIntegration).where(
-                MarketplaceIntegration.platform == "mercadolivre",
-                MarketplaceIntegration.is_active == True,
+            select(MarketplaceAccount).where(
+                MarketplaceAccount.platform == "mercadolivre",
+                MarketplaceAccount.is_active == True,
             )
         )
         for integration in result.scalars().all():
             await _sync_ml_integration(db, integration)
 
-        # Shopee integrations
         result = await db.execute(
-            select(MarketplaceIntegration).where(
-                MarketplaceIntegration.platform == "shopee",
-                MarketplaceIntegration.is_active == True,
+            select(MarketplaceAccount).where(
+                MarketplaceAccount.platform == "shopee",
+                MarketplaceAccount.is_active == True,
             )
         )
         for integration in result.scalars().all():
             await _sync_shopee_integration(db, integration)
 
 
-async def _sync_ml_integration(db, integration: MarketplaceIntegration):
+async def _sync_ml_integration(db, integration: MarketplaceAccount):
     try:
         date_from = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
         orders = await ml_service.get_recent_orders(
@@ -62,10 +59,10 @@ async def _sync_ml_integration(db, integration: MarketplaceIntegration):
         print(f"Error syncing ML integration {integration.id}: {e}")
 
 
-async def _sync_shopee_integration(db, integration: MarketplaceIntegration):
+async def _sync_shopee_integration(db, integration: MarketplaceAccount):
     try:
         now = int(time.time())
-        time_from = now - 1800  # last 30 minutes
+        time_from = now - 1800
         orders = await shopee_service.get_order_list(
             integration.access_token,
             integration.shop_id,
