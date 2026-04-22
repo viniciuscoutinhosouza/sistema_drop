@@ -12,6 +12,7 @@ router = APIRouter()
 def _serialize(w: Warehouse) -> dict:
     return {
         "id": w.id,
+        "go_id": w.go_id,
         "name": w.name,
         "cnpj": w.cnpj,
         "company_name": w.company_name,
@@ -33,30 +34,38 @@ def _serialize(w: Warehouse) -> dict:
 
 
 @router.get("")
-async def get_warehouse(
+async def list_warehouses(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Retorna os dados do galpão. Acessível por qualquer usuário autenticado (para exibir endereço de devolução)."""
-    result = await db.execute(select(Warehouse).limit(1))
-    warehouse = result.scalar_one_or_none()
-    if not warehouse:
-        return None
-    return _serialize(warehouse)
+    """Lista galpões. Admin vê todos; GO vê os seus; UGO/AC vê apenas o seu."""
+    if current_user.role == "admin":
+        result = await db.execute(select(Warehouse))
+        return [_serialize(w) for w in result.scalars().all()]
+    if current_user.role == "go":
+        result = await db.execute(select(Warehouse).where(Warehouse.go_id == current_user.go_id))
+        return [_serialize(w) for w in result.scalars().all()]
+    # UGO ou AC — retorna apenas o galpão vinculado
+    if current_user.warehouse_id:
+        result = await db.execute(select(Warehouse).where(Warehouse.id == current_user.warehouse_id))
+        w = result.scalar_one_or_none()
+        return _serialize(w) if w else None
+    return None
 
 
 @router.post("", status_code=201)
 async def create_warehouse(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_role("admin", "go")),
 ):
-    """Cria o galpão. Apenas Admin pode executar. Só deve existir um galpão."""
-    existing = await db.execute(select(Warehouse).limit(1))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Já existe um galpão cadastrado. Use PUT para atualizar.")
+    """Cria um Galpão. Admin ou GO podem executar."""
+    go_id = body.get("go_id") or current_user.go_id
+    if not go_id:
+        raise HTTPException(status_code=422, detail="go_id é obrigatório")
 
     warehouse = Warehouse(
+        go_id=go_id,
         name=body.get("name", ""),
         cnpj=body.get("cnpj"),
         company_name=body.get("company_name"),
@@ -86,13 +95,16 @@ async def update_warehouse(
     warehouse_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_role("admin", "go")),
 ):
-    """Atualiza os dados do galpão. Apenas Admin pode executar."""
+    """Atualiza os dados do galpão. Admin ou GO podem executar."""
     result = await db.execute(select(Warehouse).where(Warehouse.id == warehouse_id))
     warehouse = result.scalar_one_or_none()
     if not warehouse:
         raise HTTPException(status_code=404, detail="Galpão não encontrado")
+
+    if current_user.role == "go" and warehouse.go_id != current_user.go_id:
+        raise HTTPException(status_code=403, detail="Este Galpão não pertence ao seu GO")
 
     fields = [
         "name", "cnpj", "company_name", "trade_name", "phone", "whatsapp", "email",

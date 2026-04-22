@@ -12,7 +12,8 @@ class MarketplaceAccount(Base):
     __tablename__ = "marketplace_accounts"
 
     id = Column(Integer, primary_key=True)
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # AC que criou a CONTA
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    cmig_id  = Column(Integer, ForeignKey("cmigs.id"), nullable=True)
     platform = Column(String(20), nullable=False)   # mercadolivre | shopee | bling
     description = Column(String(200))               # Apelido interno
     email = Column(String(255))                     # E-mail da conta no marketplace
@@ -35,6 +36,8 @@ class MarketplaceAccount(Base):
 
     administrators = relationship("AccountAdministrator", back_populates="account", cascade="all, delete-orphan")
     balance = relationship("AccountBalance", back_populates="account", uselist=False)
+    cmig = relationship("CMIG", back_populates="accounts")
+    nfe_configs = relationship("NFeConfig", back_populates="cm", cascade="all, delete-orphan")
 
 
 class AccountBalance(Base):

@@ -12,20 +12,24 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     email = Column(String(255), nullable=False, unique=True)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False, default="ac")  # ugo | ac | admin
+    role = Column(String(20), nullable=False, default="ac")  # ugo | ac | admin | go
     full_name = Column(String(255), nullable=False)
     whatsapp = Column(String(20))
     cpf_cnpj = Column(String(18), unique=True)
     is_active = Column(Boolean, nullable=False, default=True)
     dark_mode = Column(Boolean, nullable=False, default=False)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)  # UGO: galpão de trabalho
+    go_id = Column(Integer, ForeignKey("goes.id"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
                         onupdate=text("SYSTIMESTAMP"))
 
     profile = relationship("ACProfile", back_populates="user", uselist=False)
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
-    # Contas de marketplace que este AC co-administra
     administered_accounts = relationship("AccountAdministrator", back_populates="user", cascade="all, delete-orphan")
+    go_profile = relationship("GO", back_populates="user", foreign_keys="GO.user_id", uselist=False)
+    owned_cmigs = relationship("CMIG", back_populates="owner_ac", foreign_keys="CMIG.owner_ac_id")
+    administered_cmigs = relationship("CMIGAdministrator", back_populates="user", foreign_keys="CMIGAdministrator.user_id", cascade="all, delete-orphan")
 
 
 class ACProfile(Base):

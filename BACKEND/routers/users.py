@@ -115,13 +115,18 @@ async def lookup_cep(cep: str):
 async def list_users(
     role: str | None = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_role("ugo", "admin", "go")),
 ):
-    """Lista usuários. UGO lista apenas ACs; Admin lista todos."""
+    """Lista usuários. UGO lista apenas ACs; GO lista UGOs+ACs do seu galpão; Admin lista todos."""
     query = select(User).where(User.is_active == True)
 
     if current_user.role == "ugo":
         query = query.where(User.role == "ac")
+    elif current_user.role == "go":
+        query = query.where(
+            User.warehouse_id == current_user.warehouse_id,
+            User.role.in_(["ugo", "ac"])
+        )
     elif role:
         query = query.where(User.role == role)
 
@@ -135,6 +140,8 @@ async def list_users(
             "whatsapp": u.whatsapp,
             "role": u.role,
             "is_active": u.is_active,
+            "warehouse_id": u.warehouse_id,
+            "go_id": u.go_id,
             "created_at": u.created_at.isoformat() if u.created_at else None,
         }
         for u in users
@@ -178,6 +185,30 @@ async def get_user(
             "plan_id": profile.plan_id,
         } if profile else None,
     }
+
+
+@router.put("/{user_id}")
+async def update_user(
+    user_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ugo", "admin", "go")),
+):
+    """Atualiza dados de um usuário (nome, whatsapp, warehouse_id, is_active)."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    if user.role == "admin":
+        raise HTTPException(status_code=403, detail="Não é possível editar o administrador")
+
+    allowed = {"full_name", "whatsapp", "warehouse_id", "is_active"}
+    for field, value in body.items():
+        if field in allowed:
+            setattr(user, field, value)
+
+    await db.commit()
+    return {"id": user.id, "full_name": user.full_name, "warehouse_id": user.warehouse_id, "is_active": user.is_active}
 
 
 @router.put("/{user_id}/deactivate", status_code=204)

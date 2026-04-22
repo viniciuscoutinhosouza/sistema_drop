@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
 from socket_manager import sio
+import models  # noqa: F401 — registra todos os ORM models no SQLAlchemy
 
 settings = get_settings()
 
@@ -60,6 +61,9 @@ from routers import (
     notifications,
     webhooks,
     warehouse,
+    goes,
+    cmigs,
+    anuncios,
 )
 
 PREFIX = "/api/v1"
@@ -80,6 +84,9 @@ app.include_router(returns.router,           prefix=f"{PREFIX}/returns",        
 app.include_router(notifications.router,     prefix=f"{PREFIX}/notifications",  tags=["Notifications"])
 app.include_router(webhooks.router,          prefix=f"{PREFIX}/webhooks",       tags=["Webhooks"])
 app.include_router(warehouse.router,         prefix=f"{PREFIX}/warehouse",      tags=["Warehouse"])
+app.include_router(goes.router,              prefix=f"{PREFIX}/goes",           tags=["GOs"])
+app.include_router(cmigs.router,             prefix=f"{PREFIX}/cmigs",          tags=["CMIGs"])
+app.include_router(anuncios.router,          prefix=f"{PREFIX}/anuncios",        tags=["Anuncios"])
 
 
 @app.get("/")

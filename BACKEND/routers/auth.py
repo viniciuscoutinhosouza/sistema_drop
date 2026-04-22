@@ -67,6 +67,8 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         email=user.email,
         role=user.role,
         dark_mode=user.dark_mode,
+        go_id=user.go_id,
+        warehouse_id=user.warehouse_id,
     )
 
 
@@ -74,12 +76,16 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
 async def register_ugo(
     body: RegisterUGORequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_role("admin", "go")),
 ):
-    """Cadastra um novo Operador Logístico (UGO). Apenas o Admin pode executar."""
+    """Cadastra um novo Operador Logístico (UGO). Admin ou GO podem executar."""
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="E-mail já cadastrado")
+
+    # GO só pode criar UGO em seus próprios Galpões
+    warehouse_id = body.warehouse_id
+    go_id = current_user.go_id if current_user.role == "go" else None
 
     user = User(
         email=body.email,
@@ -87,6 +93,8 @@ async def register_ugo(
         full_name=body.full_name,
         whatsapp=body.whatsapp,
         role="ugo",
+        warehouse_id=warehouse_id,
+        go_id=go_id,
     )
     db.add(user)
     try:
@@ -100,7 +108,7 @@ async def register_ugo(
         if "check constraint" in err_str or "ck_" in err_str or "chk_" in err_str:
             raise HTTPException(
                 status_code=500,
-                detail="Erro de banco de dados: constraint de role inválida. Execute o script de migração 12_migration_roles.sql."
+                detail="Erro de banco de dados: constraint de role inválida. Execute o script de migração 16_migration_v3_multi_go_cmig.sql."
             )
         raise HTTPException(status_code=500, detail=f"Erro de banco de dados: {str(e)}")
 
@@ -130,6 +138,8 @@ async def register_ac(
         whatsapp=body.whatsapp,
         cpf_cnpj=body.cpf_cnpj,
         role="ac",
+        warehouse_id=current_user.warehouse_id,  # herda o galpão do UGO que cadastra
+        go_id=current_user.go_id,
     )
     db.add(user)
     try:
@@ -202,6 +212,8 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
         email=user.email,
         role=user.role,
         dark_mode=user.dark_mode,
+        go_id=user.go_id,
+        warehouse_id=user.warehouse_id,
     )
 
 

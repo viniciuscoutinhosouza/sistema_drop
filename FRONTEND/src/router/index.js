@@ -53,6 +53,22 @@ const SupplierProductListView = () => import('@/views/supplier/SupplierProductLi
 const UsersView     = () => import('@/views/settings/UsersView.vue')
 const WarehouseView = () => import('@/views/settings/WarehouseView.vue')
 
+// GOs (admin only)
+const GoListView = () => import('@/views/go/GoListView.vue')
+const GoFormView = () => import('@/views/go/GoFormView.vue')
+
+// CMIGs (AC + UGO)
+const CmigListView   = () => import('@/views/cmig/CmigListView.vue')
+const CmigFormView   = () => import('@/views/cmig/CmigFormView.vue')
+const CmigDetailView = () => import('@/views/cmig/CmigDetailView.vue')
+
+// Produtos CMIG (AC + UGO)
+const CmigProductListView = () => import('@/views/cmig-products/CmigProductListView.vue')
+const CmigProductFormView = () => import('@/views/cmig-products/CmigProductFormView.vue')
+
+// Anúncios (AC)
+const AnunciosView = () => import('@/views/anuncios/AnunciosView.vue')
+
 
 const routes = [
   // Auth routes (no sidebar)
@@ -123,8 +139,27 @@ const routes = [
       {
         path: 'settings/warehouse',
         component: WarehouseView,
-        meta: { title: 'Galpão', role: 'admin' },
+        meta: { title: 'Galpão', role: 'go' },
       },
+
+      // GOs — somente admin
+      { path: 'goes', component: GoListView, meta: { title: 'Gestores Operacionais', role: 'admin' } },
+      { path: 'goes/new', component: GoFormView, meta: { title: 'Novo GO', role: 'admin' } },
+      { path: 'goes/:id/edit', component: GoFormView, meta: { title: 'Editar GO', role: 'admin' } },
+
+      // CMIGs — AC e UGO
+      { path: 'cmigs', component: CmigListView, meta: { title: 'Contas MIG' } },
+      { path: 'cmigs/new', component: CmigFormView, meta: { title: 'Nova CMIG', role: 'ac' } },
+      { path: 'cmigs/:id', component: CmigDetailView, meta: { title: 'CMIG' } },
+      { path: 'cmigs/:id/edit', component: CmigFormView, meta: { title: 'Editar CMIG', role: 'ac' } },
+
+      // Produtos CMIG
+      { path: 'cmig-products', component: CmigProductListView, meta: { title: 'Produtos CMIG' } },
+      { path: 'cmig-products/new', component: CmigProductFormView, meta: { title: 'Novo Produto CMIG', role: 'ac' } },
+      { path: 'cmig-products/:id/edit', component: CmigProductFormView, meta: { title: 'Editar Produto CMIG', role: 'ac' } },
+
+      // Anúncios — AC
+      { path: 'anuncios', component: AnunciosView, meta: { title: 'Anúncios', role: 'ac' } },
     ],
   },
 
@@ -153,7 +188,16 @@ router.beforeEach((to, from, next) => {
 
   if (to.meta.role) {
     const user = JSON.parse(stored || '{}').user
-    if (!user || (user.role !== to.meta.role && !(to.meta.role === 'ugo' && user.role === 'admin'))) {
+    const role = user?.role
+    const requiredRole = to.meta.role
+
+    // admin acessa tudo; go acessa rotas de go e ugo; ugo acessa rotas de ugo; ac acessa rotas de ac
+    const canAccess = role === 'admin' ||
+      role === requiredRole ||
+      (requiredRole === 'ugo' && role === 'go') ||
+      (requiredRole === 'go' && role === 'go')
+
+    if (!canAccess) {
       return next('/dashboard')
     }
   }

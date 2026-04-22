@@ -32,6 +32,31 @@
 
           <!-- Menus visíveis apenas para AC -->
           <template v-if="isAC">
+            <li class="nav-header">MINHAS CONTAS</li>
+
+            <li class="nav-item">
+              <RouterLink to="/cmigs" class="nav-link" :class="{ active: route.path.startsWith('/cmigs') || route.path.startsWith('/cmig-products') }">
+                <i class="nav-icon fas fa-id-card"></i>
+                <p>Contas MIG (CMIG)</p>
+              </RouterLink>
+            </li>
+
+            <li class="nav-item">
+              <RouterLink to="/integrations" class="nav-link" :class="{ active: route.path.startsWith('/integrations') }">
+                <i class="nav-icon fas fa-plug"></i>
+                <p>Contas Marketplace (CM)</p>
+              </RouterLink>
+            </li>
+
+            <li class="nav-header">OPERAÇÕES</li>
+
+            <li class="nav-item">
+              <RouterLink to="/anuncios" class="nav-link" :class="{ active: route.path.startsWith('/anuncios') }">
+                <i class="nav-icon fas fa-tag"></i>
+                <p>Anúncios</p>
+              </RouterLink>
+            </li>
+
             <li class="nav-item">
               <RouterLink to="/financial" class="nav-link" :class="{ active: route.path.startsWith('/financial') }">
                 <i class="nav-icon fas fa-dollar-sign"></i>
@@ -47,9 +72,9 @@
             </li>
 
             <li class="nav-item">
-              <RouterLink to="/products" class="nav-link" :class="{ active: route.path.startsWith('/products') }">
-                <i class="nav-icon fas fa-box"></i>
-                <p>Meus Produtos</p>
+              <RouterLink to="/catalog" class="nav-link" :class="{ active: route.path.startsWith('/catalog') }">
+                <i class="nav-icon fas fa-store"></i>
+                <p>Catálogo PG</p>
               </RouterLink>
             </li>
 
@@ -61,23 +86,9 @@
             </li>
 
             <li class="nav-item">
-              <RouterLink to="/catalog" class="nav-link" :class="{ active: route.path.startsWith('/catalog') }">
-                <i class="nav-icon fas fa-store"></i>
-                <p>Catálogo</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-item">
               <RouterLink to="/manual-orders" class="nav-link" :class="{ active: route.path.startsWith('/manual-orders') }">
                 <i class="nav-icon fas fa-hand-paper"></i>
                 <p>Drop Manual</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-item">
-              <RouterLink to="/integrations" class="nav-link" :class="{ active: route.path.startsWith('/integrations') }">
-                <i class="nav-icon fas fa-plug"></i>
-                <p>Minhas Contas</p>
               </RouterLink>
             </li>
 
@@ -100,7 +111,13 @@
               </RouterLink>
             </li>
 
-            <!-- Pedidos só aparece para UGO puro; admin já vê via bloco AC -->
+            <li class="nav-item">
+              <RouterLink to="/cmigs" class="nav-link" :class="{ active: route.path.startsWith('/cmigs') || route.path.startsWith('/cmig-products') }">
+                <i class="nav-icon fas fa-id-card"></i>
+                <p>Contas MIG (CMIG)</p>
+              </RouterLink>
+            </li>
+
             <li class="nav-item" v-if="isOnlyUGO">
               <RouterLink to="/orders" class="nav-link" :class="{ active: route.path.startsWith('/orders') }">
                 <i class="nav-icon fas fa-shopping-cart"></i>
@@ -109,12 +126,31 @@
             </li>
           </template>
 
+          <!-- Menus para GO (Gestor Operacional) -->
+          <template v-if="isGO">
+            <li class="nav-header">GESTÃO</li>
+
+            <li class="nav-item">
+              <RouterLink :to="`/goes/${authStore.user?.go_id}/edit`" class="nav-link" :class="{ active: route.path.includes('/goes/') && route.path.includes('/edit') }">
+                <i class="nav-icon fas fa-building"></i>
+                <p>Minha Empresa</p>
+              </RouterLink>
+            </li>
+
+            <li class="nav-item">
+              <RouterLink to="/settings/users" class="nav-link" :class="{ active: route.path === '/settings/users' }">
+                <i class="nav-icon fas fa-users"></i>
+                <p>Usuários</p>
+              </RouterLink>
+            </li>
+          </template>
+
           <!-- Configurações — visível para Admin e UGO -->
-          <template v-if="isAdmin || isUGO">
+          <template v-if="isAdmin || isOnlyUGO">
             <li class="nav-header">ADMINISTRAÇÃO</li>
 
             <li class="nav-item" :class="{ 'menu-open': settingsOpen }">
-              <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') }" @click.prevent="settingsOpen = !settingsOpen">
+              <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/goes') }" @click.prevent="settingsOpen = !settingsOpen">
                 <i class="nav-icon fas fa-cog"></i>
                 <p>
                   Configurações
@@ -129,9 +165,9 @@
                   </RouterLink>
                 </li>
                 <li class="nav-item" v-if="isAdmin">
-                  <RouterLink to="/settings/warehouse" class="nav-link" :class="{ active: route.path === '/settings/warehouse' }">
+                  <RouterLink to="/goes" class="nav-link" :class="{ active: route.path.startsWith('/goes') }">
                     <i class="far fa-circle nav-icon"></i>
-                    <p>Galpão</p>
+                    <p>Gestores Operacionais</p>
                   </RouterLink>
                 </li>
               </ul>
@@ -170,12 +206,13 @@ async function handleLogout() {
 
 const role = computed(() => authStore.user?.role)
 const isAdmin   = computed(() => role.value === 'admin')
+const isGO      = computed(() => role.value === 'go')
 const isUGO     = computed(() => role.value === 'ugo' || role.value === 'admin')
 const isOnlyUGO = computed(() => role.value === 'ugo')
 const isAC      = computed(() => role.value === 'ac' || role.value === 'admin')
 
 const roleLabel = computed(() => {
-  const map = { admin: 'Administrador', ugo: 'Operador Logístico', ac: 'Gestor de Conta' }
+  const map = { admin: 'Administrador', go: 'Gestor Operacional', ugo: 'Operador Logístico', ac: 'Gestor de Conta' }
   return map[role.value] || role.value
 })
 </script>

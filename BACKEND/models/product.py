@@ -20,6 +20,7 @@ class CatalogProduct(Base):
     __tablename__ = "catalog_products"
 
     id = Column(Integer, primary_key=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
     sku = Column(String(100), nullable=False, unique=True)
     title = Column(String(500), nullable=False)
     description = Column(String)  # CLOB
@@ -45,6 +46,7 @@ class CatalogProduct(Base):
                           order_by="CatalogProductImage.sort_order", cascade="all, delete-orphan")
     variants = relationship("CatalogProductVariant", back_populates="product",
                             cascade="all, delete-orphan")
+    cmig_products = relationship("CMIGProduct", back_populates="pg_product")
 
 
 class CatalogProductImage(Base):
@@ -118,21 +120,25 @@ class DropshipperProductImage(Base):
 class ProductListing(Base):
     __tablename__ = "product_listings"
 
-    id               = Column(Integer, primary_key=True)
-    product_id       = Column(Integer, ForeignKey("dropshipper_products.id", ondelete="CASCADE"), nullable=False)
-    account_id       = Column(Integer, ForeignKey("marketplace_accounts.id", ondelete="CASCADE"), nullable=False)
-    platform_item_id = Column(String(200))
-    sale_price       = Column(Numeric(15, 2), nullable=False)
-    title_override   = Column(String(500))
-    category_id      = Column(String(100))
-    listing_type     = Column(String(20))
-    status           = Column(String(20), nullable=False, default="draft")
-    error_message    = Column(String(2000))
-    published_at     = Column(TIMESTAMP(timezone=True))
-    last_sync_at     = Column(TIMESTAMP(timezone=True))
-    created_at       = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
-    updated_at       = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                              onupdate=text("SYSTIMESTAMP"))
+    id                 = Column(Integer, primary_key=True)
+    product_id         = Column(Integer, ForeignKey("dropshipper_products.id", ondelete="CASCADE"), nullable=True)
+    account_id         = Column(Integer, ForeignKey("marketplace_accounts.id", ondelete="CASCADE"), nullable=False)
+    cmig_product_id    = Column(Integer, ForeignKey("cmig_products.id"), nullable=True)
+    catalog_product_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=True)
+    platform_item_id   = Column(String(200))
+    sale_price         = Column(Numeric(15, 2), nullable=False)
+    title_override     = Column(String(500))
+    category_id        = Column(String(100))
+    listing_type       = Column(String(20))
+    status             = Column(String(20), nullable=False, default="draft")
+    error_message      = Column(String(2000))
+    published_at       = Column(TIMESTAMP(timezone=True))
+    last_sync_at       = Column(TIMESTAMP(timezone=True))
+    created_at         = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at         = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
+                                onupdate=text("SYSTIMESTAMP"))
 
-    product  = relationship("DropshipperProduct", back_populates="listings")
-    account  = relationship("MarketplaceAccount")
+    product         = relationship("DropshipperProduct", back_populates="listings")
+    account         = relationship("MarketplaceAccount")
+    cmig_product    = relationship("CMIGProduct")
+    catalog_product = relationship("CatalogProduct")

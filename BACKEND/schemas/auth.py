@@ -1,4 +1,5 @@
 from pydantic import BaseModel, EmailStr, field_validator
+from typing import Optional
 import re
 
 
@@ -8,12 +9,13 @@ class LoginRequest(BaseModel):
 
 
 class RegisterUGORequest(BaseModel):
-    """Cadastro de Operador Logístico (UGO) — realizado apenas pelo Admin."""
+    """Cadastro de Operador Logístico (UGO) — realizado pelo Admin ou GO."""
     full_name: str
     email: EmailStr
     whatsapp: str
     password: str
     password_confirm: str
+    warehouse_id: int | None = None
 
     @field_validator("password_confirm")
     @classmethod
@@ -74,6 +76,8 @@ class TokenResponse(BaseModel):
     email: str
     role: str
     dark_mode: bool
+    go_id: Optional[int] = None
+    warehouse_id: Optional[int] = None
 
 
 class RefreshRequest(BaseModel):

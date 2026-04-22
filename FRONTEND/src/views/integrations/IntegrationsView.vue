@@ -31,12 +31,22 @@
             <span class="font-weight-bold text-truncate flex-grow-1" :title="acc.platform_username || acc.description">
               {{ acc.platform_username || acc.description || acc.email }}
             </span>
-            <button class="btn btn-xs btn-outline-danger ml-2" title="Desconectar" @click="disconnect(acc)">
+            <button class="btn btn-xs btn-outline-primary ml-1" title="Editar" @click="openEditModal(acc)">
+              <i class="fas fa-edit"></i>
+            </button>
+            <button class="btn btn-xs btn-outline-danger ml-1" title="Desconectar" @click="disconnect(acc)">
               <i class="fas fa-unlink"></i>
             </button>
           </div>
 
           <div class="card-body">
+            <p v-if="acc.cmig_id" class="mb-1 small">
+              <i class="fas fa-id-card mr-1 text-primary"></i>
+              <span class="text-primary font-weight-bold">{{ cmigName(acc.cmig_id) }}</span>
+            </p>
+            <p v-else class="mb-1 small text-warning">
+              <i class="fas fa-exclamation-triangle mr-1"></i>Sem CMIG vinculada
+            </p>
             <p v-if="acc.email" class="mb-1 text-muted small"><i class="fas fa-envelope mr-1"></i>{{ acc.email }}</p>
             <p v-if="acc.phone" class="mb-1 text-muted small"><i class="fas fa-phone mr-1"></i>{{ acc.phone }}</p>
             <p v-if="acc.last_sync_at" class="mb-2 text-muted small">
@@ -130,6 +140,13 @@
               <input v-model="newContaForm.phone" class="form-control" placeholder="(11) 91234-5678" required />
             </div>
             <div class="form-group">
+              <label>Conta MIG (CMIG) <span class="text-danger">*</span></label>
+              <select v-model="newContaForm.cmig_id" class="form-control" required>
+                <option value="">Selecione a CMIG...</option>
+                <option v-for="c in cmigs" :key="c.id" :value="c.id">{{ c.company_name }} ({{ c.cnpj }})</option>
+              </select>
+            </div>
+            <div class="form-group">
               <label>Descrição (opcional)</label>
               <input v-model="newContaForm.description" class="form-control" placeholder="Ex: Loja Principal ML" />
             </div>
@@ -195,6 +212,39 @@
       </div>
     </div>
 
+    <!-- ─── Modal: Editar Conta ─────────────────────────────────────────── -->
+    <div v-if="modal.edit" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="fas fa-edit mr-2"></i> Editar Conta de Marketplace</h5>
+            <button class="close" @click="modal.edit = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <div v-if="editError" class="alert alert-danger">{{ editError }}</div>
+            <div class="form-group">
+              <label>Conta MIG (CMIG) <span class="text-danger">*</span></label>
+              <select v-model="editForm.cmig_id" class="form-control">
+                <option value="">Selecione a CMIG...</option>
+                <option v-for="c in cmigs" :key="c.id" :value="c.id">{{ c.company_name }} ({{ c.cnpj }})</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Descrição</label>
+              <input v-model="editForm.description" class="form-control" placeholder="Ex: Loja Principal ML" />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="modal.edit = false">Cancelar</button>
+            <button class="btn btn-primary" :disabled="savingEdit" @click="saveEdit">
+              <i v-if="savingEdit" class="fas fa-spinner fa-spin mr-1"></i>
+              {{ savingEdit ? 'Salvando...' : 'Salvar Alterações' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ─── Modal: Bling API Key ──────────────────────────────────────────── -->
     <div v-if="modal.bling" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
       <div class="modal-dialog">
@@ -232,15 +282,22 @@ import { useToast } from '@/composables/useToast'
 const { show: toast } = useToast()
 
 const accounts = ref([])
+const cmigs    = ref([])
 const loading  = ref(false)
 
-const modal   = ref({ newConta: false, otp: false, bling: false })
+const modal   = ref({ newConta: false, otp: false, bling: false, edit: false })
 const syncing = ref({})   // { [account_id]: 'orders' | 'listings' | false }
 
 // Nova CONTA
-const newContaForm   = ref({ platform: '', email: '', phone: '', description: '' })
+const newContaForm   = ref({ platform: '', email: '', phone: '', description: '', cmig_id: '' })
 const newContaError  = ref('')
 const savingNewConta = ref(false)
+
+// Editar CONTA
+const editTarget = ref(null)
+const editForm   = ref({ cmig_id: '', description: '' })
+const editError  = ref('')
+const savingEdit = ref(false)
 
 // OTP
 const otpTarget    = ref(null)
@@ -268,10 +325,47 @@ async function loadAccounts() {
   }
 }
 
+async function loadCmigs() {
+  try {
+    const { data } = await api.get('/cmigs')
+    cmigs.value = Array.isArray(data) ? data : (data?.items || [])
+  } catch { }
+}
+
+function cmigName(id) {
+  const c = cmigs.value.find(c => c.id === id)
+  return c ? c.company_name : `CMIG #${id}`
+}
+
 function openNewContaModal() {
-  newContaForm.value = { platform: '', email: '', phone: '', description: '' }
+  newContaForm.value = { platform: '', email: '', phone: '', description: '', cmig_id: '' }
   newContaError.value = ''
   modal.value.newConta = true
+}
+
+function openEditModal(acc) {
+  editTarget.value = acc
+  editForm.value = { cmig_id: acc.cmig_id || '', description: acc.description || '' }
+  editError.value = ''
+  modal.value.edit = true
+}
+
+async function saveEdit() {
+  savingEdit.value = true
+  editError.value = ''
+  try {
+    await api.put(`/accounts/${editTarget.value.id}`, {
+      cmig_id: editForm.value.cmig_id || null,
+      description: editForm.value.description,
+    })
+    modal.value.edit = false
+    toast('Conta atualizada!', 'success')
+    await loadAccounts()
+  } catch (err) {
+    editError.value = err.response?.data?.detail || 'Erro ao salvar'
+  } finally {
+    savingEdit.value = false
+  }
 }
 
 async function createConta() {
@@ -428,5 +522,5 @@ function formatDateTime(dt) {
   return new Date(dt).toLocaleString('pt-BR')
 }
 
-onMounted(loadAccounts)
+onMounted(() => { loadAccounts(); loadCmigs() })
 </script>

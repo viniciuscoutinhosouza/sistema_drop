@@ -61,3 +61,19 @@ SHOPEE_REDIRECT_URI=http://localhost:8000/api/v1/integrations/shopee/callback
 # Platform fee per order (R$)
 PLATFORM_FEE=2.00
 
+
+
+
+
+
+## GITHUB
+
+### Atualizar o Projeto Local
+cd "c:\Sistema_Drop" && git pull origin master
+
+### Atualizar o Repositorio do Github
+cd "c:\Sistema_Drop" && git status && git log --oneline -3
+
+cd "c:\Sistema_Drop" && git add -A && git commit -m 
+
+cd "c:\Sistema_Drop" && git push origin master

@@ -84,3 +84,25 @@ async def get_ac_or_ugo(
     if current_user.role not in ("ac", "ugo", "admin"):
         raise HTTPException(status_code=403, detail="Acesso não autorizado")
     return current_user
+
+
+async def get_active_go(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Retorna o usuário atual se for um GO ativo."""
+    if current_user.role not in ("go", "admin"):
+        raise HTTPException(status_code=403, detail="Acesso apenas para Gestores Operacionais (GO)")
+    return current_user
+
+
+async def require_warehouse_scope(
+    warehouse_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> bool:
+    """Valida se o UGO pertence ao galpão solicitado."""
+    if current_user.role == "admin":
+        return True
+    if current_user.role in ("ugo", "go") and current_user.warehouse_id == warehouse_id:
+        return True
+    raise HTTPException(status_code=403, detail="Acesso negado a este Galpão")

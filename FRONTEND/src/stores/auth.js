@@ -53,6 +53,8 @@ export const useAuthStore = defineStore('auth', () => {
       email: data.email,
       role: data.role,
       dark_mode: data.dark_mode,
+      go_id: data.go_id ?? null,
+      warehouse_id: data.warehouse_id ?? null,
     }
     saveToStorage()
     if (data.dark_mode) {

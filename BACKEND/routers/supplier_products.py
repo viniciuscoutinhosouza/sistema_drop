@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from database import get_db
-from dependencies import require_role
+from dependencies import require_role, get_current_user
 from models.user import User
 from models.product import CatalogProduct, CatalogProductImage
 
@@ -12,11 +12,23 @@ router = APIRouter()
 @router.get("")
 async def list_supplier_products(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_role("ugo", "admin", "ac")),
 ):
-    result = await db.execute(
-        select(CatalogProduct).order_by(CatalogProduct.created_at.desc())
-    )
+    # UGO vê apenas PG do seu Galpão; admin vê todos
+    if current_user.role == "ugo" and current_user.warehouse_id:
+        stmt = select(CatalogProduct).where(
+            CatalogProduct.warehouse_id == current_user.warehouse_id
+        ).order_by(CatalogProduct.created_at.desc())
+    elif current_user.role == "ac" and current_user.warehouse_id:
+        stmt = select(CatalogProduct).where(
+            and_(
+                CatalogProduct.warehouse_id == current_user.warehouse_id,
+                CatalogProduct.is_active == True,
+            )
+        ).order_by(CatalogProduct.created_at.desc())
+    else:
+        stmt = select(CatalogProduct).order_by(CatalogProduct.created_at.desc())
+    result = await db.execute(stmt)
     products = result.scalars().all()
     return [
         {
@@ -38,6 +50,7 @@ async def create_product(
     current_user: User = Depends(require_role("ugo", "admin")),
 ):
     product = CatalogProduct(
+        warehouse_id=current_user.warehouse_id,
         sku=body["sku"],
         title=body["title"],
         description=body.get("description"),

@@ -68,6 +68,7 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
         "is_active": acc.is_active,
         "otp_verified": acc.otp_verified,
         "is_owner": is_owner,
+        "cmig_id": acc.cmig_id,
         "last_sync_at": acc.last_sync_at.isoformat() if acc.last_sync_at else None,
         "created_at": acc.created_at.isoformat() if acc.created_at else None,
     }
@@ -146,6 +147,7 @@ async def create_account(
         description=description,
         email=email,
         phone=phone,
+        cmig_id=body.get("cmig_id") or None,
         otp_verified=False,
     )
     db.add(account)
@@ -375,6 +377,8 @@ async def update_account(
     account = await _assert_ac_can_access(account_id, current_user.id, db)
     if "description" in body:
         account.description = body["description"]
+    if "cmig_id" in body:
+        account.cmig_id = body["cmig_id"] or None
     await db.commit()
     return {"ok": True}
 

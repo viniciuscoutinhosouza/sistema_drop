@@ -9,6 +9,7 @@ class Order(Base):
     id = Column(Integer, primary_key=True)
     dropshipper_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     account_id = Column(Integer, ForeignKey("marketplace_accounts.id"))
+    cmig_id = Column(Integer, ForeignKey("cmigs.id"), nullable=True)
     platform = Column(String(20))
     platform_order_id = Column(String(200))
     platform_order_ref = Column(String(200))

@@ -20,8 +20,10 @@ class ProfileOut(BaseModel):
     full_name: str
     whatsapp: Optional[str]
     cpf_cnpj: Optional[str]
-    role: str
+    role: str  # ugo | ac | admin | go
     dark_mode: bool
+    warehouse_id: Optional[int] = None
+    go_id: Optional[int] = None
     created_at: datetime
     address: Optional[AddressSchema] = None
     subscription_status: Optional[str] = None
