@@ -141,24 +141,27 @@ async def update_item_price(access_token: str, item_id: str, price: float) -> No
 
 
 async def get_seller_item_ids(access_token: str, seller_id: str) -> list[str]:
-    """Return all active item IDs for a seller (paginated)."""
-    ids, offset, limit = [], 0, 50
+    """Return all item IDs for a seller across all statuses (paginated)."""
+    all_ids: list[str] = []
+    ml_statuses = ["active", "paused", "closed", "under_review", "inactive"]
     async with httpx.AsyncClient() as client:
-        while True:
-            resp = await client.get(
-                f"{ML_API_BASE}/users/{seller_id}/items/search",
-                headers={"Authorization": f"Bearer {access_token}"},
-                params={"status": "active", "limit": limit, "offset": offset},
-            )
-            if resp.status_code != 200:
-                break
-            data = resp.json()
-            batch = data.get("results", [])
-            ids.extend(batch)
-            if len(batch) < limit:
-                break
-            offset += limit
-    return ids
+        for status in ml_statuses:
+            offset, limit = 0, 50
+            while True:
+                resp = await client.get(
+                    f"{ML_API_BASE}/users/{seller_id}/items/search",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={"status": status, "limit": limit, "offset": offset},
+                )
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+                batch = data.get("results", [])
+                all_ids.extend(batch)
+                if len(batch) < limit:
+                    break
+                offset += limit
+    return all_ids
 
 
 async def get_items_bulk(access_token: str, item_ids: list[str]) -> list[dict]:

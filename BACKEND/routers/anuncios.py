@@ -103,7 +103,10 @@ async def _get_valid_token(account: MarketplaceAccount, db: AsyncSession) -> str
     if account.platform != "mercadolivre":
         raise HTTPException(status_code=400, detail="Importação automática disponível apenas para Mercado Livre")
     now = datetime.now(timezone.utc)
-    if account.token_expires_at and account.token_expires_at <= now:
+    expires = account.token_expires_at
+    if expires and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires and expires <= now:
         token_data = await ml_service.refresh_ml_token(account.refresh_token)
         account.access_token = token_data["access_token"]
         account.refresh_token = token_data.get("refresh_token", account.refresh_token)
@@ -185,7 +188,21 @@ async def import_anuncios(
 
         price = item.get("price") or item.get("original_price") or 0
         title = item.get("title", "")
-        item_status = item.get("status", "active")
+        print(f"[DEBUG] {platform_item_id} | thumbnail={item.get('thumbnail')} | pictures={len(item.get('pictures', []))}")
+        thumbnail = item.get("thumbnail", "") or ""
+        pictures = item.get("pictures", [])
+        if not thumbnail and pictures:
+            thumbnail = pictures[0].get("secure_url") or pictures[0].get("url", "")
+        if thumbnail:
+            thumbnail = thumbnail.replace("http://", "https://")
+        _ml_status = item.get("status", "active")
+        item_status = {
+            "active": "published",
+            "paused": "paused",
+            "closed": "paused",
+            "under_review": "draft",
+            "inactive": "paused",
+        }.get(_ml_status, "published")
 
         # Upsert
         existing_result = await db.execute(
@@ -200,6 +217,8 @@ async def import_anuncios(
             existing.title_override = title
             existing.sale_price = price
             existing.status = item_status
+            if thumbnail:
+                existing.thumbnail = thumbnail
             existing.last_sync_at = datetime.now(timezone.utc)
             updated += 1
             listing = existing
@@ -208,6 +227,7 @@ async def import_anuncios(
                 account_id=account_id,
                 platform_item_id=platform_item_id,
                 title_override=title,
+                thumbnail=thumbnail,
                 sale_price=price,
                 status=item_status,
                 published_at=datetime.now(timezone.utc),
