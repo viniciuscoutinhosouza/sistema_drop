@@ -120,24 +120,48 @@
                 <!-- Info central -->
                 <div class="flex-grow-1 mr-2" style="min-width:0">
                   <div class="font-weight-bold text-truncate" :title="a.title_override">{{ a.title_override }}</div>
+                  <!-- Linha 1: ID + SKU -->
                   <div class="small text-muted mt-1">
                     <span class="text-monospace font-weight-bold">{{ a.platform_item_id }}</span>
                     <span v-if="a.sku" class="ml-2">· SKU: {{ a.sku }}</span>
                   </div>
-                  <div class="d-flex flex-wrap mt-1" style="gap:4px">
+                  <!-- Linha 2: badges de tipo + qualidade -->
+                  <div class="d-flex flex-wrap align-items-center mt-1" style="gap:4px">
                     <span v-if="a.listing_type" :class="listingTypeBadge(a.listing_type)" style="font-size:11px">{{ listingTypeLabel(a.listing_type) }}</span>
                     <span v-if="a.is_full" class="badge" style="background:#00a650;color:#fff;font-size:11px"><i class="fas fa-warehouse mr-1"></i>Full</span>
-                    <span v-if="a.ml_catalog_id" class="badge badge-info" style="font-size:11px"><i class="fas fa-bookmark mr-1"></i>Catálogo ML</span>
+                    <span v-if="a.ml_catalog_id" class="badge badge-primary" style="font-size:11px"><i class="fas fa-bookmark mr-1"></i>Catálogo ML</span>
                     <span v-if="a.category_name || a.category_id" class="badge badge-light text-dark border" style="font-size:11px" :title="a.category_id">{{ a.category_name || a.category_id }}</span>
+                    <!-- Qualidade do anúncio -->
+                    <span :class="'badge ' + listingQuality(a).cls"
+                          style="font-size:11px;cursor:help"
+                          :title="listingQuality(a).issues.length ? listingQuality(a).issues.join('\n') : 'Anúncio completo'">
+                      <i class="fas fa-star mr-1"></i>{{ listingQuality(a).label }}
+                    </span>
                   </div>
+                  <!-- Linha 3: métricas -->
                   <div class="small mt-1">
+                    <span class="text-info mr-2" title="Visualizações nos últimos 7 dias">
+                      <i class="fas fa-eye"></i> {{ a.visits_7d || 0 }} vis./7d
+                    </span>
                     <span class="text-success mr-2"><i class="fas fa-shopping-cart"></i> Vendidos: {{ a.sold_quantity || 0 }}</span>
-                    <span class="text-primary"><i class="fas fa-box"></i> Disponíveis: {{ a.available_quantity || 0 }}</span>
-                    <a v-if="pictureCount(a)" href="#" class="ml-2 text-secondary" @click.prevent="openPhotosModal(a)">
-                      <i class="fas fa-camera"></i> {{ pictureCount(a) }} fotos
+                    <span class="text-primary mr-2"><i class="fas fa-box"></i> Disp.: {{ a.available_quantity || 0 }}</span>
+                    <a v-if="pictureCount(a)" href="#" class="mr-2 text-secondary" @click.prevent="openPhotosModal(a)">
+                      <i class="fas fa-camera"></i> {{ pictureCount(a) }}
                     </a>
-                    <a v-if="hasVariations(a)" href="#" class="ml-2 text-info" @click.prevent="showVariationsModal(a)">Ver variações</a>
+                    <a v-if="hasVariations(a)" href="#" class="text-info" @click.prevent="showVariationsModal(a)">
+                      <i class="fas fa-sitemap"></i> Variações
+                    </a>
                   </div>
+                  <!-- Linha 4: tarifa + frete -->
+                  <div class="small text-muted mt-1">
+                    <i class="fas fa-tag mr-1"></i>
+                    <span>Tarifa: <strong class="text-dark">R$ {{ listingFees(a).feeAmt }}</strong> ({{ listingFees(a).rate }}%)</span>
+                    <span class="mx-2">·</span>
+                    <i class="fas fa-truck mr-1"></i>
+                    <span v-if="a.free_shipping" class="text-success"><strong>Frete Grátis</strong> (por conta do vendedor)</span>
+                    <span v-else class="text-muted">Frete pago pelo comprador</span>
+                  </div>
+                  <!-- Linha 5: vínculo -->
                   <div class="small mt-1">
                     <span v-if="a.cmig_product" class="badge badge-success">CMIG: {{ a.cmig_product.sku }}</span>
                     <span v-else-if="a.catalog_product" class="badge badge-info">PG: {{ a.catalog_product.sku }}</span>
@@ -856,17 +880,26 @@ async function openWizard(listing) {
       wf.value.product_id = listing.catalog_product.id
       wf.value.selectedProduct = pgProductList.value.find(p => p.id === listing.catalog_product.id) || listing.catalog_product
     }
+    // Pre-popular fotos do anúncio
+    if (listing.pictures_json) {
+      try {
+        const pics = JSON.parse(listing.pictures_json)
+        wf.value.pictures = pics.map(p => p.url || p).filter(Boolean).slice(0, 12)
+      } catch { /* ignore */ }
+    }
     if (listing.category_id) {
-      wf.value.category_name = listing.category_id
-      // try to load attributes for saved category
+      wf.value.category_name = listing.category_name || listing.category_id
       try {
         const { data } = await api.get(`/anuncios/categories/${listing.category_id}/attributes`)
         categoryAttributes.value = Array.isArray(data) ? data : []
         if (listing.attributes_json) {
           try {
             const saved = JSON.parse(listing.attributes_json)
-            for (const a of saved) { attrValues.value[a.id] = a.value_name }
-          } catch { /* ignore parse error */ }
+            // suporta ambos os formatos: {id, value} e {id, value_name}
+            for (const a of saved) {
+              if (a.id) attrValues.value[a.id] = a.value ?? a.value_name ?? ''
+            }
+          } catch { /* ignore */ }
         }
       } catch { /* ignore */ }
     }
@@ -1149,15 +1182,57 @@ function listingTypeLabel(t) {
 }
 
 function listingTypeBadge(t) {
-  const gold = 'badge' // will use inline style for gold color
   return {
     gold_special:  'badge badge-warning text-dark',
     gold_pro:      'badge badge-warning text-dark',
-    gold_premium:  'badge badge-warning text-dark',
+    gold_premium:  'badge badge-primary',
     silver:        'badge badge-secondary',
     bronze:        'badge badge-secondary',
     free:          'badge badge-light text-dark border',
   }[t] || 'badge badge-secondary'
+}
+
+const _ML_FEES = { gold_premium: 16, gold_pro: 13.5, gold_special: 11, silver: 8, bronze: 6, free: 0 }
+
+function listingFees(listing) {
+  const price = Number(listing.sale_price) || 0
+  const rate = _ML_FEES[listing.listing_type] ?? 11
+  return { rate, feeAmt: (price * rate / 100).toFixed(2) }
+}
+
+function listingQuality(listing) {
+  const issues = []
+  let score = 0
+
+  const pics = pictureCount(listing)
+  if (pics === 0)      { issues.push('Nenhuma foto cadastrada') }
+  else if (pics < 3)   { score += 15; issues.push('Adicione mais fotos (min. 3, ideal 8+)') }
+  else if (pics < 6)   { score += 25; issues.push('Adicione mais fotos para aumentar conversão') }
+  else                 { score += 35 }
+
+  const desc = (listing.description_override || '').trim()
+  if (!desc)                    { issues.push('Sem descricao — detalhe o produto') }
+  else if (desc.length < 150)   { score += 10; issues.push('Descricao muito curta') }
+  else if (desc.length < 500)   { score += 20; issues.push('Descricao pode ser mais detalhada') }
+  else                          { score += 30 }
+
+  const attrs = listing.attributes_json
+  if (!attrs || attrs.length < 10) { issues.push('Ficha tecnica incompleta (marca, modelo...)') }
+  else                             { score += 20 }
+
+  if (!listing.thumbnail) { issues.push('Sem imagem principal') }
+  else                    { score += 10 }
+
+  if (!listing.sku) { issues.push('SKU do vendedor nao preenchido') }
+  else              { score += 5 }
+
+  let label, cls
+  if      (score >= 80) { label = 'Excelente'; cls = 'badge-success' }
+  else if (score >= 55) { label = 'Bom';       cls = 'badge-info' }
+  else if (score >= 30) { label = 'Regular';   cls = 'badge-warning text-dark' }
+  else                  { label = 'Fraco';     cls = 'badge-danger' }
+
+  return { score, label, cls, issues }
 }
 
 function openPhotosModal(listing) {

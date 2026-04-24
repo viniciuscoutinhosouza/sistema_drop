@@ -145,6 +145,7 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "ml_catalog_id": listing.ml_catalog_id,
         "available_quantity": listing.available_quantity,
         "sold_quantity": listing.sold_quantity or 0,
+        "visits_7d": listing.visits_7d or 0,
         "item_condition": listing.item_condition,
         "weight_kg": float(listing.weight_kg) if listing.weight_kg else None,
         "height_cm": float(listing.height_cm) if listing.height_cm else None,
