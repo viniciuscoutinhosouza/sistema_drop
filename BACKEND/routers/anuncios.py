@@ -102,17 +102,33 @@ async def _get_valid_token(account: MarketplaceAccount, db: AsyncSession) -> str
     """Retorna o access_token da conta; tenta refresh se expirado."""
     if account.platform != "mercadolivre":
         raise HTTPException(status_code=400, detail="Importação automática disponível apenas para Mercado Livre")
+
     now = datetime.now(timezone.utc)
     expires = account.token_expires_at
     if expires and expires.tzinfo is None:
         expires = expires.replace(tzinfo=timezone.utc)
-    if expires and expires <= now:
+
+    token_expired = expires and expires <= now
+
+    if token_expired:
+        if not account.refresh_token:
+            raise HTTPException(
+                status_code=401,
+                detail="Token do Mercado Livre expirado. Reconecte a conta em Integrações → editar conta.",
+            )
+        from datetime import timedelta
         token_data = await ml_service.refresh_ml_token(account.refresh_token)
         account.access_token = token_data["access_token"]
         account.refresh_token = token_data.get("refresh_token", account.refresh_token)
-        from datetime import timedelta
         account.token_expires_at = now + timedelta(seconds=token_data.get("expires_in", 21600))
         await db.commit()
+
+    if not account.access_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Conta sem token de acesso. Conecte a conta do Mercado Livre em Integrações.",
+        )
+
     return account.access_token
 
 

@@ -60,7 +60,16 @@
               <i class="fas fa-spinner fa-spin fa-2x text-muted"></i>
             </div>
             <div v-else-if="filteredAnuncios.length === 0" class="text-center text-muted py-5">
+              <i class="fas fa-tag fa-2x mb-2 d-block"></i>
               Nenhum anúncio encontrado.
+              <div class="mt-2">
+                <button class="btn btn-sm btn-secondary mr-2" @click="importAnuncios" :disabled="importing">
+                  <i class="fas fa-download mr-1"></i>Importar do Marketplace
+                </button>
+                <button class="btn btn-sm btn-success" @click="openEditModal(null)">
+                  <i class="fas fa-plus mr-1"></i>Criar Manualmente
+                </button>
+              </div>
             </div>
             <table v-else class="table table-hover table-sm mb-0">
               <thead class="thead-light">
