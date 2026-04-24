@@ -199,3 +199,75 @@ async def pause_item(access_token: str, item_id: str) -> None:
         )
     if resp.status_code not in (200, 201):
         raise HTTPException(status_code=400, detail=f"Erro ao pausar anúncio ML: {resp.text}")
+
+
+async def search_categories(query: str, site_id: str = "MLB") -> list[dict]:
+    """Search ML categories by text (no auth required)."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/sites/{site_id}/categories/search",
+            params={"q": query},
+        )
+    if resp.status_code != 200:
+        return []
+    data = resp.json()
+    # API returns either a list or {"categories": [...]}
+    if isinstance(data, list):
+        return data
+    return data.get("categories", data.get("results", []))
+
+
+async def get_category_attributes(category_id: str) -> list[dict]:
+    """Return attributes for a given ML category (no auth required)."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{ML_API_BASE}/categories/{category_id}/attributes")
+    return resp.json() if resp.status_code == 200 else []
+
+
+async def post_item_description(access_token: str, item_id: str, plain_text: str) -> None:
+    """Create item description (call once, right after item creation)."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{ML_API_BASE}/items/{item_id}/description",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"plain_text": plain_text},
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(status_code=400, detail=f"Erro ao criar descrição ML: {resp.text}")
+
+
+async def update_item_description(access_token: str, item_id: str, plain_text: str) -> None:
+    """Update existing item description."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}/description",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"plain_text": plain_text},
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(status_code=400, detail=f"Erro ao atualizar descrição ML: {resp.text}")
+
+
+async def update_item(access_token: str, item_id: str, data: dict) -> dict:
+    """Generic PUT /items/{id} — only send changed fields."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=data,
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}")
+    return resp.json()
+
+
+async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) -> None:
+    """Reactivate a paused or closed ML listing."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"status": "active", "available_quantity": max(quantity, 1)},
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp.text}")

@@ -33,6 +33,8 @@ class CatalogProduct(Base):
     ncm = Column(String(10))
     cest = Column(String(7))
     brand = Column(String(100))
+    model = Column(String(200))
+    ean = Column(String(14))
     origin = Column(Integer, default=0)
     category_id = Column(Integer, ForeignKey("categories.id"))
     stock_quantity = Column(Integer, nullable=False, default=0)
@@ -70,8 +72,10 @@ class CatalogProductVariant(Base):
     variant_name = Column(String(255))
     color = Column(String(100))
     size = Column(String(100))
+    voltage = Column(String(50))
     stock_quantity = Column(Integer, nullable=False, default=0)
     price_modifier = Column(Numeric(15, 2), default=0)
+    attributes_json = Column(String(2000))
 
     product = relationship("CatalogProduct", back_populates="variants")
 
@@ -134,11 +138,20 @@ class ProductListing(Base):
     listing_type       = Column(String(20))
     status             = Column(String(20), nullable=False, default="draft")
     error_message      = Column(String(2000))
-    published_at       = Column(TIMESTAMP(timezone=True))
-    last_sync_at       = Column(TIMESTAMP(timezone=True))
-    created_at         = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
-    updated_at         = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                                onupdate=text("SYSTIMESTAMP"))
+    published_at         = Column(TIMESTAMP(timezone=True))
+    last_sync_at         = Column(TIMESTAMP(timezone=True))
+    description_override = Column(String)            # CLOB
+    attributes_json      = Column(String(4000))
+    available_quantity   = Column(Integer, default=1)
+    item_condition       = Column(String(20), default="new")
+    warranty_type        = Column(String(50))
+    warranty_time        = Column(String(20))
+    shipping_mode        = Column(String(20), default="me2")
+    free_shipping        = Column(Boolean, default=False)
+    video_id             = Column(String(100))
+    created_at           = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at           = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
+                                  onupdate=text("SYSTIMESTAMP"))
 
     product         = relationship("DropshipperProduct", back_populates="listings")
     account         = relationship("MarketplaceAccount")

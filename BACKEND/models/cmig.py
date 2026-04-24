@@ -58,6 +58,8 @@ class CMIGProduct(Base):
     title          = Column(String(255), nullable=False)
     description    = Column(String(4000))
     brand          = Column(String(100))
+    model          = Column(String(200))
+    ean            = Column(String(14))
     cost_price     = Column(Numeric(10, 2))
     stock_quantity = Column(Integer, nullable=False, default=0)
     weight_kg      = Column(Numeric(8, 3))
@@ -76,6 +78,7 @@ class CMIGProduct(Base):
     cmig       = relationship("CMIG", back_populates="products")
     pg_product = relationship("CatalogProduct", back_populates="cmig_products")
     images     = relationship("CMIGProductImage", back_populates="product", cascade="all, delete-orphan")
+    variants   = relationship("CMIGProductVariant", back_populates="product", cascade="all, delete-orphan")
 
 
 class CMIGProductImage(Base):
@@ -88,3 +91,20 @@ class CMIGProductImage(Base):
     is_primary      = Column(Boolean, nullable=False, default=False)
 
     product = relationship("CMIGProduct", back_populates="images")
+
+
+class CMIGProductVariant(Base):
+    __tablename__ = "cmig_product_variants"
+
+    id              = Column(Integer, primary_key=True)
+    cmig_product_id = Column(Integer, ForeignKey("cmig_products.id"), nullable=False)
+    sku             = Column(String(100), nullable=False, unique=True)
+    variant_name    = Column(String(255))
+    color           = Column(String(100))
+    size_label      = Column(String(100))
+    voltage         = Column(String(50))
+    stock_quantity  = Column(Integer, nullable=False, default=0)
+    price_modifier  = Column(Numeric(15, 2), default=0)
+    attributes_json = Column(String(2000))
+
+    product = relationship("CMIGProduct", back_populates="variants")

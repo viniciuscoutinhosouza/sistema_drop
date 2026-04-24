@@ -4,7 +4,7 @@ from sqlalchemy import select, and_
 from database import get_db
 from dependencies import get_current_user
 from models.user import User
-from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage
+from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
 from models.warehouse import Warehouse
 from models.product import CatalogProduct
 from models.integration import MarketplaceAccount
@@ -355,6 +355,144 @@ async def import_cmig_product_to_pg(
     await db.commit()
     await db.refresh(pg)
     return {"detail": "Produto importado para o PG com sucesso", "pg_product_id": pg.id, "sku": sku_pg}
+
+
+# ── Variantes de Produtos CMIG ─────────────────────────────────────────────────
+
+async def _get_cmig_product_or_404(product_id: int, cmig_id: int, db: AsyncSession) -> CMIGProduct:
+    result = await db.execute(
+        select(CMIGProduct).where(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id)
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
+    return product
+
+
+@router.get("/{cmig_id}/products/{product_id}/variants")
+async def list_cmig_product_variants(
+    cmig_id: int,
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+    await _get_cmig_product_or_404(product_id, cmig_id, db)
+
+    result = await db.execute(
+        select(CMIGProductVariant).where(CMIGProductVariant.cmig_product_id == product_id)
+    )
+    variants = result.scalars().all()
+    return [_serialize_variant(v) for v in variants]
+
+
+@router.post("/{cmig_id}/products/{product_id}/variants", status_code=201)
+async def create_cmig_product_variant(
+    cmig_id: int,
+    product_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+    await _get_cmig_product_or_404(product_id, cmig_id, db)
+
+    sku = (body.get("sku") or "").strip()
+    if not sku:
+        raise HTTPException(status_code=400, detail="sku é obrigatório")
+
+    dup = await db.execute(select(CMIGProductVariant).where(CMIGProductVariant.sku == sku))
+    if dup.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="SKU de variante já cadastrado")
+
+    variant = CMIGProductVariant(
+        cmig_product_id=product_id,
+        sku=sku,
+        variant_name=body.get("variant_name"),
+        color=body.get("color"),
+        size_label=body.get("size_label") or body.get("size"),
+        voltage=body.get("voltage"),
+        stock_quantity=int(body.get("stock_quantity", 0)),
+        price_modifier=body.get("price_modifier", 0),
+        attributes_json=body.get("attributes_json"),
+    )
+    db.add(variant)
+    await db.commit()
+    await db.refresh(variant)
+    return _serialize_variant(variant)
+
+
+@router.put("/{cmig_id}/products/{product_id}/variants/{variant_id}")
+async def update_cmig_product_variant(
+    cmig_id: int,
+    product_id: int,
+    variant_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+
+    result = await db.execute(
+        select(CMIGProductVariant).where(
+            CMIGProductVariant.id == variant_id,
+            CMIGProductVariant.cmig_product_id == product_id,
+        )
+    )
+    variant = result.scalar_one_or_none()
+    if not variant:
+        raise HTTPException(status_code=404, detail="Variante não encontrada")
+
+    for field in ("variant_name", "color", "size_label", "voltage", "stock_quantity", "price_modifier", "attributes_json"):
+        if field in body:
+            setattr(variant, field, body[field])
+
+    await db.commit()
+    await db.refresh(variant)
+    return _serialize_variant(variant)
+
+
+@router.delete("/{cmig_id}/products/{product_id}/variants/{variant_id}", status_code=204)
+async def delete_cmig_product_variant(
+    cmig_id: int,
+    product_id: int,
+    variant_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+
+    result = await db.execute(
+        select(CMIGProductVariant).where(
+            CMIGProductVariant.id == variant_id,
+            CMIGProductVariant.cmig_product_id == product_id,
+        )
+    )
+    variant = result.scalar_one_or_none()
+    if not variant:
+        raise HTTPException(status_code=404, detail="Variante não encontrada")
+
+    await db.delete(variant)
+    await db.commit()
+
+
+def _serialize_variant(v: CMIGProductVariant) -> dict:
+    return {
+        "id": v.id,
+        "cmig_product_id": v.cmig_product_id,
+        "sku": v.sku,
+        "variant_name": v.variant_name,
+        "color": v.color,
+        "size_label": v.size_label,
+        "voltage": v.voltage,
+        "stock_quantity": v.stock_quantity,
+        "price_modifier": float(v.price_modifier) if v.price_modifier is not None else 0,
+        "attributes_json": v.attributes_json,
+    }
 
 
 # ── Configuração NF-e ──────────────────────────────────────────────────────────

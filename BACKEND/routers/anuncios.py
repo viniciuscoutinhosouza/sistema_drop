@@ -67,6 +67,51 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
     return listing
 
 
+def _build_ml_payload(product, form: dict) -> dict:
+    """Build full ML item payload from a product (CMIGProduct or CatalogProduct) + form data."""
+    payload: dict = {
+        "title": (form.get("title_override") or product.title or "")[:60],
+        "price": float(form["sale_price"]),
+        "currency_id": "BRL",
+        "available_quantity": int(form.get("available_quantity") or 1),
+        "buying_mode": "buy_it_now",
+        "listing_type_id": form.get("listing_type") or "gold_special",
+        "condition": form.get("item_condition") or "new",
+    }
+
+    if form.get("category_id"):
+        payload["category_id"] = form["category_id"]
+
+    # Pictures — use direct URLs; ML fetches them
+    images = form.get("pictures") or []
+    if not images and hasattr(product, "images"):
+        images = [img.url for img in (product.images or [])]
+    if images:
+        payload["pictures"] = [{"source": url} for url in images[:12]]
+
+    # Attributes — list of {"id": "BRAND", "value_name": "Nike"}
+    attributes = list(form.get("attributes") or [])
+    if not any(a.get("id") == "BRAND" for a in attributes) and getattr(product, "brand", None):
+        attributes.append({"id": "BRAND", "value_name": product.brand})
+    if attributes:
+        payload["attributes"] = attributes
+
+    # Warranty via sale_terms
+    warranty_type = form.get("warranty_type")
+    warranty_time = form.get("warranty_time")
+    if warranty_type:
+        payload["sale_terms"] = [{"id": "WARRANTY_TYPE", "value_name": warranty_type}]
+        if warranty_time:
+            payload["sale_terms"].append({"id": "WARRANTY_TIME", "value_name": warranty_time})
+
+    payload["shipping"] = {
+        "mode": form.get("shipping_mode") or "me2",
+        "free_shipping": bool(form.get("free_shipping", False)),
+    }
+
+    return payload
+
+
 def _serialize_listing(listing: ProductListing) -> dict:
     cmig_product = None
     if listing.cmig_product:
@@ -87,12 +132,23 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "account_id": listing.account_id,
         "platform_item_id": listing.platform_item_id,
         "permalink": listing.permalink,
+        "thumbnail": listing.thumbnail,
         "title_override": listing.title_override,
         "sale_price": float(listing.sale_price) if listing.sale_price else None,
         "status": listing.status,
         "listing_type": listing.listing_type,
+        "category_id": listing.category_id,
         "published_at": listing.published_at.isoformat() if listing.published_at else None,
         "last_sync_at": listing.last_sync_at.isoformat() if listing.last_sync_at else None,
+        "description_override": listing.description_override,
+        "attributes_json": listing.attributes_json,
+        "available_quantity": listing.available_quantity,
+        "item_condition": listing.item_condition,
+        "warranty_type": listing.warranty_type,
+        "warranty_time": listing.warranty_time,
+        "shipping_mode": listing.shipping_mode,
+        "free_shipping": listing.free_shipping,
+        "video_id": listing.video_id,
         "cmig_product": cmig_product,
         "catalog_product": catalog_product,
         "is_linked": cmig_product is not None or catalog_product is not None,
@@ -486,21 +542,43 @@ async def publish_anuncio(
             raise HTTPException(status_code=404, detail="Produto PG não encontrado")
         product_title = product_title or prod.title
 
+    description = body.get("description_override") or body.get("description")
+    available_quantity = int(body.get("available_quantity") or 1)
+    item_condition = body.get("item_condition") or "new"
+    warranty_type = body.get("warranty_type")
+    warranty_time = body.get("warranty_time")
+    shipping_mode = body.get("shipping_mode") or "me2"
+    free_shipping = bool(body.get("free_shipping", False))
+    video_id = body.get("video_id")
+    attributes_json = body.get("attributes_json")
+    pictures = body.get("pictures") or []
+
     if mode == "create":
         if not category_id:
             raise HTTPException(status_code=400, detail="category_id é obrigatório para criar anúncio")
-        item_data = {
-            "title": product_title,
+
+        ml_form = {
+            "title_override": product_title,
+            "sale_price": sale_price,
+            "listing_type": listing_type,
             "category_id": category_id,
-            "price": float(sale_price),
-            "currency_id": "BRL",
-            "available_quantity": 1,
-            "buying_mode": "buy_it_now",
-            "listing_type_id": listing_type,
-            "condition": "new",
+            "available_quantity": available_quantity,
+            "item_condition": item_condition,
+            "warranty_type": warranty_type,
+            "warranty_time": warranty_time,
+            "shipping_mode": shipping_mode,
+            "free_shipping": free_shipping,
+            "pictures": pictures,
+            "attributes": body.get("attributes") or [],
         }
-        ml_item = await ml_service.create_item(access_token, item_data)
+        ml_payload = _build_ml_payload(prod, ml_form)
+        ml_item = await ml_service.create_item(access_token, ml_payload)
         platform_item_id = ml_item.get("id")
+        if description and platform_item_id:
+            try:
+                await ml_service.post_item_description(access_token, platform_item_id, description)
+            except Exception:
+                pass  # não bloqueia criação se descrição falhar
         status = "published"
         published_at = datetime.now(timezone.utc)
     else:
@@ -519,6 +597,15 @@ async def publish_anuncio(
         title_override=product_title,
         category_id=category_id,
         listing_type=listing_type,
+        description_override=description,
+        attributes_json=attributes_json,
+        available_quantity=available_quantity,
+        item_condition=item_condition,
+        warranty_type=warranty_type,
+        warranty_time=warranty_time,
+        shipping_mode=shipping_mode,
+        free_shipping=free_shipping,
+        video_id=video_id,
         status=status,
         published_at=published_at,
         last_sync_at=datetime.now(timezone.utc),
@@ -536,14 +623,146 @@ async def update_anuncio(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Atualiza preço e/ou título do anúncio."""
+    """Atualiza anúncio no DB e, se tiver platform_item_id, sincroniza no ML."""
     listing = await _get_listing_or_404(listing_id, current_user, db)
 
-    if "sale_price" in body and body["sale_price"]:
-        listing.sale_price = body["sale_price"]
-    if "title_override" in body:
-        listing.title_override = body["title_override"]
+    # Campos simples
+    for field in (
+        "sale_price", "title_override", "category_id", "listing_type",
+        "description_override", "attributes_json", "available_quantity",
+        "item_condition", "warranty_type", "warranty_time",
+        "shipping_mode", "free_shipping", "video_id",
+    ):
+        if field in body:
+            setattr(listing, field, body[field])
 
+    # Sincroniza ML se listing tem platform_item_id
+    if listing.platform_item_id and listing.account.platform == "mercadolivre":
+        try:
+            access_token = await _get_valid_token(listing.account, db)
+            ml_data: dict = {}
+            if "sale_price" in body and body["sale_price"]:
+                ml_data["price"] = float(body["sale_price"])
+            if "title_override" in body and body["title_override"]:
+                ml_data["title"] = str(body["title_override"])[:60]
+            if "available_quantity" in body:
+                ml_data["available_quantity"] = int(body["available_quantity"] or 1)
+            if ml_data:
+                await ml_service.update_item(access_token, listing.platform_item_id, ml_data)
+            description = body.get("description_override")
+            if description:
+                try:
+                    await ml_service.update_item_description(access_token, listing.platform_item_id, description)
+                except Exception:
+                    await ml_service.post_item_description(access_token, listing.platform_item_id, description)
+        except HTTPException:
+            pass  # token inválido — salva no DB mas não sincroniza ML
+
+    await db.commit()
+    return _serialize_listing(listing)
+
+
+@router.get("/categories/search")
+async def search_categories(
+    q: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Busca categorias ML por texto (não requer conta específica)."""
+    return await ml_service.search_categories(q)
+
+
+@router.get("/categories/{category_id}/attributes")
+async def get_category_attributes(
+    category_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Retorna atributos de uma categoria ML, filtrando required/recommended."""
+    attrs = await ml_service.get_category_attributes(category_id)
+    result = []
+    for attr in attrs:
+        tags = attr.get("tags") or []
+        is_required = "required" in tags
+        is_recommended = "recommended" in tags
+        if is_required or is_recommended:
+            result.append({
+                "id": attr.get("id"),
+                "name": attr.get("name"),
+                "value_type": attr.get("value_type"),
+                "is_required": is_required,
+                "allowed_units": attr.get("allowed_units"),
+                "values": [
+                    {"id": v.get("id"), "name": v.get("name")}
+                    for v in (attr.get("values") or [])[:50]
+                ],
+            })
+    return result
+
+
+@router.post("/{listing_id}/sync-to-ml")
+async def sync_listing_to_ml(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sincroniza todos os dados do listing de volta ao ML."""
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma para sincronizar")
+
+    access_token = await _get_valid_token(listing.account, db)
+
+    # Resolve produto vinculado para preencher campos do payload
+    product = listing.cmig_product or listing.catalog_product
+    if not product:
+        raise HTTPException(status_code=400, detail="Anúncio sem produto vinculado para sincronizar")
+
+    form = {
+        "title_override": listing.title_override,
+        "sale_price": listing.sale_price,
+        "listing_type": listing.listing_type,
+        "category_id": listing.category_id,
+        "available_quantity": listing.available_quantity or 1,
+        "item_condition": listing.item_condition or "new",
+        "warranty_type": listing.warranty_type,
+        "warranty_time": listing.warranty_time,
+        "shipping_mode": listing.shipping_mode or "me2",
+        "free_shipping": listing.free_shipping or False,
+        "attributes": [],
+    }
+    ml_payload = _build_ml_payload(product, form)
+    # Remove category_id from update payload (ML rejects changing category after creation)
+    ml_payload.pop("category_id", None)
+
+    await ml_service.update_item(access_token, listing.platform_item_id, ml_payload)
+
+    if listing.description_override:
+        try:
+            await ml_service.update_item_description(access_token, listing.platform_item_id, listing.description_override)
+        except Exception:
+            await ml_service.post_item_description(access_token, listing.platform_item_id, listing.description_override)
+
+    listing.last_sync_at = datetime.now(timezone.utc)
+    await db.commit()
+    return _serialize_listing(listing)
+
+
+@router.post("/{listing_id}/reactivate")
+async def reactivate_anuncio(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reativa anúncio pausado ou fechado no ML."""
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma")
+
+    access_token = await _get_valid_token(listing.account, db)
+    quantity = listing.available_quantity or 1
+    await ml_service.reactivate_item(access_token, listing.platform_item_id, quantity)
+
+    listing.status = "published"
+    listing.last_sync_at = datetime.now(timezone.utc)
     await db.commit()
     return _serialize_listing(listing)
 
