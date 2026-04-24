@@ -141,7 +141,8 @@ async def update_item_price(access_token: str, item_id: str, price: float) -> No
 
 
 async def get_seller_item_ids(access_token: str, seller_id: str) -> list[str]:
-    """Return all item IDs for a seller across all statuses (paginated)."""
+    """Return all item IDs for a seller across all statuses (paginated), deduped."""
+    seen: set[str] = set()
     all_ids: list[str] = []
     ml_statuses = ["active", "paused", "closed", "under_review", "inactive"]
     async with httpx.AsyncClient() as client:
@@ -157,7 +158,10 @@ async def get_seller_item_ids(access_token: str, seller_id: str) -> list[str]:
                     break
                 data = resp.json()
                 batch = data.get("results", [])
-                all_ids.extend(batch)
+                for item_id in batch:
+                    if item_id not in seen:
+                        seen.add(item_id)
+                        all_ids.append(item_id)
                 if len(batch) < limit:
                     break
                 offset += limit
