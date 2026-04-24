@@ -5,6 +5,7 @@ OAuth flow: Authorization Code (https://auth.mercadolivre.com.br/authorization)
 Token endpoint: https://api.mercadolibre.com/oauth/token
 """
 import httpx
+from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
 from fastapi import HTTPException
 from config import get_settings
@@ -17,11 +18,12 @@ ML_TOKEN_URL = f"{ML_API_BASE}/oauth/token"
 
 
 def get_authorization_url(state: str) -> str:
+    redirect = quote(settings.ML_REDIRECT_URI, safe="")
     return (
         f"{ML_AUTH_URL}"
         f"?response_type=code"
         f"&client_id={settings.ML_APP_ID}"
-        f"&redirect_uri={settings.ML_REDIRECT_URI}"
+        f"&redirect_uri={redirect}"
         f"&state={state}"
     )
 
