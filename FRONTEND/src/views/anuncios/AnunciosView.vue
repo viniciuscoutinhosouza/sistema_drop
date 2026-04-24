@@ -120,7 +120,9 @@
                       <button v-if="a.status === 'active' || a.status === 'published'" class="btn btn-sm btn-outline-warning" title="Pausar" @click="pauseAnuncio(a)">
                         <i class="fas fa-pause"></i>
                       </button>
-                      <a v-if="a.platform_item_id && selectedAccountPlatform === 'mercadolivre'" :href="`https://www.mercadolivre.com.br/p/${a.platform_item_id}`" target="_blank" class="btn btn-sm btn-outline-info" title="Ver no ML">
+                      <a v-if="a.permalink || (a.platform_item_id && selectedAccountPlatform === 'mercadolivre')"
+                         :href="a.permalink || `https://www.mercadolivre.com.br/p/${a.platform_item_id}`"
+                         target="_blank" class="btn btn-sm btn-outline-info" title="Ver no ML">
                         <i class="fas fa-external-link-alt"></i>
                       </a>
                     </div>

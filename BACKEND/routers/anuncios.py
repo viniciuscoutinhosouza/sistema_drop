@@ -86,6 +86,7 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "id": listing.id,
         "account_id": listing.account_id,
         "platform_item_id": listing.platform_item_id,
+        "permalink": listing.permalink,
         "title_override": listing.title_override,
         "sale_price": float(listing.sale_price) if listing.sale_price else None,
         "status": listing.status,
@@ -204,6 +205,7 @@ async def import_anuncios(
 
         price = item.get("price") or item.get("original_price") or 0
         title = item.get("title", "")
+        permalink = item.get("permalink", "") or ""
         print(f"[DEBUG] {platform_item_id} | thumbnail={item.get('thumbnail')} | pictures={len(item.get('pictures', []))}")
         thumbnail = item.get("thumbnail", "") or ""
         pictures = item.get("pictures", [])
@@ -235,6 +237,8 @@ async def import_anuncios(
             existing.status = item_status
             if thumbnail:
                 existing.thumbnail = thumbnail
+            if permalink:
+                existing.permalink = permalink
             existing.last_sync_at = datetime.now(timezone.utc)
             updated += 1
             listing = existing
@@ -244,6 +248,7 @@ async def import_anuncios(
                 platform_item_id=platform_item_id,
                 title_override=title,
                 thumbnail=thumbnail,
+                permalink=permalink,
                 sale_price=price,
                 status=item_status,
                 published_at=datetime.now(timezone.utc),

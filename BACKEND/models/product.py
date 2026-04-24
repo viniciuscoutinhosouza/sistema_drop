@@ -126,6 +126,7 @@ class ProductListing(Base):
     cmig_product_id    = Column(Integer, ForeignKey("cmig_products.id"), nullable=True)
     catalog_product_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=True)
     platform_item_id   = Column(String(200))
+    permalink          = Column(String(1000))
     thumbnail          = Column(String(1000))
     sale_price         = Column(Numeric(15, 2), nullable=False)
     title_override     = Column(String(500))
