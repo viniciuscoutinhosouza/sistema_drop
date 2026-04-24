@@ -47,10 +47,45 @@
                 </button>
               </div>
             </div>
+            <div v-if="selectedAccountId" class="row mt-2">
+              <div class="col-12">
+                <ul class="nav nav-pills" style="gap:2px">
+                  <li v-for="tab in statusTabs" :key="tab.key" class="nav-item">
+                    <a :class="['nav-link py-1 px-2 small', filterStatus === tab.key ? 'active' : '']"
+                       href="#" @click.prevent="filterStatus = tab.key">
+                      {{ tab.label }}
+                      <span v-if="tab.key !== 'all' && statsBar?.counts?.[tab.key]"
+                            class="badge badge-light ml-1">{{ statsBar.counts[tab.key] }}</span>
+                    </a>
+                  </li>
+                </ul>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- Tabela -->
+        <!-- Stats bar -->
+        <div v-if="statsBar && selectedAccountId" class="card card-body py-2 px-3 mb-3">
+          <div class="d-flex align-items-center flex-wrap" style="gap:20px">
+            <span class="text-muted small">
+              <i class="fas fa-eye mr-1 text-info"></i>
+              Visitas (7d): <strong>{{ (statsBar.visits?.total_visits || 0).toLocaleString('pt-BR') }}</strong>
+            </span>
+            <span class="text-muted small">
+              <i class="fas fa-shopping-cart mr-1 text-success"></i>
+              Total vendidos: <strong>{{ statsBar.total_sold || 0 }}</strong>
+            </span>
+            <span v-for="tab in statusTabs.filter(t => t.key !== 'all')" :key="'stat-'+tab.key" class="text-muted small">
+              <span :class="statusBadgeClass(tab.key)">{{ tab.label }}</span>
+              <strong class="ml-1">{{ statsBar.counts?.[tab.key] || 0 }}</strong>
+            </span>
+            <button class="btn btn-sm btn-outline-secondary ml-auto" @click="loadStats" :disabled="loadingStats">
+              <i :class="['fas', loadingStats ? 'fa-spinner fa-spin' : 'fa-sync-alt']"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Listagem -->
         <div class="card">
           <div class="card-body p-0">
             <div v-if="!selectedAccountId" class="text-center text-muted py-5">
@@ -70,76 +105,62 @@
                 </button>
               </div>
             </div>
-            <table v-else class="table table-hover table-sm mb-0">
-              <thead class="thead-light">
-                <tr>
-                  <th style="width:32px"></th>
-                  <th>ID Plataforma</th>
-                  <th>Título</th>
-                  <th>Preço</th>
-                  <th>Produto Vinculado</th>
-                  <th>Status</th>
-                  <th class="text-center">Ações</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="a in filteredAnuncios" :key="a.id" :class="{ 'table-warning': !a.is_linked }">
-                  <td class="text-center">
-                    <img v-if="a.thumbnail" :src="a.thumbnail" style="width:28px;height:28px;object-fit:cover;border-radius:3px" />
-                    <i v-else class="fas fa-image text-muted"></i>
-                  </td>
-                  <td class="text-monospace small">{{ a.platform_item_id || '—' }}</td>
-                  <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="a.title_override">
-                    {{ a.title_override }}
-                  </td>
-                  <td class="text-nowrap">{{ formatCurrency(a.sale_price) }}</td>
-                  <td>
-                    <span v-if="a.cmig_product" class="badge badge-success">
-                      <i class="fas fa-check mr-1"></i>{{ a.cmig_product.sku }} — {{ a.cmig_product.title }}
-                    </span>
-                    <span v-else-if="a.catalog_product" class="badge badge-info">
-                      <i class="fas fa-check mr-1"></i>PG: {{ a.catalog_product.sku }} — {{ a.catalog_product.title }}
-                    </span>
-                    <span v-else class="badge badge-warning">
-                      <i class="fas fa-exclamation-triangle mr-1"></i>Sem vínculo
-                    </span>
-                  </td>
-                  <td>
-                    <span :class="statusBadge(a.status)">{{ a.status }}</span>
-                  </td>
-                  <td class="text-center text-nowrap">
-                    <div class="btn-group">
-                      <button class="btn btn-sm btn-outline-secondary" title="Editar" @click="openWizard(a)">
-                        <i class="fas fa-edit"></i>
-                      </button>
-                      <button class="btn btn-sm btn-outline-primary" title="Vincular produto" @click="openLinkModal(a)">
-                        <i class="fas fa-link"></i>
-                      </button>
-                      <button v-if="!a.is_linked" class="btn btn-sm btn-outline-dark" title="Criar Produto CMIG" @click="openCreateCmigModal(a)">
-                        <i class="fas fa-plus"></i>
-                      </button>
-                      <button v-if="a.is_linked" class="btn btn-sm btn-outline-danger" title="Remover vínculo" @click="unlinkAnuncio(a)">
-                        <i class="fas fa-unlink"></i>
-                      </button>
-                      <button v-if="a.status === 'active' || a.status === 'published'" class="btn btn-sm btn-outline-warning" title="Pausar" @click="pauseAnuncio(a)">
-                        <i class="fas fa-pause"></i>
-                      </button>
-                      <button v-if="a.status === 'paused' || a.status === 'closed'" class="btn btn-sm btn-outline-success" title="Reativar" @click="reactivateAnuncio(a)">
-                        <i class="fas fa-play"></i>
-                      </button>
-                      <button v-if="a.platform_item_id && a.is_linked" class="btn btn-sm btn-outline-info" title="Sincronizar ML" @click="syncToMl(a)">
-                        <i class="fas fa-sync-alt"></i>
-                      </button>
-                      <a v-if="a.permalink || (a.platform_item_id && selectedAccountPlatform === 'mercadolivre')"
-                         :href="a.permalink || `https://www.mercadolivre.com.br/p/${a.platform_item_id}`"
-                         target="_blank" class="btn btn-sm btn-outline-info" title="Ver no ML">
-                        <i class="fas fa-external-link-alt"></i>
-                      </a>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <div v-else>
+              <div v-for="a in filteredAnuncios" :key="a.id"
+                   class="d-flex align-items-start border-bottom p-2"
+                   :style="!a.is_linked ? 'background:#fffbea' : ''">
+                <!-- Thumbnail -->
+                <img v-if="a.thumbnail" :src="a.thumbnail"
+                     style="width:72px;height:72px;object-fit:cover;border-radius:4px;flex-shrink:0"
+                     class="mr-3" />
+                <div v-else class="mr-3 d-flex align-items-center justify-content-center bg-light"
+                     style="width:72px;height:72px;border-radius:4px;flex-shrink:0">
+                  <i class="fas fa-image text-muted fa-lg"></i>
+                </div>
+                <!-- Info central -->
+                <div class="flex-grow-1 mr-2" style="min-width:0">
+                  <div class="font-weight-bold text-truncate" :title="a.title_override">{{ a.title_override }}</div>
+                  <div class="small text-muted mt-1">
+                    <span class="text-monospace font-weight-bold">{{ a.platform_item_id }}</span>
+                    <span v-if="a.sku" class="ml-2">· SKU: {{ a.sku }}</span>
+                  </div>
+                  <div class="d-flex flex-wrap mt-1" style="gap:4px">
+                    <span v-if="a.listing_type" :class="listingTypeBadge(a.listing_type)" style="font-size:11px">{{ listingTypeLabel(a.listing_type) }}</span>
+                    <span v-if="a.is_full" class="badge" style="background:#00a650;color:#fff;font-size:11px"><i class="fas fa-warehouse mr-1"></i>Full</span>
+                    <span v-if="a.ml_catalog_id" class="badge badge-info" style="font-size:11px"><i class="fas fa-bookmark mr-1"></i>Catálogo ML</span>
+                    <span v-if="a.category_name || a.category_id" class="badge badge-light text-dark border" style="font-size:11px" :title="a.category_id">{{ a.category_name || a.category_id }}</span>
+                  </div>
+                  <div class="small mt-1">
+                    <span class="text-success mr-2"><i class="fas fa-shopping-cart"></i> Vendidos: {{ a.sold_quantity || 0 }}</span>
+                    <span class="text-primary"><i class="fas fa-box"></i> Disponíveis: {{ a.available_quantity || 0 }}</span>
+                    <a v-if="pictureCount(a)" href="#" class="ml-2 text-secondary" @click.prevent="openPhotosModal(a)">
+                      <i class="fas fa-camera"></i> {{ pictureCount(a) }} fotos
+                    </a>
+                    <a v-if="hasVariations(a)" href="#" class="ml-2 text-info" @click.prevent="showVariationsModal(a)">Ver variações</a>
+                  </div>
+                  <div class="small mt-1">
+                    <span v-if="a.cmig_product" class="badge badge-success">CMIG: {{ a.cmig_product.sku }}</span>
+                    <span v-else-if="a.catalog_product" class="badge badge-info">PG: {{ a.catalog_product.sku }}</span>
+                    <span v-else class="badge badge-warning"><i class="fas fa-exclamation-triangle mr-1"></i>Sem vínculo</span>
+                  </div>
+                </div>
+                <!-- Preço + Status + Ações -->
+                <div class="d-flex flex-column align-items-end flex-shrink-0" style="min-width:130px">
+                  <div class="font-weight-bold text-success">{{ formatCurrency(a.sale_price) }}</div>
+                  <span :class="statusBadgeClass(a.status)" class="mt-1">{{ statusLabel(a.status) }}</span>
+                  <div class="btn-group btn-group-sm mt-2">
+                    <button class="btn btn-outline-secondary" title="Editar" @click="openWizard(a)"><i class="fas fa-edit"></i></button>
+                    <button class="btn btn-outline-primary" title="Vincular" @click="openLinkModal(a)"><i class="fas fa-link"></i></button>
+                    <button v-if="!a.is_linked" class="btn btn-outline-dark" title="Criar CMIG" @click="openCreateCmigModal(a)"><i class="fas fa-plus"></i></button>
+                    <button v-if="a.is_linked" class="btn btn-outline-danger" title="Desvincular" @click="unlinkAnuncio(a)"><i class="fas fa-unlink"></i></button>
+                    <button v-if="a.status === 'published'" class="btn btn-outline-warning" title="Pausar" @click="pauseAnuncio(a)"><i class="fas fa-pause"></i></button>
+                    <button v-if="a.status === 'paused'" class="btn btn-outline-success" title="Reativar" @click="reactivateAnuncio(a)"><i class="fas fa-play"></i></button>
+                    <button v-if="a.platform_item_id && a.is_linked" class="btn btn-outline-info" title="Sincronizar ML" @click="syncToMl(a)"><i class="fas fa-sync-alt"></i></button>
+                    <a v-if="a.permalink" :href="a.permalink" target="_blank" class="btn btn-outline-info" title="Ver no ML"><i class="fas fa-external-link-alt"></i></a>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -580,6 +601,46 @@
       </div>
     </div>
 
+    <!-- Modal: Fotos do Anúncio -->
+    <div v-if="photosModal.show" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.7)" @click.self="photosModal.show = false">
+      <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">
+              <i class="fas fa-images mr-2"></i>
+              Fotos — {{ photosModal.listing?.title_override }}
+            </h5>
+            <button type="button" class="close" @click="photosModal.show = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <div v-if="photosModal.photos.length === 0" class="text-center text-muted py-4">
+              Nenhuma foto disponível.
+            </div>
+            <div v-else class="d-flex flex-wrap" style="gap:10px">
+              <div v-for="(photo, i) in photosModal.photos" :key="photo.id || i"
+                   class="position-relative" style="cursor:pointer"
+                   @click="photosModal.zoomed = photo.url">
+                <img :src="photo.url" style="width:160px;height:160px;object-fit:cover;border-radius:6px;border:2px solid #dee2e6" />
+                <span class="badge badge-dark position-absolute" style="bottom:6px;left:6px;font-size:10px">{{ i + 1 }}</span>
+              </div>
+            </div>
+            <!-- Zoom -->
+            <div v-if="photosModal.zoomed" class="text-center mt-3">
+              <img :src="photosModal.zoomed" style="max-width:100%;max-height:60vh;border-radius:6px;border:2px solid #007bff" />
+              <div class="mt-1">
+                <a :href="photosModal.zoomed" target="_blank" class="small text-muted">Abrir em nova aba</a>
+                <button class="btn btn-xs btn-outline-secondary ml-3" @click="photosModal.zoomed = null">Fechar zoom</button>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer justify-content-between">
+            <small class="text-muted">{{ photosModal.photos.length }} foto(s)</small>
+            <button class="btn btn-secondary" @click="photosModal.show = false">Fechar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -596,16 +657,29 @@ const anuncios = ref([])
 const loading = ref(false)
 const importing = ref(false)
 const filterVinculo = ref('all')
+const filterStatus = ref('all')
+const statsBar = ref(null)
+const loadingStats = ref(false)
 const importResult = ref(null)
 const cmigs = ref([])
+
+const statusTabs = [
+  { key: 'all',       label: 'Todos' },
+  { key: 'published', label: 'Ativos' },
+  { key: 'paused',    label: 'Pausados' },
+  { key: 'draft',     label: 'Em revisão' },
+  { key: 'closed',    label: 'Finalizados' },
+]
 
 const selectedAccount = computed(() => accounts.value.find(a => a.id === selectedAccountId.value))
 const selectedAccountPlatform = computed(() => selectedAccount.value?.platform || '')
 
 const filteredAnuncios = computed(() => {
-  if (filterVinculo.value === 'linked') return anuncios.value.filter(a => a.is_linked)
-  if (filterVinculo.value === 'unlinked') return anuncios.value.filter(a => !a.is_linked)
-  return anuncios.value
+  let list = anuncios.value
+  if (filterVinculo.value === 'linked')   list = list.filter(a => a.is_linked)
+  if (filterVinculo.value === 'unlinked') list = list.filter(a => !a.is_linked)
+  if (filterStatus.value !== 'all')       list = list.filter(a => a.status === filterStatus.value)
+  return list
 })
 
 // ══════════════════════════════════════════════════
@@ -875,6 +949,7 @@ async function saveWizard() {
 const linkModal = ref({ show: false, listing: null, loading: false, cmig_suggestions: [], pg_suggestions: [] })
 const linkSearch = ref('')
 const createCmigModal = ref({ show: false, listing: null, saving: false, error: '' })
+const photosModal = ref({ show: false, listing: null, photos: [], zoomed: null })
 const createCmigForm = ref({ cmig_id: '', sku_cmig: '', title: '', brand: '', cost_price: '', ncm: '', weight_kg: '' })
 
 onMounted(async () => {
@@ -897,16 +972,29 @@ async function loadCmigs() {
 }
 
 async function loadAnuncios() {
-  if (!selectedAccountId.value) { anuncios.value = []; return }
+  if (!selectedAccountId.value) { anuncios.value = []; statsBar.value = null; return }
   loading.value = true
   try {
-    const { data } = await api.get(`/anuncios?account_id=${selectedAccountId.value}`)
-    anuncios.value = Array.isArray(data) ? data : []
+    const [res] = await Promise.all([
+      api.get(`/anuncios?account_id=${selectedAccountId.value}`),
+      loadStats(),
+    ])
+    anuncios.value = Array.isArray(res.data) ? res.data : []
   } catch {
     toast.error('Erro ao carregar anúncios')
   } finally {
     loading.value = false
   }
+}
+
+async function loadStats() {
+  if (!selectedAccountId.value) return
+  loadingStats.value = true
+  try {
+    const { data } = await api.get(`/anuncios/stats?account_id=${selectedAccountId.value}`)
+    statsBar.value = data
+  } catch { statsBar.value = null }
+  finally { loadingStats.value = false }
 }
 
 async function importAnuncios() {
@@ -1042,11 +1130,63 @@ function formatCurrency(v) {
   return Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
-function statusBadge(s) {
+function statusBadgeClass(s) {
   return {
-    active: 'badge badge-success', published: 'badge badge-success',
-    paused: 'badge badge-warning', draft: 'badge badge-secondary',
-    closed: 'badge badge-danger',
+    published: 'badge badge-success',
+    paused:    'badge badge-warning',
+    draft:     'badge badge-secondary',
+    closed:    'badge badge-danger',
+    error:     'badge badge-danger',
   }[s] || 'badge badge-secondary'
+}
+
+function statusLabel(s) {
+  return { published: 'Ativo', paused: 'Pausado', draft: 'Em revisão', closed: 'Finalizado', error: 'Erro' }[s] || s
+}
+
+function listingTypeLabel(t) {
+  return { gold_special: 'Clássico', gold_pro: 'Gold Pro', gold_premium: 'Premium', silver: 'Prata', bronze: 'Bronze', free: 'Grátis' }[t] || t || ''
+}
+
+function listingTypeBadge(t) {
+  const gold = 'badge' // will use inline style for gold color
+  return {
+    gold_special:  'badge badge-warning text-dark',
+    gold_pro:      'badge badge-warning text-dark',
+    gold_premium:  'badge badge-warning text-dark',
+    silver:        'badge badge-secondary',
+    bronze:        'badge badge-secondary',
+    free:          'badge badge-light text-dark border',
+  }[t] || 'badge badge-secondary'
+}
+
+function openPhotosModal(listing) {
+  let photos = []
+  if (listing.pictures_json) {
+    try { photos = JSON.parse(listing.pictures_json) } catch { /* ignore */ }
+  }
+  photosModal.value = { show: true, listing, photos, zoomed: null }
+}
+
+function pictureCount(listing) {
+  if (!listing.pictures_json) return 0
+  try { return JSON.parse(listing.pictures_json).length } catch { return 0 }
+}
+
+function hasVariations(listing) {
+  if (!listing.variations_json) return false
+  try { return JSON.parse(listing.variations_json).length > 0 } catch { return false }
+}
+
+function showVariationsModal(listing) {
+  if (!listing.variations_json) return
+  try {
+    const vars = JSON.parse(listing.variations_json)
+    alert(`Variações de "${listing.title_override}":\n\n` +
+      vars.map(v => {
+        const attrs = (v.attributes || []).map(a => `${a.name}: ${a.value}`).join(', ')
+        return `• ${attrs} — Estoque: ${v.available_quantity ?? '?'} | Vendidos: ${v.sold_quantity ?? 0}`
+      }).join('\n'))
+  } catch { /* ignore */ }
 }
 </script>

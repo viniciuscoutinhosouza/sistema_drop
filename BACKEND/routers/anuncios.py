@@ -2,10 +2,11 @@
 Gestão de Anúncios — fluxo AC-centrado.
 Cada anúncio (ProductListing) pode estar vinculado a CMIGProduct OU CatalogProduct OU sem vínculo.
 """
+import json as _json
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
 
 from database import get_db
@@ -133,17 +134,29 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "platform_item_id": listing.platform_item_id,
         "permalink": listing.permalink,
         "thumbnail": listing.thumbnail,
+        "sku": listing.sku,
         "title_override": listing.title_override,
         "sale_price": float(listing.sale_price) if listing.sale_price else None,
         "status": listing.status,
         "listing_type": listing.listing_type,
         "category_id": listing.category_id,
+        "category_name": listing.category_name,
+        "is_full": bool(listing.is_full) if listing.is_full is not None else False,
+        "ml_catalog_id": listing.ml_catalog_id,
+        "available_quantity": listing.available_quantity,
+        "sold_quantity": listing.sold_quantity or 0,
+        "item_condition": listing.item_condition,
+        "weight_kg": float(listing.weight_kg) if listing.weight_kg else None,
+        "height_cm": float(listing.height_cm) if listing.height_cm else None,
+        "width_cm": float(listing.width_cm) if listing.width_cm else None,
+        "length_cm": float(listing.length_cm) if listing.length_cm else None,
+        "pictures_json": listing.pictures_json,
+        "fiscal_json": listing.fiscal_json,
+        "variations_json": listing.variations_json,
         "published_at": listing.published_at.isoformat() if listing.published_at else None,
         "last_sync_at": listing.last_sync_at.isoformat() if listing.last_sync_at else None,
         "description_override": listing.description_override,
         "attributes_json": listing.attributes_json,
-        "available_quantity": listing.available_quantity,
-        "item_condition": listing.item_condition,
         "warranty_type": listing.warranty_type,
         "warranty_time": listing.warranty_time,
         "shipping_mode": listing.shipping_mode,
@@ -244,6 +257,33 @@ async def import_anuncios(
     item_ids = await ml_service.get_seller_item_ids(access_token, seller_id)
     items = await ml_service.get_items_bulk(access_token, item_ids)
 
+    # Busca descrições em paralelo para todos os itens
+    descriptions: dict[str, str] = {}
+    if item_ids:
+        descriptions = await ml_service.get_items_descriptions(access_token, item_ids)
+
+    # Busca nomes de categorias e visitas 7d em paralelo
+    unique_category_ids = list({item.get("category_id") for item in items if item.get("category_id")})
+    category_names: dict[str, str] = {}
+    per_item_visits: dict[str, int] = {}
+    import asyncio as _asyncio
+    async def _fetch_extra():
+        nonlocal category_names, per_item_visits
+        tasks = []
+        if unique_category_ids:
+            tasks.append(ml_service.get_categories_bulk(unique_category_ids))
+        visit_task = ml_service.get_account_visit_stats(access_token, seller_id)
+        tasks.append(visit_task)
+        results = await _asyncio.gather(*tasks, return_exceptions=True)
+        idx = 0
+        if unique_category_ids:
+            if not isinstance(results[idx], Exception):
+                category_names = results[idx]
+            idx += 1
+        if not isinstance(results[idx], Exception):
+            per_item_visits = results[idx].get("per_item", {})
+    await _fetch_extra()
+
     imported = updated = auto_matched = unlinked = 0
 
     # Carrega produtos CMIG da CMIG vinculada à conta (para auto-match)
@@ -262,13 +302,7 @@ async def import_anuncios(
         price = item.get("price") or item.get("original_price") or 0
         title = item.get("title", "")
         permalink = item.get("permalink", "") or ""
-        print(f"[DEBUG] {platform_item_id} | thumbnail={item.get('thumbnail')} | pictures={len(item.get('pictures', []))}")
-        thumbnail = item.get("thumbnail", "") or ""
-        pictures = item.get("pictures", [])
-        if not thumbnail and pictures:
-            thumbnail = pictures[0].get("secure_url") or pictures[0].get("url", "")
-        if thumbnail:
-            thumbnail = thumbnail.replace("http://", "https://")
+        sku = item.get("seller_custom_field") or ""
         _ml_status = item.get("status", "active")
         item_status = {
             "active": "published",
@@ -277,6 +311,128 @@ async def import_anuncios(
             "under_review": "draft",
             "inactive": "paused",
         }.get(_ml_status, "published")
+        available_qty = item.get("available_quantity") or item.get("initial_quantity") or 1
+        sold_qty = item.get("sold_quantity") or 0
+        item_condition = item.get("condition") or "new"
+        listing_type = item.get("listing_type_id") or ""
+        category_id = item.get("category_id") or ""
+        category_name = category_names.get(category_id, "") if category_id else ""
+        shipping = item.get("shipping") or {}
+        shipping_mode = shipping.get("mode") or "me2"
+        free_shipping = bool(shipping.get("free_shipping", False))
+        is_full = (shipping.get("logistic_type") or "").lower() == "fulfillment"
+        ml_catalog_id = item.get("catalog_product_id") or ""
+        visits_7d = per_item_visits.get(str(platform_item_id), 0)
+
+        # Fotos — todas as pictures com URL HTTPS
+        _DIMENSIONAL_IDS = {
+            "WEIGHT", "NET_WEIGHT", "GROSS_WEIGHT",
+            "PACKAGE_WEIGHT", "PACKAGE_NET_WEIGHT",
+            "HEIGHT", "WIDTH", "LENGTH", "DEPTH",
+            "PACKAGE_HEIGHT", "PACKAGE_WIDTH", "PACKAGE_LENGTH", "PACKAGE_DEPTH",
+        }
+        _FISCAL_IDS = {"GTIN", "EAN", "NCM", "CEST", "FISCAL_CLASSIFICATION"}
+
+        pics_list = []
+        for pic in item.get("pictures", []):
+            url = pic.get("secure_url") or pic.get("url", "")
+            if url:
+                pics_list.append({"id": pic.get("id", ""), "url": url.replace("http://", "https://")})
+
+        thumbnail = item.get("thumbnail", "") or ""
+        if not thumbnail and pics_list:
+            thumbnail = pics_list[0]["url"]
+        if thumbnail:
+            thumbnail = thumbnail.replace("http://", "https://")
+
+        # Descrição (buscada em paralelo antes do loop)
+        description_text = descriptions.get(str(platform_item_id), "") or ""
+
+        # Separação de atributos: dimensional, fiscal, ficha técnica
+        dim: dict = {}
+        fiscal: dict = {}
+        tech: list = []
+        for attr in item.get("attributes", []):
+            attr_id = (attr.get("id") or "").upper()
+            val_name = attr.get("value_name")
+            val_struct = attr.get("value_struct") or {}
+            val_num = val_struct.get("number")
+            unit = val_struct.get("unit") or ""
+            val = val_name or val_num
+            if attr_id in _DIMENSIONAL_IDS:
+                dim[attr_id] = {"value": val_num, "unit": unit, "text": val_name}
+            elif attr_id in _FISCAL_IDS:
+                fiscal[attr_id.lower()] = val_name
+            elif val is not None:
+                tech.append({"id": attr_id, "name": attr.get("name"), "value": val_name})
+
+        # Fallback de SKU pelo atributo SELLER_SKU
+        if not sku:
+            _sku_attr = next((a for a in item.get("attributes", [])
+                              if (a.get("id") or "").upper() == "SELLER_SKU"), None)
+            if _sku_attr:
+                sku = _sku_attr.get("value_name") or ""
+
+        def _to_kg(key):
+            """Converte valor dimensional para kg respeitando a unidade retornada pelo ML."""
+            d = dim.get(key, {})
+            v = d.get("value")
+            if v is None:
+                return None
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            u = (d.get("unit") or "").lower()
+            if u in ("g", "gr", "grams", "gramas"):
+                return round(v / 1000, 3)
+            if u in ("mg", "milligrams"):
+                return round(v / 1_000_000, 3)
+            return round(v, 3)  # assume kg
+
+        def _to_cm(key):
+            """Converte valor dimensional para cm respeitando a unidade retornada pelo ML."""
+            d = dim.get(key, {})
+            v = d.get("value")
+            if v is None:
+                return None
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            u = (d.get("unit") or "").lower()
+            if u in ("mm", "millimeters", "milímetros"):
+                return round(v / 10, 2)
+            if u in ("m", "meters", "metros"):
+                return round(v * 100, 2)
+            return round(v, 2)  # assume cm
+
+        weight_kg = _to_kg("WEIGHT") or _to_kg("NET_WEIGHT") or _to_kg("GROSS_WEIGHT") \
+                    or _to_kg("PACKAGE_WEIGHT") or _to_kg("PACKAGE_NET_WEIGHT")
+        height_cm = _to_cm("HEIGHT") or _to_cm("PACKAGE_HEIGHT")
+        width_cm  = _to_cm("WIDTH")  or _to_cm("PACKAGE_WIDTH")
+        length_cm = _to_cm("LENGTH") or _to_cm("DEPTH") \
+                    or _to_cm("PACKAGE_LENGTH") or _to_cm("PACKAGE_DEPTH")
+
+        # Variações
+        variations_list = []
+        for var in item.get("variations", []):
+            variations_list.append({
+                "id": var.get("id"),
+                "price": var.get("price"),
+                "available_quantity": var.get("available_quantity"),
+                "sold_quantity": var.get("sold_quantity"),
+                "attributes": [
+                    {"id": a.get("id"), "name": a.get("name"), "value": a.get("value_name")}
+                    for a in var.get("attribute_combinations", [])
+                ],
+                "picture_ids": var.get("picture_ids", []),
+            })
+
+        pictures_json  = _json.dumps(pics_list, ensure_ascii=False) if pics_list else None
+        fiscal_json    = _json.dumps(fiscal, ensure_ascii=False) if fiscal else None
+        variations_json = _json.dumps(variations_list, ensure_ascii=False) if variations_list else None
+        attributes_json = _json.dumps(tech, ensure_ascii=False) if tech else None
 
         # Upsert
         existing_result = await db.execute(
@@ -291,10 +447,38 @@ async def import_anuncios(
             existing.title_override = title
             existing.sale_price = price
             existing.status = item_status
+            existing.category_id = category_id or existing.category_id
+            if category_name:
+                existing.category_name = category_name
+            existing.listing_type = listing_type or existing.listing_type
+            existing.is_full = is_full
+            existing.ml_catalog_id = ml_catalog_id or existing.ml_catalog_id
+            existing.available_quantity = available_qty
+            existing.sold_quantity = sold_qty
+            existing.visits_7d = visits_7d
+            existing.item_condition = item_condition
+            existing.shipping_mode = shipping_mode
+            existing.free_shipping = free_shipping
             if thumbnail:
                 existing.thumbnail = thumbnail
             if permalink:
                 existing.permalink = permalink
+            if sku:
+                existing.sku = sku
+            if description_text:
+                existing.description_override = description_text
+            existing.weight_kg = weight_kg
+            existing.height_cm = height_cm
+            existing.width_cm  = width_cm
+            existing.length_cm = length_cm
+            if pictures_json:
+                existing.pictures_json = pictures_json
+            if fiscal_json:
+                existing.fiscal_json = fiscal_json
+            if variations_json:
+                existing.variations_json = variations_json
+            if attributes_json:
+                existing.attributes_json = attributes_json
             existing.last_sync_at = datetime.now(timezone.utc)
             updated += 1
             listing = existing
@@ -305,8 +489,29 @@ async def import_anuncios(
                 title_override=title,
                 thumbnail=thumbnail,
                 permalink=permalink,
+                sku=sku,
+                description_override=description_text or None,
                 sale_price=price,
                 status=item_status,
+                category_id=category_id,
+                category_name=category_name or None,
+                listing_type=listing_type,
+                is_full=is_full,
+                ml_catalog_id=ml_catalog_id or None,
+                available_quantity=available_qty,
+                sold_quantity=sold_qty,
+                visits_7d=visits_7d,
+                item_condition=item_condition,
+                shipping_mode=shipping_mode,
+                free_shipping=free_shipping,
+                weight_kg=weight_kg,
+                height_cm=height_cm,
+                width_cm=width_cm,
+                length_cm=length_cm,
+                pictures_json=pictures_json,
+                fiscal_json=fiscal_json,
+                variations_json=variations_json,
+                attributes_json=attributes_json,
                 published_at=datetime.now(timezone.utc),
                 last_sync_at=datetime.now(timezone.utc),
             )
@@ -660,6 +865,41 @@ async def update_anuncio(
 
     await db.commit()
     return _serialize_listing(listing)
+
+
+@router.get("/stats")
+async def get_anuncio_stats(
+    account_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retorna contagens por status + total vendidos + visitas 7d do ML."""
+    account = await _get_account_or_403(account_id, current_user, db)
+
+    rows = await db.execute(
+        select(ProductListing.status, func.count().label("cnt"))
+        .where(ProductListing.account_id == account_id)
+        .group_by(ProductListing.status)
+    )
+    counts = {row.status: row.cnt for row in rows}
+
+    total_sold = await db.scalar(
+        select(func.sum(ProductListing.sold_quantity))
+        .where(ProductListing.account_id == account_id)
+    ) or 0
+
+    visit_stats: dict = {"total_visits": 0}
+    if account.platform == "mercadolivre":
+        try:
+            access_token = await _get_valid_token(account, db)
+            user_info = await ml_service.get_user_info(access_token)
+            seller_id = str(user_info.get("id", ""))
+            if seller_id:
+                visit_stats = await ml_service.get_account_visit_stats(access_token, seller_id)
+        except Exception:
+            pass
+
+    return {"counts": counts, "total_sold": int(total_sold), "visits": visit_stats}
 
 
 @router.get("/categories/search")

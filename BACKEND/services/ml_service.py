@@ -189,6 +189,28 @@ async def get_items_bulk(access_token: str, item_ids: list[str]) -> list[dict]:
     return results
 
 
+async def get_items_descriptions(access_token: str, item_ids: list[str]) -> dict[str, str]:
+    """Fetch descriptions for multiple items concurrently. Returns {item_id: text}."""
+    import asyncio
+
+    async def _one(client: httpx.AsyncClient, iid: str) -> tuple[str, str]:
+        try:
+            resp = await client.get(
+                f"{ML_API_BASE}/items/{iid}/description",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return iid, data.get("plain_text") or data.get("text") or ""
+        except Exception:
+            pass
+        return iid, ""
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        results = await asyncio.gather(*[_one(client, iid) for iid in item_ids])
+    return dict(results)
+
+
 async def pause_item(access_token: str, item_id: str) -> None:
     """Pause (close) an active ML listing."""
     async with httpx.AsyncClient() as client:
@@ -271,3 +293,47 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
         )
     if resp.status_code not in (200, 201):
         raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp.text}")
+
+
+async def get_categories_bulk(category_ids: list[str]) -> dict[str, str]:
+    """Fetch category names for a list of unique IDs. Returns {category_id: name}."""
+    import asyncio
+
+    async def _one(cid: str) -> tuple[str, str]:
+        async with httpx.AsyncClient(timeout=10) as client:
+            try:
+                resp = await client.get(f"{ML_API_BASE}/categories/{cid}")
+                if resp.status_code == 200:
+                    return cid, resp.json().get("name", "")
+            except Exception:
+                pass
+        return cid, ""
+
+    results = await asyncio.gather(*[_one(cid) for cid in category_ids])
+    return dict(results)
+
+
+async def get_account_visit_stats(access_token: str, seller_id: str) -> dict:
+    """Busca visitas dos últimos 7 dias — total e por item."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/users/{seller_id}/items/visits/time_window",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"last": 7, "unit": "day"},
+        )
+    if resp.status_code != 200:
+        return {"total_visits": 0, "per_item": {}, "date_from": None, "date_to": None}
+    data = resp.json()
+    total = 0
+    per_item: dict[str, int] = {}
+    for day in data.get("data_by_date", []):
+        total += day.get("total", 0)
+        for iv in day.get("visits_detail", []):
+            iid = str(iv.get("item_id", ""))
+            per_item[iid] = per_item.get(iid, 0) + iv.get("visits", 0)
+    return {
+        "total_visits": total,
+        "per_item": per_item,
+        "date_from": data.get("date_from"),
+        "date_to": data.get("date_to"),
+    }
