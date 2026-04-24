@@ -104,21 +104,26 @@
                     <span :class="statusBadge(a.status)">{{ a.status }}</span>
                   </td>
                   <td class="text-center text-nowrap">
-                    <button class="btn btn-xs btn-outline-primary mr-1" title="Vincular produto" @click="openLinkModal(a)">
-                      <i class="fas fa-link"></i>
-                    </button>
-                    <button v-if="!a.is_linked" class="btn btn-xs btn-outline-secondary mr-1" title="Criar Produto CMIG" @click="openCreateCmigModal(a)">
-                      <i class="fas fa-plus"></i>
-                    </button>
-                    <button v-if="a.is_linked" class="btn btn-xs btn-outline-danger mr-1" title="Remover vínculo" @click="unlinkAnuncio(a)">
-                      <i class="fas fa-unlink"></i>
-                    </button>
-                    <button v-if="a.status === 'active' || a.status === 'published'" class="btn btn-xs btn-outline-warning mr-1" title="Pausar" @click="pauseAnuncio(a)">
-                      <i class="fas fa-pause"></i>
-                    </button>
-                    <a v-if="a.platform_item_id && selectedAccountPlatform === 'mercadolivre'" :href="`https://www.mercadolivre.com.br/p/${a.platform_item_id}`" target="_blank" class="btn btn-xs btn-outline-info" title="Ver no ML">
-                      <i class="fas fa-external-link-alt"></i>
-                    </a>
+                    <div class="btn-group">
+                      <button class="btn btn-sm btn-outline-secondary" title="Editar" @click="openEditModal(a)">
+                        <i class="fas fa-edit"></i>
+                      </button>
+                      <button class="btn btn-sm btn-outline-primary" title="Vincular produto" @click="openLinkModal(a)">
+                        <i class="fas fa-link"></i>
+                      </button>
+                      <button v-if="!a.is_linked" class="btn btn-sm btn-outline-dark" title="Criar Produto CMIG" @click="openCreateCmigModal(a)">
+                        <i class="fas fa-plus"></i>
+                      </button>
+                      <button v-if="a.is_linked" class="btn btn-sm btn-outline-danger" title="Remover vínculo" @click="unlinkAnuncio(a)">
+                        <i class="fas fa-unlink"></i>
+                      </button>
+                      <button v-if="a.status === 'active' || a.status === 'published'" class="btn btn-sm btn-outline-warning" title="Pausar" @click="pauseAnuncio(a)">
+                        <i class="fas fa-pause"></i>
+                      </button>
+                      <a v-if="a.platform_item_id && selectedAccountPlatform === 'mercadolivre'" :href="`https://www.mercadolivre.com.br/p/${a.platform_item_id}`" target="_blank" class="btn btn-sm btn-outline-info" title="Ver no ML">
+                        <i class="fas fa-external-link-alt"></i>
+                      </a>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -127,6 +132,74 @@
         </div>
       </div>
     </section>
+
+    <!-- Modal: Editar / Novo Anúncio -->
+    <div v-if="editModal.show" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">
+              <i class="fas fa-edit mr-2"></i>
+              {{ editModal.isNew ? 'Novo Anúncio Manual' : 'Editar Anúncio' }}
+            </h5>
+            <button type="button" class="close" @click="editModal.show = false"><span>&times;</span></button>
+          </div>
+          <form @submit.prevent="doSaveEdit">
+            <div class="modal-body">
+              <div v-if="editModal.error" class="alert alert-danger">{{ editModal.error }}</div>
+              <div class="row">
+                <div class="col-md-8 form-group">
+                  <label>Título do anúncio <span class="text-danger">*</span></label>
+                  <input v-model="editForm.title_override" class="form-control" required />
+                </div>
+                <div class="col-md-4 form-group">
+                  <label>Preço de venda (R$) <span class="text-danger">*</span></label>
+                  <input v-model="editForm.sale_price" type="number" step="0.01" min="0" class="form-control" required />
+                </div>
+              </div>
+              <div class="row">
+                <div class="col-md-5 form-group">
+                  <label>ID no Marketplace</label>
+                  <input v-model="editForm.platform_item_id" class="form-control" placeholder="Ex: MLB12345678" />
+                </div>
+                <div class="col-md-4 form-group">
+                  <label>Categoria</label>
+                  <input v-model="editForm.category_id" class="form-control" placeholder="Ex: MLB1051" />
+                </div>
+                <div class="col-md-3 form-group">
+                  <label>Tipo de anúncio</label>
+                  <select v-model="editForm.listing_type" class="form-control">
+                    <option value="">—</option>
+                    <option value="gold_special">Gold Special</option>
+                    <option value="gold_pro">Gold Pro</option>
+                    <option value="free">Grátis</option>
+                  </select>
+                </div>
+              </div>
+              <div class="row">
+                <div class="col-md-4 form-group">
+                  <label>Status</label>
+                  <select v-model="editForm.status" class="form-control">
+                    <option value="draft">Rascunho</option>
+                    <option value="active">Ativo</option>
+                    <option value="published">Publicado</option>
+                    <option value="paused">Pausado</option>
+                    <option value="closed">Encerrado</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" @click="editModal.show = false">Cancelar</button>
+              <button type="submit" class="btn btn-primary" :disabled="editModal.saving">
+                <i v-if="editModal.saving" class="fas fa-spinner fa-spin mr-1"></i>
+                {{ editModal.saving ? 'Salvando...' : 'Salvar' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
 
     <!-- Modal: Resultado de Importação -->
     <div v-if="importResult" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
@@ -386,6 +459,10 @@ const filteredAnuncios = computed(() => {
   return anuncios.value
 })
 
+// ── edit modal ──
+const editModal = ref({ show: false, isNew: false, listing: null, saving: false, error: '' })
+const editForm = ref({ title_override: '', sale_price: '', platform_item_id: '', category_id: '', listing_type: '', status: 'draft' })
+
 // ── link modal ──
 const linkModal = ref({ show: false, listing: null, loading: false, cmig_suggestions: [], pg_suggestions: [] })
 const linkSearch = ref('')
@@ -455,6 +532,60 @@ async function importAnuncios() {
 
 function setFilter(f) {
   filterVinculo.value = f
+}
+
+// ── Edit Modal ──
+
+function openEditModal(listing) {
+  if (listing) {
+    editModal.value = { show: true, isNew: false, listing, saving: false, error: '' }
+    editForm.value = {
+      title_override: listing.title_override || '',
+      sale_price: listing.sale_price || '',
+      platform_item_id: listing.platform_item_id || '',
+      category_id: listing.category_id || '',
+      listing_type: listing.listing_type || '',
+      status: listing.status || 'draft',
+    }
+  } else {
+    editModal.value = { show: true, isNew: true, listing: null, saving: false, error: '' }
+    editForm.value = { title_override: '', sale_price: '', platform_item_id: '', category_id: '', listing_type: 'gold_special', status: 'draft' }
+  }
+}
+
+async function doSaveEdit() {
+  editModal.value.saving = true
+  editModal.value.error = ''
+  try {
+    if (editModal.value.isNew) {
+      await api.post('/anuncios/manual', {
+        account_id: selectedAccountId.value,
+        title_override: editForm.value.title_override,
+        sale_price: parseFloat(editForm.value.sale_price),
+        platform_item_id: editForm.value.platform_item_id || null,
+        category_id: editForm.value.category_id || null,
+        listing_type: editForm.value.listing_type || null,
+        status: editForm.value.status,
+      })
+      toast.success('Anúncio criado com sucesso!')
+    } else {
+      await api.put(`/anuncios/${editModal.value.listing.id}`, {
+        title_override: editForm.value.title_override,
+        sale_price: parseFloat(editForm.value.sale_price),
+        platform_item_id: editForm.value.platform_item_id || null,
+        category_id: editForm.value.category_id || null,
+        listing_type: editForm.value.listing_type || null,
+        status: editForm.value.status,
+      })
+      toast.success('Anúncio atualizado!')
+    }
+    editModal.value.show = false
+    await loadAnuncios()
+  } catch (e) {
+    editModal.value.error = e.response?.data?.detail || 'Erro ao salvar anúncio'
+  } finally {
+    editModal.value.saving = false
+  }
 }
 
 // ── Link Modal ──
