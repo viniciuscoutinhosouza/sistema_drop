@@ -233,6 +233,16 @@
               <label>Descrição</label>
               <input v-model="editForm.description" class="form-control" placeholder="Ex: Loja Principal ML" />
             </div>
+            <div class="form-group mb-0">
+              <div class="custom-control custom-switch">
+                <input type="checkbox" class="custom-control-input" id="editIsOfficialStore"
+                       v-model="editForm.is_official_store" />
+                <label class="custom-control-label" for="editIsOfficialStore">
+                  Loja Oficial no Mercado Livre
+                </label>
+              </div>
+              <small class="text-muted">Ative apenas para contas com <em>family_name</em> — permite editar o título do anúncio via API.</small>
+            </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="modal.edit = false">Cancelar</button>
@@ -295,7 +305,7 @@ const savingNewConta = ref(false)
 
 // Editar CONTA
 const editTarget = ref(null)
-const editForm   = ref({ cmig_id: '', description: '' })
+const editForm   = ref({ cmig_id: '', description: '', is_official_store: false })
 const editError  = ref('')
 const savingEdit = ref(false)
 
@@ -345,7 +355,7 @@ function openNewContaModal() {
 
 function openEditModal(acc) {
   editTarget.value = acc
-  editForm.value = { cmig_id: acc.cmig_id || '', description: acc.description || '' }
+  editForm.value = { cmig_id: acc.cmig_id || '', description: acc.description || '', is_official_store: !!acc.is_official_store }
   editError.value = ''
   modal.value.edit = true
 }
@@ -357,6 +367,7 @@ async function saveEdit() {
     await api.put(`/accounts/${editTarget.value.id}`, {
       cmig_id: editForm.value.cmig_id || null,
       description: editForm.value.description,
+      is_official_store: editForm.value.is_official_store,
     })
     modal.value.edit = false
     toast('Conta atualizada!', 'success')

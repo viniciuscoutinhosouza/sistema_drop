@@ -69,6 +69,9 @@ const CmigProductFormView = () => import('@/views/cmig-products/CmigProductFormV
 // Anúncios (AC)
 const AnunciosView = () => import('@/views/anuncios/AnunciosView.vue')
 
+// Simulador ML
+const SimuladorView = () => import('@/views/simulator/SimuladorView.vue')
+
 
 const routes = [
   // Auth routes (no sidebar)
@@ -160,6 +163,9 @@ const routes = [
 
       // Anúncios — AC
       { path: 'anuncios', component: AnunciosView, meta: { title: 'Anúncios', role: 'ac' } },
+
+      // Simulador ML — todos os usuários
+      { path: 'simulator', component: SimuladorView, meta: { title: 'Simulador ML' } },
     ],
   },
 

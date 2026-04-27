@@ -144,9 +144,11 @@ class ProductListing(Base):
     title_override     = Column(String(500))
     category_id        = Column(String(100))
     category_name      = Column(String(200))
+    category_path_json = Column(String(4000), nullable=True)  # JSON: [{id, name}, ...]
     listing_type       = Column(String(20))
     is_full            = Column(Boolean, default=False)
     ml_catalog_id      = Column(String(200))
+    catalog_listing    = Column(Boolean, nullable=True, default=False)  # true = anúncio DE catálogo; false + ml_catalog_id = optin
     status             = Column(String(20), nullable=False, default="draft")
     error_message      = Column(String(2000))
     published_at         = Column(TIMESTAMP(timezone=True))
@@ -162,6 +164,24 @@ class ProductListing(Base):
     shipping_mode        = Column(String(20), default="me2")
     free_shipping        = Column(Boolean, default=False)
     video_id             = Column(String(100))
+
+    # Cache de custos ML (comissão + frete + margem)
+    commission_pct       = Column(Numeric(8, 4),  nullable=True)
+    commission_amount    = Column(Numeric(10, 2), nullable=True)
+    shipping_cost        = Column(Numeric(10, 2), nullable=True)
+    net_revenue          = Column(Numeric(10, 2), nullable=True)
+    margin_pct           = Column(Numeric(8, 4),  nullable=True)
+    costs_cached_at      = Column(TIMESTAMP(timezone=True), nullable=True)
+
+    # Estoque por tipo
+    qty_full             = Column(Integer, default=0, nullable=True)   # Full ML (fulfillment)
+    qty_local            = Column(Integer, default=0, nullable=True)   # Estoque local/cross-docking
+
+    # Preço regular e promoção
+    regular_price        = Column(Numeric(12, 2), nullable=True)       # preço sem promoção
+    promo_type           = Column(String(50),     nullable=True)       # ex: PRICE_DISCOUNT
+    promo_discount_pct   = Column(Numeric(5, 2),  nullable=True)       # % de desconto
+
     created_at           = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at           = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
                                   onupdate=text("SYSTIMESTAMP"))

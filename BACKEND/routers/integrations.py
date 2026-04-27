@@ -66,6 +66,7 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
         "phone": acc.phone,
         "platform_username": acc.platform_username,
         "is_active": acc.is_active,
+        "is_official_store": bool(acc.is_official_store),
         "otp_verified": acc.otp_verified,
         "is_owner": is_owner,
         "cmig_id": acc.cmig_id,
@@ -379,6 +380,8 @@ async def update_account(
         account.description = body["description"]
     if "cmig_id" in body:
         account.cmig_id = body["cmig_id"] or None
+    if "is_official_store" in body:
+        account.is_official_store = bool(body["is_official_store"])
     await db.commit()
     return {"ok": True}
 

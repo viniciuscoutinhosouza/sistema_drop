@@ -64,6 +64,7 @@ from routers import (
     goes,
     cmigs,
     anuncios,
+    simulator,
 )
 
 PREFIX = "/api/v1"
@@ -87,6 +88,7 @@ app.include_router(warehouse.router,         prefix=f"{PREFIX}/warehouse",      
 app.include_router(goes.router,              prefix=f"{PREFIX}/goes",           tags=["GOs"])
 app.include_router(cmigs.router,             prefix=f"{PREFIX}/cmigs",          tags=["CMIGs"])
 app.include_router(anuncios.router,          prefix=f"{PREFIX}/anuncios",        tags=["Anuncios"])
+app.include_router(simulator.router,         prefix=f"{PREFIX}/simulator",       tags=["Simulator"])
 
 
 @app.get("/")

@@ -26,6 +26,7 @@ class MarketplaceAccount(Base):
     shop_id = Column(Integer)                       # Shopee shop ID
     api_key = Column(String(500))                   # Para Bling
     is_active = Column(Boolean, nullable=False, default=True)
+    is_official_store = Column(Boolean, nullable=False, default=False)  # Loja Oficial ML — permite editar título
     otp_verified = Column(Boolean, nullable=False, default=False)
     last_sync_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))

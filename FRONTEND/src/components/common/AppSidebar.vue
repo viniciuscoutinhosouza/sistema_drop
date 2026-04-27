@@ -30,6 +30,13 @@
             </RouterLink>
           </li>
 
+          <li class="nav-item">
+            <RouterLink to="/simulator" class="nav-link" :class="{ active: route.path === '/simulator' }">
+              <i class="nav-icon fas fa-calculator"></i>
+              <p>Simulador ML</p>
+            </RouterLink>
+          </li>
+
           <!-- Menus visíveis apenas para AC -->
           <template v-if="isAC">
             <li class="nav-header">MINHAS CONTAS</li>
