@@ -637,7 +637,7 @@ async def import_anuncios(
                 existing.regular_price     = regular_price
                 existing.promo_type        = promo_type_val
                 existing.promo_discount_pct = promo_disc_pct
-            elif existing.regular_price is not None and price >= (existing.regular_price or 0) * 0.99:
+            elif existing.regular_price is not None and price >= float(existing.regular_price or 0) * 0.99:
                 # promoção acabou — limpa os campos
                 existing.regular_price      = None
                 existing.promo_type         = None
