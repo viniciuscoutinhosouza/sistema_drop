@@ -4,9 +4,11 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import socketio
+import os as _os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from config import get_settings
 from socket_manager import sio
 import models  # noqa: F401 — registra todos os ORM models no SQLAlchemy
@@ -89,6 +91,10 @@ app.include_router(goes.router,              prefix=f"{PREFIX}/goes",           
 app.include_router(cmigs.router,             prefix=f"{PREFIX}/cmigs",          tags=["CMIGs"])
 app.include_router(anuncios.router,          prefix=f"{PREFIX}/anuncios",        tags=["Anuncios"])
 app.include_router(simulator.router,         prefix=f"{PREFIX}/simulator",       tags=["Simulator"])
+
+
+_os.makedirs("static/uploads/cmig-products", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.get("/")

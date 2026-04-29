@@ -1,229 +1,131 @@
 <template>
   <div>
-    <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h3 class="card-title">Produto Geral (PG)</h3>
-        <button class="btn btn-sm btn-primary" @click="openModal()">
-          <i class="fas fa-plus mr-1"></i> Novo Produto
-        </button>
-      </div>
-      <div class="card-body p-0">
-        <table class="table table-sm table-hover">
-          <thead>
-            <tr><th>#</th><th>SKU</th><th>Título</th><th>Custo</th><th>Estoque</th><th>Ativo</th><th class="text-center">Ações</th></tr>
-          </thead>
-          <tbody>
-            <tr v-if="loading"><td colspan="7" class="text-center py-4"><i class="fas fa-spinner fa-spin"></i></td></tr>
-            <tr v-else-if="!products.length"><td colspan="7" class="text-center py-4 text-muted">Nenhum produto cadastrado.</td></tr>
-            <tr v-for="p in products" :key="p.id">
-              <td class="text-muted">{{ p.id }}</td>
-              <td><code>{{ p.sku }}</code></td>
-              <td>{{ p.title }}</td>
-              <td>{{ formatCurrency(p.cost_price) }}</td>
-              <td>
-                <input
-                  type="number" min="0"
-                  :value="p.stock_quantity"
-                  class="form-control form-control-sm"
-                  style="width:80px"
-                  @change="updateStock(p.id, $event.target.value)"
-                />
-              </td>
-              <td>
-                <span :class="`badge badge-${p.is_active ? 'success' : 'secondary'}`">
-                  {{ p.is_active ? 'Ativo' : 'Inativo' }}
-                </span>
-              </td>
-              <td class="text-center text-nowrap">
-                <button class="btn btn-xs btn-outline-secondary mr-1" title="Editar" @click="openModal(p)">
-                  <i class="fas fa-edit"></i>
-                </button>
-                <button class="btn btn-xs btn-outline-danger" title="Desativar" @click="deactivate(p)">
-                  <i class="fas fa-trash"></i>
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Modal Criar / Editar -->
-    <div v-if="showModal" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
-      <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">{{ editing ? 'Editar Produto' : 'Novo Produto' }}</h5>
-            <button class="close" @click="closeModal"><span>&times;</span></button>
+    <div class="content-header">
+      <div class="container-fluid">
+        <div class="row mb-2">
+          <div class="col-sm-6">
+            <h1 class="m-0">Produtos Gerais (PG)</h1>
           </div>
-          <div class="modal-body">
-            <div v-if="formError" class="alert alert-danger">{{ formError }}</div>
-
-            <div class="row">
-              <div class="col-md-4 form-group">
-                <label>SKU <span class="text-danger">*</span></label>
-                <input v-model="form.sku" class="form-control" :disabled="!!editing" required />
-              </div>
-              <div class="col-md-8 form-group">
-                <label>Título <span class="text-danger">*</span></label>
-                <input v-model="form.title" class="form-control" required />
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label>Descrição</label>
-              <textarea v-model="form.description" class="form-control" rows="2"></textarea>
-            </div>
-
-            <div class="row">
-              <div class="col-md-4 form-group">
-                <label>Preço de custo (R$) <span class="text-danger">*</span></label>
-                <input v-model.number="form.cost_price" type="number" step="0.01" min="0" class="form-control" required />
-              </div>
-              <div class="col-md-4 form-group">
-                <label>Preço sugerido (R$)</label>
-                <input v-model.number="form.suggested_price" type="number" step="0.01" min="0" class="form-control" />
-              </div>
-              <div class="col-md-4 form-group">
-                <label>Estoque inicial</label>
-                <input v-model.number="form.stock_quantity" type="number" min="0" class="form-control" />
-              </div>
-            </div>
-
-            <div class="row">
-              <div class="col-md-3 form-group">
-                <label>Peso (kg)</label>
-                <input v-model.number="form.weight_kg" type="number" step="0.01" min="0" class="form-control" />
-              </div>
-              <div class="col-md-3 form-group">
-                <label>Altura (cm)</label>
-                <input v-model.number="form.height_cm" type="number" step="0.1" min="0" class="form-control" />
-              </div>
-              <div class="col-md-3 form-group">
-                <label>Largura (cm)</label>
-                <input v-model.number="form.width_cm" type="number" step="0.1" min="0" class="form-control" />
-              </div>
-              <div class="col-md-3 form-group">
-                <label>Comprimento (cm)</label>
-                <input v-model.number="form.length_cm" type="number" step="0.1" min="0" class="form-control" />
-              </div>
-            </div>
-
-            <div class="row">
-              <div class="col-md-4 form-group">
-                <label>Marca</label>
-                <input v-model="form.brand" class="form-control" />
-              </div>
-              <div class="col-md-4 form-group">
-                <label>NCM</label>
-                <input v-model="form.ncm" class="form-control" placeholder="0000.00.00" />
-              </div>
-              <div class="col-md-4 form-group">
-                <label>CEST</label>
-                <input v-model="form.cest" class="form-control" />
-              </div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn btn-secondary" @click="closeModal">Cancelar</button>
-            <button class="btn btn-primary" :disabled="saving" @click="save">
-              <i v-if="saving" class="fas fa-spinner fa-spin mr-1"></i>
-              {{ saving ? 'Salvando...' : (editing ? 'Salvar alterações' : 'Cadastrar produto') }}
-            </button>
+          <div class="col-sm-6 text-right">
+            <RouterLink to="/pg/new" class="btn btn-primary">
+              <i class="fas fa-plus mr-1"></i> Novo Produto
+            </RouterLink>
           </div>
         </div>
       </div>
     </div>
+
+    <section class="content">
+      <div class="container-fluid">
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title"><i class="fas fa-boxes mr-2"></i>Produtos cadastrados</h3>
+          </div>
+          <div class="card-body p-0">
+            <div v-if="loading" class="text-center py-5">
+              <i class="fas fa-spinner fa-spin fa-2x text-muted"></i>
+            </div>
+            <table v-else class="table table-hover table-striped mb-0">
+              <thead>
+                <tr>
+                  <th style="width:72px"></th>
+                  <th>SKU</th>
+                  <th>Título</th>
+                  <th>Custo</th>
+                  <th>Preço Sugerido</th>
+                  <th>Estoque</th>
+                  <th>Status</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="products.length === 0">
+                  <td colspan="8" class="text-center text-muted py-4">Nenhum produto cadastrado.</td>
+                </tr>
+                <tr v-for="p in products" :key="p.id">
+                  <td class="p-1 text-center">
+                    <img v-if="p.thumbnail" :src="p.thumbnail"
+                         style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />
+                    <div v-else style="width:56px;height:56px;background:#f4f4f4;border-radius:4px;display:flex;align-items:center;justify-content:center;">
+                      <i class="fas fa-image text-muted"></i>
+                    </div>
+                  </td>
+                  <td><code>{{ p.sku }}</code></td>
+                  <td>{{ p.title }}</td>
+                  <td>{{ p.cost_price ? `R$ ${Number(p.cost_price).toFixed(2)}` : '—' }}</td>
+                  <td>{{ p.suggested_price ? `R$ ${Number(p.suggested_price).toFixed(2)}` : '—' }}</td>
+                  <td>
+                    <input
+                      type="number" min="0"
+                      :value="p.stock_quantity"
+                      class="form-control form-control-sm"
+                      style="width:80px"
+                      @change="updateStock(p.id, $event.target.value)"
+                    />
+                  </td>
+                  <td>
+                    <span :class="`badge badge-${p.is_active ? 'success' : 'secondary'}`">
+                      {{ p.is_active ? 'Ativo' : 'Inativo' }}
+                    </span>
+                  </td>
+                  <td>
+                    <RouterLink :to="`/pg/${p.id}/edit`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
+                      <i class="fas fa-edit"></i>
+                    </RouterLink>
+                    <button class="btn btn-sm btn-outline-danger" title="Desativar" @click="deactivate(p)">
+                      <i class="fas fa-trash"></i>
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
-import { formatCurrency } from '@/utils/formatters'
 
 const products = ref([])
 const loading  = ref(true)
-const showModal = ref(false)
-const saving    = ref(false)
-const editing   = ref(null)
-const formError = ref('')
-
-const defaultForm = () => ({
-  sku: '', title: '', description: '',
-  cost_price: '', suggested_price: '', stock_quantity: 0,
-  weight_kg: '', height_cm: '', width_cm: '', length_cm: '',
-  brand: '', ncm: '', cest: '',
-})
-const form = ref(defaultForm())
+const toast    = useToast()
 
 async function load() {
   loading.value = true
-  const { data } = await api.get('/pg')
-  products.value = data
-  loading.value = false
-}
-
-function openModal(product = null) {
-  editing.value = product
-  formError.value = ''
-  if (product) {
-    form.value = {
-      sku: product.sku,
-      title: product.title,
-      description: product.description || '',
-      cost_price: product.cost_price,
-      suggested_price: product.suggested_price || '',
-      stock_quantity: product.stock_quantity,
-      weight_kg: product.weight_kg || '',
-      height_cm: product.height_cm || '',
-      width_cm: product.width_cm || '',
-      length_cm: product.length_cm || '',
-      brand: product.brand || '',
-      ncm: product.ncm || '',
-      cest: product.cest || '',
-    }
-  } else {
-    form.value = defaultForm()
-  }
-  showModal.value = true
-}
-
-function closeModal() {
-  showModal.value = false
-  editing.value = null
-}
-
-async function save() {
-  if (!form.value.sku || !form.value.title || !form.value.cost_price) {
-    formError.value = 'SKU, título e preço de custo são obrigatórios.'
-    return
-  }
-  saving.value = true
-  formError.value = ''
   try {
-    if (editing.value) {
-      await api.put(`/pg/${editing.value.id}`, form.value)
-    } else {
-      await api.post('/pg', form.value)
-    }
-    closeModal()
-    await load()
-  } catch (err) {
-    formError.value = err.response?.data?.detail || 'Erro ao salvar produto.'
+    const { data } = await api.get('/pg')
+    products.value = data
   } finally {
-    saving.value = false
+    loading.value = false
   }
 }
 
 async function updateStock(id, qty) {
-  await api.put(`/pg/${id}/stock`, { stock_quantity: parseInt(qty) })
+  try {
+    await api.put(`/pg/${id}/stock`, { stock_quantity: parseInt(qty) })
+  } catch (e) {
+    toast.error('Erro ao atualizar estoque.')
+  }
 }
 
 async function deactivate(p) {
-  if (!confirm(`Desativar "${p.title}"?`)) return
-  await api.delete(`/pg/${p.id}`)
-  await load()
+  if (!confirm(`Excluir "${p.title}"?\n\nSe o produto não possuir vendas será excluído permanentemente, caso contrário será desativado.`)) return
+  try {
+    const { data } = await api.delete(`/pg/${p.id}`)
+    if (data?.action === 'deactivated') {
+      toast.warning(data.message || 'Produto desativado (possui vendas).')
+    } else {
+      toast.success('Produto excluído com sucesso!')
+    }
+    await load()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao excluir produto.')
+  }
 }
 
 onMounted(load)

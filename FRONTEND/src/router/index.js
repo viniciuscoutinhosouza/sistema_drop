@@ -48,6 +48,7 @@ const NotificationsView = () => import('@/views/notifications/NotificationsView.
 
 // Supplier / PG
 const SupplierProductListView = () => import('@/views/supplier/SupplierProductListView.vue')
+const PgProductFormView       = () => import('@/views/supplier/PgProductFormView.vue')
 
 // Settings
 const UsersView     = () => import('@/views/settings/UsersView.vue')
@@ -127,11 +128,9 @@ const routes = [
       { path: 'notifications', component: NotificationsView, meta: { title: 'Notificações' } },
 
       // UGO-only (Operador Logístico — Produto Geral)
-      {
-        path: 'pg',
-        component: SupplierProductListView,
-        meta: { title: 'Produto Geral (PG)', role: 'ugo' },
-      },
+      { path: 'pg',          component: SupplierProductListView, meta: { title: 'Produtos Gerais (PG)', role: 'ugo' } },
+      { path: 'pg/new',      component: PgProductFormView,       meta: { title: 'Novo Produto PG',      role: 'ugo' } },
+      { path: 'pg/:id/edit', component: PgProductFormView,       meta: { title: 'Editar Produto PG',    role: 'ugo' } },
 
       // Configurações — Admin e UGO
       {

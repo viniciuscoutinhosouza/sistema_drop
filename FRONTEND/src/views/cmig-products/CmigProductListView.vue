@@ -32,6 +32,7 @@
             <table v-else class="table table-hover table-striped mb-0">
               <thead>
                 <tr>
+                  <th style="width:72px"></th>
                   <th>SKU CMIG</th>
                   <th>Título</th>
                   <th>Estoque</th>
@@ -43,11 +44,25 @@
               </thead>
               <tbody>
                 <tr v-if="products.length === 0">
-                  <td colspan="7" class="text-center text-muted py-4">Nenhum produto cadastrado.</td>
+                  <td colspan="8" class="text-center text-muted py-4">Nenhum produto cadastrado.</td>
                 </tr>
                 <tr v-for="p in products" :key="p.id">
+                  <td class="p-1 text-center">
+                    <img v-if="getThumb(p)" :src="getThumb(p)"
+                         style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />
+                    <div v-else style="width:56px;height:56px;background:#f4f4f4;border-radius:4px;display:flex;align-items:center;justify-content:center;">
+                      <i class="fas fa-image text-muted"></i>
+                    </div>
+                  </td>
                   <td><code>{{ p.sku_cmig }}</code></td>
-                  <td>{{ p.title }}</td>
+                  <td>
+                    {{ p.title }}
+                    <div v-if="p.brand || p.model" class="small text-muted mt-1">
+                      <span v-if="p.brand">{{ p.brand }}</span>
+                      <span v-if="p.brand && p.model"> · </span>
+                      <span v-if="p.model">{{ p.model }}</span>
+                    </div>
+                  </td>
                   <td>
                     <span :class="p.stock_quantity === 0 ? 'text-danger font-weight-bold' : ''">
                       {{ p.stock_quantity }}
@@ -70,8 +85,14 @@
                     <button v-if="isAC && !p.pg_product_id" class="btn btn-sm btn-outline-secondary mr-1" @click="openLinkPg(p)" title="Vincular ao PG">
                       <i class="fas fa-link"></i>
                     </button>
-                    <button v-if="isUGO && !p.pg_product_id" class="btn btn-sm btn-outline-warning" @click="importToPg(p)" title="Importar para PG">
+                    <button v-if="isUGO && !p.pg_product_id" class="btn btn-sm btn-outline-warning mr-1" @click="importToPg(p)" title="Importar para PG">
                       <i class="fas fa-file-import"></i>
+                    </button>
+                    <button v-if="isUGO && p.pg_product_id" class="btn btn-sm btn-outline-info mr-1" @click="syncPg(p)" title="Sincronizar dados com PG">
+                      <i class="fas fa-sync-alt"></i>
+                    </button>
+                    <button v-if="isAC" class="btn btn-sm btn-outline-danger" @click="deleteProduct(p)" title="Excluir produto">
+                      <i class="fas fa-trash"></i>
                     </button>
                   </td>
                 </tr>
@@ -140,6 +161,17 @@ onMounted(async () => {
   await loadProducts()
 })
 
+function getThumb(p) {
+  if (p.pictures_json) {
+    try {
+      const pics = JSON.parse(p.pictures_json)
+      if (pics.length) return pics[0].url
+    } catch {}
+  }
+  if (p.images && p.images.length) return p.images[0].url
+  return null
+}
+
 async function loadProducts() {
   loading.value = true
   try {
@@ -172,14 +204,50 @@ async function linkToPg() {
   }
 }
 
+async function deleteProduct(p) {
+  if (!confirm(`Excluir "${p.title}"?\n\nSe o produto não possuir vendas será excluído permanentemente, caso contrário será desativado.`)) return
+  try {
+    const { data } = await api.delete(`/cmigs/${cmigId.value}/products/${p.id}`)
+    if (data?.action === 'deactivated') {
+      toast.warning(data.message || 'Produto desativado (possui vendas).')
+    } else {
+      toast.success('Produto excluído com sucesso!')
+    }
+    await loadProducts()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao excluir produto.')
+  }
+}
+
 async function importToPg(product) {
   if (!confirm(`Importar "${product.title}" para o Produto Geral (PG)?`)) return
   try {
     const { data } = await api.post(`/cmigs/${cmigId.value}/products/${product.id}/import-to-pg`)
-    toast.success(`Produto importado para o PG! SKU: ${data.sku}`)
+    const extras = [
+      data.photos_imported ? `${data.photos_imported} foto(s)` : null,
+      data.variants_imported ? `${data.variants_imported} variante(s)` : null,
+      data.brand ? `Marca: ${data.brand}` : null,
+      data.model ? `Modelo: ${data.model}` : null,
+    ].filter(Boolean).join(' · ')
+    toast.success(`Produto importado para o PG! SKU: ${data.sku}${extras ? ' · ' + extras : ''}`)
     await loadProducts()
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao importar produto.')
+  }
+}
+
+async function syncPg(product) {
+  if (!confirm(`Sincronizar dados de "${product.title}" com o PG vinculado (PG #${product.pg_product_id})?\n\nIsso irá atualizar: Marca, Modelo, EAN, NCM, CEST, dimensões e origem no PG.`)) return
+  try {
+    const { data } = await api.post(`/cmigs/${cmigId.value}/products/${product.id}/sync-pg`)
+    const synced = [
+      data.brand ? `Marca: ${data.brand}` : null,
+      data.model ? `Modelo: ${data.model}` : null,
+      data.ean ? `EAN: ${data.ean}` : null,
+    ].filter(Boolean).join(' · ')
+    toast.success(`PG sincronizado!${synced ? ' ' + synced : ' (sem Marca/Modelo no CMIG — edite o produto CMIG primeiro)'}`)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao sincronizar com PG.')
   }
 }
 </script>

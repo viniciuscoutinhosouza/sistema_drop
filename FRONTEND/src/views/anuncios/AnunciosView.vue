@@ -259,16 +259,23 @@
                   </div>
 
                   <!-- Ações -->
-                  <div class="flex-shrink-0">
+                  <div class="flex-shrink-0 d-flex flex-column align-items-end" style="gap:3px;padding-left:16px;border-left:1px solid #e2e8f0">
+                    <!-- Linha 1: edição e vínculo -->
                     <div class="btn-group btn-group-sm">
                       <button class="btn btn-outline-secondary" title="Editar" @click="openWizard(a)"><i class="fas fa-edit"></i></button>
-                      <button class="btn btn-outline-primary" title="Vincular" @click="openLinkModal(a)"><i class="fas fa-link"></i></button>
-                      <button v-if="!a.is_linked" class="btn btn-outline-dark" title="Criar CMIG" @click="openCreateCmigModal(a)"><i class="fas fa-plus"></i></button>
-                      <button v-if="a.is_linked" class="btn btn-outline-danger" title="Desvincular" @click="unlinkAnuncio(a)"><i class="fas fa-unlink"></i></button>
-                      <button v-if="a.status === 'published'" class="btn btn-outline-warning" title="Pausar" @click="pauseAnuncio(a)"><i class="fas fa-pause"></i></button>
-                      <button v-if="a.status === 'paused'" class="btn btn-outline-success" title="Reativar" @click="reactivateAnuncio(a)"><i class="fas fa-play"></i></button>
-                      <button v-if="a.platform_item_id && a.is_linked" class="btn btn-outline-info" title="Sincronizar ML" @click="syncToMl(a)"><i class="fas fa-sync-alt"></i></button>
-                      <a v-if="a.permalink" :href="a.permalink" target="_blank" class="btn btn-outline-info" title="Ver no ML"><i class="fas fa-external-link-alt"></i></a>
+                      <button class="btn btn-outline-primary" title="Vincular produto" @click="openLinkModal(a)"><i class="fas fa-link"></i></button>
+                      <button v-if="!a.is_linked" class="btn btn-outline-dark" title="Criar produto CMIG" @click="openCreateCmigModal(a)"><i class="fas fa-plus"></i></button>
+                      <button v-if="a.is_linked" class="btn btn-outline-warning" title="Desvincular produto" @click="unlinkAnuncio(a)"><i class="fas fa-unlink"></i></button>
+                    </div>
+                    <!-- Linha 2: status e marketplace -->
+                    <div class="btn-group btn-group-sm">
+                      <button v-if="a.status === 'published'" class="btn btn-outline-warning" title="Pausar anúncio" @click="pauseAnuncio(a)"><i class="fas fa-pause"></i></button>
+                      <button v-if="a.status === 'paused'" class="btn btn-outline-success" title="Reativar anúncio" @click="reactivateAnuncio(a)"><i class="fas fa-play"></i></button>
+                      <button v-if="a.platform_item_id && a.is_linked" class="btn btn-outline-info" title="Sincronizar com ML" @click="syncToMl(a)"><i class="fas fa-sync-alt"></i></button>
+                      <a v-if="a.permalink" :href="a.permalink" target="_blank" class="btn btn-outline-info" title="Ver no Marketplace"><i class="fas fa-external-link-alt"></i></a>
+                    </div>
+                    <!-- Linha 3: exclusão -->
+                    <div class="btn-group btn-group-sm">
                       <button class="btn btn-outline-danger" title="Excluir do sistema" @click="deleteAnuncioSistema(a)"><i class="fas fa-trash"></i></button>
                       <button v-if="a.platform_item_id" class="btn btn-danger" title="Excluir do sistema e do Marketplace" @click="deleteAnuncioMarketplace(a)"><i class="fas fa-trash-alt"></i></button>
                     </div>
@@ -756,16 +763,37 @@
 
     <!-- Modal: Criar Produto CMIG -->
     <div v-if="createCmigModal.show" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
-      <div class="modal-dialog modal-lg">
+      <div class="modal-dialog modal-xl">
         <div class="modal-content">
           <div class="modal-header">
             <h5 class="modal-title"><i class="fas fa-plus mr-2"></i>Criar Produto CMIG</h5>
             <button type="button" class="close" @click="createCmigModal.show = false"><span>&times;</span></button>
           </div>
           <form @submit.prevent="doCreateCmigProduct">
-            <div class="modal-body">
-              <div v-if="createCmigModal.error" class="alert alert-danger">{{ createCmigModal.error }}</div>
+            <div class="modal-body" style="max-height:75vh;overflow-y:auto">
+              <div v-if="createCmigModal.error" class="alert alert-danger py-2">{{ createCmigModal.error }}</div>
               <p class="text-muted small mb-3">A partir do anúncio: <strong>{{ createCmigModal.listing?.title_override }}</strong></p>
+
+              <!-- Fotos importadas -->
+              <div v-if="createCmigModal.pictures.length" class="mb-3">
+                <p class="font-weight-bold small text-uppercase text-muted mb-1">
+                  <i class="fas fa-images mr-1"></i>Fotos importadas ({{ createCmigModal.pictures.length }})
+                </p>
+                <div class="d-flex flex-wrap">
+                  <img v-for="(pic, i) in createCmigModal.pictures.slice(0, 8)" :key="i"
+                       :src="pic.url" class="rounded border mr-1 mb-1"
+                       style="width:60px;height:60px;object-fit:cover;" />
+                  <span v-if="createCmigModal.pictures.length > 8"
+                        class="d-flex align-items-center text-muted small px-2">
+                    +{{ createCmigModal.pictures.length - 8 }} fotos
+                  </span>
+                </div>
+              </div>
+
+              <hr class="my-2" />
+
+              <!-- Identificação -->
+              <p class="font-weight-bold small text-uppercase text-muted mb-2">Identificação</p>
               <div class="row">
                 <div class="col-md-6 form-group">
                   <label>CMIG <span class="text-danger">*</span></label>
@@ -780,29 +808,131 @@
                 </div>
               </div>
               <div class="row">
-                <div class="col-md-8 form-group">
+                <div class="col-md-6 form-group">
                   <label>Título <span class="text-danger">*</span></label>
                   <input v-model="createCmigForm.title" class="form-control" required />
                 </div>
-                <div class="col-md-4 form-group">
+                <div class="col-md-3 form-group">
                   <label>Marca</label>
                   <input v-model="createCmigForm.brand" class="form-control" />
                 </div>
+                <div class="col-md-3 form-group">
+                  <label>Modelo</label>
+                  <input v-model="createCmigForm.model" class="form-control" />
+                </div>
               </div>
               <div class="row">
-                <div class="col-md-4 form-group">
-                  <label>Custo (R$)</label>
-                  <input v-model="createCmigForm.cost_price" type="number" step="0.01" class="form-control" />
+                <div class="col-md-8 form-group">
+                  <label>Categoria</label>
+                  <input v-model="createCmigForm.category_name" class="form-control" placeholder="Nome da categoria" />
                 </div>
                 <div class="col-md-4 form-group">
-                  <label>NCM</label>
-                  <input v-model="createCmigForm.ncm" class="form-control" maxlength="8" />
-                </div>
-                <div class="col-md-4 form-group">
-                  <label>Peso (kg)</label>
-                  <input v-model="createCmigForm.weight_kg" type="number" step="0.001" class="form-control" />
+                  <label>Video ID</label>
+                  <input v-model="createCmigForm.video_id" class="form-control" placeholder="ID do vídeo" />
                 </div>
               </div>
+
+              <hr class="my-2" />
+
+              <!-- Preço e Estoque -->
+              <p class="font-weight-bold small text-uppercase text-muted mb-2">Preço e Estoque</p>
+              <div class="row">
+                <div class="col-md-4 form-group">
+                  <label>Preço de Venda (R$)</label>
+                  <input v-model="createCmigForm.sale_price" type="number" step="0.01" min="0" class="form-control" />
+                </div>
+                <div class="col-md-4 form-group">
+                  <label>Custo (R$)</label>
+                  <input v-model="createCmigForm.cost_price" type="number" step="0.01" min="0" class="form-control" />
+                </div>
+                <div class="col-md-4 form-group">
+                  <label>Qtd. Estoque</label>
+                  <input v-model="createCmigForm.stock_quantity" type="number" min="0" class="form-control" />
+                </div>
+              </div>
+
+              <hr class="my-2" />
+
+              <!-- Descrição -->
+              <p class="font-weight-bold small text-uppercase text-muted mb-2">Descrição</p>
+              <div class="form-group">
+                <textarea v-model="createCmigForm.description" class="form-control" rows="4" placeholder="Descrição do produto..."></textarea>
+              </div>
+
+              <hr class="my-2" />
+
+              <!-- Dimensões -->
+              <p class="font-weight-bold small text-uppercase text-muted mb-2">Dimensões e Peso</p>
+              <div class="row">
+                <div class="col-md-3 form-group">
+                  <label>Peso (kg)</label>
+                  <input v-model="createCmigForm.weight_kg" type="number" step="0.001" min="0" class="form-control" />
+                </div>
+                <div class="col-md-3 form-group">
+                  <label>Altura (cm)</label>
+                  <input v-model="createCmigForm.height_cm" type="number" step="0.01" min="0" class="form-control" />
+                </div>
+                <div class="col-md-3 form-group">
+                  <label>Largura (cm)</label>
+                  <input v-model="createCmigForm.width_cm" type="number" step="0.01" min="0" class="form-control" />
+                </div>
+                <div class="col-md-3 form-group">
+                  <label>Comprimento (cm)</label>
+                  <input v-model="createCmigForm.length_cm" type="number" step="0.01" min="0" class="form-control" />
+                </div>
+              </div>
+
+              <hr class="my-2" />
+
+              <!-- Fiscal -->
+              <p class="font-weight-bold small text-uppercase text-muted mb-2">Fiscal</p>
+              <div class="row">
+                <div class="col-md-4 form-group">
+                  <label>NCM</label>
+                  <input v-model="createCmigForm.ncm" class="form-control" maxlength="8" placeholder="00000000" />
+                </div>
+                <div class="col-md-4 form-group">
+                  <label>CEST</label>
+                  <input v-model="createCmigForm.cest" class="form-control" maxlength="7" placeholder="0000000" />
+                </div>
+                <div class="col-md-4 form-group">
+                  <label>EAN / GTIN</label>
+                  <input v-model="createCmigForm.ean" class="form-control" maxlength="14" placeholder="0000000000000" />
+                </div>
+              </div>
+
+              <!-- Variantes -->
+              <template v-if="createCmigModal.variants.length">
+                <hr class="my-2" />
+                <p class="font-weight-bold small text-uppercase text-muted mb-2">
+                  <i class="fas fa-layer-group mr-1"></i>
+                  Variantes — {{ createCmigModal.variants.length }} serão criadas automaticamente
+                </p>
+                <div class="table-responsive">
+                  <table class="table table-sm table-bordered mb-0">
+                    <thead class="thead-light">
+                      <tr>
+                        <th>SKU</th>
+                        <th>Estoque</th>
+                        <th>Preço</th>
+                        <th>Atributos</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(v, i) in createCmigModal.variants" :key="i">
+                        <td class="text-monospace small">{{ v.sku }}</td>
+                        <td>{{ v.available_quantity }}</td>
+                        <td>{{ v.price != null ? 'R$ ' + Number(v.price).toFixed(2) : '—' }}</td>
+                        <td>
+                          <span v-for="(a, ai) in v.attrs" :key="ai" class="badge badge-secondary mr-1">
+                            {{ a.name }}: {{ a.value }}
+                          </span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
             </div>
             <div class="modal-footer">
               <button type="button" class="btn btn-secondary" @click="createCmigModal.show = false">Cancelar</button>
@@ -1240,9 +1370,15 @@ async function saveWizard() {
 
 const linkModal = ref({ show: false, listing: null, loading: false, cmig_suggestions: [], pg_suggestions: [] })
 const linkSearch = ref('')
-const createCmigModal = ref({ show: false, listing: null, saving: false, error: '' })
+const createCmigModal = ref({ show: false, listing: null, saving: false, error: '', pictures: [], variants: [] })
 const photosModal = ref({ show: false, listing: null, photos: [], zoomed: null })
-const createCmigForm = ref({ cmig_id: '', sku_cmig: '', title: '', brand: '', cost_price: '', ncm: '', weight_kg: '' })
+const createCmigForm = ref({
+  cmig_id: '', sku_cmig: '', title: '', brand: '', model: '',
+  category_name: '', description: '', video_id: '',
+  sale_price: '', cost_price: '', stock_quantity: 0,
+  weight_kg: '', height_cm: '', width_cm: '', length_cm: '',
+  ncm: '', cest: '', ean: '',
+})
 
 onMounted(async () => {
   await Promise.all([loadAccounts(), loadCmigs()])
@@ -1416,28 +1552,83 @@ async function unlinkAnuncio(listing) {
 }
 
 function openCreateCmigModal(listing) {
-  createCmigModal.value = { show: true, listing, saving: false, error: '' }
+  // Dados fiscais: tenta fiscal_json primeiro, depois attributes_json como fallback
+  const _FISCAL_MAP = { NCM: 'ncm', CEST: 'cest', GTIN: 'gtin', EAN: 'ean' }
+  let fiscal = {}
+  let brand = ''
+  let model = ''
+  try { fiscal = JSON.parse(listing.fiscal_json || '{}') } catch {}
+  try {
+    const attrs = JSON.parse(listing.attributes_json || '[]')
+    for (const a of attrs) {
+      const id = (a.id || '').toUpperCase()
+      const key = _FISCAL_MAP[id]
+      if (key && !fiscal[key] && a.value) fiscal[key] = String(a.value)
+      if (id === 'BRAND' && a.value) brand = String(a.value)
+      if (id === 'MODEL' && a.value) model = String(a.value)
+    }
+  } catch {}
+
+  // Normaliza NCM e CEST removendo pontos/hífens
+  const normNcm  = (v) => v ? v.replace(/[.\-]/g, '').slice(0, 8) : ''
+  const normCest = (v) => v ? v.replace(/[.\-]/g, '').slice(0, 7) : ''
+
+  let pictures = []
+  try { pictures = JSON.parse(listing.pictures_json || '[]') } catch {}
+
+  let variants = []
+  try {
+    const rawVars = JSON.parse(listing.variations_json || '[]')
+    variants = rawVars.map((v, idx) => {
+      const attrs = v.attributes || []
+      const sellerSku = attrs.find(a => a.id === 'SELLER_SKU')
+      const sku = (sellerSku?.value) || `${listing.sku || 'VAR'}_${idx + 1}`
+      const displayAttrs = attrs.filter(a => a.id !== 'SELLER_SKU').map(a => ({ name: a.name, value: a.value }))
+      return { sku, price: v.price, available_quantity: v.available_quantity, attrs: displayAttrs }
+    })
+  } catch {}
+
+  createCmigModal.value = { show: true, listing, saving: false, error: '', pictures, variants }
   createCmigForm.value = {
-    cmig_id: selectedAccount.value?.cmig_id || '',
-    sku_cmig: '',
-    title: listing.title_override || '',
-    brand: '',
-    cost_price: '',
-    ncm: '',
-    weight_kg: '',
+    cmig_id:        selectedAccount.value?.cmig_id || '',
+    sku_cmig:       listing.sku || '',
+    title:          listing.title_override || '',
+    brand:          brand,
+    model:          model,
+    category_name:  listing.category_name || '',
+    description:    listing.description_override || '',
+    video_id:       listing.video_id || '',
+    sale_price:     listing.sale_price || '',
+    cost_price:     '',
+    stock_quantity: listing.available_quantity ?? 0,
+    weight_kg:      listing.weight_kg || '',
+    height_cm:      listing.height_cm || '',
+    width_cm:       listing.width_cm || '',
+    length_cm:      listing.length_cm || '',
+    ncm:            normNcm(fiscal.ncm),
+    cest:           normCest(fiscal.cest),
+    ean:            fiscal.ean || fiscal.gtin || '',
   }
 }
 
 async function doCreateCmigProduct() {
   createCmigModal.value.saving = true
   createCmigModal.value.error = ''
+  const f = createCmigForm.value
   try {
-    await api.post(`/anuncios/${createCmigModal.value.listing.id}/create-cmig-product`, {
-      ...createCmigForm.value,
-      cost_price: createCmigForm.value.cost_price ? parseFloat(createCmigForm.value.cost_price) : null,
-      weight_kg: createCmigForm.value.weight_kg ? parseFloat(createCmigForm.value.weight_kg) : null,
+    const res = await api.post(`/anuncios/${createCmigModal.value.listing.id}/create-cmig-product`, {
+      ...f,
+      sale_price:     f.sale_price     ? parseFloat(f.sale_price)     : null,
+      cost_price:     f.cost_price     ? parseFloat(f.cost_price)     : null,
+      stock_quantity: f.stock_quantity !== '' ? parseInt(f.stock_quantity) : null,
+      weight_kg:      f.weight_kg      ? parseFloat(f.weight_kg)      : null,
+      height_cm:      f.height_cm      ? parseFloat(f.height_cm)      : null,
+      width_cm:       f.width_cm       ? parseFloat(f.width_cm)       : null,
+      length_cm:      f.length_cm      ? parseFloat(f.length_cm)      : null,
     })
-    toast.success('Produto CMIG criado e vinculado!')
+    const vCount = res.data?.product?.variants_created
+    const msg = vCount ? `Produto CMIG criado com ${vCount} variante(s)!` : 'Produto CMIG criado e vinculado!'
+    toast.success(msg)
     createCmigModal.value.show = false
     await loadAnuncios()
   } catch (e) {

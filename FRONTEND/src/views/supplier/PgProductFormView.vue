@@ -4,10 +4,10 @@
       <div class="container-fluid">
         <div class="row mb-2">
           <div class="col-sm-6">
-            <h1 class="m-0">{{ isEdit ? 'Editar Produto CMIG' : 'Novo Produto CMIG' }}</h1>
+            <h1 class="m-0">{{ isEdit ? 'Editar Produto PG' : 'Novo Produto PG' }}</h1>
           </div>
           <div class="col-sm-6 text-right">
-            <RouterLink :to="`/cmig-products?cmig_id=${cmigId}`" class="btn btn-secondary">
+            <RouterLink to="/pg" class="btn btn-secondary">
               <i class="fas fa-arrow-left mr-1"></i> Voltar
             </RouterLink>
           </div>
@@ -69,8 +69,8 @@
 
                   <div class="row">
                     <div class="col-md-3 form-group">
-                      <label>SKU CMIG <span class="text-danger">*</span></label>
-                      <input v-model="form.sku_cmig" class="form-control" required :disabled="isEdit" />
+                      <label>SKU <span class="text-danger">*</span></label>
+                      <input v-model="form.sku" class="form-control" required :disabled="isEdit" />
                     </div>
                     <div class="col-md-6 form-group">
                       <label>Título <span class="text-danger">*</span></label>
@@ -92,33 +92,39 @@
                       <input v-model="form.model" class="form-control" placeholder="Ex: Air Max 97" />
                     </div>
                     <div class="col-md-4 form-group">
-                      <label>Categoria</label>
-                      <input v-model="form.category_name" class="form-control" placeholder="Nome da categoria" />
+                      <label>Origem</label>
+                      <select v-model="form.origin" class="form-control">
+                        <option :value="0">0 - Nacional</option>
+                        <option :value="1">1 - Estrangeira (Importação Direta)</option>
+                        <option :value="2">2 - Estrangeira (Mercado Interno)</option>
+                      </select>
                     </div>
                   </div>
 
                   <div class="row">
                     <div class="col-md-3 form-group">
-                      <label>Preço de Venda</label>
+                      <label>Preço de Custo <span class="text-danger">*</span></label>
                       <div class="input-group">
                         <div class="input-group-prepend"><span class="input-group-text">R$</span></div>
-                        <input v-model="form.sale_price" type="number" step="0.01" class="form-control" />
+                        <input v-model="form.cost_price" type="number" step="0.01" min="0" class="form-control" required />
                       </div>
                     </div>
                     <div class="col-md-3 form-group">
-                      <label>Preço de Custo</label>
+                      <label>Preço Sugerido</label>
                       <div class="input-group">
                         <div class="input-group-prepend"><span class="input-group-text">R$</span></div>
-                        <input v-model="form.cost_price" type="number" step="0.01" class="form-control" />
+                        <input v-model="form.suggested_price" type="number" step="0.01" min="0" class="form-control" />
                       </div>
                     </div>
                     <div class="col-md-2 form-group">
                       <label>Estoque</label>
-                      <input v-model="form.stock_quantity" type="number" class="form-control" min="0" />
+                      <input v-model="form.stock_quantity" type="number" min="0" class="form-control" />
                     </div>
-                    <div class="col-md-4 form-group">
-                      <label>Video ID</label>
-                      <input v-model="form.video_id" class="form-control" placeholder="ID do vídeo" />
+                    <div class="col-md-4 form-group d-flex align-items-end pb-3" v-if="isEdit">
+                      <div class="custom-control custom-switch">
+                        <input v-model="form.is_active" type="checkbox" class="custom-control-input" id="is_active" />
+                        <label class="custom-control-label" for="is_active">Produto Ativo</label>
+                      </div>
                     </div>
                   </div>
 
@@ -151,27 +157,13 @@
                   <hr />
                   <h6 class="text-muted text-uppercase mb-3"><small>Informações Fiscais</small></h6>
                   <div class="row">
-                    <div class="col-md-3 form-group">
+                    <div class="col-md-4 form-group">
                       <label>NCM</label>
                       <input v-model="form.ncm" class="form-control" maxlength="8" placeholder="00000000" />
                     </div>
-                    <div class="col-md-3 form-group">
+                    <div class="col-md-4 form-group">
                       <label>CEST</label>
                       <input v-model="form.cest" class="form-control" maxlength="7" placeholder="0000000" />
-                    </div>
-                    <div class="col-md-3 form-group">
-                      <label>Origem</label>
-                      <select v-model="form.origin" class="form-control">
-                        <option :value="0">0 - Nacional</option>
-                        <option :value="1">1 - Estrangeira (Importação Direta)</option>
-                        <option :value="2">2 - Estrangeira (Mercado Interno)</option>
-                      </select>
-                    </div>
-                    <div class="col-md-3 form-group d-flex align-items-end pb-3" v-if="isEdit">
-                      <div class="custom-control custom-switch">
-                        <input v-model="form.is_active" type="checkbox" class="custom-control-input" id="is_active" />
-                        <label class="custom-control-label" for="is_active">Produto Ativo</label>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -184,7 +176,7 @@
               </form>
             </div>
 
-            <!-- Variações (somente no modo edição) -->
+            <!-- Variações (somente edição) -->
             <div class="card" v-if="isEdit">
               <div class="card-header d-flex align-items-center justify-content-between">
                 <h3 class="card-title mb-0"><i class="fas fa-th-large mr-2"></i>Variações</h3>
@@ -197,7 +189,7 @@
                   <i class="fas fa-spinner fa-spin"></i> Carregando...
                 </div>
                 <div v-else-if="variants.length === 0" class="text-center text-muted py-4">
-                  Nenhuma variação cadastrada. Clique em "Adicionar Variação" para começar.
+                  Nenhuma variação cadastrada.
                 </div>
                 <table v-else class="table table-sm table-hover mb-0">
                   <thead>
@@ -217,18 +209,14 @@
                       <td><code>{{ v.sku }}</code></td>
                       <td>{{ v.variant_name || '—' }}</td>
                       <td>{{ v.color || '—' }}</td>
-                      <td>{{ v.size_label || '—' }}</td>
+                      <td>{{ v.size_label || v.size || '—' }}</td>
                       <td>{{ v.voltage || '—' }}</td>
                       <td>{{ v.stock_quantity }}</td>
                       <td>{{ v.price_modifier > 0 ? '+' : '' }}{{ formatCurrency(v.price_modifier) }}</td>
                       <td class="text-right pr-2">
                         <div class="btn-group btn-group-sm">
-                          <button class="btn btn-outline-primary" @click="openVariantModal(v)" title="Editar">
-                            <i class="fas fa-edit"></i>
-                          </button>
-                          <button class="btn btn-outline-danger" @click="deleteVariant(v)" title="Excluir">
-                            <i class="fas fa-trash"></i>
-                          </button>
+                          <button class="btn btn-outline-primary" @click="openVariantModal(v)"><i class="fas fa-edit"></i></button>
+                          <button class="btn btn-outline-danger" @click="deleteVariant(v)"><i class="fas fa-trash"></i></button>
                         </div>
                       </td>
                     </tr>
@@ -255,7 +243,7 @@
             <div class="row">
               <div class="col-md-6 form-group">
                 <label>SKU <span class="text-danger">*</span></label>
-                <input v-model="variantForm.sku" class="form-control" :disabled="!!variantForm.id" placeholder="SKU-001-AZUL-P" />
+                <input v-model="variantForm.sku" class="form-control" :disabled="!!variantForm.id" />
               </div>
               <div class="col-md-6 form-group">
                 <label>Nome da Variação</label>
@@ -286,10 +274,6 @@
                 <input v-model.number="variantForm.price_modifier" type="number" step="0.01" class="form-control" placeholder="0.00" />
               </div>
             </div>
-            <div class="form-group">
-              <label>Atributos Extras <small class="text-muted">(JSON: {"material":"algodão"})</small></label>
-              <input v-model="variantForm.attributes_json" class="form-control" placeholder='{"material":"algodão"}' />
-            </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="variantModal=false">Cancelar</button>
@@ -309,41 +293,27 @@ import { useRoute, useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 
-const route = useRoute()
+const route  = useRoute()
 const router = useRouter()
-const toast = useToast()
+const toast  = useToast()
 
-const isEdit = computed(() => !!route.params.id)
-const cmigId = computed(() => route.query.cmig_id)
-const saving = ref(false)
-const error = ref('')
+const isEdit  = computed(() => !!route.params.id)
+const saving  = ref(false)
+const error   = ref('')
 
 const form = ref({
-  sku_cmig: '',
-  title: '',
-  brand: '',
-  model: '',
-  ean: '',
-  category_name: '',
-  description: '',
-  cost_price: null,
-  sale_price: null,
-  stock_quantity: 0,
-  weight_kg: null,
-  height_cm: null,
-  width_cm: null,
-  length_cm: null,
-  ncm: '',
-  cest: '',
-  origin: 0,
-  video_id: '',
-  is_active: true,
+  sku: '', title: '', brand: '', model: '', ean: '',
+  description: '', cost_price: null, suggested_price: null,
+  stock_quantity: 0, weight_kg: null, height_cm: null,
+  width_cm: null, length_cm: null, ncm: '', cest: '',
+  origin: 0, is_active: true,
 })
 
-const pictures = ref([])
+// Fotos
+const pictures   = ref([])
 const newPhotoUrl = ref('')
-const uploading = ref(false)
-const fileInput = ref(null)
+const uploading  = ref(false)
+const fileInput  = ref(null)
 
 function removePhoto(index) {
   pictures.value.splice(index, 1)
@@ -364,7 +334,7 @@ async function uploadPhoto(event) {
     const fd = new FormData()
     fd.append('file', file)
     const { data } = await api.post(
-      `/cmigs/${cmigId.value}/products/${route.params.id}/photos`,
+      `/pg/${route.params.id}/photos`,
       fd,
       { headers: { 'Content-Type': 'multipart/form-data' } },
     )
@@ -379,12 +349,12 @@ async function uploadPhoto(event) {
 }
 
 // Variações
-const variants = ref([])
+const variants       = ref([])
 const loadingVariants = ref(false)
-const variantModal = ref(false)
-const variantError = ref('')
-const savingVariant = ref(false)
-const variantForm = ref({})
+const variantModal   = ref(false)
+const variantError   = ref('')
+const savingVariant  = ref(false)
+const variantForm    = ref({})
 
 function formatCurrency(v) {
   return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -394,10 +364,9 @@ async function loadVariants() {
   if (!isEdit.value) return
   loadingVariants.value = true
   try {
-    const { data } = await api.get(`/cmigs/${cmigId.value}/products/${route.params.id}/variants`)
+    const { data } = await api.get(`/pg/${route.params.id}/variants`)
     variants.value = data
   } catch {
-    // silencioso — variantes são opcionais
   } finally {
     loadingVariants.value = false
   }
@@ -407,7 +376,7 @@ function openVariantModal(variant) {
   variantError.value = ''
   variantForm.value = variant
     ? { ...variant }
-    : { sku: '', variant_name: '', color: '', size: '', voltage: '', stock_quantity: 0, price_modifier: 0, attributes_json: '' }
+    : { sku: '', variant_name: '', color: '', size_label: '', voltage: '', stock_quantity: 0, price_modifier: 0 }
   variantModal.value = true
 }
 
@@ -416,7 +385,7 @@ async function saveVariant() {
   if (!variantForm.value.sku?.trim()) { variantError.value = 'SKU é obrigatório'; return }
   savingVariant.value = true
   try {
-    const base = `/cmigs/${cmigId.value}/products/${route.params.id}/variants`
+    const base = `/pg/${route.params.id}/variants`
     if (variantForm.value.id) {
       await api.put(`${base}/${variantForm.value.id}`, variantForm.value)
       toast.success('Variação atualizada!')
@@ -436,7 +405,7 @@ async function saveVariant() {
 async function deleteVariant(v) {
   if (!confirm(`Excluir variação ${v.sku}?`)) return
   try {
-    await api.delete(`/cmigs/${cmigId.value}/products/${route.params.id}/variants/${v.id}`)
+    await api.delete(`/pg/${route.params.id}/variants/${v.id}`)
     toast.success('Variação excluída!')
     await loadVariants()
   } catch (e) {
@@ -446,14 +415,9 @@ async function deleteVariant(v) {
 
 onMounted(async () => {
   if (isEdit.value) {
-    const { data } = await api.get(`/cmigs/${cmigId.value}/products/${route.params.id}`)
+    const { data } = await api.get(`/pg/${route.params.id}`)
     Object.assign(form.value, data)
-    try {
-      pictures.value = data.pictures_json ? JSON.parse(data.pictures_json) : []
-    } catch { pictures.value = [] }
-    if (!pictures.value.length && data.images?.length) {
-      pictures.value = data.images.map(img => ({ url: img.url }))
-    }
+    pictures.value = data.images || []
     await loadVariants()
   }
 })
@@ -462,15 +426,15 @@ async function submit() {
   error.value = ''
   saving.value = true
   try {
-    const payload = { ...form.value, pictures_json: JSON.stringify(pictures.value) }
+    const payload = { ...form.value, images: pictures.value.map(p => ({ url: p.url })) }
     if (isEdit.value) {
-      await api.put(`/cmigs/${cmigId.value}/products/${route.params.id}`, payload)
+      await api.put(`/pg/${route.params.id}`, payload)
       toast.success('Produto atualizado com sucesso!')
     } else {
-      await api.post(`/cmigs/${cmigId.value}/products`, payload)
+      await api.post('/pg', payload)
       toast.success('Produto cadastrado com sucesso!')
     }
-    router.push(`/cmig-products?cmig_id=${cmigId.value}`)
+    router.push('/pg')
   } catch (e) {
     error.value = e.response?.data?.detail || 'Erro ao salvar produto.'
   } finally {

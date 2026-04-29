@@ -345,7 +345,7 @@ async def remove_co_admin(
     admin = result.scalar_one_or_none()
     if not admin:
         raise HTTPException(status_code=404, detail="Co-administrador não encontrado")
-    await db.delete(admin)
+    db.delete(admin)
     await db.commit()
 
 

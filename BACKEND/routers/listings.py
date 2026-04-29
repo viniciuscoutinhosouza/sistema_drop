@@ -185,7 +185,7 @@ async def delete_listing(
     db: AsyncSession = Depends(get_db),
 ):
     listing, _ = await _get_listing_for_user(listing_id, product_id, current_user.id, db)
-    await db.delete(listing)
+    db.delete(listing)
     await db.commit()
 
 

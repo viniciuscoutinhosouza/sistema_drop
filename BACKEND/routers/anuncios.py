@@ -13,7 +13,7 @@ from database import get_db
 from dependencies import get_current_user
 from models.user import User
 from models.product import ProductListing, CatalogProduct
-from models.cmig import CMIG, CMIGProduct, CMIGAdministrator
+from models.cmig import CMIG, CMIGProduct, CMIGProductVariant, CMIGAdministrator
 from models.integration import MarketplaceAccount
 from models.user import AccountAdministrator
 from services import ml_service
@@ -492,9 +492,20 @@ async def import_anuncios(
             if attr_id in _DIMENSIONAL_IDS:
                 dim[attr_id] = {"value": val_num, "unit": unit, "text": val_name}
             elif attr_id in _FISCAL_IDS:
-                fiscal[attr_id.lower()] = val_name
+                # value_id como fallback quando value_name é None (catálogo ML)
+                fiscal_val = val_name or attr.get("value_id")
+                if fiscal_val is not None:
+                    fiscal[attr_id.lower()] = str(fiscal_val)
             elif val is not None:
                 tech.append({"id": attr_id, "name": attr.get("name"), "value": val_name})
+
+        # sale_terms: fonte adicional de GTIN/EAN (comum no ML Brasil)
+        for term in item.get("sale_terms", []):
+            term_id = (term.get("id") or "").upper()
+            if term_id in _FISCAL_IDS:
+                term_val = term.get("value_name") or term.get("value_id")
+                if term_val and not fiscal.get(term_id.lower()):
+                    fiscal[term_id.lower()] = str(term_val)
 
         # Fallback de SKU pelo atributo SELLER_SKU
         if not sku:
@@ -879,27 +890,107 @@ async def create_cmig_product_from_listing(
         if not r.scalar_one_or_none():
             raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
 
-    sku_cmig = body.get("sku_cmig", "").strip()
+    sku_cmig = (body.get("sku_cmig") or "").strip() or (listing.sku or "").strip()
     if not sku_cmig:
         raise HTTPException(status_code=400, detail="sku_cmig é obrigatório")
 
+    # Extrai campos fiscais do fiscal_json do anúncio
+    fiscal_dict = {}
+    if listing.fiscal_json:
+        try:
+            fiscal_dict = _json.loads(listing.fiscal_json)
+        except Exception:
+            pass
+
+    # Fallback: busca em attributes_json itens com IDs fiscais e marca
+    # (cobre listings importados antes do fiscal_json ou com atributo com ID diferente)
+    brand_from_attrs = None
+    model_from_attrs = None
+    if listing.attributes_json:
+        _FISCAL_MAP = {"NCM": "ncm", "CEST": "cest", "GTIN": "gtin", "EAN": "ean",
+                       "FISCAL_CLASSIFICATION": "fiscal_classification"}
+        try:
+            for a in _json.loads(listing.attributes_json):
+                aid = (a.get("id") or "").upper()
+                key = _FISCAL_MAP.get(aid)
+                if key and not fiscal_dict.get(key) and a.get("value"):
+                    fiscal_dict[key] = str(a["value"])
+                if aid == "BRAND" and a.get("value") and brand_from_attrs is None:
+                    brand_from_attrs = str(a["value"])
+                if aid == "MODEL" and a.get("value") and model_from_attrs is None:
+                    model_from_attrs = str(a["value"])
+        except Exception:
+            pass
+
+    def _norm_ncm(v):
+        """Remove pontos/hífens do NCM; limita a 8 chars."""
+        return v.replace(".", "").replace("-", "")[:8] if v else v
+
+    def _norm_cest(v):
+        """Remove pontos/hífens do CEST; limita a 7 chars."""
+        return v.replace(".", "").replace("-", "")[:7] if v else v
+
+    ncm  = _norm_ncm(body.get("ncm")  or fiscal_dict.get("ncm"))
+    cest = _norm_cest(body.get("cest") or fiscal_dict.get("cest"))
+    ean  = body.get("ean")  or fiscal_dict.get("ean") or fiscal_dict.get("gtin")
+
     product = CMIGProduct(
-        cmig_id=cmig_id,
-        sku_cmig=sku_cmig,
-        title=body.get("title", listing.title_override or ""),
-        description=body.get("description"),
-        brand=body.get("brand"),
-        cost_price=body.get("cost_price"),
-        weight_kg=body.get("weight_kg"),
-        height_cm=body.get("height_cm"),
-        width_cm=body.get("width_cm"),
-        length_cm=body.get("length_cm"),
-        ncm=body.get("ncm"),
-        cest=body.get("cest"),
-        origin=body.get("origin", 0),
+        cmig_id        = cmig_id,
+        sku_cmig       = sku_cmig,
+        title          = body.get("title") or listing.title_override or "",
+        description    = body.get("description") or listing.description_override,
+        brand          = body.get("brand") or brand_from_attrs,
+        model          = body.get("model") or model_from_attrs,
+        cost_price     = body.get("cost_price"),
+        stock_quantity = listing.available_quantity or 0,
+        weight_kg      = body.get("weight_kg")  or listing.weight_kg,
+        height_cm      = body.get("height_cm") or listing.height_cm,
+        width_cm       = body.get("width_cm")  or listing.width_cm,
+        length_cm      = body.get("length_cm") or listing.length_cm,
+        ncm            = ncm,
+        cest           = cest,
+        ean            = ean,
+        origin         = body.get("origin", 0),
+        category_name  = listing.category_name,
+        sale_price     = listing.sale_price,
+        video_id       = listing.video_id,
+        attributes_json= listing.attributes_json,
+        pictures_json  = listing.pictures_json,
+        fiscal_json    = listing.fiscal_json,
     )
     db.add(product)
     await db.flush()  # gera o ID
+
+    # Cria variantes a partir do variations_json do anúncio
+    variants_created = 0
+    if listing.variations_json:
+        try:
+            variations = _json.loads(listing.variations_json)
+            for idx, var in enumerate(variations):
+                attrs = var.get("attributes", [])
+
+                var_sku = next(
+                    (a["value"] for a in attrs if a.get("id") == "SELLER_SKU"),
+                    None,
+                ) or f"{sku_cmig}_{idx + 1}"
+
+                var_attrs = [
+                    {"name": a["name"], "value": a["value"]}
+                    for a in attrs
+                    if a.get("id") != "SELLER_SKU"
+                ]
+
+                variant = CMIGProductVariant(
+                    cmig_product_id = product.id,
+                    sku             = var_sku,
+                    stock_quantity  = var.get("available_quantity", 0),
+                    sale_price      = var.get("price"),
+                    attributes_json = _json.dumps(var_attrs, ensure_ascii=False),
+                )
+                db.add(variant)
+                variants_created += 1
+        except Exception:
+            pass
 
     listing.cmig_product_id = product.id
     listing.catalog_product_id = None
@@ -912,6 +1003,7 @@ async def create_cmig_product_from_listing(
             "sku_cmig": product.sku_cmig,
             "title": product.title,
             "cmig_id": product.cmig_id,
+            "variants_created": variants_created,
         },
         "listing": _serialize_listing(listing),
     }

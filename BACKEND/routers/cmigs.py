@@ -1,12 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func, update as _sa_update
+from sqlalchemy.orm import selectinload
+import os as _os, shutil as _shutil, uuid as _uuid_mod
 from database import get_db
 from dependencies import get_current_user
 from models.user import User
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
 from models.warehouse import Warehouse
-from models.product import CatalogProduct
+from models.product import CatalogProduct, CatalogProductImage, CatalogProductVariant, ProductListing
+from models.order import OrderItem
 from models.integration import MarketplaceAccount
 from models.nfe_config import NFeConfig
 from schemas.cmig import (
@@ -182,7 +185,7 @@ async def remove_cmig_admin(
     if not entry or entry.is_owner:
         raise HTTPException(status_code=404, detail="Co-administrador não encontrado ou é o proprietário")
 
-    await db.delete(entry)
+    db.delete(entry)
     await db.commit()
 
 
@@ -197,8 +200,33 @@ async def list_cmig_products(
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
 
-    result = await db.execute(select(CMIGProduct).where(CMIGProduct.cmig_id == cmig_id))
+    result = await db.execute(
+        select(CMIGProduct)
+        .options(selectinload(CMIGProduct.images))
+        .where(CMIGProduct.cmig_id == cmig_id)
+    )
     return result.scalars().all()
+
+
+@router.get("/{cmig_id}/products/{product_id}", response_model=CMIGProductOut)
+async def get_cmig_product(
+    cmig_id: int,
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+
+    result = await db.execute(
+        select(CMIGProduct)
+        .options(selectinload(CMIGProduct.images))
+        .where(and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id))
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
+    return product
 
 
 @router.post("/{cmig_id}/products", status_code=201, response_model=CMIGProductOut)
@@ -255,7 +283,7 @@ async def update_cmig_product(
     return product
 
 
-@router.delete("/{cmig_id}/products/{product_id}", status_code=204)
+@router.delete("/{cmig_id}/products/{product_id}")
 async def delete_cmig_product(
     cmig_id: int,
     product_id: int,
@@ -272,8 +300,55 @@ async def delete_cmig_product(
     if not product:
         raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
 
-    await db.delete(product)
+    # Verificar pedidos internos via PG vinculado
+    has_sales = False
+    if product.pg_product_id:
+        r = await db.execute(
+            select(func.count()).select_from(OrderItem)
+            .where(OrderItem.catalog_product_id == product.pg_product_id)
+        )
+        has_sales = (r.scalar() or 0) > 0
+
+    if has_sales:
+        product.is_active = False
+        await db.commit()
+        return {"action": "deactivated", "message": "Produto desativado pois possui pedidos registrados."}
+
+    # Sem vendas — limpar FK em ProductListing antes de deletar
+    await db.execute(
+        _sa_update(ProductListing)
+        .where(ProductListing.cmig_product_id == product_id)
+        .values(cmig_product_id=None)
+    )
+
+    db.delete(product)
     await db.commit()
+    return {"action": "deleted", "message": "Produto excluído com sucesso."}
+
+
+@router.post("/{cmig_id}/products/{product_id}/photos")
+async def upload_cmig_product_photo(
+    cmig_id: int,
+    product_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+    await _get_cmig_product_or_404(product_id, cmig_id, db)
+
+    ext = _os.path.splitext(file.filename or "")[1].lower() or ".jpg"
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        raise HTTPException(status_code=400, detail="Tipo de arquivo não permitido. Use JPG, PNG, WEBP ou GIF.")
+
+    filename = f"{_uuid_mod.uuid4().hex}{ext}"
+    dest_dir = "static/uploads/cmig-products"
+    _os.makedirs(dest_dir, exist_ok=True)
+    with open(f"{dest_dir}/{filename}", "wb") as out:
+        _shutil.copyfileobj(file.file, out)
+
+    return {"url": f"/static/uploads/cmig-products/{filename}"}
 
 
 @router.post("/{cmig_id}/products/{product_id}/link-pg")
@@ -312,8 +387,112 @@ async def import_cmig_product_to_pg(
     current_user: User = Depends(get_current_user),
 ):
     """UGO importa um Produto CMIG para o PG do seu Galpão (um a um)."""
+    import secrets as _secrets
+    import json as _json_imp
+
     if current_user.role not in ("ugo", "admin"):
         raise HTTPException(status_code=403, detail="Apenas UGO pode importar Produtos CMIG para o PG")
+
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+
+    result = await db.execute(
+        select(CMIGProduct)
+        .options(selectinload(CMIGProduct.variants))
+        .where(and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id))
+    )
+    cp = result.scalar_one_or_none()
+    if not cp:
+        raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
+
+    if cp.pg_product_id:
+        raise HTTPException(status_code=409, detail="Produto CMIG já está vinculado a um PG")
+
+    sku_pg = f"PG-{cp.sku_cmig}-{_secrets.token_hex(3).upper()}"
+
+    pg = CatalogProduct(
+        warehouse_id=current_user.warehouse_id,
+        sku=sku_pg,
+        title=cp.title,
+        description=cp.description or "",
+        cost_price=cp.cost_price or 0,
+        suggested_price=cp.sale_price,
+        model=cp.model,
+        ean=cp.ean,
+        weight_kg=cp.weight_kg,
+        height_cm=cp.height_cm,
+        width_cm=cp.width_cm,
+        length_cm=cp.length_cm,
+        ncm=cp.ncm,
+        cest=cp.cest,
+        brand=cp.brand,
+        origin=cp.origin or 0,
+        stock_quantity=cp.stock_quantity or 0,
+        is_active=True,
+    )
+    db.add(pg)
+    await db.flush()
+
+    # Importar fotos de pictures_json → CatalogProductImage
+    photos_imported = 0
+    if cp.pictures_json:
+        try:
+            pics = _json_imp.loads(cp.pictures_json)
+            for i, pic in enumerate(pics):
+                url = pic.get("url") if isinstance(pic, dict) else str(pic)
+                if url:
+                    db.add(CatalogProductImage(
+                        product_id=pg.id,
+                        url=url,
+                        sort_order=i,
+                        is_primary=(i == 0),
+                    ))
+                    photos_imported += 1
+        except Exception:
+            pass
+
+    # Importar variantes → CatalogProductVariant
+    variants_imported = 0
+    for i, v in enumerate(cp.variants or []):
+        var_sku = f"PG-{v.sku}-{_secrets.token_hex(2).upper()}"
+        db.add(CatalogProductVariant(
+            product_id=pg.id,
+            sku=var_sku,
+            variant_name=v.variant_name,
+            color=v.color,
+            size_label=v.size_label,
+            voltage=v.voltage,
+            stock_quantity=v.stock_quantity or 0,
+            price_modifier=v.price_modifier or 0,
+            attributes_json=v.attributes_json,
+        ))
+        variants_imported += 1
+
+    cp.pg_product_id = pg.id
+    await db.commit()
+    await db.refresh(pg)
+    return {
+        "detail": "Produto importado para o PG com sucesso",
+        "pg_product_id": pg.id,
+        "sku": sku_pg,
+        "photos_imported": photos_imported,
+        "variants_imported": variants_imported,
+        "brand": pg.brand,
+        "model": pg.model,
+        "ean": pg.ean,
+    }
+
+
+@router.post("/{cmig_id}/products/{product_id}/sync-pg")
+async def sync_pg_from_cmig(
+    cmig_id: int,
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Atualiza os campos do PG vinculado com os dados atuais do Produto CMIG."""
+    if current_user.role not in ("ugo", "admin"):
+        raise HTTPException(status_code=403, detail="Apenas UGO pode sincronizar Produtos CMIG com PG")
 
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
@@ -324,37 +503,45 @@ async def import_cmig_product_to_pg(
     cp = result.scalar_one_or_none()
     if not cp:
         raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
+    if not cp.pg_product_id:
+        raise HTTPException(status_code=400, detail="Produto CMIG não está vinculado a um PG")
 
-    if cp.pg_product_id:
-        raise HTTPException(status_code=409, detail="Produto CMIG já está vinculado a um PG")
+    pg_result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == cp.pg_product_id))
+    pg = pg_result.scalar_one_or_none()
+    if not pg:
+        raise HTTPException(status_code=404, detail="Produto PG vinculado não encontrado")
 
-    # Gerar SKU único para o PG
-    import secrets
-    sku_pg = f"PG-{cp.sku_cmig}-{secrets.token_hex(3).upper()}"
+    if cp.brand is not None:
+        pg.brand = cp.brand
+    if cp.model is not None:
+        pg.model = cp.model
+    if cp.ean is not None:
+        pg.ean = cp.ean
+    if cp.ncm is not None:
+        pg.ncm = cp.ncm
+    if cp.cest is not None:
+        pg.cest = cp.cest
+    if cp.weight_kg is not None:
+        pg.weight_kg = cp.weight_kg
+    if cp.height_cm is not None:
+        pg.height_cm = cp.height_cm
+    if cp.width_cm is not None:
+        pg.width_cm = cp.width_cm
+    if cp.length_cm is not None:
+        pg.length_cm = cp.length_cm
+    if cp.origin is not None:
+        pg.origin = cp.origin
 
-    pg = CatalogProduct(
-        sku=sku_pg,
-        title=cp.title,
-        description=cp.description or "",
-        cost_price=cp.cost_price or 0,
-        weight_kg=cp.weight_kg,
-        height_cm=cp.height_cm,
-        width_cm=cp.width_cm,
-        length_cm=cp.length_cm,
-        ncm=cp.ncm,
-        cest=cp.cest,
-        brand=cp.brand,
-        origin=cp.origin or 0,
-        stock_quantity=0,
-        is_active=True,
-    )
-    db.add(pg)
-    await db.flush()
-
-    cp.pg_product_id = pg.id
     await db.commit()
-    await db.refresh(pg)
-    return {"detail": "Produto importado para o PG com sucesso", "pg_product_id": pg.id, "sku": sku_pg}
+    return {
+        "detail": "Produto PG atualizado com dados do CMIG",
+        "pg_product_id": pg.id,
+        "brand": cp.brand,
+        "model": cp.model,
+        "ean": cp.ean,
+        "ncm": cp.ncm,
+        "cest": cp.cest,
+    }
 
 
 # ── Variantes de Produtos CMIG ─────────────────────────────────────────────────
@@ -476,7 +663,7 @@ async def delete_cmig_product_variant(
     if not variant:
         raise HTTPException(status_code=404, detail="Variante não encontrada")
 
-    await db.delete(variant)
+    db.delete(variant)
     await db.commit()
 
 
@@ -583,5 +770,5 @@ async def delete_nfe_config(
     if not config:
         raise HTTPException(status_code=404, detail="Configuração NF-e não encontrada")
 
-    await db.delete(config)
+    db.delete(config)
     await db.commit()

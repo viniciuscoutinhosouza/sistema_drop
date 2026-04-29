@@ -78,7 +78,10 @@ class CMIGProductCreate(BaseModel):
     title: str
     description: Optional[str] = None
     brand: Optional[str] = None
+    model: Optional[str] = None
+    ean: Optional[str] = None
     cost_price: Optional[float] = None
+    sale_price: Optional[float] = None
     stock_quantity: int = 0
     weight_kg: Optional[float] = None
     height_cm: Optional[float] = None
@@ -87,13 +90,18 @@ class CMIGProductCreate(BaseModel):
     ncm: Optional[str] = None
     cest: Optional[str] = None
     origin: Optional[int] = 0
+    category_name: Optional[str] = None
+    video_id: Optional[str] = None
 
 
 class CMIGProductUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     brand: Optional[str] = None
+    model: Optional[str] = None
+    ean: Optional[str] = None
     cost_price: Optional[float] = None
+    sale_price: Optional[float] = None
     stock_quantity: Optional[int] = None
     weight_kg: Optional[float] = None
     height_cm: Optional[float] = None
@@ -103,6 +111,9 @@ class CMIGProductUpdate(BaseModel):
     cest: Optional[str] = None
     origin: Optional[int] = None
     is_active: Optional[bool] = None
+    category_name: Optional[str] = None
+    video_id: Optional[str] = None
+    pictures_json: Optional[str] = None
 
 
 class CMIGProductLinkPG(BaseModel):
@@ -116,7 +127,10 @@ class CMIGProductOut(BaseModel):
     title: str
     description: Optional[str]
     brand: Optional[str]
+    model: Optional[str]
+    ean: Optional[str]
     cost_price: Optional[float]
+    sale_price: Optional[float]
     stock_quantity: int
     weight_kg: Optional[float]
     height_cm: Optional[float]
@@ -125,6 +139,9 @@ class CMIGProductOut(BaseModel):
     ncm: Optional[str]
     cest: Optional[str]
     origin: Optional[int]
+    category_name: Optional[str]
+    video_id: Optional[str]
+    pictures_json: Optional[str]
     pg_product_id: Optional[int]
     is_active: bool
     created_at: datetime

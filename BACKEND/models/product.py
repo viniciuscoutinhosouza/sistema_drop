@@ -71,7 +71,7 @@ class CatalogProductVariant(Base):
     sku = Column(String(100), nullable=False, unique=True)
     variant_name = Column(String(255))
     color = Column(String(100))
-    size = Column(String(100))
+    size_label = Column(String(100))
     voltage = Column(String(50))
     stock_quantity = Column(Integer, nullable=False, default=0)
     price_modifier = Column(Numeric(15, 2), default=0)

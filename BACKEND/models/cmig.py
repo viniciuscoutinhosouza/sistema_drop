@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, Numeric, TIMESTAMP, ForeignKey, text
+from sqlalchemy import Column, Integer, String, Boolean, Numeric, TIMESTAMP, ForeignKey, text, Text
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -69,6 +69,12 @@ class CMIGProduct(Base):
     ncm            = Column(String(8))
     cest           = Column(String(7))
     origin         = Column(Integer, default=0)
+    category_name  = Column(String(200))
+    sale_price     = Column(Numeric(15, 2))
+    video_id       = Column(String(100))
+    attributes_json= Column(Text)
+    pictures_json  = Column(Text)
+    fiscal_json    = Column(String(2000))
     pg_product_id  = Column(Integer, ForeignKey("catalog_products.id"), nullable=True)
     is_active      = Column(Boolean, nullable=False, default=True)
     created_at     = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
@@ -105,6 +111,7 @@ class CMIGProductVariant(Base):
     voltage         = Column(String(50))
     stock_quantity  = Column(Integer, nullable=False, default=0)
     price_modifier  = Column(Numeric(15, 2), default=0)
+    sale_price      = Column(Numeric(15, 2))
     attributes_json = Column(String(2000))
 
     product = relationship("CMIGProduct", back_populates="variants")
