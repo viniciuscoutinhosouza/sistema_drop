@@ -79,7 +79,7 @@
                     </span>
                   </td>
                   <td>
-                    <RouterLink v-if="isAC" :to="`/cmig-products/${p.id}/edit?cmig_id=${cmigId}`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
+                    <RouterLink v-if="isAC || isUGO" :to="`/cmig-products/${p.id}/edit?cmig_id=${cmigId}`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
                       <i class="fas fa-edit"></i>
                     </RouterLink>
                     <button v-if="isAC && !p.pg_product_id" class="btn btn-sm btn-outline-secondary mr-1" @click="openLinkPg(p)" title="Vincular ao PG">

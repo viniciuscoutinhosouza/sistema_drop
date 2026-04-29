@@ -158,7 +158,7 @@ const routes = [
       // Produtos CMIG
       { path: 'cmig-products', component: CmigProductListView, meta: { title: 'Produtos CMIG' } },
       { path: 'cmig-products/new', component: CmigProductFormView, meta: { title: 'Novo Produto CMIG', role: 'ac' } },
-      { path: 'cmig-products/:id/edit', component: CmigProductFormView, meta: { title: 'Editar Produto CMIG', role: 'ac' } },
+      { path: 'cmig-products/:id/edit', component: CmigProductFormView, meta: { title: 'Editar Produto CMIG', role: ['ac', 'ugo'] } },
 
       // Anúncios — AC
       { path: 'anuncios', component: AnunciosView, meta: { title: 'Anúncios', role: 'ac' } },
@@ -197,10 +197,10 @@ router.beforeEach((to, from, next) => {
     const requiredRole = to.meta.role
 
     // admin acessa tudo; go acessa rotas de go e ugo; ugo acessa rotas de ugo; ac acessa rotas de ac
+    const roles = Array.isArray(requiredRole) ? requiredRole : [requiredRole]
     const canAccess = role === 'admin' ||
-      role === requiredRole ||
-      (requiredRole === 'ugo' && role === 'go') ||
-      (requiredRole === 'go' && role === 'go')
+      roles.includes(role) ||
+      (roles.includes('ugo') && role === 'go')
 
     if (!canAccess) {
       return next('/dashboard')

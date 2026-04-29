@@ -40,7 +40,9 @@
                 <tr v-if="cmigs.length === 0">
                   <td colspan="6" class="text-center text-muted py-4">Nenhuma CMIG cadastrada.</td>
                 </tr>
-                <tr v-for="cmig in cmigs" :key="cmig.id">
+                <tr v-for="cmig in cmigs" :key="cmig.id"
+                    style="cursor:pointer"
+                    @click.stop="router.push(`/cmig-products?cmig_id=${cmig.id}`)">
                   <td>{{ cmig.id }}</td>
                   <td>
                     <strong>{{ cmig.company_name }}</strong>
@@ -53,7 +55,7 @@
                       {{ cmig.is_active ? 'Ativa' : 'Inativa' }}
                     </span>
                   </td>
-                  <td>
+                  <td @click.stop>
                     <RouterLink :to="`/cmigs/${cmig.id}`" class="btn btn-sm btn-outline-info mr-1" title="Detalhes">
                       <i class="fas fa-eye"></i>
                     </RouterLink>
@@ -73,10 +75,12 @@
 
 <script setup>
 import { computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useCmigStore } from '@/stores/cmig'
 import { useAuthStore } from '@/stores/auth'
 import { storeToRefs } from 'pinia'
 
+const router = useRouter()
 const cmigStore = useCmigStore()
 const authStore = useAuthStore()
 const { cmigs, loading } = storeToRefs(cmigStore)
