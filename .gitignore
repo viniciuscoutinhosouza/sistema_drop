@@ -52,3 +52,9 @@ desktop.ini
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Claude Code (configs locais de agents/skills)
+.claude/
+
+# Scripts de debug pessoais
+BACKEND/test_ml_order.py
