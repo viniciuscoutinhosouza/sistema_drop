@@ -4,6 +4,8 @@ from models.go import GO
 from models.warehouse import Warehouse
 from models.product import Category, CatalogProduct, CatalogProductImage, CatalogProductVariant, DropshipperProduct, DropshipperProductImage, ProductListing
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage
+from models.person import Person
+from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceItem, InvoiceEvent
 from models.nfe_config import NFeConfig
 from models.integration import MarketplaceAccount, AccountBalance, AccountTransaction, OTPVerification
 from models.order import Order, OrderItem

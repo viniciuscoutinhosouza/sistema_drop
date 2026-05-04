@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Numeric, Boolean, TIMESTAMP, ForeignKey, text
+from sqlalchemy import Column, Integer, String, Numeric, Boolean, TIMESTAMP, Date, ForeignKey, text
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -21,13 +21,27 @@ class Order(Base):
     buyer_document = Column(String(20))
     shipping_address = Column(String)   # JSON CLOB
     shipping_method = Column(String(100))
+    shipment_status = Column(String(50))
     tracking_code = Column(String(100))
     tracking_url = Column(String(500))
+    shipment_id = Column(String(100))
     label_url = Column(String(1000))
+    label_cached_at = Column(TIMESTAMP(timezone=True))  # quando a etiqueta foi salva no disco
+    nfe_url = Column(String(1000))
+    nfe_key = Column(String(50))
+    nfe_status = Column(String(30))
+    invoice_id = Column(Integer, ForeignKey("invoices.id"))
+    estimated_delivery_date = Column(Date)
+    estimated_handling_limit = Column(Date)
+    estimated_delivery_final = Column(Date)
+    order_tags = Column(String(500))
     sale_amount = Column(Numeric(15, 2))
     product_cost = Column(Numeric(15, 2))
-    platform_fee = Column(Numeric(15, 2))
-    shipping_cost = Column(Numeric(15, 2))
+    platform_fee = Column(Numeric(15, 2))            # tarifa ML (sale_fee somado dos itens)
+    shipping_cost = Column(Numeric(15, 2))           # legacy / agregado
+    buyer_shipping_paid = Column(Numeric(15, 2))     # frete que o comprador pagou
+    seller_shipping_cost = Column(Numeric(15, 2))    # frete deduzido do vendedor (list_cost - cost)
+    ml_fee_pct = Column(Numeric(8, 4))               # % da tarifa ML sobre o valor da venda
     total_debit = Column(Numeric(15, 2))
     is_hidden = Column(Boolean, default=False)
     notes = Column(String)
@@ -38,6 +52,7 @@ class Order(Base):
                         onupdate=text("SYSTIMESTAMP"))
 
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
+    invoice = relationship("Invoice", foreign_keys=[invoice_id])
 
 
 class OrderItem(Base):
@@ -51,7 +66,9 @@ class OrderItem(Base):
     sku = Column(String(100))
     title = Column(String(500))
     quantity = Column(Integer, nullable=False, default=1)
+    ml_item_id = Column(String(200))
     unit_price = Column(Numeric(15, 2))
     unit_cost = Column(Numeric(15, 2))
+    thumbnail_url = Column(String(1000))
 
     order = relationship("Order", back_populates="items")

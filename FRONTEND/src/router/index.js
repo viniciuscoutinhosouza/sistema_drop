@@ -73,6 +73,16 @@ const AnunciosView = () => import('@/views/anuncios/AnunciosView.vue')
 // Simulador ML
 const SimuladorView = () => import('@/views/simulator/SimuladorView.vue')
 
+// Pessoas (Clientes / Fornecedores)
+const PeopleListView = () => import('@/views/people/PeopleListView.vue')
+const PersonFormView = () => import('@/views/people/PersonFormView.vue')
+
+// Fiscal (NF-e)
+const EntradasView      = () => import('@/views/fiscal/EntradasView.vue')
+const SaidasView        = () => import('@/views/fiscal/SaidasView.vue')
+const InvoiceFormView   = () => import('@/views/fiscal/InvoiceFormView.vue')
+const InvoiceDetailView = () => import('@/views/fiscal/InvoiceDetailView.vue')
+
 
 const routes = [
   // Auth routes (no sidebar)
@@ -165,6 +175,18 @@ const routes = [
 
       // Simulador ML — todos os usuários
       { path: 'simulator', component: SimuladorView, meta: { title: 'Simulador ML' } },
+
+      // Pessoas (Clientes/Fornecedores) — AC, UGO, Admin
+      { path: 'people',         component: PeopleListView, meta: { title: 'Pessoas' } },
+      { path: 'people/new',     component: PersonFormView, meta: { title: 'Nova Pessoa' } },
+      { path: 'people/:id',     component: PersonFormView, meta: { title: 'Editar Pessoa' } },
+
+      // Fiscal — Entradas / Saídas
+      { path: 'fiscal/entradas',         component: EntradasView,      meta: { title: 'Entradas (NF-e)' } },
+      { path: 'fiscal/saidas',           component: SaidasView,        meta: { title: 'Saídas (NF-e)' } },
+      { path: 'fiscal/invoices/new',     component: InvoiceFormView,   meta: { title: 'Nova NF-e' } },
+      { path: 'fiscal/invoices/:id',     component: InvoiceDetailView, meta: { title: 'NF-e' } },
+      { path: 'fiscal/invoices/:id/edit', component: InvoiceFormView,  meta: { title: 'Editar NF-e' } },
     ],
   },
 

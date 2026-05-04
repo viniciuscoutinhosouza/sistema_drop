@@ -20,6 +20,8 @@ def start_scheduler():
     from tasks.sync_tokens import refresh_expiring_tokens
     from tasks.check_subscriptions import check_overdue_subscriptions
     from tasks.sync_stock import sync_all_stock
+    from tasks.sync_dfe import sync_all_dfe
+    from tasks.fiscal_alerts import run_fiscal_alerts
 
     scheduler.add_job(
         sync_all_orders,
@@ -50,6 +52,22 @@ def start_scheduler():
         IntervalTrigger(minutes=30),
         id="sync_stock",
         name="Sync Stock to Marketplaces",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        sync_all_dfe,
+        IntervalTrigger(minutes=30),
+        id="sync_dfe",
+        name="Sync DFe (NFes recebidas via Focus)",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        run_fiscal_alerts,
+        CronTrigger(hour=9, minute=0),
+        id="fiscal_alerts",
+        name="Alertas fiscais (cert expirando + invoices stale)",
         replace_existing=True,
     )
 

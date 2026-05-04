@@ -101,6 +101,22 @@
             >
               Marcar Enviado
             </button>
+            <RouterLink
+              v-if="order.invoice_id"
+              :to="`/fiscal/invoices/${order.invoice_id}`"
+              class="btn btn-outline-info btn-sm"
+            >
+              <i class="fas fa-file-invoice mr-1"></i> Ver NFe vinculada
+            </RouterLink>
+            <button
+              v-else
+              class="btn btn-outline-primary btn-sm"
+              :disabled="generatingInvoice"
+              @click="generateInvoice"
+            >
+              <i class="fas" :class="generatingInvoice ? 'fa-spinner fa-spin' : 'fa-file-invoice'"></i>
+              {{ generatingInvoice ? 'Gerando...' : 'Gerar NFe a partir do Pedido' }}
+            </button>
           </div>
         </div>
       </div>
@@ -148,13 +164,16 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '@/composables/useApi'
+import { useToast } from '@/composables/useToast'
 import { formatCurrency, formatDateTime } from '@/utils/formatters'
 import { ORDER_STATUSES } from '@/utils/constants'
 
 const route = useRoute()
 const router = useRouter()
+const toast = useToast()
 const order = ref(null)
 const paying = ref(false)
+const generatingInvoice = ref(false)
 
 const steps = [
   { key: 'downloaded',      label: 'Baixou',     icon: 'fas fa-download' },
@@ -202,6 +221,24 @@ async function payOrder() {
 async function updateStatus(newStatus) {
   await api.put(`/orders/${order.value.id}/status`, { status: newStatus })
   await loadOrder()
+}
+
+async function generateInvoice() {
+  if (!confirm(`Gerar uma NFe de saída a partir deste pedido? Será criado um rascunho que você poderá revisar e transmitir.`)) return
+  generatingInvoice.value = true
+  try {
+    const { data } = await api.post(`/invoices/from-order/${order.value.id}`)
+    if (data.warnings?.length) {
+      toast.warning(data.warnings.join(' '))
+    } else {
+      toast.success(`NFe rascunho criada (Invoice #${data.invoice_id})`)
+    }
+    router.push(`/fiscal/invoices/${data.invoice_id}/edit`)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao gerar NFe')
+  } finally {
+    generatingInvoice.value = false
+  }
 }
 
 onMounted(loadOrder)

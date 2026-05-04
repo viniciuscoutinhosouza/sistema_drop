@@ -32,6 +32,9 @@ class CMIG(Base):
     administrators = relationship("CMIGAdministrator", back_populates="cmig", cascade="all, delete-orphan")
     products   = relationship("CMIGProduct", back_populates="cmig", cascade="all, delete-orphan")
     accounts   = relationship("MarketplaceAccount", back_populates="cmig")
+    people     = relationship("Person", back_populates="cmig", cascade="all, delete-orphan")
+    fiscal_config = relationship("CMIGFiscalConfig", back_populates="cmig", uselist=False,
+                                  cascade="all, delete-orphan")
 
 
 class CMIGAdministrator(Base):

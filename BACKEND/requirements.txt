@@ -26,5 +26,11 @@ python-socketio==5.11.4
 # Background jobs
 apscheduler==3.10.4
 
+# XML parsing (NFe import)
+xmltodict==0.13.0
+
+# Certificado A1 (.pfx) — validação local antes de enviar ao Focus
+cryptography>=42.0.0
+
 # CORS
 # (built into FastAPI/Starlette)

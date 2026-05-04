@@ -96,6 +96,9 @@
               </div>
             </div>
 
+            <!-- Configuração Fiscal (NF-e via Focus NFe) -->
+            <CmigFiscalConfigCard v-if="cmig" :cmig-id="Number(cmig.id)" />
+
             <!-- Co-administradores -->
             <div class="card" v-if="isAC">
               <div class="card-header">
@@ -173,6 +176,7 @@ import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
+import CmigFiscalConfigCard from '@/components/cmigs/CmigFiscalConfigCard.vue'
 
 const route = useRoute()
 const authStore = useAuthStore()

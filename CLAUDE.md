@@ -1,0 +1,248 @@
+# CLAUDE.md — MIG ECOMMERCE / Sistema Drop
+
+## Visão Geral
+
+Sistema de gestão de contas de marketplace para dropshippers (ACs) e galpões (UGOs).
+Integra Mercado Livre e Shopee via OAuth multi-conta; gerencia pedidos, estoque, NF-e e anúncios.
+
+---
+
+## Stack e Versões
+
+### Backend
+| Pacote | Versão |
+|---|---|
+| Python | 3.11 |
+| FastAPI | 0.115.6 |
+| SQLAlchemy | 2.0.36 |
+| oracledb (thin mode) | 2.3.0 |
+| Pydantic | 2.10.4 |
+| bcrypt | **4.0.1** (fixo — versões maiores quebram o passlib) |
+| python-jose | latest |
+| httpx | 0.28.1 |
+| python-socketio | 5.11.4 |
+| APScheduler | 3.10.4 |
+
+### Frontend
+| Pacote | Versão |
+|---|---|
+| Vue | 3.4 |
+| Pinia | 2.1.7 |
+| Vue Router | 4.5.1 |
+| Axios | 1.3.4 |
+| Socket.io-client | 4.8.1 |
+| AdminLTE | 3 |
+| Bootstrap | 5 |
+| Vite | 4.5 |
+
+Sem TypeScript, sem ESLint/Prettier.
+
+---
+
+## Estrutura de Pastas
+
+```
+Sistema_Drop/
+├── BACKEND/
+│   ├── main.py               # App FastAPI + montagem Socket.io
+│   ├── database.py           # Engine Oracle + AsyncSyncSession wrapper
+│   ├── config.py             # Pydantic Settings (lê .env)
+│   ├── dependencies.py       # get_current_user, require_role(*roles)
+│   ├── socket_manager.py     # Instância socketio.AsyncServer
+│   ├── models/               # ORM SQLAlchemy
+│   │   ├── user.py           # User, AccountAdministrator, CMIGAdministrator
+│   │   ├── cmig.py           # CMIG, CMIGProduct, CMIGProductVariant, CMIGProductImage
+│   │   ├── product.py        # CatalogProduct, DropshipperProduct, ProductListing, Kits…
+│   │   ├── order.py          # Order, OrderItem, ManualOrder…
+│   │   ├── integration.py    # MarketplaceAccount
+│   │   └── warehouse.py      # Warehouse
+│   ├── routers/              # 22 routers FastAPI
+│   ├── services/             # Clientes externos (ml_service, shopee_service, bling_service…)
+│   ├── tasks/scheduler.py    # Jobs APScheduler
+│   └── static/uploads/       # Fotos enviadas via upload
+├── FRONTEND/
+│   ├── src/
+│   │   ├── stores/           # Pinia: auth, ui, notifications, financial, cmig, go
+│   │   ├── composables/      # useApi (Axios), useToast, useSocket, usePagination
+│   │   ├── router/index.js   # 30+ rotas com meta.requiresAuth
+│   │   ├── views/            # 16 categorias de views
+│   │   └── components/       # Componentes reutilizáveis
+│   └── vite.config.js        # Proxy /api → :8000, /ws → :8000 (ws:true)
+└── Scripts SQL/              # Migrations Oracle numeradas (rodar em ordem)
+```
+
+---
+
+## Como Rodar
+
+```bash
+# Backend
+cd BACKEND
+pip install -r requirements.txt    # Python 3.11
+cp .env.example .env               # preencher variáveis Oracle + JWT + ML + Shopee
+uvicorn main:socket_app --reload --port 8000
+
+# Frontend (outro terminal)
+cd FRONTEND
+npm install
+npm run dev                        # http://localhost:5173 (proxy → :8000)
+```
+
+---
+
+## Convenções de Código
+
+### Backend
+- Routers retornam `dict` diretamente (sem schema Pydantic no retorno).
+- Use `body: dict` para receber JSON nos endpoints — sem Pydantic request models.
+- `require_role("ugo", "admin")` como dependência para acesso restrito.
+- Sempre usar `await db.execute(select(...))` — mas `db.add()` e `db.delete()` são **síncronos** (sem await).
+- Após `db.add()` antes do ID: chamar `await db.flush()` para obter o PK sem commitar.
+- `model_dump(exclude_none=True)` para atualizações parciais com Pydantic v2.
+- Colunas de variante de tamanho: `size_label` (não `size`) em `CatalogProductVariant` e `CMIGProductVariant`.
+
+### Frontend
+- Vue 3 Composition API + `<script setup>`.
+- Composable `useApi` (Axios com interceptors JWT) — não usar `axios` diretamente.
+- `useToast()` para feedback: `.success()`, `.error()`, `.warning()`, `.info()`.
+- AdminLTE 3 + Bootstrap 5 — classes `card`, `card-header`, `card-body`, `btn btn-sm`.
+- Ícones via Font Awesome 5 (`fas fa-*`).
+- Rotas protegidas com `meta: { requiresAuth: true }`.
+
+---
+
+## Arquitetura e Decisões Importantes
+
+### Oracle sem driver async
+Não existe driver `oracledb` async. A solução adotada:
+- `_sync_engine` = engine SQLAlchemy síncrono
+- `AsyncSyncSession` = wrapper que executa operações via `asyncio.to_thread()`
+- Nos routers: `db: AsyncSession = Depends(get_db)` — mas o tipo real é `AsyncSyncSession`
+- **`db.add()` e `db.delete()` são síncronos** — nunca use `await` neles
+- `oracledb.defaults.fetch_lobs = False` ativado globalmente para auto-converter CLOB em string
+
+### JWT + Autenticação
+- Token armazenado em `localStorage` (frontend)
+- Axios injeta `Authorization: Bearer <token>` em todo request
+- Em 401, interceptor tenta refresh automático e refaz o request original
+- Se refresh falhar → redireciona para `/login`
+
+### Papéis (roles)
+| Role | Sigla | Acesso |
+|---|---|---|
+| Account Manager | `ac` | Gerencia CMIG, cria produtos CMIG, vê catálogo PG |
+| Warehouse Operator | `ugo` | Gerencia PG, importa/sincroniza para PG, edita variantes |
+| Admin | `admin` | Acesso total (inclui permissões UGO) |
+| Gestor Operacional | `go` | Aprovações e visão gerencial |
+
+### Fluxo CMIG → PG
+1. AC cria `CMIGProduct` com fotos, dimensões e variantes
+2. UGO importa para PG (`POST /cmigs/{id}/products/{pid}/import-to-pg`) → cria `CatalogProduct`
+3. Vinculação salva `CMIGProduct.pg_product_id`
+4. Sync posterior (`POST .../sync-pg`) atualiza marca, modelo, EAN, NCM, CEST, dimensões no PG
+
+### Anúncios ML/Shopee
+- `ProductListing` liga `DropshipperProduct` ↔ `MarketplaceAccount`
+- `attributes_json` armazena specs no formato ML: `[{"id": "BRAND", "name": "Marca", "value": "Nike"}]`
+- Jaccard similarity (threshold 0.6) para auto-match anúncio ↔ CMIGProduct
+- Endpoint `/anuncios/{listing_id}/create-cmig-product` converte anúncio em CMIGProduct
+
+### Tempo real
+- Socket.io em `/ws/socket.io` (ASGI sub-app)
+- `socket_manager.py` expõe `sio.emit(event, data, room=user_id)`
+- Frontend usa `useSocket` composable
+
+### Background Jobs (APScheduler)
+| Job | Intervalo |
+|---|---|
+| sync_orders | 15 min |
+| refresh_tokens | 1 hora |
+| check_subscriptions | diário |
+| sync_stock | 30 min |
+
+---
+
+## Integrações Externas e Variáveis de Ambiente
+
+```env
+# Oracle ATP
+ORACLE_USER=
+ORACLE_PASSWORD=
+ORACLE_DSN=                    # ex: meudb_high
+ORACLE_WALLET_DIR=             # opcional — caminho da pasta do wallet
+ORACLE_WALLET_PASSWORD=
+
+# JWT
+JWT_SECRET_KEY=                # string longa aleatória
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# CORS
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# Mercado Livre
+ML_APP_ID=
+ML_CLIENT_SECRET=
+ML_REDIRECT_URI=
+
+# Shopee
+SHOPEE_PARTNER_ID=
+SHOPEE_PARTNER_KEY=
+SHOPEE_REDIRECT_URI=
+
+# Bling (opcional)
+BLING_CLIENT_ID=
+BLING_CLIENT_SECRET=
+```
+
+---
+
+## Prefixos de API
+
+| Prefixo | Router |
+|---|---|
+| `/api/v1/auth` | Login, refresh token |
+| `/api/v1/users` | Gestão de usuários |
+| `/api/v1/dashboard` | Dados resumidos |
+| `/api/v1/financial` | Financeiro |
+| `/api/v1/catalog` | Catálogo de produtos |
+| `/api/v1/pg` | Produto Geral (supplier_products.py) |
+| `/api/v1/products` | Produtos do dropshipper |
+| `/api/v1/kits` | Kits de produtos |
+| `/api/v1/orders` | Pedidos |
+| `/api/v1/manual-orders` | Pedidos manuais |
+| `/api/v1/accounts` | Contas de marketplace |
+| `/api/v1/products/{id}/listings` | Anúncios por produto |
+| `/api/v1/returns` | Devoluções |
+| `/api/v1/notifications` | Notificações |
+| `/api/v1/webhooks` | Webhooks ML/Shopee |
+| `/api/v1/warehouse` | Galpões |
+| `/api/v1/goes` | Gestores Operacionais |
+| `/api/v1/cmigs` | CMIGs e produtos CMIG |
+| `/api/v1/anuncios` | Anúncios importados do ML |
+| `/api/v1/simulator` | Simulador de preço |
+
+---
+
+## Regras Específicas para Claude
+
+1. **Nunca use `await` em `db.add()` ou `db.delete()`** — são síncronos no `AsyncSyncSession`.
+2. **`size_label`**, não `size` — coluna de tamanho em variantes (CMIG e PG).
+3. **bcrypt 4.0.1 fixo** — não atualizar sem testar passlib.
+4. **Migrations SQL numeradas** em `Sistema_Drop/Scripts SQL/` (raiz do projeto, **não** dentro de BACKEND) — criar novos scripts seguindo o padrão `NN_descricao.sql`; usar bloco `DECLARE ... EXCEPTION WHEN e_col_exists` para ser idempotente.
+5. **Oracle CLOB**: `oracledb.defaults.fetch_lobs = False` já está ativo — campos Text/CLOB chegam como string normalmente.
+6. **Windows + asyncio**: `WindowsSelectorEventLoopPolicy` já configurado em `main.py` — não remover.
+7. **Testes**: não há suite de testes automatizados — validar manualmente via Swagger (`/docs`) ou frontend.
+8. **Sem TypeScript no frontend** — manter JS puro; não introduzir TS sem acordar com o usuário.
+
+---
+
+## Gotchas e Armadilhas Conhecidas
+
+- `catalog_products.model` e `catalog_products.ean` foram adicionados na migration 22 (não estão no DDL original). Se o DB for recriado do zero, rodar a migration 28 (`28_catalog_products_model_ean.sql`) para garantir.
+- O `AsyncSession` importável em qualquer módulo é na verdade `AsyncSyncSession` — o alias existe por compatibilidade.
+- `selectinload` é obrigatório para carregar relacionamentos (`images`, `variants`) — o ORM não faz lazy load em contexto async.
+- Campos ML vindos do webhook chegam como snake_case; já tratados em `ml_service.py`.
+- Shopee OAuth usa HMAC-SHA256 com timestamp no header — `shopee_service.py` cuida disso.
+- `fiscal_json` em anúncios armazena raw `{ncm, cest, gtin, origin}` — extrair com `json.loads()`.

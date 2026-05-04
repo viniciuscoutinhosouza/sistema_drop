@@ -105,6 +105,27 @@
                 <p>Devoluções</p>
               </RouterLink>
             </li>
+
+            <li class="nav-header">FISCAL</li>
+
+            <li class="nav-item">
+              <RouterLink to="/people" class="nav-link" :class="{ active: route.path.startsWith('/people') }">
+                <i class="nav-icon fas fa-address-book"></i>
+                <p>Pessoas</p>
+              </RouterLink>
+            </li>
+            <li class="nav-item">
+              <RouterLink to="/fiscal/entradas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/entradas') }">
+                <i class="nav-icon fas fa-arrow-down"></i>
+                <p>Entradas</p>
+              </RouterLink>
+            </li>
+            <li class="nav-item">
+              <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') || route.path.startsWith('/fiscal/invoices') }">
+                <i class="nav-icon fas fa-arrow-up"></i>
+                <p>Saídas</p>
+              </RouterLink>
+            </li>
           </template>
 
           <!-- Menus exclusivos para UGO (Operador Logístico) -->
@@ -129,6 +150,27 @@
               <RouterLink to="/orders" class="nav-link" :class="{ active: route.path.startsWith('/orders') }">
                 <i class="nav-icon fas fa-shopping-cart"></i>
                 <p>Pedidos</p>
+              </RouterLink>
+            </li>
+
+            <li class="nav-header">FISCAL</li>
+
+            <li class="nav-item">
+              <RouterLink to="/people" class="nav-link" :class="{ active: route.path.startsWith('/people') }">
+                <i class="nav-icon fas fa-address-book"></i>
+                <p>Pessoas</p>
+              </RouterLink>
+            </li>
+            <li class="nav-item">
+              <RouterLink to="/fiscal/entradas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/entradas') }">
+                <i class="nav-icon fas fa-arrow-down"></i>
+                <p>Entradas</p>
+              </RouterLink>
+            </li>
+            <li class="nav-item">
+              <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') || route.path.startsWith('/fiscal/invoices') }">
+                <i class="nav-icon fas fa-arrow-up"></i>
+                <p>Saídas</p>
               </RouterLink>
             </li>
           </template>

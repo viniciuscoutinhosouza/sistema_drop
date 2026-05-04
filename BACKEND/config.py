@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # Platform fee (R$) charged per order payment
     PLATFORM_FEE: float = 2.00
 
+    # Focus NFe (provedor de emissão de NFe)
+    FOCUS_NFE_BASE_HOMOLOG: str = "https://homologacao.focusnfe.com.br"
+    FOCUS_NFE_BASE_PROD: str = "https://api.focusnfe.com.br"
+    FOCUS_NFE_TIMEOUT: float = 60.0
+    FOCUS_NFE_WEBHOOK_SECRET: str = ""
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
