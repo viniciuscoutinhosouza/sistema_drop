@@ -29,7 +29,7 @@
 
       <!-- Notifications bell -->
       <li class="nav-item dropdown">
-        <a class="nav-link" href="#" data-toggle="dropdown">
+        <a class="nav-link" href="#" data-bs-toggle="dropdown">
           <i class="far fa-bell"></i>
           <span
             v-if="notificationsStore.unreadCount > 0"
@@ -63,7 +63,7 @@
 
       <!-- User dropdown -->
       <li class="nav-item dropdown user-menu">
-        <a href="#" class="nav-link dropdown-toggle" data-toggle="dropdown">
+        <a href="#" class="nav-link dropdown-toggle" data-bs-toggle="dropdown">
           <span class="d-none d-md-inline">{{ authStore.user?.full_name }}</span>
         </a>
         <ul class="dropdown-menu dropdown-menu-right">

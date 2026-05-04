@@ -77,3 +77,13 @@ cd "c:\Sistema_Drop" && git status && git log --oneline -3
 cd "c:\Sistema_Drop" && git add -A && git commit -m 
 
 cd "c:\Sistema_Drop" && git push origin master
+
+
+
+Se preferir gerenciar como arquivos:
+
+wshobson/agents — coleção robusta e ativa, organizada em plugins por área (python-development, kubernetes-operations, security-scanning, etc.). Provavelmente é a origem da maior parte da sua lista.
+VoltAgent/awesome-claude-code-subagents — 100+ subagents categorizados, com instalador interativo (./install-agents.sh) que deixa você escolher o que quer.
+0xfurai/claude-code-subagents — outra coleção grande, mais focada em "experts" por tecnologia.
+davepoon/buildwithclaude — hub agregador com 500+ extensões (skills, agents, commands, hooks).
+rahulvrane/awesome-claude-agents — meta-lista que aponta pras outras coleções, útil pra explorar.

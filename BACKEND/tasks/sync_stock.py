@@ -37,6 +37,10 @@ async def _sync(db: AsyncSyncSession) -> None:
     rows = result.all()
 
     for listing, account, product in rows:
+        # Skip Full listings: stock is managed by ML inventory system, not modifiable per-item
+        if account.platform == "mercadolivre" and listing.is_full:
+            continue
+
         try:
             stock = await _compute_stock(db, product)
         except Exception as exc:

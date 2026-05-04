@@ -78,17 +78,224 @@ async def get_order(access_token: str, order_id: str) -> dict:
     return resp.json()
 
 
-async def get_recent_orders(access_token: str, seller_id: str, date_from: str) -> list:
-    """Poll ML for orders created after date_from (ISO 8601)."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{ML_API_BASE}/orders/search/recent",
+async def emit_nfe(access_token: str, seller_id: str, order_ids: list) -> dict:
+    """Emit NF-e via ML Faturador. POST /users/{seller_id}/invoices/orders."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{ML_API_BASE}/users/{seller_id}/invoices/orders",
             headers={"Authorization": f"Bearer {access_token}"},
-            params={"seller": seller_id, "sort": "date_asc"},
+            json={"orders": order_ids},
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Erro ao emitir NF-e: {resp.text[:400]}",
+        )
+    return resp.json()
+
+
+async def get_shipment_invoice_data(access_token: str, shipment_id: str) -> dict:
+    """Return invoice data from GET /shipments/{id}/invoice_data?siteId=MLB (or {} on error)."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/shipments/{shipment_id}/invoice_data",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"siteId": "MLB"},
+            )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return {}
+
+
+async def get_order_fiscal_data(
+    access_token: str,
+    order_id: str,
+    seller_id: str | None = None,
+    shipment_id: str | None = None,
+) -> dict:
+    """Return invoice data for an ML order.
+
+    Priority:
+    1. Faturador ML (GET /users/{seller_id}/invoices/orders/{order_id}) — most reliable,
+       returns full invoice with 44-digit invoice_key and status already "authorized".
+    2. Shipment invoice (GET /shipments/{shipment_id}/invoice_data) — works for ME2/Full
+       when shipment_id is stored, but fiscal_key may be shorter than 44 digits.
+    3. Order fiscal_data (GET /orders/{id}.fiscal_data.invoice) — least reliable,
+       often null even when NF-e exists.
+    """
+    # 1. Faturador endpoint (most reliable — requires seller_id)
+    if seller_id:
+        data = await get_invoices_by_order(access_token, seller_id, order_id)
+        if data and data.get("status"):
+            return data
+
+    # 2. Shipment invoice endpoint
+    if shipment_id:
+        data = await get_shipment_invoice_data(access_token, shipment_id)
+        if data:
+            return data
+
+    # 3. Fallback: order fiscal_data (unreliable — often null)
+    try:
+        order_data = await get_order(access_token, order_id)
+    except Exception:
+        return {}
+    fiscal = order_data.get("fiscal_data") or {}
+    return fiscal.get("invoice") or {}
+
+
+async def get_shipment(access_token: str, shipment_id: str) -> dict:
+    """Fetch shipment details from ML API — includes logistic_type and receiver_address.
+    x-format-new: true is required to receive SLA date fields in shipping_option.
+    """
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/shipments/{shipment_id}",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "x-format-new": "true",
+            },
         )
     if resp.status_code != 200:
-        return []
-    return resp.json().get("results", [])
+        return {}
+    return resp.json()
+
+
+async def get_shipment_history(access_token: str, shipment_id: str) -> dict:
+    """Fetch shipment movement history from ML API."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/shipments/{shipment_id}/history",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "x-format-new": "true",
+            },
+        )
+    if resp.status_code != 200:
+        return {}
+    return resp.json()
+
+
+async def get_shipment_carrier(access_token: str, shipment_id: str) -> dict:
+    """Fetch carrier info (name, tracking URL) from ML API."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/shipments/{shipment_id}/carrier",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "x-format-new": "true",
+            },
+        )
+    if resp.status_code != 200:
+        return {}
+    return resp.json()
+
+
+async def get_shipment_label(access_token: str, shipment_id: str, fmt: str = "pdf") -> tuple[bytes, str]:
+    """Fetch the official ML shipping label PDF (or ZPL2).
+
+    Returns (content_bytes, content_type). Raises HTTPException on error.
+    The PDF includes: shipping label + content declaration + product identification.
+
+    NOTE: Label is only available when shipment is at least in 'ready_to_ship' status.
+    Earlier states (pending/handling) usually return 400.
+    """
+    media_types = {"pdf": "application/pdf", "zpl2": "text/plain"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/shipment_labels",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"shipment_ids": shipment_id, "response_type": fmt, "savePdf": "Y"},
+        )
+    if resp.status_code != 200:
+        # Try to parse ML JSON error for a friendlier message
+        msg = resp.text[:500]
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                msg = data.get("message") or data.get("error") or str(data)[:300]
+        except Exception:
+            pass
+        print(f"[ML] get_shipment_label shipment={shipment_id} status={resp.status_code}: {msg}")
+        raise HTTPException(
+            status_code=400 if resp.status_code == 400 else resp.status_code,
+            detail=f"Mercado Livre não pôde gerar a etiqueta: {msg}",
+        )
+    # Sanity check: ML sometimes returns 200 with HTML error page when content is unavailable
+    if fmt == "pdf" and not resp.content.startswith(b"%PDF"):
+        snippet = resp.content[:200].decode("utf-8", errors="ignore")
+        print(f"[ML] get_shipment_label shipment={shipment_id} non-PDF response: {snippet}")
+        raise HTTPException(
+            status_code=400,
+            detail="Mercado Livre retornou conteúdo inválido — etiqueta pode não estar pronta ainda",
+        )
+    return resp.content, media_types.get(fmt, "application/octet-stream")
+
+
+async def get_shipment_costs(access_token: str, shipment_id: str) -> dict:
+    """Fetch detailed shipment costs from ML API.
+
+    Returns: {
+        "gross_amount": float,           # custo bruto do frete
+        "receiver": {"cost": float, ...},  # frete pago pelo comprador
+        "senders": [{"cost": float, ...}], # frete pago pelo vendedor (deduzido)
+    }
+
+    This endpoint is the ONLY accurate source for seller's actual shipping cost,
+    especially in free-shipping scenarios where the seller pays via 'mandatory' discount.
+    Returns {} on 404/error (some shipments — Full, not_specified — may not have costs).
+    """
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/shipments/{shipment_id}/costs",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if resp.status_code != 200:
+        return {}
+    return resp.json()
+
+
+async def get_recent_orders(
+    access_token: str,
+    seller_id: str,
+    date_from: str,
+    date_to: str | None = None,
+) -> list:
+    """Poll ML for orders updated in [date_from, date_to] using /orders/search."""
+    all_orders = []
+    offset = 0
+    limit = 50
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        while True:
+            params: dict = {
+                "seller": seller_id,
+                "order.date_last_updated.from": date_from,
+                "sort": "date_asc",
+                "offset": offset,
+                "limit": limit,
+            }
+            if date_to:
+                params["order.date_last_updated.to"] = date_to
+            resp = await client.get(
+                f"{ML_API_BASE}/orders/search",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+            )
+            if resp.status_code != 200:
+                print(f"[ML] get_recent_orders status={resp.status_code}: {resp.text[:200]}")
+                break
+            data = resp.json()
+            results = data.get("results", [])
+            all_orders.extend(results)
+            paging = data.get("paging", {})
+            total = paging.get("total", 0)
+            if not results or offset + limit >= total:
+                break
+            offset += limit
+    return all_orders
 
 
 async def create_item(access_token: str, item_data: dict) -> dict:
@@ -105,15 +312,83 @@ async def create_item(access_token: str, item_data: dict) -> dict:
 
 
 async def update_item_stock(access_token: str, item_id: str, quantity: int) -> None:
-    """Update available quantity for an existing ML listing."""
-    async with httpx.AsyncClient() as client:
+    """Update available quantity for an existing ML listing.
+
+    Falls back to alternative endpoints when /items/{id} returns
+    item.available_quantity.not_modifiable:
+    - Items with variations: PUT /items/{id}/variations/{variation_id}
+    - Catalog items (user_product_id set): PUT /user-products/{id}/stock
+    - Full (fulfillment) items: skip silently — stock managed by ML
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.put(
             f"{ML_API_BASE}/items/{item_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers=headers,
             json={"available_quantity": quantity},
         )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=400, detail=f"Erro ao atualizar estoque ML: {resp.text}")
+
+        if resp.status_code in (200, 201):
+            return
+
+        # Detect the "not modifiable" error to try alternative endpoints
+        is_not_modifiable = False
+        if resp.status_code == 400:
+            try:
+                body = resp.json()
+                cause = body.get("cause") or []
+                if any((c or {}).get("code") == "item.available_quantity.not_modifiable" for c in cause):
+                    is_not_modifiable = True
+            except Exception:
+                pass
+
+        if not is_not_modifiable:
+            raise HTTPException(status_code=400, detail=f"Erro ao atualizar estoque ML: {resp.text}")
+
+        # Fetch the item to determine its type
+        item_resp = await client.get(f"{ML_API_BASE}/items/{item_id}", headers=headers)
+        if item_resp.status_code != 200:
+            # Can't determine type, skip silently — this is a non-modifiable item
+            return
+        item = item_resp.json()
+
+        # Full items: stock managed by ML, skip silently
+        if (item.get("shipping") or {}).get("logistic_type") == "fulfillment":
+            return
+
+        variations = item.get("variations") or []
+        user_product_id = item.get("user_product_id")
+
+        # Items with variations: distribute stock to first variation OR skip if multiple
+        if variations:
+            # If there's only one variation, update it; otherwise skip (we can't decide)
+            if len(variations) == 1:
+                var_id = variations[0].get("id")
+                if var_id:
+                    var_resp = await client.put(
+                        f"{ML_API_BASE}/items/{item_id}/variations/{var_id}",
+                        headers=headers,
+                        json={"available_quantity": quantity},
+                    )
+                    if var_resp.status_code in (200, 201):
+                        return
+            return  # multiple variations: caller should sync per variation
+
+        # Catalog items: stock managed via user_product_id
+        if user_product_id:
+            up_resp = await client.put(
+                f"{ML_API_BASE}/user-products/{user_product_id}/stock",
+                headers=headers,
+                json={"available_quantity": quantity},
+            )
+            if up_resp.status_code in (200, 201):
+                return
+            # silent fail — some catalog items are read-only at user-product level too
+            return
+
+        # Unknown reason — skip silently to not flood logs
+        return
 
 
 async def get_item(access_token: str, item_id: str) -> dict:
@@ -827,3 +1102,53 @@ async def get_shipping_details(
         "discount_type":       parsed["discount_type"],
         "net_cost":            parsed["net_cost"],
     }
+
+
+# ─── NF-e / Invoice endpoints ────────────────────────────────────────────────
+
+async def get_invoices_by_order(access_token: str, seller_id: str, order_id: str) -> dict:
+    """Fetch invoice for an ML order via GET /users/{seller_id}/invoices/orders/{order_id}."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/users/{seller_id}/invoices/orders/{order_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return {}
+
+
+async def get_invoice_by_id(access_token: str, seller_id: str, invoice_id: str) -> dict:
+    """Fetch a specific invoice by invoice_id."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/users/{seller_id}/invoices/{invoice_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return {}
+
+
+async def fetch_invoice_file(access_token: str, path: str) -> tuple[bytes, str]:
+    """Proxy-fetch a file from ML API using its relative path (xml_location or danfe_location).
+
+    path example: /users/134608322/invoices/documents/xml/1377978/authorized
+    Returns (content_bytes, content_type).
+    """
+    url = f"{ML_API_BASE}{path}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Arquivo não disponível no ML: {resp.text[:200]}",
+        )
+    content_type = resp.headers.get("content-type", "application/octet-stream")
+    return resp.content, content_type

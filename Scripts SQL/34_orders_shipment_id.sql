@@ -1,0 +1,9 @@
+DECLARE
+  e_col_exists EXCEPTION;
+  PRAGMA EXCEPTION_INIT(e_col_exists, -1430);
+BEGIN
+  EXECUTE IMMEDIATE 'ALTER TABLE orders ADD (shipment_id VARCHAR2(100))';
+EXCEPTION
+  WHEN e_col_exists THEN NULL;
+END;
+/

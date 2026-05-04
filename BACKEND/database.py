@@ -8,7 +8,8 @@ DB operations run in asyncio.to_thread() so FastAPI async routes work as-is.
 import asyncio
 
 import oracledb
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
 from config import get_settings
 
@@ -36,8 +37,28 @@ _sync_engine = create_engine(
     pool_size=5,
     max_overflow=10,
     pool_pre_ping=True,
+    # Recycle connections after 25 min — Oracle ATP drops idle TCP after ~30 min
+    pool_recycle=1500,
     echo=False,
 )
+
+
+@event.listens_for(_sync_engine, "checkout")
+def _oracle_checkout_ping(dbapi_connection, connection_record, connection_proxy):
+    """
+    Belt-and-suspenders ping on every checkout.
+    oracledb thin mode raises DPY-4011 for broken TCP connections, which
+    SQLAlchemy does not always classify as a disconnect, so pool_pre_ping
+    alone is insufficient.  We execute a trivial query and raise
+    DisconnectionError so the pool discards the dead connection and retries.
+    """
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("SELECT 1 FROM DUAL")
+        cursor.close()
+    except Exception:
+        connection_record.invalidate()
+        raise DisconnectionError("Oracle connection stale — DPY-4011 guard")
 
 _SyncSession = sessionmaker(_sync_engine, autocommit=False, autoflush=False)
 

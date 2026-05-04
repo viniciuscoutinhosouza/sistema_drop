@@ -14,16 +14,19 @@ export function formatCurrency(value) {
  */
 export function formatDateTime(isoString) {
   if (!isoString) return ''
-  const d = new Date(isoString)
+  const s = String(isoString)
+  const d = s.includes('T') ? new Date(s) : new Date(s + 'T12:00:00')
   return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
 }
 
 /**
  * Format an ISO date string to dd/MM/yyyy
+ * Plain dates (YYYY-MM-DD) are treated as local noon to avoid UTC-boundary off-by-one.
  */
 export function formatDate(isoString) {
   if (!isoString) return ''
-  const d = new Date(isoString)
+  const s = String(isoString)
+  const d = s.includes('T') ? new Date(s) : new Date(s + 'T12:00:00')
   return d.toLocaleDateString('pt-BR')
 }
 
