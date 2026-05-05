@@ -275,8 +275,25 @@ async def update_cmig_product(
     if not product:
         raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
 
-    for field, value in body.model_dump(exclude_none=True).items():
+    payload = body.model_dump(exclude_none=True)
+    images = payload.pop("images", None)
+
+    for field, value in payload.items():
         setattr(product, field, value)
+
+    # Sincronizar imagens se fornecidas (substitui o conteúdo da tabela)
+    if images is not None:
+        from sqlalchemy import delete as _sa_delete
+        await db.execute(_sa_delete(CMIGProductImage).where(CMIGProductImage.cmig_product_id == product_id))
+        for i, img in enumerate(images):
+            url = img.get("url") if isinstance(img, dict) else str(img)
+            if url:
+                db.add(CMIGProductImage(
+                    cmig_product_id=product_id,
+                    url=url,
+                    sort_order=i,
+                    is_primary=(i == 0),
+                ))
 
     await db.commit()
     await db.refresh(product)
@@ -398,7 +415,7 @@ async def import_cmig_product_to_pg(
 
     result = await db.execute(
         select(CMIGProduct)
-        .options(selectinload(CMIGProduct.variants))
+        .options(selectinload(CMIGProduct.variants), selectinload(CMIGProduct.images))
         .where(and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id))
     )
     cp = result.scalar_one_or_none()
@@ -416,7 +433,7 @@ async def import_cmig_product_to_pg(
         title=cp.title,
         description=cp.description or "",
         cost_price=cp.cost_price or 0,
-        suggested_price=cp.sale_price,
+        suggested_price=cp.suggested_price,
         model=cp.model,
         ean=cp.ean,
         weight_kg=cp.weight_kg,
@@ -427,15 +444,27 @@ async def import_cmig_product_to_pg(
         cest=cp.cest,
         brand=cp.brand,
         origin=cp.origin or 0,
+        category_id=cp.category_id,
+        video_id=cp.video_id,
+        attributes_json=cp.attributes_json,
         stock_quantity=cp.stock_quantity or 0,
         is_active=True,
     )
     db.add(pg)
     await db.flush()
 
-    # Importar fotos de pictures_json → CatalogProductImage
+    # Importar fotos: prefere a tabela cmig_product_images; fallback p/ pictures_json (legado)
     photos_imported = 0
-    if cp.pictures_json:
+    if cp.images:
+        for i, img in enumerate(cp.images):
+            db.add(CatalogProductImage(
+                product_id=pg.id,
+                url=img.url,
+                sort_order=img.sort_order if img.sort_order is not None else i,
+                is_primary=bool(img.is_primary) or (i == 0),
+            ))
+            photos_imported += 1
+    elif cp.pictures_json:
         try:
             pics = _json_imp.loads(cp.pictures_json)
             for i, pic in enumerate(pics):
@@ -531,6 +560,12 @@ async def sync_pg_from_cmig(
         pg.length_cm = cp.length_cm
     if cp.origin is not None:
         pg.origin = cp.origin
+    if cp.category_id is not None:
+        pg.category_id = cp.category_id
+    if cp.video_id is not None:
+        pg.video_id = cp.video_id
+    if cp.attributes_json is not None:
+        pg.attributes_json = cp.attributes_json
 
     await db.commit()
     return {
@@ -603,6 +638,7 @@ async def create_cmig_product_variant(
         voltage=body.get("voltage"),
         stock_quantity=int(body.get("stock_quantity", 0)),
         price_modifier=body.get("price_modifier", 0),
+        suggested_price=body.get("suggested_price"),
         attributes_json=body.get("attributes_json"),
     )
     db.add(variant)
@@ -633,7 +669,7 @@ async def update_cmig_product_variant(
     if not variant:
         raise HTTPException(status_code=404, detail="Variante não encontrada")
 
-    for field in ("variant_name", "color", "size_label", "voltage", "stock_quantity", "price_modifier", "attributes_json"):
+    for field in ("variant_name", "color", "size_label", "voltage", "stock_quantity", "price_modifier", "suggested_price", "attributes_json"):
         if field in body:
             setattr(variant, field, body[field])
 
@@ -678,6 +714,7 @@ def _serialize_variant(v: CMIGProductVariant) -> dict:
         "voltage": v.voltage,
         "stock_quantity": v.stock_quantity,
         "price_modifier": float(v.price_modifier) if v.price_modifier is not None else 0,
+        "suggested_price": float(v.suggested_price) if v.suggested_price is not None else None,
         "attributes_json": v.attributes_json,
     }
 

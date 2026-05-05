@@ -74,6 +74,7 @@ class CMIGProductImageOut(BaseModel):
 
 
 class CMIGProductCreate(BaseModel):
+    # stock_quantity intencionalmente fora — gerenciado por eventos de NF-e/pedido
     sku_cmig: str
     title: str
     description: Optional[str] = None
@@ -81,8 +82,7 @@ class CMIGProductCreate(BaseModel):
     model: Optional[str] = None
     ean: Optional[str] = None
     cost_price: Optional[float] = None
-    sale_price: Optional[float] = None
-    stock_quantity: int = 0
+    suggested_price: Optional[float] = None
     weight_kg: Optional[float] = None
     height_cm: Optional[float] = None
     width_cm: Optional[float] = None
@@ -90,19 +90,20 @@ class CMIGProductCreate(BaseModel):
     ncm: Optional[str] = None
     cest: Optional[str] = None
     origin: Optional[int] = 0
-    category_name: Optional[str] = None
+    category_id: Optional[int] = None
     video_id: Optional[str] = None
+    attributes_json: Optional[str] = None
 
 
 class CMIGProductUpdate(BaseModel):
+    # stock_quantity intencionalmente fora — gerenciado por eventos de NF-e/pedido
     title: Optional[str] = None
     description: Optional[str] = None
     brand: Optional[str] = None
     model: Optional[str] = None
     ean: Optional[str] = None
     cost_price: Optional[float] = None
-    sale_price: Optional[float] = None
-    stock_quantity: Optional[int] = None
+    suggested_price: Optional[float] = None
     weight_kg: Optional[float] = None
     height_cm: Optional[float] = None
     width_cm: Optional[float] = None
@@ -111,9 +112,10 @@ class CMIGProductUpdate(BaseModel):
     cest: Optional[str] = None
     origin: Optional[int] = None
     is_active: Optional[bool] = None
-    category_name: Optional[str] = None
+    category_id: Optional[int] = None
     video_id: Optional[str] = None
-    pictures_json: Optional[str] = None
+    attributes_json: Optional[str] = None
+    images: Optional[list] = None  # [{url: "..."}]; quando presente, sincroniza cmig_product_images
 
 
 class CMIGProductLinkPG(BaseModel):
@@ -130,7 +132,7 @@ class CMIGProductOut(BaseModel):
     model: Optional[str]
     ean: Optional[str]
     cost_price: Optional[float]
-    sale_price: Optional[float]
+    suggested_price: Optional[float]
     stock_quantity: int
     weight_kg: Optional[float]
     height_cm: Optional[float]
@@ -139,9 +141,11 @@ class CMIGProductOut(BaseModel):
     ncm: Optional[str]
     cest: Optional[str]
     origin: Optional[int]
-    category_name: Optional[str]
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None  # derivado do join (read-only)
     video_id: Optional[str]
-    pictures_json: Optional[str]
+    attributes_json: Optional[str] = None
+    pictures_json: Optional[str] = None  # legado — fallback de leitura
     pg_product_id: Optional[int]
     is_active: bool
     created_at: datetime

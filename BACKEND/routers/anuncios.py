@@ -13,7 +13,7 @@ from database import get_db
 from dependencies import get_current_user
 from models.user import User
 from models.product import ProductListing, CatalogProduct
-from models.cmig import CMIG, CMIGProduct, CMIGProductVariant, CMIGAdministrator
+from models.cmig import CMIG, CMIGProduct, CMIGProductImage, CMIGProductVariant, CMIGAdministrator
 from models.integration import MarketplaceAccount
 from models.user import AccountAdministrator
 from services import ml_service
@@ -951,15 +951,28 @@ async def create_cmig_product_from_listing(
         cest           = cest,
         ean            = ean,
         origin         = body.get("origin", 0),
-        category_name  = listing.category_name,
-        sale_price     = listing.sale_price,
-        video_id       = listing.video_id,
+        suggested_price = body.get("suggested_price") or body.get("sale_price") or listing.sale_price,
+        video_id       = body.get("video_id") or listing.video_id,
         attributes_json= listing.attributes_json,
-        pictures_json  = listing.pictures_json,
         fiscal_json    = listing.fiscal_json,
     )
     db.add(product)
     await db.flush()  # gera o ID
+
+    # Importar fotos do anúncio (pictures_json) → cmig_product_images
+    if listing.pictures_json:
+        try:
+            for i, pic in enumerate(_json.loads(listing.pictures_json)):
+                url = pic.get("url") if isinstance(pic, dict) else str(pic)
+                if url:
+                    db.add(CMIGProductImage(
+                        cmig_product_id=product.id,
+                        url=url,
+                        sort_order=i,
+                        is_primary=(i == 0),
+                    ))
+        except Exception:
+            pass
 
     # Cria variantes a partir do variations_json do anúncio
     variants_created = 0

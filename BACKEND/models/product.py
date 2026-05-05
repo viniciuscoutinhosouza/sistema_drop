@@ -37,18 +37,24 @@ class CatalogProduct(Base):
     ean = Column(String(14))
     origin = Column(Integer, default=0)
     category_id = Column(Integer, ForeignKey("categories.id"))
+    video_id = Column(String(100))
+    attributes_json = Column(String)  # CLOB
     stock_quantity = Column(Integer, nullable=False, default=0)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
                         onupdate=text("SYSTIMESTAMP"))
 
-    category = relationship("Category", back_populates="products")
+    category = relationship("Category", back_populates="products", lazy="joined")
     images = relationship("CatalogProductImage", back_populates="product",
                           order_by="CatalogProductImage.sort_order", cascade="all, delete-orphan")
     variants = relationship("CatalogProductVariant", back_populates="product",
                             cascade="all, delete-orphan")
     cmig_products = relationship("CMIGProduct", back_populates="pg_product")
+
+    @property
+    def category_name(self):
+        return self.category.name if self.category else None
 
 
 class CatalogProductImage(Base):
@@ -75,6 +81,7 @@ class CatalogProductVariant(Base):
     voltage = Column(String(50))
     stock_quantity = Column(Integer, nullable=False, default=0)
     price_modifier = Column(Numeric(15, 2), default=0)
+    suggested_price = Column(Numeric(15, 2))
     attributes_json = Column(String(2000))
 
     product = relationship("CatalogProduct", back_populates="variants")

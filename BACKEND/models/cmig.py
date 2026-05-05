@@ -72,8 +72,8 @@ class CMIGProduct(Base):
     ncm            = Column(String(8))
     cest           = Column(String(7))
     origin         = Column(Integer, default=0)
-    category_name  = Column(String(200))
-    sale_price     = Column(Numeric(15, 2))
+    category_id    = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    suggested_price = Column(Numeric(15, 2))
     video_id       = Column(String(100))
     attributes_json= Column(Text)
     pictures_json  = Column(Text)
@@ -86,8 +86,13 @@ class CMIGProduct(Base):
 
     cmig       = relationship("CMIG", back_populates="products")
     pg_product = relationship("CatalogProduct", back_populates="cmig_products")
+    category   = relationship("Category", lazy="joined")
     images     = relationship("CMIGProductImage", back_populates="product", cascade="all, delete-orphan")
     variants   = relationship("CMIGProductVariant", back_populates="product", cascade="all, delete-orphan")
+
+    @property
+    def category_name(self):
+        return self.category.name if self.category else None
 
 
 class CMIGProductImage(Base):
@@ -114,7 +119,7 @@ class CMIGProductVariant(Base):
     voltage         = Column(String(50))
     stock_quantity  = Column(Integer, nullable=False, default=0)
     price_modifier  = Column(Numeric(15, 2), default=0)
-    sale_price      = Column(Numeric(15, 2))
+    suggested_price = Column(Numeric(15, 2))
     attributes_json = Column(String(2000))
 
     product = relationship("CMIGProduct", back_populates="variants")

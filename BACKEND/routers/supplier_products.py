@@ -35,6 +35,10 @@ def _serialize_product(p: CatalogProduct) -> dict:
         "model": p.model,
         "ean": p.ean,
         "origin": p.origin,
+        "category_id": p.category_id,
+        "category_name": p.category_name,
+        "video_id": p.video_id,
+        "attributes_json": p.attributes_json,
         "is_active": p.is_active,
         "thumbnail": thumbnail,
         "images": [{"id": i.id, "url": i.url, "sort_order": i.sort_order, "is_primary": i.is_primary} for i in sorted(p.images, key=lambda i: i.sort_order)],
@@ -48,10 +52,11 @@ def _serialize_variant(v: CatalogProductVariant) -> dict:
         "sku": v.sku,
         "variant_name": v.variant_name,
         "color": v.color,
-        "size": v.size_label,
+        "size_label": v.size_label,
         "voltage": v.voltage,
         "stock_quantity": v.stock_quantity,
         "price_modifier": float(v.price_modifier) if v.price_modifier is not None else 0,
+        "suggested_price": float(v.suggested_price) if v.suggested_price is not None else None,
         "attributes_json": v.attributes_json,
     }
 
@@ -118,7 +123,10 @@ async def create_product(
         cest=body.get("cest"),
         brand=body.get("brand"),
         origin=body.get("origin", 0),
-        stock_quantity=body.get("stock_quantity", 0),
+        category_id=body.get("category_id"),
+        video_id=body.get("video_id"),
+        attributes_json=body.get("attributes_json"),
+        # stock_quantity é gerenciado por eventos de NF-e/pedido (entrada/saída)
     )
     db.add(product)
     await db.flush()
@@ -144,10 +152,12 @@ async def update_product(
     if not product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
 
+    # stock_quantity intencionalmente fora — atualizado por eventos de NF-e/pedido
     for field in ["title", "description", "cost_price", "suggested_price", "model", "ean",
                   "weight_kg", "height_cm", "width_cm", "length_cm",
-                  "ncm", "cest", "brand", "origin", "stock_quantity", "is_active"]:
-        if field in body and body[field] is not None:
+                  "ncm", "cest", "brand", "origin", "is_active",
+                  "category_id", "video_id", "attributes_json"]:
+        if field in body:
             setattr(product, field, body[field])
 
     # Sincronizar imagens se fornecidas
@@ -276,10 +286,11 @@ async def create_variant(
         sku=sku,
         variant_name=body.get("variant_name"),
         color=body.get("color"),
-        size_label=body.get("size") or body.get("size_label"),
+        size_label=body.get("size_label") or body.get("size"),
         voltage=body.get("voltage"),
         stock_quantity=int(body.get("stock_quantity", 0)),
         price_modifier=body.get("price_modifier", 0),
+        suggested_price=body.get("suggested_price"),
         attributes_json=body.get("attributes_json"),
     )
     db.add(variant)
@@ -306,7 +317,7 @@ async def update_variant(
     if not variant:
         raise HTTPException(status_code=404, detail="Variante não encontrada")
 
-    for field in ("variant_name", "color", "size_label", "voltage", "stock_quantity", "price_modifier", "attributes_json"):
+    for field in ("variant_name", "color", "size_label", "voltage", "stock_quantity", "price_modifier", "suggested_price", "attributes_json"):
         if field in body:
             setattr(variant, field, body[field])
 

@@ -162,13 +162,13 @@ onMounted(async () => {
 })
 
 function getThumb(p) {
+  if (p.images && p.images.length) return p.images[0].url
   if (p.pictures_json) {
     try {
       const pics = JSON.parse(p.pictures_json)
       if (pics.length) return pics[0].url
     } catch {}
   }
-  if (p.images && p.images.length) return p.images[0].url
   return null
 }
 

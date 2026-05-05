@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, and_
 from database import get_db
+from dependencies import require_role
 from models.product import CatalogProduct, CatalogProductImage, Category
+from models.cmig import CMIGProduct
 
 router = APIRouter()
 
@@ -70,6 +72,80 @@ async def list_catalog(
 async def list_categories(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Category).order_by(Category.name))
     return [{"id": c.id, "name": c.name, "parent_id": c.parent_id} for c in result.scalars().all()]
+
+
+@router.post("/categories", status_code=201,
+             dependencies=[Depends(require_role("ac", "ugo", "admin"))])
+async def create_category(body: dict, db: AsyncSession = Depends(get_db)):
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name é obrigatório")
+    parent_id = body.get("parent_id")
+
+    dup = await db.execute(
+        select(Category).where(
+            and_(func.lower(Category.name) == name.lower(),
+                 Category.parent_id.is_(parent_id) if parent_id is None else Category.parent_id == parent_id)
+        )
+    )
+    if dup.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Já existe uma categoria com esse nome no mesmo nível")
+
+    cat = Category(name=name, parent_id=parent_id)
+    db.add(cat)
+    await db.commit()
+    await db.refresh(cat)
+    return {"id": cat.id, "name": cat.name, "parent_id": cat.parent_id}
+
+
+@router.put("/categories/{category_id}",
+            dependencies=[Depends(require_role("ac", "ugo", "admin"))])
+async def update_category(category_id: int, body: dict, db: AsyncSession = Depends(get_db)):
+    cat = (await db.execute(select(Category).where(Category.id == category_id))).scalar_one_or_none()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Categoria não encontrada")
+
+    if "name" in body:
+        new_name = (body["name"] or "").strip()
+        if not new_name:
+            raise HTTPException(status_code=422, detail="name não pode ser vazio")
+        cat.name = new_name
+    if "parent_id" in body:
+        new_parent = body["parent_id"]
+        if new_parent == category_id:
+            raise HTTPException(status_code=422, detail="Categoria não pode ser pai dela mesma")
+        cat.parent_id = new_parent
+
+    await db.commit()
+    return {"id": cat.id, "name": cat.name, "parent_id": cat.parent_id}
+
+
+@router.delete("/categories/{category_id}",
+               dependencies=[Depends(require_role("ac", "ugo", "admin"))])
+async def delete_category(category_id: int, db: AsyncSession = Depends(get_db)):
+    cat = (await db.execute(select(Category).where(Category.id == category_id))).scalar_one_or_none()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Categoria não encontrada")
+
+    pg_count = (await db.execute(
+        select(func.count()).select_from(CatalogProduct).where(CatalogProduct.category_id == category_id)
+    )).scalar() or 0
+    cmig_count = (await db.execute(
+        select(func.count()).select_from(CMIGProduct).where(CMIGProduct.category_id == category_id)
+    )).scalar() or 0
+    children_count = (await db.execute(
+        select(func.count()).select_from(Category).where(Category.parent_id == category_id)
+    )).scalar() or 0
+
+    if pg_count or cmig_count or children_count:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Categoria em uso: {pg_count} produtos PG, {cmig_count} produtos CMIG, {children_count} subcategorias",
+        )
+
+    db.delete(cat)
+    await db.commit()
+    return {"detail": "Categoria excluída"}
 
 
 @router.get("/{product_id}")
