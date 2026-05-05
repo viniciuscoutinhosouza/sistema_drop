@@ -178,6 +178,7 @@ async def get_catalog_product(product_id: int, db: AsyncSession = Depends(get_db
         "length_cm": float(product.length_cm) if product.length_cm else None,
         "ncm": product.ncm,
         "brand": product.brand,
+        "model": product.model,
         "stock_quantity": product.stock_quantity,
         "images": images,
     }

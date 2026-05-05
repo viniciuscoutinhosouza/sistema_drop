@@ -3,8 +3,11 @@ Gestão de Anúncios — fluxo AC-centrado.
 Cada anúncio (ProductListing) pode estar vinculado a CMIGProduct OU CatalogProduct OU sem vínculo.
 """
 import json as _json
+import os as _os
+import shutil as _shutil
+import uuid as _uuid_mod
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
@@ -19,6 +22,23 @@ from models.user import AccountAdministrator
 from services import ml_service
 
 router = APIRouter()
+
+
+@router.post("/upload-image")
+async def upload_anuncio_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """Upload de imagem para usar em anúncios. Retorna URL pública."""
+    ext = _os.path.splitext(file.filename or "")[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        raise HTTPException(status_code=400, detail="Tipo de arquivo não permitido. Use JPG, PNG, WEBP ou GIF.")
+    filename = f"{_uuid_mod.uuid4().hex}{ext}"
+    dest_dir = "static/uploads/anuncio-images"
+    _os.makedirs(dest_dir, exist_ok=True)
+    with open(f"{dest_dir}/{filename}", "wb") as out:
+        _shutil.copyfileobj(file.file, out)
+    return {"url": f"/static/uploads/anuncio-images/{filename}"}
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -68,10 +88,14 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
     return listing
 
 
-def _build_ml_payload(product, form: dict) -> dict:
-    """Build full ML item payload from a product (CMIGProduct or CatalogProduct) + form data."""
+def _build_ml_payload(product, form: dict, *, use_family_name: bool = False) -> dict:
+    """Build full ML item payload from a product (CMIGProduct or CatalogProduct) + form data.
+
+    use_family_name=True → categorias de catálogo ML: usa family_name em vez de title.
+    use_family_name=False → listagens normais: usa title diretamente.
+    """
+    title = (form.get("title_override") or product.title or "")[:60]
     payload: dict = {
-        "title": (form.get("title_override") or product.title or "")[:60],
         "price": float(form["sale_price"]),
         "currency_id": "BRL",
         "available_quantity": int(form.get("available_quantity") or 1),
@@ -79,6 +103,11 @@ def _build_ml_payload(product, form: dict) -> dict:
         "listing_type_id": form.get("listing_type") or "gold_special",
         "condition": form.get("item_condition") or "new",
     }
+
+    if use_family_name:
+        payload["family_name"] = (form.get("family_name") or title)[:60]
+    else:
+        payload["title"] = title
 
     if form.get("category_id"):
         payload["category_id"] = form["category_id"]
@@ -94,6 +123,31 @@ def _build_ml_payload(product, form: dict) -> dict:
     attributes = list(form.get("attributes") or [])
     if not any(a.get("id") == "BRAND" for a in attributes) and getattr(product, "brand", None):
         attributes.append({"id": "BRAND", "value_name": product.brand})
+
+    # Package dimensions (obrigatórios em várias categorias ML)
+    existing_ids = {a.get("id", "").upper() for a in attributes}
+
+    # Modelo (obrigatório em várias categorias ML)
+    model = form.get("model") or getattr(product, "model", None)
+    if model and "MODEL" not in existing_ids:
+        attributes.append({"id": "MODEL", "value_name": str(model)})
+
+    for field, attr_id in [
+        ("height_cm", "SELLER_PACKAGE_HEIGHT"),
+        ("width_cm",  "SELLER_PACKAGE_WIDTH"),
+        ("length_cm", "SELLER_PACKAGE_LENGTH"),
+    ]:
+        val = form.get(field)
+        if val in (None, ""):
+            val = getattr(product, field, None)
+        if val not in (None, "") and attr_id not in existing_ids:
+            attributes.append({"id": attr_id, "value_name": f"{int(float(val))} cm"})
+    weight = form.get("weight_kg")
+    if weight in (None, ""):
+        weight = getattr(product, "weight_kg", None)
+    if weight not in (None, "") and "SELLER_PACKAGE_WEIGHT" not in existing_ids:
+        attributes.append({"id": "SELLER_PACKAGE_WEIGHT", "value_name": f"{int(float(weight) * 1000)} g"})
+
     if attributes:
         payload["attributes"] = attributes
 
@@ -111,6 +165,54 @@ def _build_ml_payload(product, form: dict) -> dict:
     }
 
     return payload
+
+
+def _ml_requires_family_name(error_body: dict) -> bool:
+    """Retorna True se o erro do ML indica que family_name é obrigatório."""
+    for cause in error_body.get("cause", []):
+        code = cause.get("code", "")
+        msg  = cause.get("message", "")
+        if "family_name" in msg or "family_name" in code:
+            return True
+    return False
+
+
+async def _create_ml_item_with_retry(access_token: str, prod, ml_form: dict) -> dict:
+    """Tenta criar item ML; se a categoria exigir family_name, retenta sem title."""
+    import httpx
+    ML_API_BASE = "https://api.mercadolibre.com"
+
+    # 1ª tentativa: payload normal com title
+    payload = _build_ml_payload(prod, ml_form, use_family_name=False)
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{ML_API_BASE}/items",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=payload,
+        )
+
+    if resp.status_code in (200, 201):
+        return resp.json()
+
+    # Se ML exigiu family_name → retenta com family_name (sem title)
+    try:
+        err = resp.json()
+    except Exception:
+        err = {}
+
+    if resp.status_code == 400 and _ml_requires_family_name(err):
+        payload2 = _build_ml_payload(prod, ml_form, use_family_name=True)
+        async with httpx.AsyncClient() as client:
+            resp2 = await client.post(
+                f"{ML_API_BASE}/items",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload2,
+            )
+        if resp2.status_code in (200, 201):
+            return resp2.json()
+        raise HTTPException(status_code=400, detail=f"Erro ao criar anúncio ML: {resp2.text}")
+
+    raise HTTPException(status_code=400, detail=f"Erro ao criar anúncio ML: {resp.text}")
 
 
 def _serialize_listing(listing: ProductListing) -> dict:
@@ -1098,21 +1200,28 @@ async def publish_anuncio(
             "free_shipping": free_shipping,
             "pictures": pictures,
             "attributes": body.get("attributes") or [],
+            "height_cm": body.get("height_cm"),
+            "width_cm":  body.get("width_cm"),
+            "length_cm": body.get("length_cm"),
+            "weight_kg": body.get("weight_kg"),
+            "model":     body.get("model"),
         }
-        ml_payload = _build_ml_payload(prod, ml_form)
-        ml_item = await ml_service.create_item(access_token, ml_payload)
+        ml_item = await _create_ml_item_with_retry(access_token, prod, ml_form)
         platform_item_id = ml_item.get("id")
         if description and platform_item_id:
             try:
                 await ml_service.post_item_description(access_token, platform_item_id, description)
             except Exception:
                 pass  # não bloqueia criação se descrição falhar
+        # ML retorna thumbnail do item criado; fallback para primeira foto enviada
+        thumbnail = ml_item.get("thumbnail") or (pictures[0] if pictures else None)
         status = "published"
         published_at = datetime.now(timezone.utc)
     else:
         if not platform_item_id:
             raise HTTPException(status_code=400, detail="platform_item_id é obrigatório para vincular")
-        await ml_service.get_item(access_token, platform_item_id)
+        ml_item_data = await ml_service.get_item(access_token, platform_item_id)
+        thumbnail = ml_item_data.get("thumbnail") or (pictures[0] if pictures else None)
         status = "published"
         published_at = datetime.now(timezone.utc)
 
@@ -1123,6 +1232,7 @@ async def publish_anuncio(
         platform_item_id=platform_item_id,
         sale_price=sale_price,
         title_override=product_title,
+        thumbnail=thumbnail,
         category_id=category_id,
         listing_type=listing_type,
         description_override=description,
