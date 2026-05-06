@@ -825,8 +825,11 @@ async def get_listing_costs(
 
     async def _fetch_shipping(client: httpx.AsyncClient) -> None:
         nonlocal shipping_net_cost, shipping_detail, weight_detail
-        needs_shipping = free_shipping or logistic_type.lower() == "fulfillment"
-        if not (needs_shipping and weight_kg and height_cm and width_cm and length_cm):
+        # /shipping_options/free aplica o desconto de reputação do vendedor.
+        # Só faz sentido quando o VENDEDOR paga o frete (frete grátis ou Full).
+        # Para ME2 sem frete grátis o comprador paga — não chamar este endpoint.
+        seller_pays = free_shipping or logistic_type.lower() == "fulfillment"
+        if not (seller_pays and weight_kg and height_cm and width_cm and length_cm):
             return
 
         wb = _calc_billable_weight(weight_kg, height_cm, width_cm, length_cm)

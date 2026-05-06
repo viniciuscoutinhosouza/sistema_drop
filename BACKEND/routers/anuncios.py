@@ -88,11 +88,11 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
     return listing
 
 
-def _build_ml_payload(product, form: dict, *, use_family_name: bool = False) -> dict:
+def _build_ml_payload(product, form: dict, *, use_family_name: bool = False, for_update: bool = False) -> dict:
     """Build full ML item payload from a product (CMIGProduct or CatalogProduct) + form data.
 
     use_family_name=True → categorias de catálogo ML: usa family_name em vez de title.
-    use_family_name=False → listagens normais: usa title diretamente.
+    for_update=True      → omite campos imutáveis após criação (ex: shipping.dimensions).
     """
     title = (form.get("title_override") or product.title or "")[:60]
     payload: dict = {
@@ -159,10 +159,24 @@ def _build_ml_payload(product, form: dict, *, use_family_name: bool = False) -> 
         if warranty_time:
             payload["sale_terms"].append({"id": "WARRANTY_TIME", "value_name": warranty_time})
 
-    payload["shipping"] = {
+    shipping_payload: dict = {
         "mode": form.get("shipping_mode") or "me2",
         "free_shipping": bool(form.get("free_shipping", False)),
     }
+
+    # Dimensões do pacote para cálculo de frete ME2 — somente na criação (imutável após)
+    if not for_update:
+        _h  = form.get("height_cm") or getattr(product, "height_cm", None)
+        _w  = form.get("width_cm")  or getattr(product, "width_cm",  None)
+        _l  = form.get("length_cm") or getattr(product, "length_cm", None)
+        _kg = form.get("weight_kg") or getattr(product, "weight_kg", None)
+        if _h and _w and _l and _kg:
+            shipping_payload["dimensions"] = (
+                f"{int(float(_h))}x{int(float(_w))}x{int(float(_l))},"
+                f"{int(float(_kg) * 1000)}"
+            )
+
+    payload["shipping"] = shipping_payload
 
     return payload
 
@@ -251,7 +265,10 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "is_full": bool(listing.is_full) if listing.is_full is not None else False,
         "ml_catalog_id": listing.ml_catalog_id,
         "catalog_listing": bool(listing.catalog_listing) if listing.catalog_listing is not None else False,
-        "available_quantity": listing.available_quantity,
+        "available_quantity":  listing.available_quantity,
+        "stock_mode":         listing.stock_mode or "product",
+        "fixed_quantity":     listing.fixed_quantity or 1,
+        "keep_stock_fixed":   bool(listing.keep_stock_fixed) if listing.keep_stock_fixed is not None else False,
         "sold_quantity": listing.sold_quantity or 0,
         "visits_7d": listing.visits_7d or 0,
         "item_condition": listing.item_condition,
@@ -1173,7 +1190,6 @@ async def publish_anuncio(
         product_title = product_title or prod.title
 
     description = body.get("description_override") or body.get("description")
-    available_quantity = int(body.get("available_quantity") or 1)
     item_condition = body.get("item_condition") or "new"
     warranty_type = body.get("warranty_type")
     warranty_time = body.get("warranty_time")
@@ -1182,6 +1198,15 @@ async def publish_anuncio(
     video_id = body.get("video_id")
     attributes_json = body.get("attributes_json")
     pictures = body.get("pictures") or []
+
+    # Estoque local
+    stock_mode = body.get("stock_mode") or "product"
+    fixed_quantity = int(body.get("fixed_quantity") or 1)
+    keep_stock_fixed = bool(body.get("keep_stock_fixed", False))
+    if stock_mode == "product":
+        available_quantity = int(getattr(prod, "stock_quantity", None) or 0)
+    else:
+        available_quantity = fixed_quantity
 
     if mode == "create":
         if not category_id:
@@ -1225,6 +1250,12 @@ async def publish_anuncio(
         status = "published"
         published_at = datetime.now(timezone.utc)
 
+    # Dimensões: usa o que veio no body, senão cai no produto
+    dim_height = body.get("height_cm") or (float(prod.height_cm) if getattr(prod, "height_cm", None) else None)
+    dim_width  = body.get("width_cm")  or (float(prod.width_cm)  if getattr(prod, "width_cm",  None) else None)
+    dim_length = body.get("length_cm") or (float(prod.length_cm) if getattr(prod, "length_cm", None) else None)
+    dim_weight = body.get("weight_kg") or (float(prod.weight_kg) if getattr(prod, "weight_kg", None) else None)
+
     listing = ProductListing(
         account_id=account_id,
         cmig_product_id=cmig_product_id,
@@ -1238,12 +1269,19 @@ async def publish_anuncio(
         description_override=description,
         attributes_json=attributes_json,
         available_quantity=available_quantity,
+        stock_mode=stock_mode,
+        fixed_quantity=fixed_quantity,
+        keep_stock_fixed=keep_stock_fixed,
         item_condition=item_condition,
         warranty_type=warranty_type,
         warranty_time=warranty_time,
         shipping_mode=shipping_mode,
         free_shipping=free_shipping,
         video_id=video_id,
+        weight_kg=dim_weight,
+        height_cm=dim_height,
+        width_cm=dim_width,
+        length_cm=dim_length,
         status=status,
         published_at=published_at,
         last_sync_at=datetime.now(timezone.utc),
@@ -1267,14 +1305,21 @@ async def update_anuncio(
     # Salva campos simples no DB
     for field in (
         "sale_price", "title_override", "category_id", "listing_type",
-        "description_override", "attributes_json", "available_quantity",
+        "description_override", "attributes_json",
         "item_condition", "warranty_type", "warranty_time",
         "shipping_mode", "free_shipping", "video_id",
         "sku", "weight_kg", "height_cm", "width_cm", "length_cm",
-        "fiscal_json",
+        "fiscal_json", "stock_mode", "fixed_quantity", "keep_stock_fixed",
     ):
         if field in body:
             setattr(listing, field, body[field])
+
+    # Recalcula available_quantity de acordo com o modo de estoque
+    new_mode = body.get("stock_mode", listing.stock_mode or "product")
+    if new_mode == "fixed":
+        listing.available_quantity = int(body.get("fixed_quantity") or listing.fixed_quantity or 1)
+    elif "available_quantity" in body:
+        listing.available_quantity = int(body["available_quantity"])
 
     # Converte pictures (array de URLs) → pictures_json no DB
     if "pictures" in body and isinstance(body["pictures"], list):
@@ -1316,7 +1361,7 @@ async def update_anuncio(
                     pass
 
             product = listing.cmig_product or listing.catalog_product
-            ml_payload = _build_ml_payload(product, form)
+            ml_payload = _build_ml_payload(product, form, for_update=True)
             # ML rejeita mudança de categoria após criação
             ml_payload.pop("category_id", None)
             # ML rejeita title em contas com family_name (não Lojas Oficiais)
@@ -1429,25 +1474,29 @@ async def get_category_attributes(
     category_id: str,
     current_user: User = Depends(get_current_user),
 ):
-    """Retorna atributos de uma categoria ML, filtrando required/recommended."""
+    """Retorna todos os atributos de uma categoria ML (exceto read_only)."""
     attrs = await ml_service.get_category_attributes(category_id)
     result = []
     for attr in attrs:
         tags = attr.get("tags") or []
-        is_required = "required" in tags
+        if "read_only" in tags:
+            continue
+        is_required    = "required" in tags
         is_recommended = "recommended" in tags
-        if is_required or is_recommended:
-            result.append({
-                "id": attr.get("id"),
-                "name": attr.get("name"),
-                "value_type": attr.get("value_type"),
-                "is_required": is_required,
-                "allowed_units": attr.get("allowed_units"),
-                "values": [
-                    {"id": v.get("id"), "name": v.get("name")}
-                    for v in (attr.get("values") or [])[:50]
-                ],
-            })
+        is_optional    = not is_required and not is_recommended
+        result.append({
+            "id":             attr.get("id"),
+            "name":           attr.get("name"),
+            "value_type":     attr.get("value_type"),
+            "is_required":    is_required,
+            "is_recommended": is_recommended,
+            "is_optional":    is_optional,
+            "allowed_units":  attr.get("allowed_units"),
+            "values": [
+                {"id": v.get("id"), "name": v.get("name")}
+                for v in (attr.get("values") or [])[:50]
+            ],
+        })
     return result
 
 
@@ -1482,7 +1531,7 @@ async def sync_listing_to_ml(
         "free_shipping": listing.free_shipping or False,
         "attributes": [],
     }
-    ml_payload = _build_ml_payload(product, form)
+    ml_payload = _build_ml_payload(product, form, for_update=True)
     # Remove category_id from update payload (ML rejects changing category after creation)
     ml_payload.pop("category_id", None)
     # ML rejeita title em contas com family_name (não Lojas Oficiais)
@@ -1622,6 +1671,16 @@ async def get_anuncio_costs(
         length_cm=float(listing.length_cm) if listing.length_cm else None,
         free_shipping=bool(listing.free_shipping),
     )
+
+    # Persiste os custos calculados para evitar recalculo e manter histórico
+    listing.commission_pct    = costs.get("commission_pct")
+    listing.commission_amount = costs.get("commission_amount")
+    listing.shipping_cost     = costs.get("shipping_cost")
+    listing.net_revenue       = costs.get("net_revenue")
+    listing.margin_pct        = costs.get("margin_pct")
+    listing.costs_cached_at   = datetime.now(timezone.utc)
+    await db.commit()
+
     # Devolve custos + dados de promoção em uma única resposta
     return {**costs, **promo_info}
 

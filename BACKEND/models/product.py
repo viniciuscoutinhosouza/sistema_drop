@@ -184,6 +184,11 @@ class ProductListing(Base):
     qty_full             = Column(Integer, default=0, nullable=True)   # Full ML (fulfillment)
     qty_local            = Column(Integer, default=0, nullable=True)   # Estoque local/cross-docking
 
+    # Controle de estoque local
+    stock_mode           = Column(String(10), default="product")  # 'product' | 'fixed'
+    fixed_quantity       = Column(Integer,    default=1)          # qtd fixa quando stock_mode='fixed'
+    keep_stock_fixed     = Column(Boolean,    default=False)       # se True, sync restaura fixed_quantity após vendas
+
     # Preço regular e promoção
     regular_price        = Column(Numeric(12, 2), nullable=True)       # preço sem promoção
     promo_type           = Column(String(50),     nullable=True)       # ex: PRICE_DISCOUNT

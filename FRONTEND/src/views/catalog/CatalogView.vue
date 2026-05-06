@@ -61,9 +61,9 @@
             </div>
             <div class="col-md-2">
               <select v-model="filters.page_size" class="form-control form-control-sm" @change="loadProducts">
-                <option :value="8">8 por página</option>
-                <option :value="16">16 por página</option>
-                <option :value="32">32 por página</option>
+                <option :value="12">12 por página</option>
+                <option :value="24">24 por página</option>
+                <option :value="48">48 por página</option>
               </select>
             </div>
           </div>
@@ -78,32 +78,34 @@
       <!-- Grade de produtos -->
       <div v-else>
         <div class="row">
-          <div v-for="product in products" :key="product.id" class="col-xl-3 col-lg-4 col-md-6 mb-4">
+          <div v-for="product in products" :key="product.id" class="col-xl-2 col-lg-3 col-md-4 col-sm-6 mb-3">
             <div class="card h-100 shadow-sm">
               <RouterLink :to="`/catalog/${product.id}`">
-                <img
-                  :src="product.image_url || 'https://via.placeholder.com/300x200?text=Sem+Foto'"
-                  class="card-img-top"
-                  style="height:180px;object-fit:cover"
-                  :alt="product.title"
-                />
+                <div style="height:130px;background:#f8f9fa;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px 4px 0 0">
+                  <img
+                    :src="product.image_url || 'https://via.placeholder.com/300x200?text=Sem+Foto'"
+                    style="max-height:100%;max-width:100%;object-fit:contain"
+                    :alt="product.title"
+                  />
+                </div>
               </RouterLink>
-              <div class="card-body p-3">
-                <p class="text-muted small mb-1">({{ product.sku }})</p>
-                <h6 class="card-title mb-1">
-                  {{ product.title.slice(0, 60) }}{{ product.title.length > 60 ? '...' : '' }}
-                </h6>
-                <p class="text-success font-weight-bold mb-1 h5">{{ formatCurrency(product.cost_price) }}</p>
-                <p class="text-muted small mb-0">Estoque: {{ product.stock_quantity }}</p>
+              <div class="card-body p-2">
+                <p class="text-muted mb-0" style="font-size:10px">({{ product.sku }})</p>
+                <p class="card-title mb-1 font-weight-bold" style="font-size:12px;line-height:1.3">
+                  {{ product.title.slice(0, 50) }}{{ product.title.length > 50 ? '...' : '' }}
+                </p>
+                <p class="text-success font-weight-bold mb-0" style="font-size:13px">{{ formatCurrency(product.cost_price) }}</p>
+                <p class="text-muted mb-0" style="font-size:11px">Estoque: {{ product.stock_quantity }}</p>
               </div>
-              <div class="card-footer p-2">
+              <div class="card-footer p-1">
                 <button
                   class="btn btn-success btn-sm btn-block"
+                  style="font-size:11px;padding:3px 6px"
                   :disabled="!selectedAccountId"
                   :title="!selectedAccountId ? 'Selecione uma conta acima' : ''"
                   @click="openPublishModal(product)"
                 >
-                  <i class="fas fa-bullhorn mr-1"></i> Publicar Anúncio
+                  <i class="fas fa-bullhorn mr-1"></i> Publicar
                 </button>
               </div>
             </div>
@@ -338,6 +340,68 @@
                    class="form-control" placeholder="0,00" style="max-width:200px" />
           </div>
 
+          <!-- Quem paga o frete (ML) -->
+          <div v-if="isMercadoLivre" class="form-group">
+            <label class="font-weight-bold">Pagamento do Frete</label>
+            <div class="d-flex" style="gap:12px">
+              <div class="card flex-fill text-center p-3"
+                   style="cursor:pointer;border-width:2px;transition:border-color .15s"
+                   :style="!form.free_shipping ? 'border-color:#007bff;background:#f0f7ff' : 'border-color:#dee2e6'"
+                   @click="form.free_shipping = false">
+                <div style="font-size:20px" class="mb-1">🛒</div>
+                <div class="font-weight-bold">Comprador paga</div>
+                <div class="text-muted small">Frete cobrado do comprador</div>
+              </div>
+              <div class="card flex-fill text-center p-3"
+                   style="cursor:pointer;border-width:2px;transition:border-color .15s"
+                   :style="form.free_shipping ? 'border-color:#28a745;background:#f0fff4' : 'border-color:#dee2e6'"
+                   @click="form.free_shipping = true">
+                <div style="font-size:20px" class="mb-1">🚚</div>
+                <div class="font-weight-bold text-success">Vendedor paga</div>
+                <div class="text-muted small">Anúncio com Frete Grátis</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Estoque -->
+          <div v-if="isMercadoLivre" class="form-group">
+            <label class="font-weight-bold">Estoque</label>
+            <div class="d-flex mb-2" style="gap:12px">
+              <div class="card flex-fill text-center p-3"
+                   style="cursor:pointer;border-width:2px;transition:border-color .15s"
+                   :style="form.stock_mode === 'product' ? 'border-color:#007bff;background:#f0f7ff' : 'border-color:#dee2e6'"
+                   @click="form.stock_mode = 'product'">
+                <div style="font-size:20px" class="mb-1">📦</div>
+                <div class="font-weight-bold">Estoque do Produto</div>
+                <div class="text-muted small">
+                  {{ modal.product?.stock_quantity ?? 0 }} unid. disponíveis
+                </div>
+              </div>
+              <div class="card flex-fill text-center p-3"
+                   style="cursor:pointer;border-width:2px;transition:border-color .15s"
+                   :style="form.stock_mode === 'fixed' ? 'border-color:#6366f1;background:#f5f3ff' : 'border-color:#dee2e6'"
+                   @click="form.stock_mode = 'fixed'">
+                <div style="font-size:20px" class="mb-1">🔢</div>
+                <div class="font-weight-bold">Valor Fixo</div>
+                <div class="text-muted small">Quantidade definida por mim</div>
+              </div>
+            </div>
+            <div v-if="form.stock_mode === 'fixed'" class="p-3 rounded" style="background:#f5f3ff;border:1px solid #c4b5fd">
+              <div class="d-flex align-items-center mb-2" style="gap:12px">
+                <label class="small font-weight-bold mb-0">Quantidade:</label>
+                <input v-model.number="form.fixed_quantity" type="number" min="0" step="1"
+                       class="form-control form-control-sm" style="width:100px" />
+              </div>
+              <div class="custom-control custom-checkbox">
+                <input v-model="form.keep_stock_fixed" type="checkbox"
+                       class="custom-control-input" id="ksf_catalog" />
+                <label class="custom-control-label small" for="ksf_catalog">
+                  Manter fixo — restaurar para {{ form.fixed_quantity }} após cada venda
+                </label>
+              </div>
+            </div>
+          </div>
+
           <!-- Dimensões do pacote (somente leitura) -->
           <div v-if="form.height_cm || form.width_cm || form.length_cm || form.weight_kg"
                class="text-muted small mt-3 pt-3 border-top">
@@ -379,36 +443,72 @@
         </div>
 
         <div class="modal-body">
-          <p class="text-muted small mb-3">
-            Preencha as características <span class="text-danger font-weight-bold">obrigatórias</span>
-            e as sugeridas para melhorar a exposição do anúncio.
-          </p>
 
-          <div v-for="attr in attrsModal.attrs" :key="attr.id" class="form-group">
-            <label class="font-weight-bold" style="font-size:13px">
-              {{ attr.name }}
-              <span v-if="attr.is_required" class="text-danger ml-1">* obrigatório</span>
-              <span v-else class="text-muted font-weight-normal ml-1">(sugerido)</span>
-            </label>
-
-            <!-- Select quando há valores predefinidos -->
-            <select v-if="attr.values && attr.values.length"
-                    v-model="attrValues[attr.id]"
-                    class="form-control form-control-sm">
-              <option value="">Selecione...</option>
-              <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
-            </select>
-
-            <!-- Input livre -->
-            <div v-else class="input-group input-group-sm">
-              <input v-model="attrValues[attr.id]"
-                     type="text"
-                     class="form-control"
-                     :placeholder="attr.allowed_units && attr.allowed_units.length
-                       ? `Valor (unidade: ${attr.allowed_units.join(', ')})`
-                       : 'Digite o valor...'" />
+          <!-- Obrigatórios -->
+          <div v-if="requiredAttrs.length" class="mb-4">
+            <h6 class="font-weight-bold text-danger mb-2">
+              <i class="fas fa-asterisk mr-1" style="font-size:10px"></i>Obrigatórios
+            </h6>
+            <div class="row">
+              <div v-for="attr in requiredAttrs" :key="attr.id" class="col-md-6 form-group mb-2">
+                <label class="font-weight-bold small">{{ attr.name }} <span class="text-danger">*</span></label>
+                <select v-if="attr.values && attr.values.length"
+                        v-model="attrValues[attr.id]"
+                        class="form-control form-control-sm"
+                        :class="{ 'border-danger': !attrValues[attr.id] }">
+                  <option value="">Selecione...</option>
+                  <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
+                </select>
+                <input v-else v-model="attrValues[attr.id]" type="text" class="form-control form-control-sm"
+                       :class="{ 'border-danger': !attrValues[attr.id] }"
+                       :placeholder="attr.allowed_units?.length ? `Valor (${attr.allowed_units.join(', ')})` : 'Digite...'" />
+              </div>
             </div>
           </div>
+
+          <!-- Recomendados -->
+          <div v-if="recommendedAttrs.length" class="mb-4">
+            <h6 class="font-weight-bold text-primary mb-2">
+              <i class="fas fa-star mr-1" style="font-size:10px"></i>Recomendados
+            </h6>
+            <div class="row">
+              <div v-for="attr in recommendedAttrs" :key="attr.id" class="col-md-6 form-group mb-2">
+                <label class="small font-weight-bold">{{ attr.name }}</label>
+                <select v-if="attr.values && attr.values.length"
+                        v-model="attrValues[attr.id]"
+                        class="form-control form-control-sm">
+                  <option value="">Selecione...</option>
+                  <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
+                </select>
+                <input v-else v-model="attrValues[attr.id]" type="text" class="form-control form-control-sm"
+                       :placeholder="attr.allowed_units?.length ? `Valor (${attr.allowed_units.join(', ')})` : 'Digite...'" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Secundários (colapsável) -->
+          <div v-if="optionalAttrs.length">
+            <button type="button" class="btn btn-sm btn-outline-secondary w-100 text-left mb-2"
+                    @click="secondaryExpanded = !secondaryExpanded">
+              <i :class="['fas', secondaryExpanded ? 'fa-chevron-down' : 'fa-chevron-right', 'mr-1']"></i>
+              Características Secundárias ({{ optionalAttrs.length }})
+              <span v-if="filledOptionalCount" class="badge badge-secondary ml-2">{{ filledOptionalCount }} preenchidos</span>
+            </button>
+            <div v-if="secondaryExpanded" class="row">
+              <div v-for="attr in optionalAttrs" :key="attr.id" class="col-md-6 form-group mb-2">
+                <label class="small">{{ attr.name }}</label>
+                <select v-if="attr.values && attr.values.length"
+                        v-model="attrValues[attr.id]"
+                        class="form-control form-control-sm">
+                  <option value="">Selecione...</option>
+                  <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
+                </select>
+                <input v-else v-model="attrValues[attr.id]" type="text" class="form-control form-control-sm"
+                       :placeholder="attr.allowed_units?.length ? `Valor (${attr.allowed_units.join(', ')})` : 'Digite...'" />
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <div class="modal-footer justify-content-between">
@@ -444,7 +544,7 @@ const filters = reactive({
   search:      '',
   category_id: '',
   sort:        'newest',
-  page_size:   16,
+  page_size:   24,
 })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / filters.page_size)))
@@ -518,17 +618,21 @@ const modal = reactive({
 })
 
 const form = reactive({
-  title:         '',
-  category_id:   '',
-  category_name: '',
-  pictures:      [],
-  sale_price:    '',
-  listing_type:  'gold_special',
-  model:         '',
-  height_cm:     '',
-  width_cm:      '',
-  length_cm:     '',
-  weight_kg:     '',
+  title:            '',
+  category_id:      '',
+  category_name:    '',
+  pictures:         [],
+  sale_price:       '',
+  listing_type:     'gold_special',
+  free_shipping:    false,
+  stock_mode:       'product',
+  fixed_quantity:   1,
+  keep_stock_fixed: false,
+  model:            '',
+  height_cm:        '',
+  width_cm:         '',
+  length_cm:        '',
+  weight_kg:        '',
 })
 
 // Busca de categoria
@@ -572,20 +676,30 @@ function clearCategory() {
 }
 
 // ── Características da categoria ──────────────────────────────────────────────
-const attrsModal = reactive({ show: false, loading: false, attrs: [] })
-const attrValues = reactive({})
+const attrsModal        = reactive({ show: false, loading: false, attrs: [] })
+const attrValues        = reactive({})
+const secondaryExpanded = ref(false)
+
+const requiredAttrs    = computed(() => attrsModal.attrs.filter(a => a.is_required))
+const recommendedAttrs = computed(() => attrsModal.attrs.filter(a => a.is_recommended))
+const optionalAttrs    = computed(() => attrsModal.attrs.filter(a => a.is_optional))
 
 const filledAttrsCount = computed(() =>
   Object.values(attrValues).filter(v => v !== '' && v != null).length
 )
 
+const filledOptionalCount = computed(() =>
+  optionalAttrs.value.filter(a => attrValues[a.id]).length
+)
+
 const requiredUnfilledCount = computed(() =>
-  attrsModal.attrs.filter(a => a.is_required && !attrValues[a.id]).length
+  requiredAttrs.value.filter(a => !attrValues[a.id]).length
 )
 
 async function loadCategoryAttrs(categoryId) {
-  attrsModal.loading = true
-  attrsModal.attrs   = []
+  attrsModal.loading  = true
+  attrsModal.attrs    = []
+  secondaryExpanded.value = false
   Object.keys(attrValues).forEach(k => delete attrValues[k])
   try {
     const { data } = await api.get(`/anuncios/categories/${categoryId}/attributes`)
@@ -664,13 +778,17 @@ async function openPublishModal(product) {
   modal.error        = ''
   modal.success      = ''
 
-  form.title         = product.title?.slice(0, 60) || ''
-  form.category_id   = ''
-  form.category_name = ''
-  form.pictures      = product.image_url ? [product.image_url] : []
-  form.sale_price    = ''
-  form.listing_type  = 'gold_special'
-  form.model         = product.model     ?? ''
+  form.title            = product.title?.slice(0, 60) || ''
+  form.category_id      = ''
+  form.category_name    = ''
+  form.pictures         = product.image_url ? [product.image_url] : []
+  form.sale_price       = ''
+  form.listing_type     = 'gold_special'
+  form.free_shipping    = false
+  form.stock_mode       = 'product'
+  form.fixed_quantity   = 1
+  form.keep_stock_fixed = false
+  form.model            = product.model     ?? ''
   form.height_cm     = product.height_cm ?? ''
   form.width_cm      = product.width_cm  ?? ''
   form.length_cm     = product.length_cm ?? ''
@@ -678,8 +796,9 @@ async function openPublishModal(product) {
   catSearch.value    = ''
   catResults.value   = []
   newPhotoUrl.value  = ''
-  attrsModal.attrs   = []
-  attrsModal.show    = false
+  attrsModal.attrs        = []
+  attrsModal.show         = false
+  secondaryExpanded.value = false
   Object.keys(attrValues).forEach(k => delete attrValues[k])
 
   // Busca imagens completas do produto em background
@@ -731,6 +850,10 @@ async function publishAnuncio() {
       sale_price:         Number(form.sale_price),
       pictures:           form.pictures,
       listing_type:       form.listing_type,
+      free_shipping:      form.free_shipping,
+      stock_mode:         form.stock_mode,
+      fixed_quantity:     form.stock_mode === 'fixed' ? Number(form.fixed_quantity) : undefined,
+      keep_stock_fixed:   form.stock_mode === 'fixed' ? form.keep_stock_fixed : undefined,
       model:              form.model.trim() || null,
       height_cm:          form.height_cm !== '' ? Number(form.height_cm) : null,
       width_cm:           form.width_cm  !== '' ? Number(form.width_cm)  : null,

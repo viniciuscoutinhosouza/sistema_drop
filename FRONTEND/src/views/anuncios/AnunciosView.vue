@@ -242,10 +242,18 @@
                         <span>Taxa fixa:</span>
                         <span>−{{ formatCurrency(pricingCalc(a).fixed_fee) }}</span>
                       </div>
-                      <div v-if="a.free_shipping || a.is_full" class="d-flex justify-content-between" style="color:#d97706">
-                        <span>Frete:</span>
+                      <!-- Frete pago pelo vendedor (free_shipping / Full) -->
+                      <div v-if="a.free_shipping || a.is_full"
+                           class="d-flex justify-content-between" style="color:#d97706">
+                        <span>Frete (vendedor):</span>
                         <span v-if="pricingCalc(a).shipping_cost > 0">−{{ formatCurrency(pricingCalc(a).shipping_cost) }}</span>
-                        <span v-else class="text-muted">sem dims.</span>
+                        <span v-else class="text-muted small">sem dims.</span>
+                      </div>
+                      <!-- Frete pago pelo comprador (ME2 sem frete grátis) — informativo -->
+                      <div v-else-if="a.shipping_mode === 'me2' || (!a.free_shipping && !a.is_full)"
+                           class="d-flex justify-content-between text-muted">
+                        <span>Frete:</span>
+                        <span class="small">pago pelo comprador</span>
                       </div>
                       <div style="border-top:1px solid #e2e8f0;margin:4px 0"></div>
                       <div class="d-flex justify-content-between font-weight-bold" style="color:#16a34a">
@@ -393,9 +401,44 @@
                       </select>
                     </template>
                   </div>
-                  <div class="col-md-3 form-group">
-                    <label>Quantidade Disponível</label>
-                    <input v-model.number="wf.available_quantity" type="number" min="1" class="form-control" />
+                  <div class="col-12 form-group">
+                    <label class="font-weight-bold">Estoque Local</label>
+                    <div class="d-flex mb-2" style="gap:10px">
+                      <div class="card flex-fill text-center p-2"
+                           style="cursor:pointer;border-width:2px;transition:border-color .15s"
+                           :style="wf.stock_mode === 'product' ? 'border-color:#007bff;background:#f0f7ff' : 'border-color:#dee2e6'"
+                           @click="wf.stock_mode = 'product'">
+                        <div style="font-size:16px" class="mb-1">📦</div>
+                        <div style="font-size:12px;font-weight:600">Estoque do Produto</div>
+                        <div class="text-muted" style="font-size:11px">Sincroniza automaticamente com o PG/CMIG</div>
+                      </div>
+                      <div class="card flex-fill text-center p-2"
+                           style="cursor:pointer;border-width:2px;transition:border-color .15s"
+                           :style="wf.stock_mode === 'fixed' ? 'border-color:#6366f1;background:#f5f3ff' : 'border-color:#dee2e6'"
+                           @click="wf.stock_mode = 'fixed'">
+                        <div style="font-size:16px" class="mb-1">🔢</div>
+                        <div style="font-size:12px;font-weight:600">Valor Fixo</div>
+                        <div class="text-muted" style="font-size:11px">Quantidade definida manualmente</div>
+                      </div>
+                    </div>
+                    <div v-if="wf.stock_mode === 'fixed'" class="p-2 rounded" style="background:#f5f3ff;border:1px solid #c4b5fd">
+                      <div class="d-flex align-items-center mb-2" style="gap:10px">
+                        <label class="small font-weight-bold mb-0">Quantidade:</label>
+                        <input v-model.number="wf.fixed_quantity" type="number" min="0" step="1"
+                               class="form-control form-control-sm" style="width:90px" />
+                        <span class="text-muted small">unidades no ML</span>
+                      </div>
+                      <div class="custom-control custom-checkbox">
+                        <input v-model="wf.keep_stock_fixed" type="checkbox"
+                               class="custom-control-input" id="ksf_edit" />
+                        <label class="custom-control-label small" for="ksf_edit">
+                          Manter fixo — restaurar para {{ wf.fixed_quantity }} após cada venda
+                        </label>
+                      </div>
+                    </div>
+                    <div v-else class="text-muted small mt-1">
+                      <i class="fas fa-sync-alt mr-1"></i>O sync a cada 30 min atualiza o ML com o estoque real do produto.
+                    </div>
                   </div>
                   <div class="col-md-3 form-group">
                     <label>Condição</label>
@@ -591,9 +634,25 @@
                       </select>
                     </div>
                     <div class="form-group">
-                      <div class="custom-control custom-switch">
-                        <input v-model="wf.free_shipping" type="checkbox" class="custom-control-input" id="wf_free_shipping" />
-                        <label class="custom-control-label" for="wf_free_shipping">Frete Grátis</label>
+                      <label class="small">Quem paga o frete?</label>
+                      <div class="d-flex" style="gap:8px">
+                        <div class="card flex-fill text-center p-2"
+                             style="cursor:pointer;border-width:2px;transition:border-color .15s"
+                             :style="!wf.free_shipping ? 'border-color:#007bff;background:#f0f7ff' : 'border-color:#dee2e6'"
+                             @click="wf.free_shipping = false">
+                          <div style="font-size:16px" class="mb-1">🛒</div>
+                          <div style="font-size:11px;font-weight:600">Comprador</div>
+                        </div>
+                        <div class="card flex-fill text-center p-2"
+                             style="cursor:pointer;border-width:2px;transition:border-color .15s"
+                             :style="wf.free_shipping ? 'border-color:#28a745;background:#f0fff4' : 'border-color:#dee2e6'"
+                             @click="wf.free_shipping = true">
+                          <div style="font-size:16px" class="mb-1">🚚</div>
+                          <div style="font-size:11px;font-weight:600;color:#16a34a">Vendedor</div>
+                        </div>
+                      </div>
+                      <div class="text-muted mt-1" style="font-size:10px">
+                        {{ wf.free_shipping ? 'Frete Grátis — vendedor arca com o custo' : 'Frete cobrado do comprador' }}
                       </div>
                     </div>
 
@@ -1002,7 +1061,7 @@ const anuncios = ref([])
 const loading = ref(false)
 const importing = ref(false)
 const filterVinculo = ref('all')
-const filterStatus = ref('all')
+const filterStatus = ref('published')
 const statsBar = ref(null)
 const loadingStats = ref(false)
 const importResult = ref(null)
@@ -1056,14 +1115,17 @@ function defaultWizardForm() {
     pictures: [],
     description_override: '',
     video_id: '',
-    shipping_mode: 'me2',
-    free_shipping: false,
-    warranty_type: '',
-    warranty_time: '',
-    weight_kg: '',
-    height_cm: '',
-    width_cm: '',
-    length_cm: '',
+    shipping_mode:    'me2',
+    free_shipping:    false,
+    stock_mode:       'product',
+    fixed_quantity:   1,
+    keep_stock_fixed: false,
+    warranty_type:    '',
+    warranty_time:    '',
+    weight_kg:        '',
+    height_cm:        '',
+    width_cm:         '',
+    length_cm:        '',
   }
 }
 
@@ -1204,6 +1266,9 @@ async function openWizard(listing) {
     wf.value.sale_price = listing.sale_price
     wf.value.listing_type = listing.listing_type || 'gold_special'
     wf.value.available_quantity = listing.available_quantity || 1
+    wf.value.stock_mode         = listing.stock_mode       || 'product'
+    wf.value.fixed_quantity     = listing.fixed_quantity   || 1
+    wf.value.keep_stock_fixed   = !!listing.keep_stock_fixed
     wf.value.item_condition = listing.item_condition || 'new'
     wf.value.platform_item_id = listing.platform_item_id || ''
     wf.value.category_id = listing.category_id || ''
@@ -1313,7 +1378,9 @@ async function saveWizard() {
       title_override: wf.value.title_override,
       sale_price: parseFloat(wf.value.sale_price),
       listing_type: wf.value.listing_type,
-      available_quantity: wf.value.available_quantity || 1,
+      stock_mode:       wf.value.stock_mode,
+      fixed_quantity:   wf.value.stock_mode === 'fixed' ? Number(wf.value.fixed_quantity) : undefined,
+      keep_stock_fixed: wf.value.stock_mode === 'fixed' ? wf.value.keep_stock_fixed : undefined,
       item_condition: wf.value.item_condition,
       platform_item_id: wf.value.platform_item_id || null,
       sku: wf.value.sku || null,
@@ -1436,17 +1503,10 @@ async function fetchAllCategoryPaths() {
   for (let i = 0; i < withCat.length; i += CONCURRENCY) {
     await Promise.all(withCat.slice(i, i + CONCURRENCY).map(a => fetchCategoryPath(a.category_id)))
   }
-  // Fetch live costs for listings without BD-cached data
-  const uncached = anuncios.value.filter(a => a.category_id && a.sale_price && !a.costs_cached_at)
-  for (let i = 0; i < uncached.length; i += CONCURRENCY) {
-    await Promise.all(uncached.slice(i, i + CONCURRENCY).map(a => fetchCost(a)))
-  }
-  // Fetch promo-only (lightweight) for cached-cost listings that have no cached promo data
-  const needsPromo = anuncios.value.filter(a =>
-    a.platform_item_id && a.costs_cached_at && !a.regular_price && !a.promo_type
-  )
-  for (let i = 0; i < needsPromo.length; i += CONCURRENCY) {
-    await Promise.all(needsPromo.slice(i, i + CONCURRENCY).map(a => fetchSalePrice(a)))
+  // Fetch live costs for all eligible listings (fresh data sempre sobrepõe cache do BD)
+  const withCosts = anuncios.value.filter(a => a.category_id && a.sale_price)
+  for (let i = 0; i < withCosts.length; i += CONCURRENCY) {
+    await Promise.all(withCosts.slice(i, i + CONCURRENCY).map(a => fetchCost(a)))
   }
 }
 
@@ -1865,23 +1925,7 @@ function effectivePrice(listing) {
 function pricingCalc(listing) {
   const price = effectivePrice(listing)
 
-  // Priority 1: BD-cached costs (set after import or refresh-costs)
-  if (listing.costs_cached_at) {
-    return {
-      rate:            listing.commission_pct ?? 0,
-      fee:             Number(listing.commission_amount ?? 0).toFixed(2),
-      financing_fee:   0,
-      fixed_fee:       0,
-      shipping_cost:   listing.shipping_cost ?? 0,
-      shipping_detail: null,
-      margin:          Number(listing.net_revenue ?? 0).toFixed(2),
-      marginPct:       Number(listing.margin_pct ?? 0).toFixed(2),
-      isReal:          true,
-      cachedAt:        listing.costs_cached_at,
-    }
-  }
-
-  // Priority 2: live fetch
+  // Priority 1: live fetch (sempre mais fresco que o cache do BD)
   const real = listingCosts.value[listing.id]
   if (real) {
     return {
@@ -1894,6 +1938,22 @@ function pricingCalc(listing) {
       margin:          real.net_revenue.toFixed(2),
       marginPct:       real.margin_pct.toFixed(2),
       isReal:          true,
+    }
+  }
+
+  // Priority 2: BD-cached costs (set after import or refresh-costs)
+  if (listing.costs_cached_at) {
+    return {
+      rate:            listing.commission_pct ?? 0,
+      fee:             Number(listing.commission_amount ?? 0).toFixed(2),
+      financing_fee:   0,
+      fixed_fee:       0,
+      shipping_cost:   listing.shipping_cost ?? 0,
+      shipping_detail: null,
+      margin:          Number(listing.net_revenue ?? 0).toFixed(2),
+      marginPct:       Number(listing.margin_pct ?? 0).toFixed(2),
+      isReal:          true,
+      cachedAt:        listing.costs_cached_at,
     }
   }
 
