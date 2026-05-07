@@ -1274,11 +1274,11 @@ async def trigger_sync(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Trigger an immediate sync for the current user's marketplace accounts (last 60 min) and check pending NF-e."""
+    """Trigger an immediate sync for the current user's marketplace accounts (last 7 days) and check pending NF-e."""
     import asyncio
     from tasks.sync_orders import sync_ml_integration, sync_shopee_integration
 
-    date_from = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
+    date_from = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     now_ts = int(time_module.time())
 
     ml_accs_result = await db.execute(
@@ -1299,10 +1299,15 @@ async def trigger_sync(
     ml_accounts = ml_accs_result.scalars().all()
 
     imported = 0
+    ml_order_ids: list[str] = []
     for account in ml_accounts:
+        range_orders = await _ml.get_recent_orders(
+            account.access_token, account.platform_user_id, date_from, None
+        )
+        ml_order_ids.extend(str(o.get("id")) for o in range_orders if o.get("id"))
         imported += await sync_ml_integration(db, account, date_from)
     for account in shopee_result.scalars().all():
-        imported += await sync_shopee_integration(db, account, now_ts - 3600, now_ts)
+        imported += await sync_shopee_integration(db, account, now_ts - 7 * 24 * 3600, now_ts)
 
     # NF-e sync: check pending ML orders for current user's accounts
     nfe_updated = 0
@@ -1379,7 +1384,7 @@ async def trigger_sync(
         limit=100,
     )
 
-    dates_fixed = await _backfill_order_dates(db, ml_accounts, current_user)
+    dates_fixed = await _backfill_order_dates(db, ml_accounts, current_user, platform_order_ids=ml_order_ids or None)
 
     return {"ok": True, "imported": imported, "nfe_updated": nfe_updated, "ship_updated": ship_updated, "dates_fixed": dates_fixed}
 
@@ -1456,6 +1461,73 @@ async def sync_range(
         for account in shopee_result.scalars().all():
             imported += await sync_shopee_integration(db, account, ts_from, ts_to)
 
+    # NF-e sync: check pending ML orders in the synced range
+    import asyncio
+    nfe_updated = 0
+    if ml_accounts:
+        accounts_map = {a.id: a for a in ml_accounts}
+        from sqlalchemy import and_
+        q = (
+            select(Order)
+            .where(
+                Order.platform == "mercadolivre",
+                Order.is_hidden == False,
+                Order.account_id.in_(list(accounts_map.keys())),
+                or_(
+                    Order.nfe_status != "authorized",
+                    Order.nfe_status == None,
+                    and_(
+                        Order.nfe_status == "authorized",
+                        or_(Order.nfe_url == None, ~Order.nfe_url.contains("/danfe/")),
+                    ),
+                ),
+            )
+            .order_by(Order.id.desc())
+            .limit(200)
+        )
+        if current_user.role == "ac":
+            q = q.where(Order.dropshipper_id == current_user.id)
+
+        nfe_result = await db.execute(q)
+        orders_to_check = nfe_result.scalars().all()
+
+        for order in orders_to_check:
+            account = accounts_map.get(order.account_id)
+            if not account or not account.access_token:
+                continue
+
+            if not order.shipment_id:
+                try:
+                    ml_order_data = await _ml.get_order(account.access_token, order.platform_order_id)
+                    sid = (ml_order_data.get("shipping") or {}).get("id")
+                    if sid:
+                        order.shipment_id = str(sid)
+                except Exception:
+                    pass
+
+            try:
+                invoice = await _ml.get_order_fiscal_data(
+                    account.access_token,
+                    order.platform_order_id,
+                    seller_id=account.platform_user_id,
+                    shipment_id=order.shipment_id,
+                )
+            except Exception:
+                invoice = {}
+
+            if invoice:
+                new_key, new_status, new_url = _extract_nfe_fields(invoice)
+                if new_key or new_status:
+                    order.nfe_key = new_key
+                    order.nfe_status = new_status
+                    order.nfe_url = new_url
+                    nfe_updated += 1
+
+            await asyncio.sleep(0.15)
+
+        if nfe_updated or any(o.shipment_id for o in orders_to_check):
+            await db.commit()
+
     # Targeted backfill: fix dates for all ML orders found in this range
     dates_fixed = await _backfill_order_dates(db, ml_accounts, current_user, platform_order_ids=ml_order_ids or None)
 
@@ -1470,6 +1542,7 @@ async def sync_range(
     return {
         "ok": True,
         "imported": imported,
+        "nfe_updated": nfe_updated,
         "dates_fixed": dates_fixed,
         "ship_updated": ship_updated,
         "date_from": date_from_iso,

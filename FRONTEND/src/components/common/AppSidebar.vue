@@ -65,6 +65,16 @@
             </li>
 
             <li class="nav-item">
+              <RouterLink to="/messages" class="nav-link" :class="{ active: route.path.startsWith('/messages') }">
+                <i class="nav-icon fas fa-comments"></i>
+                <p>
+                  Atendimento
+                  <span v-if="unreadMessages > 0" class="badge badge-danger badge-pill right">{{ unreadMessages }}</span>
+                </p>
+              </RouterLink>
+            </li>
+
+            <li class="nav-item">
               <RouterLink to="/financial" class="nav-link" :class="{ active: route.path.startsWith('/financial') }">
                 <i class="nav-icon fas fa-dollar-sign"></i>
                 <p>Financeiro</p>
@@ -219,6 +229,12 @@
                     <p>Gestores Operacionais</p>
                   </RouterLink>
                 </li>
+                <li class="nav-item" v-if="isAdmin">
+                  <RouterLink to="/settings/ai-config" class="nav-link" :class="{ active: route.path === '/settings/ai-config' }">
+                    <i class="far fa-circle nav-icon"></i>
+                    <p>Configuração de IA</p>
+                  </RouterLink>
+                </li>
               </ul>
             </li>
           </template>
@@ -238,15 +254,25 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useMessagesStore } from '@/stores/messages'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
 const settingsOpen = ref(false)
+const messagesStore = useMessagesStore()
+const unreadMessages = computed(() => messagesStore.unreadTotal)
+
+onMounted(() => {
+  const role = authStore.user?.role
+  if (role === 'ac' || role === 'admin') {
+    messagesStore.fetchStats()
+  }
+})
 
 async function handleLogout() {
   await authStore.logout()

@@ -36,6 +36,12 @@ async def ml_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     event_id = f"{ml_user_id}:{resource}"
     topic = body.get("topic", "")
 
+    # Roteia por tópico
+    if topic == "messages":
+        return await _handle_ml_messages(db, body, ml_user_id)
+    if topic == "questions":
+        return await _handle_ml_questions(db, body, ml_user_id)
+
     # Only process order notifications
     if "orders" not in resource and topic != "orders_v2":
         return {"status": "ignored"}
@@ -81,6 +87,70 @@ async def ml_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         event.error_message = str(e)[:1000]
         await db.commit()
         raise
+
+    return {"status": "ok"}
+
+
+async def _handle_ml_messages(db, body: dict, ml_user_id: str):
+    """Webhook messages: busca pack_id no resource e dispara sync."""
+    import asyncio
+    from tasks.messages_sync import sync_account_messages
+
+    resource = body.get("resource", "")
+    # resource exemplo: /messages/packs/1234567890/sellers/987654321
+    parts = resource.split("/")
+    try:
+        pack_idx = parts.index("packs")
+        pack_id = parts[pack_idx + 1]
+    except (ValueError, IndexError):
+        return {"status": "ignored", "reason": "no_pack_id"}
+
+    result = await db.execute(
+        select(MarketplaceAccount).where(
+            MarketplaceAccount.platform_user_id == ml_user_id,
+            MarketplaceAccount.platform == "mercadolivre",
+            MarketplaceAccount.is_active == True,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        return {"status": "no_integration"}
+
+    # Sincroniza em background sem bloquear a resposta 200
+    asyncio.create_task(sync_account_messages(account.id))
+    return {"status": "ok", "pack_id": pack_id}
+
+
+async def _handle_ml_questions(db, body: dict, ml_user_id: str):
+    """
+    Webhook questions: busca a pergunta específica pelo question_id do resource.
+    Funciona para anúncios normais E de catálogo, pois usa GET /questions/{id} direto.
+    """
+    import asyncio
+    import re
+    from tasks.messages_sync import sync_question_by_id
+
+    result = await db.execute(
+        select(MarketplaceAccount).where(
+            MarketplaceAccount.platform_user_id == ml_user_id,
+            MarketplaceAccount.platform == "mercadolivre",
+            MarketplaceAccount.is_active == True,
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        return {"status": "no_integration"}
+
+    # Resource vem como "/questions/123456789"
+    resource = body.get("resource") or ""
+    match = re.search(r"/questions/(\d+)", resource)
+    if match:
+        question_id = match.group(1)
+        asyncio.create_task(sync_question_by_id(account.id, question_id))
+    else:
+        # Fallback: sync geral se não conseguir extrair o ID
+        from tasks.messages_sync import sync_account_messages
+        asyncio.create_task(sync_account_messages(account.id))
 
     return {"status": "ok"}
 

@@ -71,6 +71,15 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    from tasks.messages_sync import sync_all_messages
+    scheduler.add_job(
+        sync_all_messages,
+        IntervalTrigger(minutes=15),
+        id="sync_messages",
+        name="Sync Mensagens e Perguntas ML",
+        replace_existing=True,
+    )
+
     scheduler.start()
     print("Background scheduler started")
 

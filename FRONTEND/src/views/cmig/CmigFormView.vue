@@ -181,10 +181,10 @@ async function fetchCep() {
   if (cep?.length !== 8) return
   try {
     const { data } = await api.get(`/users/address/lookup/${cep}`)
-    form.value.street = data.logradouro
-    form.value.neighborhood = data.bairro
-    form.value.city = data.localidade
-    form.value.state = data.uf
+    form.value.street = data.street
+    form.value.neighborhood = data.neighborhood
+    form.value.city = data.city
+    form.value.state = data.state
   } catch {}
 }
 

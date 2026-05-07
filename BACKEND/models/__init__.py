@@ -14,3 +14,4 @@ from models.financial import FinancialTransaction
 from models.notification import Notification
 from models.return_ import Return
 from models.webhook import WebhookEvent
+from models.messages import ConversationThread, ConversationMessage, AIConfig, CMIGAIConfig

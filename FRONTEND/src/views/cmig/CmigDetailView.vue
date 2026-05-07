@@ -114,6 +114,40 @@
                 </div>
               </div>
             </div>
+
+            <!-- IA de Atendimento -->
+            <div class="card" v-if="isAC || isAdmin">
+              <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-robot mr-2 text-success"></i>IA de Atendimento</h3>
+              </div>
+              <div class="card-body">
+                <div class="form-group mb-2">
+                  <div class="custom-control custom-switch">
+                    <input type="checkbox" class="custom-control-input" id="switchAutoRespond" v-model="aiConfig.auto_respond" />
+                    <label class="custom-control-label" for="switchAutoRespond">
+                      Auto-resposta ativada
+                    </label>
+                  </div>
+                  <small class="text-muted d-block mt-1">
+                    Quando ativado, a IA responde automaticamente aos compradores sem revisão humana.
+                  </small>
+                </div>
+                <div class="form-group mb-2">
+                  <label class="small font-weight-bold">Instruções específicas desta conta</label>
+                  <textarea
+                    v-model="aiConfig.custom_instructions"
+                    class="form-control form-control-sm"
+                    rows="4"
+                    placeholder="Ex: Esta é a conta da Nike. Produtos originais. Prazo de entrega: 5-7 dias úteis..."
+                  ></textarea>
+                  <small class="text-muted">Combinadas com as instruções gerais do sistema.</small>
+                </div>
+                <button class="btn btn-sm btn-success" @click="saveAIConfig" :disabled="savingAI">
+                  <i :class="['fas', savingAI ? 'fa-spinner fa-spin' : 'fa-save', 'mr-1']"></i>
+                  {{ savingAI ? 'Salvando...' : 'Salvar IA' }}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -193,16 +227,40 @@ const coAdminId = ref('')
 const nfeForm = ref({ cm_id: '', shipping_method: 'FULL_ML', issuer: 'marketplace', notes: '' })
 
 const isAC = computed(() => authStore.user?.role === 'ac')
+const isAdmin = computed(() => authStore.user?.role === 'admin')
 const cmigId = computed(() => route.params.id)
+
+const aiConfig = ref({ auto_respond: false, custom_instructions: '' })
+const savingAI = ref(false)
 
 onMounted(async () => {
   const { data } = await api.get(`/cmigs/${cmigId.value}`)
   cmig.value = data
   loadNfeConfigs()
+  loadAIConfig()
   // Carregar CMs da CMIG
   const { data: accData } = await api.get('/accounts', { params: { cmig_id: cmigId.value } }).catch(() => ({ data: [] }))
   cms.value = Array.isArray(accData) ? accData : (accData?.items || [])
 })
+
+async function loadAIConfig() {
+  try {
+    const { data } = await api.get(`/ai-config/cmig/${cmigId.value}`)
+    aiConfig.value = { auto_respond: data.auto_respond || false, custom_instructions: data.custom_instructions || '' }
+  } catch (_) {}
+}
+
+async function saveAIConfig() {
+  savingAI.value = true
+  try {
+    await api.put(`/ai-config/cmig/${cmigId.value}`, aiConfig.value)
+    toast.success('Configuração de IA salva!')
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao salvar configuração de IA.')
+  } finally {
+    savingAI.value = false
+  }
+}
 
 async function loadNfeConfigs() {
   if (!cms.value.length) return

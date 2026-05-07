@@ -70,6 +70,8 @@ from routers import (
     people,
     fiscal_config,
     invoices,
+    messages,
+    ai_config,
 )
 
 PREFIX = "/api/v1"
@@ -97,6 +99,8 @@ app.include_router(simulator.router,         prefix=f"{PREFIX}/simulator",      
 app.include_router(people.router,            prefix=f"{PREFIX}/people",         tags=["People"])
 app.include_router(fiscal_config.router,     prefix=f"{PREFIX}/cmigs/{{cmig_id}}/fiscal-config", tags=["FiscalConfig"])
 app.include_router(invoices.router,          prefix=f"{PREFIX}/invoices",        tags=["Invoices"])
+app.include_router(messages.router)
+app.include_router(ai_config.router)
 
 
 _os.makedirs("static/uploads/cmig-products", exist_ok=True)

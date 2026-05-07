@@ -1,5 +1,6 @@
 <template>
   <div>
+    <h4 class="mb-2 font-weight-bold">Pedidos</h4>
     <!-- Paginação topo -->
     <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap" style="gap:.5rem">
       <div class="d-flex align-items-center" style="gap:.25rem">
@@ -127,7 +128,7 @@
           </div>
         </div>
         <div class="ml-auto d-flex" style="gap:.4rem">
-          <button class="btn btn-sm btn-outline-primary" @click="syncOrders" :disabled="syncing" title="Sincronizar últimos 60 min com ML/Shopee">
+          <button class="btn btn-sm btn-outline-primary" @click="syncOrders" :disabled="syncing" title="Sincronizar últimos 7 dias com ML/Shopee">
             <i class="fas fa-cloud-download-alt mr-1" :class="{ 'fa-spin': syncing }"></i>
             {{ syncing ? 'Sincronizando...' : 'Sincronizar' }}
           </button>
@@ -952,6 +953,7 @@ async function syncOrders() {
     const parts = [`${data.imported} novo(s) pedido(s) importado(s)`]
     if (data.nfe_updated > 0) parts.push(`${data.nfe_updated} NF-e(s) atualizada(s)`)
     if (data.ship_updated > 0) parts.push(`${data.ship_updated} envio(s) atualizado(s)`)
+    if (data.dates_fixed > 0) parts.push(`${data.dates_fixed} data(s) corrigida(s)`)
     toast.success(`Sincronização concluída — ${parts.join(' · ')}`)
     await loadOrders()
   } catch (err) {
@@ -977,6 +979,7 @@ async function runSyncRange() {
       platform: syncRange.value.platform,
     })
     const parts = [`${data.imported} novo(s) pedido(s) importado(s)`]
+    if (data.nfe_updated > 0) parts.push(`${data.nfe_updated} NF-e(s) atualizada(s)`)
     if (data.dates_fixed > 0) parts.push(`${data.dates_fixed} data(s) corrigida(s)`)
     if (data.ship_updated > 0) parts.push(`${data.ship_updated} envio(s) atualizado(s)`)
     syncRangeResult.value = {

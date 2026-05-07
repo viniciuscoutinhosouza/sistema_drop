@@ -25,6 +25,7 @@ def get_authorization_url(state: str) -> str:
         f"&client_id={settings.ML_APP_ID}"
         f"&redirect_uri={redirect}"
         f"&state={state}"
+        f"&scope=read_messages%20write_messages%20read_questions"
     )
 
 

@@ -83,6 +83,12 @@ const SaidasView        = () => import('@/views/fiscal/SaidasView.vue')
 const InvoiceFormView   = () => import('@/views/fiscal/InvoiceFormView.vue')
 const InvoiceDetailView = () => import('@/views/fiscal/InvoiceDetailView.vue')
 
+// Atendimento (Mensagens)
+const MessagesView = () => import('@/views/messages/MessagesView.vue')
+
+// Configuração IA
+const AIConfigView = () => import('@/views/settings/AIConfigView.vue')
+
 
 const routes = [
   // Auth routes (no sidebar)
@@ -172,6 +178,12 @@ const routes = [
 
       // Anúncios — AC
       { path: 'anuncios', component: AnunciosView, meta: { title: 'Anúncios', role: 'ac' } },
+
+      // Atendimento (Mensagens + Perguntas) — AC e Admin
+      { path: 'messages', component: MessagesView, meta: { title: 'Central de Atendimento' } },
+
+      // Configuração IA — Admin
+      { path: 'settings/ai-config', component: AIConfigView, meta: { title: 'Configuração de IA', role: 'admin' } },
 
       // Simulador ML — todos os usuários
       { path: 'simulator', component: SimuladorView, meta: { title: 'Simulador ML' } },

@@ -141,7 +141,7 @@ async def create_account(
         await db.commit()
         return {"id": existing.id, "message": "Conta vinculada como co-administrador"}
 
-    # Nova CONTA
+    # Nova CONTA — inativa até completar OAuth
     account = MarketplaceAccount(
         owner_id=current_user.id,
         platform=platform,
@@ -150,6 +150,7 @@ async def create_account(
         phone=phone,
         cmig_id=body.get("cmig_id") or None,
         otp_verified=False,
+        is_active=False,
     )
     db.add(account)
     await db.flush()
