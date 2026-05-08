@@ -60,7 +60,6 @@ async def create_product(
     product = DropshipperProduct(
         dropshipper_id=current_user.id,
         catalog_product_id=body.get("catalog_product_id"),
-        kit_id=body.get("kit_id"),
         title=body["title"],
         title_ml=body.get("title_ml"),
         title_shopee=body.get("title_shopee"),
@@ -95,7 +94,6 @@ async def get_product(
     return {
         "id": product.id,
         "catalog_product_id": product.catalog_product_id,
-        "kit_id": product.kit_id,
         "title": product.title,
         "title_ml": product.title_ml,
         "title_shopee": product.title_shopee,

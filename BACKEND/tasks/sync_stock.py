@@ -16,7 +16,6 @@ from database import task_db, AsyncSyncSession
 from models.integration import MarketplaceAccount
 from models.product import DropshipperProduct, CatalogProduct, ProductListing
 from models.cmig import CMIGProduct
-from services.kit_service import calculate_kit_stock
 from services.ml_service import update_item_stock as ml_update_stock
 from services.shopee_service import update_item_stock as shopee_update_stock
 
@@ -116,8 +115,6 @@ async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) 
         product = result.scalar_one_or_none()
         if product is None:
             return 0
-        if product.kit_id:
-            return await calculate_kit_stock(db, product.kit_id)
         if product.catalog_product_id:
             result = await db.execute(
                 select(CatalogProduct.stock_quantity).where(CatalogProduct.id == product.catalog_product_id)

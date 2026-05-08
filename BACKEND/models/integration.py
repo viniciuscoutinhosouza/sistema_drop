@@ -28,6 +28,7 @@ class MarketplaceAccount(Base):
     is_active = Column(Boolean, nullable=False, default=False)
     is_official_store = Column(Boolean, nullable=False, default=False)  # Loja Oficial ML — permite editar título
     otp_verified = Column(Boolean, nullable=False, default=False)
+    requires_reauth = Column(Boolean, nullable=False, default=False)
     last_sync_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
 

@@ -30,11 +30,19 @@
               <div class="card-header"><h3 class="card-title">Informações</h3></div>
               <div class="card-body">
                 <dl class="row mb-0">
-                  <dt class="col-sm-5">CNPJ</dt>
-                  <dd class="col-sm-7">{{ cmig.cnpj }}</dd>
-                  <dt class="col-sm-5">Razão Social</dt>
-                  <dd class="col-sm-7">{{ cmig.company_name }}</dd>
-                  <dt class="col-sm-5">Nome Fantasia</dt>
+                  <template v-if="cmig.cnpj">
+                    <dt class="col-sm-5">CNPJ</dt>
+                    <dd class="col-sm-7">{{ cmig.cnpj }}</dd>
+                    <dt class="col-sm-5">Razão Social</dt>
+                    <dd class="col-sm-7">{{ cmig.company_name || '—' }}</dd>
+                  </template>
+                  <template v-else-if="cmig.cpf">
+                    <dt class="col-sm-5">CPF</dt>
+                    <dd class="col-sm-7">{{ cmig.cpf }}</dd>
+                    <dt class="col-sm-5">Nome</dt>
+                    <dd class="col-sm-7">{{ cmig.company_name || '—' }}</dd>
+                  </template>
+                  <dt class="col-sm-5">{{ (cmig.cpf && !cmig.cnpj) ? 'Apelido' : 'Nome Fantasia' }}</dt>
                   <dd class="col-sm-7">{{ cmig.trade_name || '—' }}</dd>
                   <dt class="col-sm-5">E-mail</dt>
                   <dd class="col-sm-7">{{ cmig.email || '—' }}</dd>

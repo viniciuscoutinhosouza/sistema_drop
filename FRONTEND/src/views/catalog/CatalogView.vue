@@ -4,7 +4,7 @@
     <div class="container-fluid">
       <div class="row mb-2">
         <div class="col-sm-6">
-          <h1 class="m-0">Catálogo PG</h1>
+          <h1 class="m-0">Catálogo</h1>
         </div>
       </div>
     </div>
@@ -33,6 +33,20 @@
           </div>
         </div>
       </div>
+
+      <!-- Toggle PG / CMIG -->
+      <div class="mb-3">
+        <div class="btn-group">
+          <button class="btn" :class="catalogTab === 'pg' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'pg'">
+            <i class="fas fa-warehouse mr-1"></i> Catálogo PG
+          </button>
+          <button class="btn" :class="catalogTab === 'cmig' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'cmig'">
+            <i class="fas fa-id-card mr-1"></i> Catálogo CMIG
+          </button>
+        </div>
+      </div>
+
+      <template v-if="catalogTab === 'pg'">
 
       <!-- Filtros -->
       <div class="card mb-3">
@@ -132,6 +146,93 @@
           </ul>
         </nav>
       </div>
+
+      </template><!-- end catalogTab === 'pg' -->
+
+      <!-- ── Catálogo CMIG ── -->
+      <template v-else>
+
+        <!-- Conta não selecionada -->
+        <div v-if="!selectedAccountId" class="text-center py-5 text-muted">
+          <i class="fas fa-hand-point-up fa-3x mb-3 d-block"></i>
+          <p>Selecione uma conta de marketplace acima para ver o Catálogo CMIG vinculado</p>
+        </div>
+
+        <!-- Conta sem CMIG vinculada -->
+        <div v-else-if="!derivedCmigId" class="alert alert-warning">
+          <i class="fas fa-exclamation-triangle mr-1"></i>
+          A conta de marketplace selecionada não possui uma CMIG vinculada.
+        </div>
+
+        <!-- Catálogo CMIG da conta -->
+        <template v-else>
+
+          <div class="card card-outline card-warning mb-3">
+            <div class="card-body py-2">
+              <div class="d-flex align-items-center flex-wrap" style="gap:12px">
+                <span class="text-muted small font-weight-bold">CMIG:</span>
+                <span class="font-weight-bold">
+                  <i class="fas fa-id-card mr-1 text-warning"></i>
+                  {{ activeCmig?.company_name || `#${derivedCmigId}` }}
+                </span>
+                <div class="btn-group btn-group-sm ml-auto">
+                  <button class="btn btn-outline-secondary" :class="{ active: cmigFilter === 'all' }" @click="cmigFilter = 'all'">Todos</button>
+                  <button class="btn btn-outline-secondary" :class="{ active: cmigFilter === 'simple' }" @click="cmigFilter = 'simple'">Simples</button>
+                  <button class="btn btn-outline-secondary" :class="{ active: cmigFilter === 'kit' }" @click="cmigFilter = 'kit'">KITs</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="cmigLoading" class="text-center py-5">
+            <i class="fas fa-spinner fa-spin fa-3x text-muted"></i>
+          </div>
+
+          <div v-else>
+            <div class="row">
+              <div v-for="product in filteredCmigProducts" :key="product.id" class="col-xl-2 col-lg-3 col-md-4 col-sm-6 mb-3">
+                <div class="card h-100 shadow-sm">
+                  <div style="height:130px;background:#f8f9fa;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px 4px 0 0">
+                    <img
+                      :src="getCmigThumb(product) || 'https://via.placeholder.com/300x200?text=Sem+Foto'"
+                      style="max-height:100%;max-width:100%;object-fit:contain"
+                      :alt="product.title"
+                    />
+                  </div>
+                  <div class="card-body p-2">
+                    <p class="text-muted mb-0" style="font-size:10px">
+                      <span v-if="product.is_composite" class="badge badge-warning mr-1" style="font-size:9px">KIT</span>
+                      {{ product.sku_cmig }}
+                    </p>
+                    <p class="card-title mb-1 font-weight-bold" style="font-size:12px;line-height:1.3">
+                      {{ product.title.slice(0, 50) }}{{ product.title.length > 50 ? '...' : '' }}
+                    </p>
+                    <p class="text-success font-weight-bold mb-0" style="font-size:13px">{{ formatCurrency(product.cost_price) }}</p>
+                    <p class="text-muted mb-0" style="font-size:11px">Estoque: {{ product.stock_quantity }}</p>
+                  </div>
+                  <div class="card-footer p-1">
+                    <button
+                      class="btn btn-success btn-sm btn-block"
+                      style="font-size:11px;padding:3px 6px"
+                      :disabled="!selectedAccountId"
+                      :title="!selectedAccountId ? 'Selecione uma conta de marketplace acima' : ''"
+                      @click="openPublishModalFromCmig(product)"
+                    >
+                      <i class="fas fa-bullhorn mr-1"></i> Publicar
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="filteredCmigProducts.length === 0" class="text-center py-5 text-muted">
+              <i class="fas fa-box-open fa-3x mb-3"></i>
+              <p>Nenhum produto encontrado</p>
+            </div>
+          </div>
+
+        </template><!-- end derivedCmigId -->
+
+      </template><!-- end catalogTab === 'cmig' -->
 
     </div>
   </section>
@@ -529,7 +630,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { formatCurrency } from '@/utils/formatters'
 
@@ -615,6 +716,7 @@ const modal = reactive({
   saving: false,
   error: '',
   success: '',
+  cmigProductId: null,   // preenchido quando publicando CMIG sem vínculo PG
 })
 
 const form = reactive({
@@ -770,13 +872,14 @@ async function uploadPhoto(event) {
 }
 
 async function openPublishModal(product) {
-  modal.product      = product
+  modal.product       = product
   modal.productImages = []
   modal.loadingImages = false
-  modal.show         = true
-  modal.saving       = false
-  modal.error        = ''
-  modal.success      = ''
+  modal.show          = true
+  modal.saving        = false
+  modal.error         = ''
+  modal.success       = ''
+  modal.cmigProductId = null
 
   form.title            = product.title?.slice(0, 60) || ''
   form.category_id      = ''
@@ -844,7 +947,9 @@ async function publishAnuncio() {
 
     await api.post('/anuncios/publish', {
       account_id:         selectedAccountId.value,
-      catalog_product_id: modal.product.id,
+      ...(modal.cmigProductId
+        ? { cmig_product_id: modal.cmigProductId }
+        : { catalog_product_id: modal.product.id }),
       title_override:     form.title.trim(),
       category_id:        form.category_id,
       sale_price:         Number(form.sale_price),
@@ -871,9 +976,130 @@ async function publishAnuncio() {
   }
 }
 
+// ── Catálogo CMIG ──────────────────────────────────────────────────────────────
+const catalogTab = ref('pg')
+const cmigs      = ref([])
+const cmigProducts = ref([])
+const cmigLoading  = ref(false)
+const cmigFilter   = ref('all')
+
+// CMIG é derivado automaticamente da conta de marketplace selecionada
+const derivedCmigId = computed(() => selectedAccount.value?.cmig_id ?? null)
+const activeCmig    = computed(() => cmigs.value.find(c => c.id === derivedCmigId.value) ?? null)
+
+const filteredCmigProducts = computed(() => {
+  if (cmigFilter.value === 'kit')    return cmigProducts.value.filter(p => p.is_composite)
+  if (cmigFilter.value === 'simple') return cmigProducts.value.filter(p => !p.is_composite)
+  return cmigProducts.value
+})
+
+async function loadCmigs() {
+  try {
+    const { data } = await api.get('/cmigs')
+    cmigs.value = Array.isArray(data) ? data : []
+  } catch {}
+}
+
+async function loadCmigProducts() {
+  const id = derivedCmigId.value
+  if (!id) { cmigProducts.value = []; return }
+  cmigLoading.value = true
+  try {
+    const { data } = await api.get(`/cmigs/${id}/products`)
+    cmigProducts.value = Array.isArray(data) ? data : []
+  } catch {
+    cmigProducts.value = []
+  } finally {
+    cmigLoading.value = false
+  }
+}
+
+// Recarrega produtos CMIG ao trocar conta de marketplace ou ativar a aba
+watch(derivedCmigId, () => {
+  if (catalogTab.value === 'cmig') loadCmigProducts()
+  else cmigProducts.value = []
+})
+watch(catalogTab, (tab) => {
+  if (tab === 'cmig') loadCmigProducts()
+})
+
+function getCmigThumb(p) {
+  if (p.images && p.images.length) return p.images[0].url
+  return null
+}
+
+async function openPublishModalFromCmig(cmigProduct) {
+  if (cmigProduct.pg_product_id) {
+    // Tem vínculo PG → publica via produto PG (estoque real no PG)
+    await openPublishModal({
+      id:             cmigProduct.pg_product_id,
+      title:          cmigProduct.title,
+      sku:            cmigProduct.sku_cmig,
+      cost_price:     cmigProduct.cost_price,
+      image_url:      getCmigThumb(cmigProduct),
+      stock_quantity: cmigProduct.stock_quantity,
+      model:          cmigProduct.model     || '',
+      height_cm:      cmigProduct.height_cm || '',
+      width_cm:       cmigProduct.width_cm  || '',
+      length_cm:      cmigProduct.length_cm || '',
+      weight_kg:      cmigProduct.weight_kg || '',
+      brand:          cmigProduct.brand     || '',
+    })
+    // openPublishModal já seta cmigProductId = null e busca imagens do PG
+  } else {
+    // Sem vínculo PG → publica diretamente pelo produto CMIG (estoque real na CMIG)
+    const thumb = getCmigThumb(cmigProduct)
+    modal.product = {
+      id:             null,
+      title:          cmigProduct.title,
+      sku:            cmigProduct.sku_cmig,
+      cost_price:     cmigProduct.cost_price,
+      image_url:      thumb,
+      stock_quantity: cmigProduct.stock_quantity,
+      model:          cmigProduct.model     || '',
+      height_cm:      cmigProduct.height_cm || '',
+      width_cm:       cmigProduct.width_cm  || '',
+      length_cm:      cmigProduct.length_cm || '',
+      weight_kg:      cmigProduct.weight_kg || '',
+    }
+    modal.cmigProductId = cmigProduct.id
+    modal.productImages = cmigProduct.images || []
+    modal.loadingImages = false
+    modal.show          = true
+    modal.saving        = false
+    modal.error         = ''
+    modal.success       = ''
+
+    form.title            = cmigProduct.title?.slice(0, 60) || ''
+    form.category_id      = ''
+    form.category_name    = ''
+    form.pictures         = (cmigProduct.images || []).map(i => i.url).filter(Boolean)
+    if (!form.pictures.length && thumb) form.pictures = [thumb]
+    form.sale_price       = ''
+    form.listing_type     = 'gold_special'
+    form.free_shipping    = false
+    form.stock_mode       = 'product'
+    form.fixed_quantity   = 1
+    form.keep_stock_fixed = false
+    form.model            = cmigProduct.model     || ''
+    form.height_cm        = cmigProduct.height_cm || ''
+    form.width_cm         = cmigProduct.width_cm  || ''
+    form.length_cm        = cmigProduct.length_cm || ''
+    form.weight_kg        = cmigProduct.weight_kg || ''
+    catSearch.value       = ''
+    catResults.value      = []
+    newPhotoUrl.value     = ''
+    attrsModal.attrs      = []
+    attrsModal.show       = false
+    secondaryExpanded.value = false
+    Object.keys(attrValues).forEach(k => delete attrValues[k])
+  }
+}
+
 onMounted(() => {
   loadAccounts()
   loadCategories()
   loadProducts()
+  loadCmigs()
 })
 </script>

@@ -90,6 +90,27 @@ npm run dev                        # http://localhost:5173 (proxy → :8000)
 
 ---
 
+## Servidor de Produção: LINUX
+O acesso ao servidor em produção segue o comando abaixo
+ssh -i c:/sistema_drop/ssh-key-2026-05-08.key ubuntu@163.176.165.201
+
+✅ Instância Oracle Cloud Criada
+Dados da instância:
+Nome:                   meu-servidor-web
+Status:                 Running (Ativo)
+Sistema Operacional:    Ubuntu 22.04 LTS
+Shape:                  VM.Standard.E2.1.Micro (Always Free)
+IP Público:             163.176.165.201
+IP Privado:             10.0.0.130
+Região:                 Brazil East (São Paulo)
+Usuário SSH:            ubuntu
+
+Portas abertas (Security List):
+Porta 22 (SSH) ✅
+Porta 80 (HTTP) ✅
+Porta 443 (HTTPS) ✅
+
+
 ## Convenções de Código
 
 ### Backend

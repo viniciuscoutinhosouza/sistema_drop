@@ -4,14 +4,15 @@ from database import Base
 
 
 class CMIG(Base):
-    """Conta MIG — representa um CNPJ físico do AC; agrupa CMs e gerencia estoque/NF-e."""
+    """Conta MIG — pode ser PJ (CNPJ + Razão Social) ou PF (CPF + Nome). CNPJ/Razão Social podem ser adicionados depois."""
     __tablename__ = "cmigs"
 
     id           = Column(Integer, primary_key=True)
     owner_ac_id  = Column(Integer, ForeignKey("users.id"), nullable=False)
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
-    cnpj         = Column(String(18), nullable=False, unique=True)
-    company_name = Column(String(255), nullable=False)
+    cnpj         = Column(String(18), nullable=True, unique=True)
+    cpf          = Column(String(14), nullable=True, unique=True)
+    company_name = Column(String(255), nullable=True)   # Razão Social (PJ) ou Nome (PF)
     trade_name   = Column(String(255))
     email        = Column(String(255))
     phone        = Column(String(20))
@@ -79,6 +80,7 @@ class CMIGProduct(Base):
     pictures_json  = Column(Text)
     fiscal_json    = Column(String(2000))
     pg_product_id  = Column(Integer, ForeignKey("catalog_products.id"), nullable=True)
+    is_composite   = Column(Boolean, nullable=False, default=False)
     is_active      = Column(Boolean, nullable=False, default=True)
     created_at     = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at     = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
@@ -89,6 +91,8 @@ class CMIGProduct(Base):
     category   = relationship("Category", lazy="joined")
     images     = relationship("CMIGProductImage", back_populates="product", cascade="all, delete-orphan")
     variants   = relationship("CMIGProductVariant", back_populates="product", cascade="all, delete-orphan")
+    components = relationship("CMIGProductComponent", foreign_keys="CMIGProductComponent.composite_id",
+                              back_populates="composite", cascade="all, delete-orphan", lazy="selectin")
 
     @property
     def category_name(self):
@@ -123,3 +127,18 @@ class CMIGProductVariant(Base):
     attributes_json = Column(String(2000))
 
     product = relationship("CMIGProduct", back_populates="variants")
+
+
+class CMIGProductComponent(Base):
+    """Componente de um Produto CMIG Composto — referencia um CMIGProduct ou CatalogProduct."""
+    __tablename__ = "cmig_product_components"
+
+    id                 = Column(Integer, primary_key=True)
+    composite_id       = Column(Integer, ForeignKey("cmig_products.id"), nullable=False)
+    cmig_product_id    = Column(Integer, ForeignKey("cmig_products.id"), nullable=True)
+    catalog_product_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=True)
+    quantity           = Column(Integer, nullable=False, default=1)
+
+    composite     = relationship("CMIGProduct", foreign_keys=[composite_id], back_populates="components")
+    cmig_product  = relationship("CMIGProduct", foreign_keys=[cmig_product_id], lazy="selectin")
+    catalog_product = relationship("CatalogProduct", foreign_keys=[catalog_product_id], lazy="selectin")

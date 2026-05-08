@@ -11,8 +11,11 @@
             <RouterLink :to="`/cmigs/${cmigId}`" class="btn btn-secondary mr-2">
               <i class="fas fa-arrow-left mr-1"></i> Voltar à CMIG
             </RouterLink>
-            <RouterLink v-if="isAC" :to="`/cmig-products/new?cmig_id=${cmigId}`" class="btn btn-primary">
+            <RouterLink v-if="isAC" :to="`/cmig-products/new?cmig_id=${cmigId}`" class="btn btn-outline-primary mr-2">
               <i class="fas fa-plus mr-1"></i> Novo Produto
+            </RouterLink>
+            <RouterLink v-if="isAC" :to="`/cmig-products/novo-composto?cmig_id=${cmigId}`" class="btn btn-primary">
+              <i class="fas fa-layer-group mr-1"></i> Novo KIT
             </RouterLink>
           </div>
         </div>
@@ -22,8 +25,13 @@
     <section class="content">
       <div class="container-fluid">
         <div class="card">
-          <div class="card-header">
-            <h3 class="card-title"><i class="fas fa-box mr-2"></i>Produtos cadastrados</h3>
+          <div class="card-header d-flex align-items-center">
+            <h3 class="card-title flex-grow-1"><i class="fas fa-box mr-2"></i>Produtos cadastrados</h3>
+            <div class="btn-group btn-group-sm">
+              <button class="btn btn-outline-secondary" :class="{ active: filter === 'all' }" @click="setFilter('all')">Todos</button>
+              <button class="btn btn-outline-secondary" :class="{ active: filter === 'simple' }" @click="setFilter('simple')">Simples</button>
+              <button class="btn btn-outline-secondary" :class="{ active: filter === 'composite' }" @click="setFilter('composite')">KITs</button>
+            </div>
           </div>
           <div class="card-body p-0">
             <div v-if="loading" class="text-center py-5">
@@ -56,6 +64,7 @@
                   </td>
                   <td><code>{{ p.sku_cmig }}</code></td>
                   <td>
+                    <span v-if="p.is_composite" class="badge badge-warning mr-1" style="font-size:0.7em">KIT</span>
                     {{ p.title }}
                     <div v-if="p.brand || p.model" class="small text-muted mt-1">
                       <span v-if="p.brand">{{ p.brand }}</span>
@@ -79,7 +88,11 @@
                     </span>
                   </td>
                   <td>
-                    <RouterLink v-if="isAC || isUGO" :to="`/cmig-products/${p.id}/edit?cmig_id=${cmigId}`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
+                    <RouterLink
+                      v-if="isAC || isUGO"
+                      :to="p.is_composite ? `/cmig-products/${p.id}/editar-composto?cmig_id=${cmigId}` : `/cmig-products/${p.id}/edit?cmig_id=${cmigId}`"
+                      class="btn btn-sm btn-outline-primary mr-1" title="Editar"
+                    >
                       <i class="fas fa-edit"></i>
                     </RouterLink>
                     <button v-if="isAC && !p.pg_product_id" class="btn btn-sm btn-outline-secondary mr-1" @click="openLinkPg(p)" title="Vincular ao PG">
@@ -144,7 +157,13 @@ const toast = useToast()
 
 const cmigId = computed(() => route.query.cmig_id || route.params.cmig_id)
 const cmig = ref(null)
-const products = ref([])
+const allProducts = ref([])
+const filter = ref('all')
+const products = computed(() => {
+  if (filter.value === 'composite') return allProducts.value.filter(p => p.is_composite)
+  if (filter.value === 'simple') return allProducts.value.filter(p => !p.is_composite)
+  return allProducts.value
+})
 const loading = ref(false)
 const showLinkModal = ref(false)
 const selectedProduct = ref(null)
@@ -153,6 +172,8 @@ const savingLink = ref(false)
 
 const isAC = computed(() => authStore.user?.role === 'ac')
 const isUGO = computed(() => ['ugo', 'admin'].includes(authStore.user?.role))
+
+function setFilter(val) { filter.value = val }
 
 onMounted(async () => {
   if (!cmigId.value) return
@@ -176,7 +197,7 @@ async function loadProducts() {
   loading.value = true
   try {
     const { data } = await api.get(`/cmigs/${cmigId.value}/products`)
-    products.value = data
+    allProducts.value = data
   } finally {
     loading.value = false
   }

@@ -40,4 +40,9 @@ async def refresh_expiring_tokens():
                 await db.commit()
                 print(f"Refreshed token for integration {integration.id}")
             except Exception as e:
-                print(f"Error refreshing token for integration {integration.id}: {e}")
+                if "invalid_grant" in str(e):
+                    integration.requires_reauth = True
+                    await db.commit()
+                    print(f"[sync_tokens] invalid_grant conta {integration.id} — marcada requires_reauth")
+                else:
+                    print(f"Error refreshing token for integration {integration.id}: {e}")

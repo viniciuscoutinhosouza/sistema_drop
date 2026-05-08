@@ -136,14 +136,14 @@ async def get_kpis(
 
 @router.get("/top-products")
 async def get_top_products(db: AsyncSession = Depends(get_db)):
-    """Top 8 most recently added catalog products."""
+    """Last 12 most recently added catalog products."""
     from models.product import CatalogProduct, CatalogProductImage
 
     result = await db.execute(
         select(CatalogProduct)
         .where(CatalogProduct.is_active == True)
         .order_by(CatalogProduct.created_at.desc())
-        .limit(8)
+        .limit(12)
     )
     products = result.scalars().all()
 

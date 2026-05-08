@@ -29,8 +29,8 @@
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Razão Social</th>
-                  <th>CNPJ</th>
+                  <th>Nome / Razão Social</th>
+                  <th>CNPJ / CPF</th>
                   <th>E-mail</th>
                   <th>Status</th>
                   <th>Ações</th>
@@ -48,7 +48,11 @@
                     <strong>{{ cmig.company_name }}</strong>
                     <small class="d-block text-muted">{{ cmig.trade_name }}</small>
                   </td>
-                  <td>{{ cmig.cnpj }}</td>
+                  <td>
+                    <span v-if="cmig.cnpj">{{ cmig.cnpj }}</span>
+                    <span v-else-if="cmig.cpf"><small class="badge badge-light border">CPF</small> {{ cmig.cpf }}</span>
+                    <span v-else class="text-muted">—</span>
+                  </td>
                   <td>{{ cmig.email }}</td>
                   <td>
                     <span class="badge" :class="cmig.is_active ? 'badge-success' : 'badge-secondary'">

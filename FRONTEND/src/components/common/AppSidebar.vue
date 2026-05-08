@@ -91,14 +91,7 @@
             <li class="nav-item">
               <RouterLink to="/catalog" class="nav-link" :class="{ active: route.path.startsWith('/catalog') }">
                 <i class="nav-icon fas fa-store"></i>
-                <p>Catálogo PG</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-item">
-              <RouterLink to="/kits" class="nav-link" :class="{ active: route.path.startsWith('/kits') }">
-                <i class="nav-icon fas fa-boxes"></i>
-                <p>Kits</p>
+                <p>Catálogo</p>
               </RouterLink>
             </li>
 

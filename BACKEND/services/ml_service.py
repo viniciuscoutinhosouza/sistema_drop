@@ -25,7 +25,7 @@ def get_authorization_url(state: str) -> str:
         f"&client_id={settings.ML_APP_ID}"
         f"&redirect_uri={redirect}"
         f"&state={state}"
-        f"&scope=read_messages%20write_messages%20read_questions"
+        f"&scope=offline_access%20read%20write%20read_messages%20write_messages%20read_questions"
     )
 
 
@@ -54,6 +54,12 @@ async def refresh_ml_token(refresh_token: str) -> dict:
             "refresh_token": refresh_token,
         })
     if resp.status_code != 200:
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        if body.get("error") == "invalid_grant":
+            raise HTTPException(status_code=401, detail="invalid_grant")
         raise HTTPException(status_code=400, detail=f"Erro ao renovar token ML: {resp.text}")
     return resp.json()
 

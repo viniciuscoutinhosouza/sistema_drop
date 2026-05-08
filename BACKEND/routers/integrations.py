@@ -70,6 +70,7 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
         "otp_verified": acc.otp_verified,
         "is_owner": is_owner,
         "cmig_id": acc.cmig_id,
+        "requires_reauth": bool(acc.requires_reauth),
         "last_sync_at": acc.last_sync_at.isoformat() if acc.last_sync_at else None,
         "created_at": acc.created_at.isoformat() if acc.created_at else None,
     }
@@ -455,6 +456,7 @@ async def ml_callback(
     account.platform_user_id = str(user_info.get("id"))
     account.platform_username = user_info.get("nickname")
     account.is_active = True
+    account.requires_reauth = False
     await db.commit()
 
     frontend_url = f"{settings.FRONTEND_URL}/oauth/success?platform=mercadolivre&status=connected"

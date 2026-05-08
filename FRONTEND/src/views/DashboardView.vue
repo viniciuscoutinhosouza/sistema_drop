@@ -81,18 +81,18 @@
       </div>
     </div>
 
-    <!-- Top 8 catalog products -->
+    <!-- Últimos 12 produtos do catálogo -->
     <div class="row">
       <div class="col-12">
         <div class="card">
           <div class="card-header">
             <h3 class="card-title">
               <i class="fas fa-star mr-2 text-warning"></i>
-              Últimos 8 produtos do catálogo
+              Últimos 12 produtos do catálogo
             </h3>
             <div class="card-tools">
               <RouterLink to="/catalog" class="btn btn-sm btn-outline-primary">
-                Ver catálogo completo
+                Ver todos
               </RouterLink>
             </div>
           </div>
@@ -104,33 +104,41 @@
               <div
                 v-for="product in topProducts"
                 :key="product.id"
-                class="col-xl-3 col-lg-4 col-md-6 col-12 mb-3"
+                class="col-xl-2 col-lg-3 col-md-4 col-sm-6 mb-3"
               >
-                <div class="card card-outline card-primary h-100">
+                <div class="card h-100 shadow-sm">
+                  <RouterLink :to="`/catalog/${product.id}`">
+                    <div style="height:130px;background:#f8f9fa;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px 4px 0 0">
+                      <img
+                        :src="product.image_url || 'https://via.placeholder.com/300x200?text=Sem+Foto'"
+                        style="max-height:100%;max-width:100%;object-fit:contain"
+                        :alt="product.title"
+                      />
+                    </div>
+                  </RouterLink>
                   <div class="card-body p-2">
-                    <img
-                      :src="product.image_url || 'https://via.placeholder.com/200x150?text=Sem+Foto'"
-                      class="img-fluid mb-2 rounded"
-                      style="height: 140px; width: 100%; object-fit: cover"
-                      :alt="product.title"
-                    />
-                    <p class="text-xs text-muted mb-1">{{ product.sku }}</p>
-                    <p class="font-weight-bold mb-1 text-sm" style="line-height:1.2">
-                      {{ product.title.slice(0, 55) }}{{ product.title.length > 55 ? '...' : '' }}
+                    <p class="text-muted mb-0" style="font-size:10px">({{ product.sku }})</p>
+                    <p class="card-title mb-1 font-weight-bold" style="font-size:12px;line-height:1.3">
+                      {{ product.title.slice(0, 50) }}{{ product.title.length > 50 ? '...' : '' }}
                     </p>
-                    <p class="text-success font-weight-bold mb-1">{{ formatCurrency(product.cost_price) }}</p>
-                    <small class="text-muted">Estoque: {{ product.stock_quantity }}</small>
+                    <p class="text-success font-weight-bold mb-0" style="font-size:13px">{{ formatCurrency(product.cost_price) }}</p>
+                    <p class="text-muted mb-0" style="font-size:11px">Estoque: {{ product.stock_quantity }}</p>
                   </div>
                   <div class="card-footer p-1">
                     <RouterLink
                       :to="`/catalog/${product.id}`"
-                      class="btn btn-sm btn-primary btn-block"
+                      class="btn btn-success btn-sm btn-block"
+                      style="font-size:11px;padding:3px 6px"
                     >
-                      <i class="fas fa-plus mr-1"></i> Cadastrar Produto
+                      <i class="fas fa-eye mr-1"></i> Ver Produto
                     </RouterLink>
                   </div>
                 </div>
               </div>
+            </div>
+            <div v-if="!loadingProducts && !topProducts.length" class="text-center py-5 text-muted">
+              <i class="fas fa-box-open fa-3x mb-3"></i>
+              <p>Nenhum produto cadastrado</p>
             </div>
           </div>
         </div>

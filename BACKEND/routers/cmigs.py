@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func, update as _sa_update
+from sqlalchemy import select, and_, func, update as _sa_update, delete as _sa_delete
 from sqlalchemy.orm import selectinload
 import os as _os, shutil as _shutil, uuid as _uuid_mod
 from database import get_db
 from dependencies import get_current_user
 from models.user import User
-from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
+from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant, CMIGProductComponent
 from models.warehouse import Warehouse
 from models.product import CatalogProduct, CatalogProductImage, CatalogProductVariant, ProductListing
 from models.order import OrderItem
@@ -14,7 +14,7 @@ from models.integration import MarketplaceAccount
 from models.nfe_config import NFeConfig
 from schemas.cmig import (
     CMIGCreate, CMIGUpdate, CMIGOut, CMIGAdminAdd,
-    CMIGProductCreate, CMIGProductUpdate, CMIGProductLinkPG, CMIGProductOut,
+    CMIGProductCreate, CMIGProductUpdate, CMIGProductLinkPG,
     NFeConfigCreate, NFeConfigUpdate, NFeConfigOut,
 )
 
@@ -56,6 +56,75 @@ async def _check_cmig_access(cmig: CMIG, user: User, db: AsyncSession, require_o
     raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
 
+# ── Helpers de Produto Composto ────────────────────────────────────────────────
+
+def _calculate_cmig_composite_stock(components) -> int:
+    """Retorna MIN(floor(estoque_comp / qtd)) para todos os componentes do composto."""
+    if not components:
+        return 0
+    stocks = []
+    for comp in components:
+        qty = max(comp.quantity, 1)
+        if comp.cmig_product_id and comp.cmig_product:
+            stocks.append(comp.cmig_product.stock_quantity // qty)
+        elif comp.catalog_product_id and comp.catalog_product:
+            stocks.append(comp.catalog_product.stock_quantity // qty)
+    return min(stocks) if stocks else 0
+
+
+def _serialize_cmig_product(p: CMIGProduct) -> dict:
+    thumbnail = p.images[0].url if p.images else None
+    stock = _calculate_cmig_composite_stock(p.components) if p.is_composite else p.stock_quantity
+    components = []
+    if p.is_composite:
+        for comp in p.components:
+            source = comp.cmig_product if comp.cmig_product_id else comp.catalog_product
+            if source:
+                qty = max(comp.quantity, 1)
+                components.append({
+                    "id": comp.id,
+                    "type": "cmig" if comp.cmig_product_id else "pg",
+                    "product_id": comp.cmig_product_id or comp.catalog_product_id,
+                    "title": source.title,
+                    "sku": source.sku_cmig if comp.cmig_product_id else source.sku,
+                    "stock_quantity": source.stock_quantity,
+                    "quantity": comp.quantity,
+                    "contribution": source.stock_quantity // qty,
+                })
+    return {
+        "id": p.id,
+        "cmig_id": p.cmig_id,
+        "sku_cmig": p.sku_cmig,
+        "title": p.title,
+        "description": p.description,
+        "brand": p.brand,
+        "model": p.model,
+        "ean": p.ean,
+        "cost_price": float(p.cost_price) if p.cost_price is not None else None,
+        "suggested_price": float(p.suggested_price) if p.suggested_price else None,
+        "stock_quantity": stock,
+        "weight_kg": float(p.weight_kg) if p.weight_kg else None,
+        "height_cm": float(p.height_cm) if p.height_cm else None,
+        "width_cm": float(p.width_cm) if p.width_cm else None,
+        "length_cm": float(p.length_cm) if p.length_cm else None,
+        "ncm": p.ncm,
+        "cest": p.cest,
+        "origin": p.origin,
+        "category_id": p.category_id,
+        "category_name": p.category_name,
+        "video_id": p.video_id,
+        "attributes_json": p.attributes_json,
+        "pictures_json": p.pictures_json,
+        "pg_product_id": p.pg_product_id,
+        "is_composite": p.is_composite,
+        "is_active": p.is_active,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "thumbnail": thumbnail,
+        "images": [{"id": i.id, "url": i.url, "sort_order": i.sort_order, "is_primary": i.is_primary} for i in p.images],
+        "components": components,
+    }
+
+
 # ── CMIG CRUD ──────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[CMIGOut])
@@ -87,9 +156,14 @@ async def create_cmig(
     if current_user.role not in ("ac", "admin"):
         raise HTTPException(status_code=403, detail="Apenas AC pode criar CMIG")
 
-    dup = await db.execute(select(CMIG).where(CMIG.cnpj == body.cnpj))
-    if dup.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="CNPJ já cadastrado")
+    if body.cnpj:
+        dup = await db.execute(select(CMIG).where(CMIG.cnpj == body.cnpj))
+        if dup.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="CNPJ já cadastrado")
+    if body.cpf:
+        dup = await db.execute(select(CMIG).where(CMIG.cpf == body.cpf))
+        if dup.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="CPF já cadastrado")
 
     # Validar galpão
     wh = await db.execute(select(Warehouse).where(Warehouse.id == body.warehouse_id))
@@ -132,7 +206,18 @@ async def update_cmig(
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
 
-    for field, value in body.model_dump(exclude_none=True).items():
+    updates = body.model_dump(exclude_none=True)
+
+    if "cnpj" in updates and updates["cnpj"] != cmig.cnpj:
+        dup = await db.execute(select(CMIG).where(CMIG.cnpj == updates["cnpj"], CMIG.id != cmig_id))
+        if dup.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="CNPJ já cadastrado em outra CMIG")
+    if "cpf" in updates and updates["cpf"] != cmig.cpf:
+        dup = await db.execute(select(CMIG).where(CMIG.cpf == updates["cpf"], CMIG.id != cmig_id))
+        if dup.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="CPF já cadastrado em outra CMIG")
+
+    for field, value in updates.items():
         setattr(cmig, field, value)
 
     await db.commit()
@@ -191,24 +276,29 @@ async def remove_cmig_admin(
 
 # ── Produtos CMIG ──────────────────────────────────────────────────────────────
 
-@router.get("/{cmig_id}/products", response_model=list[CMIGProductOut])
+@router.get("/{cmig_id}/products")
 async def list_cmig_products(
     cmig_id: int,
+    composite_only: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
 
-    result = await db.execute(
+    stmt = (
         select(CMIGProduct)
         .options(selectinload(CMIGProduct.images))
         .where(CMIGProduct.cmig_id == cmig_id)
     )
-    return result.scalars().all()
+    if composite_only:
+        stmt = stmt.where(CMIGProduct.is_composite == True)
+
+    result = await db.execute(stmt)
+    return [_serialize_cmig_product(p) for p in result.scalars().all()]
 
 
-@router.get("/{cmig_id}/products/{product_id}", response_model=CMIGProductOut)
+@router.get("/{cmig_id}/products/{product_id}")
 async def get_cmig_product(
     cmig_id: int,
     product_id: int,
@@ -226,10 +316,10 @@ async def get_cmig_product(
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
-    return product
+    return _serialize_cmig_product(product)
 
 
-@router.post("/{cmig_id}/products", status_code=201, response_model=CMIGProductOut)
+@router.post("/{cmig_id}/products", status_code=201)
 async def create_cmig_product(
     cmig_id: int,
     body: CMIGProductCreate,
@@ -250,14 +340,28 @@ async def create_cmig_product(
     if dup.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="SKU CMIG já cadastrado nesta CMIG")
 
-    product = CMIGProduct(cmig_id=cmig_id, **body.model_dump())
+    payload = body.model_dump(exclude={"components"})
+    product = CMIGProduct(cmig_id=cmig_id, **payload)
     db.add(product)
+    await db.flush()
+
+    if body.is_composite and body.components:
+        for comp in body.components:
+            if not comp.cmig_product_id and not comp.catalog_product_id:
+                continue
+            db.add(CMIGProductComponent(
+                composite_id=product.id,
+                cmig_product_id=comp.cmig_product_id,
+                catalog_product_id=comp.catalog_product_id,
+                quantity=max(comp.quantity, 1),
+            ))
+
     await db.commit()
     await db.refresh(product)
-    return product
+    return _serialize_cmig_product(product)
 
 
-@router.put("/{cmig_id}/products/{product_id}", response_model=CMIGProductOut)
+@router.put("/{cmig_id}/products/{product_id}")
 async def update_cmig_product(
     cmig_id: int,
     product_id: int,
@@ -277,13 +381,13 @@ async def update_cmig_product(
 
     payload = body.model_dump(exclude_none=True)
     images = payload.pop("images", None)
+    components = payload.pop("components", None)
 
     for field, value in payload.items():
         setattr(product, field, value)
 
     # Sincronizar imagens se fornecidas (substitui o conteúdo da tabela)
     if images is not None:
-        from sqlalchemy import delete as _sa_delete
         await db.execute(_sa_delete(CMIGProductImage).where(CMIGProductImage.cmig_product_id == product_id))
         for i, img in enumerate(images):
             url = img.get("url") if isinstance(img, dict) else str(img)
@@ -295,9 +399,22 @@ async def update_cmig_product(
                     is_primary=(i == 0),
                 ))
 
+    # Substituir componentes se fornecidos e produto é composto
+    if components is not None and product.is_composite:
+        await db.execute(_sa_delete(CMIGProductComponent).where(CMIGProductComponent.composite_id == product_id))
+        for comp in components:
+            if not comp.get("cmig_product_id") and not comp.get("catalog_product_id"):
+                continue
+            db.add(CMIGProductComponent(
+                composite_id=product_id,
+                cmig_product_id=comp.get("cmig_product_id"),
+                catalog_product_id=comp.get("catalog_product_id"),
+                quantity=max(comp.get("quantity", 1), 1),
+            ))
+
     await db.commit()
     await db.refresh(product)
-    return product
+    return _serialize_cmig_product(product)
 
 
 @router.delete("/{cmig_id}/products/{product_id}")

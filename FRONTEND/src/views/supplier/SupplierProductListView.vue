@@ -7,6 +7,9 @@
             <h1 class="m-0">Produtos Gerais (PG)</h1>
           </div>
           <div class="col-sm-6 text-right">
+            <RouterLink to="/pg/novo-composto" class="btn btn-outline-primary mr-2">
+              <i class="fas fa-layer-group mr-1"></i> Novo KIT
+            </RouterLink>
             <RouterLink to="/pg/new" class="btn btn-primary">
               <i class="fas fa-plus mr-1"></i> Novo Produto
             </RouterLink>
@@ -51,7 +54,10 @@
                     </div>
                   </td>
                   <td><code>{{ p.sku }}</code></td>
-                  <td>{{ p.title }}</td>
+                  <td>
+                    <span v-if="p.is_composite" class="badge badge-warning mr-1" style="font-size:0.7em">COMPOSTO</span>
+                    {{ p.title }}
+                  </td>
                   <td>{{ p.cost_price ? `R$ ${Number(p.cost_price).toFixed(2)}` : '—' }}</td>
                   <td>{{ p.suggested_price ? `R$ ${Number(p.suggested_price).toFixed(2)}` : '—' }}</td>
                   <td>
@@ -69,7 +75,10 @@
                     </span>
                   </td>
                   <td>
-                    <RouterLink :to="`/pg/${p.id}/edit`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
+                    <RouterLink
+                      :to="p.is_composite ? `/pg/${p.id}/editar-composto` : `/pg/${p.id}/edit`"
+                      class="btn btn-sm btn-outline-primary mr-1" title="Editar"
+                    >
                       <i class="fas fa-edit"></i>
                     </RouterLink>
                     <button class="btn btn-sm btn-outline-danger" title="Desativar" @click="deactivate(p)">

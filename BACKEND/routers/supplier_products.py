@@ -5,7 +5,7 @@ from sqlalchemy.orm import selectinload
 from database import get_db
 from dependencies import require_role, get_current_user
 from models.user import User
-from models.product import CatalogProduct, CatalogProductImage, CatalogProductVariant, ProductListing
+from models.product import CatalogProduct, CatalogProductImage, CatalogProductVariant, ProductListing, CatalogProductComponent
 from models.cmig import CMIGProduct
 from models.order import OrderItem
 import os as _os, shutil as _shutil, uuid as _uuid
@@ -13,18 +13,31 @@ import os as _os, shutil as _shutil, uuid as _uuid
 router = APIRouter()
 
 
-def _serialize_product(p: CatalogProduct) -> dict:
+def _calculate_pg_composite_stock(components) -> int:
+    """Retorna MIN(floor(estoque_comp / qtd)) para todos os componentes do PG composto."""
+    if not components:
+        return 0
+    stocks = []
+    for comp in components:
+        qty = max(comp.quantity, 1)
+        if comp.component:
+            stocks.append(comp.component.stock_quantity // qty)
+    return min(stocks) if stocks else 0
+
+
+def _serialize_product(p: CatalogProduct, include_components: bool = False) -> dict:
     thumbnail = None
     if p.images:
         thumbnail = sorted(p.images, key=lambda i: i.sort_order)[0].url
-    return {
+    stock = _calculate_pg_composite_stock(p.components) if p.is_composite else p.stock_quantity
+    result = {
         "id": p.id,
         "sku": p.sku,
         "title": p.title,
         "description": p.description,
         "cost_price": float(p.cost_price) if p.cost_price is not None else 0,
         "suggested_price": float(p.suggested_price) if p.suggested_price else None,
-        "stock_quantity": p.stock_quantity,
+        "stock_quantity": stock,
         "weight_kg": float(p.weight_kg) if p.weight_kg else None,
         "height_cm": float(p.height_cm) if p.height_cm else None,
         "width_cm": float(p.width_cm) if p.width_cm else None,
@@ -39,10 +52,26 @@ def _serialize_product(p: CatalogProduct) -> dict:
         "category_name": p.category_name,
         "video_id": p.video_id,
         "attributes_json": p.attributes_json,
+        "is_composite": p.is_composite,
         "is_active": p.is_active,
         "thumbnail": thumbnail,
         "images": [{"id": i.id, "url": i.url, "sort_order": i.sort_order, "is_primary": i.is_primary} for i in sorted(p.images, key=lambda i: i.sort_order)],
+        "components": [],
     }
+    if include_components and p.is_composite:
+        for comp in p.components:
+            if comp.component:
+                qty = max(comp.quantity, 1)
+                result["components"].append({
+                    "id": comp.id,
+                    "product_id": comp.component_id,
+                    "title": comp.component.title,
+                    "sku": comp.component.sku,
+                    "stock_quantity": comp.component.stock_quantity,
+                    "quantity": comp.quantity,
+                    "contribution": comp.component.stock_quantity // qty,
+                })
+    return result
 
 
 def _serialize_variant(v: CatalogProductVariant) -> dict:
@@ -95,7 +124,7 @@ async def get_supplier_product(
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
-    data = _serialize_product(p)
+    data = _serialize_product(p, include_components=True)
     data["variants"] = [_serialize_variant(v) for v in sorted(p.variants, key=lambda v: v.id)]
     return data
 
@@ -106,6 +135,7 @@ async def create_product(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("ugo", "admin")),
 ):
+    is_composite = bool(body.get("is_composite", False))
     product = CatalogProduct(
         warehouse_id=current_user.warehouse_id,
         sku=body["sku"],
@@ -126,6 +156,7 @@ async def create_product(
         category_id=body.get("category_id"),
         video_id=body.get("video_id"),
         attributes_json=body.get("attributes_json"),
+        is_composite=is_composite,
         # stock_quantity é gerenciado por eventos de NF-e/pedido (entrada/saída)
     )
     db.add(product)
@@ -135,6 +166,17 @@ async def create_product(
         url = img.get("url") if isinstance(img, dict) else str(img)
         if url:
             db.add(CatalogProductImage(product_id=product.id, url=url, sort_order=i, is_primary=(i == 0)))
+
+    if is_composite:
+        for comp in body.get("components", []):
+            comp_id = comp.get("component_id")
+            if not comp_id:
+                continue
+            db.add(CatalogProductComponent(
+                composite_id=product.id,
+                component_id=comp_id,
+                quantity=max(int(comp.get("quantity", 1)), 1),
+            ))
 
     await db.commit()
     return {"id": product.id, "sku": product.sku}
@@ -167,6 +209,19 @@ async def update_product(
             url = img.get("url") if isinstance(img, dict) else str(img)
             if url:
                 db.add(CatalogProductImage(product_id=product_id, url=url, sort_order=i, is_primary=(i == 0)))
+
+    # Substituir componentes se produto composto e components fornecidos
+    if product.is_composite and "components" in body:
+        await db.execute(_sa_delete(CatalogProductComponent).where(CatalogProductComponent.composite_id == product_id))
+        for comp in body["components"]:
+            comp_id = comp.get("component_id")
+            if not comp_id:
+                continue
+            db.add(CatalogProductComponent(
+                composite_id=product_id,
+                component_id=comp_id,
+                quantity=max(int(comp.get("quantity", 1)), 1),
+            ))
 
     await db.commit()
     return {"ok": True}

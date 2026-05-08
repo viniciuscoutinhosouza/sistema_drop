@@ -54,7 +54,6 @@ from routers import (
     catalog,
     supplier_products,
     products,
-    kits,
     orders,
     manual_orders,
     integrations,
@@ -83,7 +82,6 @@ app.include_router(financial.router,         prefix=f"{PREFIX}/financial",      
 app.include_router(catalog.router,           prefix=f"{PREFIX}/catalog",        tags=["Catalog"])
 app.include_router(supplier_products.router, prefix=f"{PREFIX}/pg",            tags=["PG - Produto Geral"])
 app.include_router(products.router,          prefix=f"{PREFIX}/products",       tags=["Products"])
-app.include_router(kits.router,              prefix=f"{PREFIX}/kits",           tags=["Kits"])
 app.include_router(orders.router,            prefix=f"{PREFIX}/orders",         tags=["Orders"])
 app.include_router(manual_orders.router,     prefix=f"{PREFIX}/manual-orders",  tags=["ManualOrders"])
 app.include_router(integrations.router,      prefix=f"{PREFIX}/accounts",       tags=["Accounts"])

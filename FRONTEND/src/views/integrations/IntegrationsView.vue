@@ -62,11 +62,17 @@
 
             <!-- Status OAuth / conexão -->
             <div v-else>
-              <div v-if="acc.is_active" class="d-flex align-items-center mb-2">
+              <!-- Alerta: token revogado / precisa reconectar -->
+              <div v-if="acc.requires_reauth" class="alert alert-danger py-2 mb-2">
+                <i class="fas fa-exclamation-circle mr-1"></i>
+                <strong>Token inválido.</strong> Reconecte a conta abaixo para restaurar a integração.
+              </div>
+
+              <div v-if="acc.is_active && !acc.requires_reauth" class="d-flex align-items-center mb-2">
                 <span class="badge badge-success mr-2">Conectado</span>
                 <small v-if="acc.platform_username" class="text-muted">@{{ acc.platform_username }}</small>
               </div>
-              <div v-else class="alert alert-secondary py-2 mb-2">
+              <div v-else-if="!acc.is_active" class="alert alert-secondary py-2 mb-2">
                 <i class="fas fa-plug mr-1"></i> Não conectado via OAuth.
               </div>
 

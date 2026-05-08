@@ -20,11 +20,6 @@ const ProductListView = () => import('@/views/products/ProductListView.vue')
 const ProductCreateView = () => import('@/views/products/ProductCreateView.vue')
 const ProductEditView = () => import('@/views/products/ProductEditView.vue')
 
-// Kits
-const KitListView = () => import('@/views/kits/KitListView.vue')
-const KitCreateView = () => import('@/views/kits/KitCreateView.vue')
-const KitEditView = () => import('@/views/kits/KitEditView.vue')
-
 // Catalog
 const CatalogView = () => import('@/views/catalog/CatalogView.vue')
 const CatalogProductView = () => import('@/views/catalog/CatalogProductView.vue')
@@ -49,6 +44,7 @@ const NotificationsView = () => import('@/views/notifications/NotificationsView.
 // Supplier / PG
 const SupplierProductListView = () => import('@/views/supplier/SupplierProductListView.vue')
 const PgProductFormView       = () => import('@/views/supplier/PgProductFormView.vue')
+const PgCompositeFormView     = () => import('@/views/supplier/PgCompositeFormView.vue')
 
 // Settings
 const UsersView     = () => import('@/views/settings/UsersView.vue')
@@ -64,8 +60,9 @@ const CmigFormView   = () => import('@/views/cmig/CmigFormView.vue')
 const CmigDetailView = () => import('@/views/cmig/CmigDetailView.vue')
 
 // Produtos CMIG (AC + UGO)
-const CmigProductListView = () => import('@/views/cmig-products/CmigProductListView.vue')
-const CmigProductFormView = () => import('@/views/cmig-products/CmigProductFormView.vue')
+const CmigProductListView       = () => import('@/views/cmig-products/CmigProductListView.vue')
+const CmigProductFormView       = () => import('@/views/cmig-products/CmigProductFormView.vue')
+const CmigCompositeFormView     = () => import('@/views/cmig-products/CmigCompositeFormView.vue')
 
 // Anúncios (AC)
 const AnunciosView = () => import('@/views/anuncios/AnunciosView.vue')
@@ -124,10 +121,6 @@ const routes = [
       { path: 'products/new', component: ProductCreateView, meta: { title: 'Cadastrar Produto' } },
       { path: 'products/:id/edit', component: ProductEditView, meta: { title: 'Editar Produto' } },
 
-      { path: 'kits', component: KitListView, meta: { title: 'Kits' } },
-      { path: 'kits/new', component: KitCreateView, meta: { title: 'Criar Kit' } },
-      { path: 'kits/:id/edit', component: KitEditView, meta: { title: 'Editar Kit' } },
-
       { path: 'catalog', component: CatalogView, meta: { title: 'Catálogo' } },
       { path: 'catalog/:id', component: CatalogProductView, meta: { title: 'Produto do Catálogo' } },
 
@@ -144,9 +137,11 @@ const routes = [
       { path: 'notifications', component: NotificationsView, meta: { title: 'Notificações' } },
 
       // UGO-only (Operador Logístico — Produto Geral)
-      { path: 'pg',          component: SupplierProductListView, meta: { title: 'Produtos Gerais (PG)', role: 'ugo' } },
-      { path: 'pg/new',      component: PgProductFormView,       meta: { title: 'Novo Produto PG',      role: 'ugo' } },
-      { path: 'pg/:id/edit', component: PgProductFormView,       meta: { title: 'Editar Produto PG',    role: 'ugo' } },
+      { path: 'pg',                    component: SupplierProductListView, meta: { title: 'Produtos Gerais (PG)', role: 'ugo' } },
+      { path: 'pg/new',                component: PgProductFormView,       meta: { title: 'Novo Produto PG',      role: 'ugo' } },
+      { path: 'pg/novo-composto',      component: PgCompositeFormView,     meta: { title: 'Novo KIT PG', role: 'ugo' } },
+      { path: 'pg/:id/edit',           component: PgProductFormView,       meta: { title: 'Editar Produto PG',    role: 'ugo' } },
+      { path: 'pg/:id/editar-composto', component: PgCompositeFormView,    meta: { title: 'Editar KIT PG', role: 'ugo' } },
 
       // Configurações — Admin e UGO
       {
@@ -172,9 +167,11 @@ const routes = [
       { path: 'cmigs/:id/edit', component: CmigFormView, meta: { title: 'Editar CMIG', role: 'ac' } },
 
       // Produtos CMIG
-      { path: 'cmig-products', component: CmigProductListView, meta: { title: 'Produtos CMIG' } },
-      { path: 'cmig-products/new', component: CmigProductFormView, meta: { title: 'Novo Produto CMIG', role: 'ac' } },
-      { path: 'cmig-products/:id/edit', component: CmigProductFormView, meta: { title: 'Editar Produto CMIG', role: ['ac', 'ugo'] } },
+      { path: 'cmig-products',                        component: CmigProductListView,   meta: { title: 'Produtos CMIG' } },
+      { path: 'cmig-products/new',                    component: CmigProductFormView,   meta: { title: 'Novo Produto CMIG', role: 'ac' } },
+      { path: 'cmig-products/novo-composto',          component: CmigCompositeFormView, meta: { title: 'Novo KIT CMIG', role: 'ac' } },
+      { path: 'cmig-products/:id/edit',               component: CmigProductFormView,   meta: { title: 'Editar Produto CMIG', role: ['ac', 'ugo'] } },
+      { path: 'cmig-products/:id/editar-composto',    component: CmigCompositeFormView, meta: { title: 'Editar KIT CMIG', role: ['ac', 'ugo'] } },
 
       // Anúncios — AC
       { path: 'anuncios', component: AnunciosView, meta: { title: 'Anúncios', role: 'ac' } },

@@ -40,6 +40,7 @@ class CatalogProduct(Base):
     video_id = Column(String(100))
     attributes_json = Column(String)  # CLOB
     stock_quantity = Column(Integer, nullable=False, default=0)
+    is_composite = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
@@ -51,6 +52,8 @@ class CatalogProduct(Base):
     variants = relationship("CatalogProductVariant", back_populates="product",
                             cascade="all, delete-orphan")
     cmig_products = relationship("CMIGProduct", back_populates="pg_product")
+    components = relationship("CatalogProductComponent", foreign_keys="CatalogProductComponent.composite_id",
+                              back_populates="composite", cascade="all, delete-orphan", lazy="selectin")
 
     @property
     def category_name(self):
@@ -87,13 +90,25 @@ class CatalogProductVariant(Base):
     product = relationship("CatalogProduct", back_populates="variants")
 
 
+class CatalogProductComponent(Base):
+    """Componente de um Produto PG Composto."""
+    __tablename__ = "catalog_product_components"
+
+    id           = Column(Integer, primary_key=True)
+    composite_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=False)
+    component_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=False)
+    quantity     = Column(Integer, nullable=False, default=1)
+
+    composite  = relationship("CatalogProduct", foreign_keys=[composite_id], back_populates="components")
+    component  = relationship("CatalogProduct", foreign_keys=[component_id], lazy="selectin")
+
+
 class DropshipperProduct(Base):
     __tablename__ = "dropshipper_products"
 
     id = Column(Integer, primary_key=True)
     dropshipper_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     catalog_product_id = Column(Integer, ForeignKey("catalog_products.id"))
-    kit_id = Column(Integer, ForeignKey("kits.id"))
     title = Column(String(500), nullable=False)
     title_ml = Column(String(60))
     title_shopee = Column(String(100))

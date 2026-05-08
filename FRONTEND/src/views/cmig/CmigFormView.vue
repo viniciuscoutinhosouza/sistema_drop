@@ -27,21 +27,54 @@
                 <div class="card-body">
                   <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
-                  <h6 class="text-muted text-uppercase mb-3"><small>Empresa</small></h6>
-                  <div class="row">
-                    <div class="col-md-4 form-group">
-                      <label>CNPJ <span class="text-danger">*</span></label>
-                      <input v-model="form.cnpj" class="form-control" required :disabled="isEdit" placeholder="00.000.000/0000-00" />
+                  <h6 class="text-muted text-uppercase mb-3"><small>Identificação</small></h6>
+
+                  <!-- Toggle PJ / PF (só na criação; na edição inferido pelo dado existente) -->
+                  <div v-if="!isEdit" class="form-group mb-3">
+                    <div class="btn-group btn-group-sm" role="group">
+                      <button type="button" class="btn" :class="personType === 'pj' ? 'btn-primary' : 'btn-outline-secondary'" @click="setPersonType('pj')">
+                        <i class="fas fa-building mr-1"></i> Pessoa Jurídica (CNPJ)
+                      </button>
+                      <button type="button" class="btn" :class="personType === 'pf' ? 'btn-primary' : 'btn-outline-secondary'" @click="setPersonType('pf')">
+                        <i class="fas fa-user mr-1"></i> Pessoa Física (CPF)
+                      </button>
                     </div>
+                  </div>
+
+                  <div class="row">
+                    <!-- PJ: CNPJ -->
+                    <div v-if="personType === 'pj'" class="col-md-4 form-group">
+                      <label>CNPJ <span class="text-danger">*</span></label>
+                      <input v-model="form.cnpj" class="form-control" :required="personType === 'pj'" :disabled="isEdit && !!form.cnpj" placeholder="00.000.000/0000-00" />
+                    </div>
+                    <!-- PF: CPF -->
+                    <div v-if="personType === 'pf'" class="col-md-4 form-group">
+                      <label>CPF <span class="text-danger">*</span></label>
+                      <input v-model="form.cpf" class="form-control" :required="personType === 'pf'" :disabled="isEdit && !!form.cpf" placeholder="000.000.000-00" />
+                    </div>
+
                     <div class="col-md-4 form-group">
-                      <label>Razão Social <span class="text-danger">*</span></label>
+                      <label>{{ personType === 'pf' ? 'Nome Completo' : 'Razão Social' }} <span class="text-danger">*</span></label>
                       <input v-model="form.company_name" class="form-control" required />
                     </div>
                     <div class="col-md-4 form-group">
-                      <label>Nome Fantasia</label>
+                      <label>{{ personType === 'pf' ? 'Apelido' : 'Nome Fantasia' }}</label>
                       <input v-model="form.trade_name" class="form-control" />
                     </div>
                   </div>
+
+                  <!-- Upgrade: adicionar CNPJ a uma conta PF já existente -->
+                  <div v-if="isEdit && !form.cnpj && form.cpf" class="row">
+                    <div class="col-md-4 form-group">
+                      <label>CNPJ <small class="text-muted">(opcional — adicionar depois)</small></label>
+                      <input v-model="form.cnpj" class="form-control" placeholder="00.000.000/0000-00" />
+                    </div>
+                    <div class="col-md-4 form-group">
+                      <label>Razão Social <small class="text-muted">(ao adicionar CNPJ)</small></label>
+                      <input v-model="form.company_name" class="form-control" />
+                    </div>
+                  </div>
+
                   <div class="row">
                     <div class="col-md-4 form-group">
                       <label>E-mail Fiscal</label>
@@ -142,9 +175,11 @@ const isEdit = computed(() => !!route.params.id)
 const saving = ref(false)
 const error = ref('')
 const warehouseLabel = ref('')
+const personType = ref('pj') // 'pj' | 'pf'
 
 const form = ref({
   cnpj: '',
+  cpf: '',
   company_name: '',
   trade_name: '',
   email: '',
@@ -160,8 +195,13 @@ const form = ref({
   is_active: true,
 })
 
+function setPersonType(type) {
+  personType.value = type
+  form.value.cnpj = ''
+  form.value.cpf = ''
+}
+
 onMounted(async () => {
-  // Preenche warehouse_id do usuário logado automaticamente
   try {
     const { data: wh } = await api.get('/warehouse')
     const w = Array.isArray(wh) ? wh[0] : wh
@@ -173,6 +213,8 @@ onMounted(async () => {
   if (isEdit.value) {
     const { data } = await api.get(`/cmigs/${route.params.id}`)
     Object.assign(form.value, data)
+    // Inferir tipo a partir dos dados existentes
+    personType.value = data.cpf && !data.cnpj ? 'pf' : 'pj'
   }
 })
 

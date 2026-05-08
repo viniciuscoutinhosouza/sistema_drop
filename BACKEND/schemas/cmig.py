@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from datetime import datetime
 from typing import Optional, List
 
@@ -7,8 +7,9 @@ from typing import Optional, List
 
 class CMIGCreate(BaseModel):
     warehouse_id: int
-    cnpj: str
-    company_name: str
+    cnpj: Optional[str] = None
+    cpf: Optional[str] = None
+    company_name: str                   # Razão Social (PJ) ou Nome completo (PF)
     trade_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
@@ -20,8 +21,18 @@ class CMIGCreate(BaseModel):
     city: Optional[str] = None
     state: Optional[str] = None
 
+    @model_validator(mode="after")
+    def check_document(self):
+        if not self.cnpj and not self.cpf:
+            raise ValueError("Informe o CNPJ (Pessoa Jurídica) ou CPF (Pessoa Física)")
+        if self.cnpj and self.cpf:
+            raise ValueError("Informe apenas CNPJ ou CPF, não ambos")
+        return self
+
 
 class CMIGUpdate(BaseModel):
+    cnpj: Optional[str] = None
+    cpf: Optional[str] = None
     company_name: Optional[str] = None
     trade_name: Optional[str] = None
     email: Optional[str] = None
@@ -40,8 +51,9 @@ class CMIGOut(BaseModel):
     id: int
     owner_ac_id: int
     warehouse_id: int
-    cnpj: str
-    company_name: str
+    cnpj: Optional[str]
+    cpf: Optional[str]
+    company_name: Optional[str]
     trade_name: Optional[str]
     email: Optional[str]
     phone: Optional[str]
@@ -73,6 +85,12 @@ class CMIGProductImageOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CMIGProductComponentIn(BaseModel):
+    cmig_product_id: Optional[int] = None
+    catalog_product_id: Optional[int] = None
+    quantity: int = 1
+
+
 class CMIGProductCreate(BaseModel):
     # stock_quantity intencionalmente fora — gerenciado por eventos de NF-e/pedido
     sku_cmig: str
@@ -93,6 +111,8 @@ class CMIGProductCreate(BaseModel):
     category_id: Optional[int] = None
     video_id: Optional[str] = None
     attributes_json: Optional[str] = None
+    is_composite: Optional[bool] = False
+    components: Optional[List[CMIGProductComponentIn]] = None
 
 
 class CMIGProductUpdate(BaseModel):
@@ -116,10 +136,24 @@ class CMIGProductUpdate(BaseModel):
     video_id: Optional[str] = None
     attributes_json: Optional[str] = None
     images: Optional[list] = None  # [{url: "..."}]; quando presente, sincroniza cmig_product_images
+    components: Optional[List[CMIGProductComponentIn]] = None  # quando presente, substitui todos os componentes
 
 
 class CMIGProductLinkPG(BaseModel):
     pg_product_id: int
+
+
+class CMIGProductComponentOut(BaseModel):
+    id: int
+    type: str  # 'cmig' | 'pg'
+    product_id: int
+    title: str
+    sku: str
+    stock_quantity: int
+    quantity: int
+    contribution: int  # floor(stock_quantity / quantity)
+
+    model_config = {"from_attributes": True}
 
 
 class CMIGProductOut(BaseModel):
@@ -147,9 +181,11 @@ class CMIGProductOut(BaseModel):
     attributes_json: Optional[str] = None
     pictures_json: Optional[str] = None  # legado — fallback de leitura
     pg_product_id: Optional[int]
+    is_composite: bool = False
     is_active: bool
     created_at: datetime
     images: List[CMIGProductImageOut] = []
+    components: List[CMIGProductComponentOut] = []
 
     model_config = {"from_attributes": True}
 
