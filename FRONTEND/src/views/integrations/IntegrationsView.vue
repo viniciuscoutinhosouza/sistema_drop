@@ -34,6 +34,10 @@
             <button class="btn btn-xs btn-outline-primary ml-1" title="Editar" @click="openEditModal(acc)">
               <i class="fas fa-edit"></i>
             </button>
+            <button v-if="canManage(acc)" class="btn btn-xs btn-outline-secondary ml-1"
+                    title="Gerenciar colaboradores" @click="openCollab(acc)">
+              <i class="fas fa-user-friends"></i>
+            </button>
             <button class="btn btn-xs btn-outline-danger ml-1" title="Desconectar" @click="disconnect(acc)">
               <i class="fas fa-unlink"></i>
             </button>
@@ -287,19 +291,40 @@
         </div>
       </div>
     </div>
+
+    <CollaboratorsModal
+      :visible="collabModal.visible"
+      entity-type="account"
+      :entity-id="collabModal.id"
+      :entity-label="collabModal.label"
+      @close="collabModal.visible = false"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
+import CollaboratorsModal from '@/components/common/CollaboratorsModal.vue'
 
 const { show: toast } = useToast()
+const authStore = useAuthStore()
+const isAdmin = computed(() => authStore.user?.role === 'admin')
 
 const accounts = ref([])
 const cmigs    = ref([])
 const loading  = ref(false)
+
+const collabModal = ref({ visible: false, id: null, label: '' })
+function canManage(acc) {
+  return isAdmin.value || acc.is_owner === true
+}
+function openCollab(acc) {
+  const label = acc.platform_username || acc.description || acc.email || `Conta #${acc.id}`
+  collabModal.value = { visible: true, id: acc.id, label }
+}
 
 const modal   = ref({ newConta: false, otp: false, bling: false, edit: false })
 const syncing = ref({})   // { [account_id]: 'orders' | 'listings' | false }

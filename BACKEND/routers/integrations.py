@@ -280,15 +280,64 @@ async def resend_otp(
 
 # ─── Co-administração ─────────────────────────────────────────────────────────
 
+async def _assert_owner_or_admin(account_id: int, user: User, db: AsyncSession) -> MarketplaceAccount:
+    """Garante que o usuário é o owner da conta OU admin da plataforma.
+    Retorna a conta se autorizado; caso contrário 403/404."""
+    acc_q = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
+    account = acc_q.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Conta não encontrada")
+    if user.role == "admin":
+        return account
+    owner_q = await db.execute(
+        select(AccountAdministrator).where(
+            AccountAdministrator.account_id == account_id,
+            AccountAdministrator.user_id == user.id,
+            AccountAdministrator.is_owner == True,
+        )
+    )
+    if not owner_q.scalar_one_or_none():
+        raise HTTPException(status_code=403, detail="Apenas o proprietário da conta pode realizar esta ação")
+    return account
+
+
+@router.get("/{account_id}/admins")
+async def list_account_admins(
+    account_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lista colaboradores desta conta (acessível ao owner, co-admins e admin)."""
+    # Acesso a leitura: qualquer co-admin da conta OU admin da plataforma
+    if current_user.role != "admin":
+        await _assert_ac_can_access(account_id, current_user.id, db)
+
+    result = await db.execute(
+        select(AccountAdministrator, User)
+        .join(User, AccountAdministrator.user_id == User.id)
+        .where(AccountAdministrator.account_id == account_id)
+        .order_by(AccountAdministrator.is_owner.desc(), User.full_name)
+    )
+    return [
+        {
+            "user_id": admin.user_id,
+            "is_owner": admin.is_owner,
+            "full_name": user.full_name,
+            "email": user.email,
+        }
+        for admin, user in result.all()
+    ]
+
+
 @router.post("/{account_id}/admins")
 async def add_co_admin(
     account_id: int,
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Adiciona outro AC como co-administrador desta CONTA."""
-    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    """Adiciona outro AC como co-administrador desta CONTA (owner ou admin)."""
+    await _assert_owner_or_admin(account_id, current_user, db)
 
     target_user_id = body.get("user_id")
     if not target_user_id:
@@ -322,20 +371,11 @@ async def add_co_admin(
 async def remove_co_admin(
     account_id: int,
     user_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove um co-administrador desta CONTA (apenas owner pode fazer isso)."""
-    # Verificar que o solicitante é o owner
-    owner_check = await db.execute(
-        select(AccountAdministrator).where(
-            AccountAdministrator.account_id == account_id,
-            AccountAdministrator.user_id == current_user.id,
-            AccountAdministrator.is_owner == True,
-        )
-    )
-    if not owner_check.scalar_one_or_none():
-        raise HTTPException(status_code=403, detail="Apenas o owner pode remover co-administradores")
+    """Remove um co-administrador desta CONTA (apenas owner ou admin)."""
+    await _assert_owner_or_admin(account_id, current_user, db)
 
     result = await db.execute(
         select(AccountAdministrator).where(
@@ -346,7 +386,7 @@ async def remove_co_admin(
     )
     admin = result.scalar_one_or_none()
     if not admin:
-        raise HTTPException(status_code=404, detail="Co-administrador não encontrado")
+        raise HTTPException(status_code=404, detail="Co-administrador não encontrado ou é o proprietário")
     db.delete(admin)
     await db.commit()
 

@@ -115,12 +115,16 @@ async def lookup_cep(cep: str):
 async def list_users(
     role: str | None = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin", "go")),
+    current_user: User = Depends(require_role("ac", "ugo", "admin", "go")),
 ):
-    """Lista usuários. UGO lista apenas ACs; GO lista UGOs+ACs do seu galpão; Admin lista todos."""
+    """Lista usuários. AC lista apenas outros ACs (exceto ele mesmo); UGO lista ACs;
+    GO lista UGOs+ACs do seu galpão; Admin lista todos."""
     query = select(User).where(User.is_active == True)
 
-    if current_user.role == "ugo":
+    if current_user.role == "ac":
+        # AC só pode listar outros ACs (para selecionar colaboradores), excluindo a si mesmo
+        query = query.where(User.role == "ac", User.id != current_user.id)
+    elif current_user.role == "ugo":
         query = query.where(User.role == "ac")
     elif current_user.role == "go":
         query = query.where(

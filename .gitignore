@@ -58,3 +58,8 @@ BACKEND/test_ml_order.py
 
 # Uploads de fotos (não versionar binários de produção/teste)
 BACKEND/static/uploads/
+
+# Chaves SSH e binários pessoais (NUNCA commitar credenciais)
+*.key
+*.pem
+DOCs/*.zip

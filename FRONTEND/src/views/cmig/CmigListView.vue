@@ -63,9 +63,14 @@
                     <RouterLink :to="`/cmigs/${cmig.id}`" class="btn btn-sm btn-outline-info mr-1" title="Detalhes">
                       <i class="fas fa-eye"></i>
                     </RouterLink>
-                    <RouterLink v-if="isAC" :to="`/cmigs/${cmig.id}/edit`" class="btn btn-sm btn-outline-primary" title="Editar">
+                    <RouterLink v-if="isAC" :to="`/cmigs/${cmig.id}/edit`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
                       <i class="fas fa-edit"></i>
                     </RouterLink>
+                    <button v-if="canManage(cmig)" class="btn btn-sm btn-outline-secondary"
+                            title="Gerenciar colaboradores"
+                            @click="openCollab(cmig)">
+                      <i class="fas fa-user-friends"></i>
+                    </button>
                   </td>
                 </tr>
               </tbody>
@@ -74,22 +79,41 @@
         </div>
       </div>
     </section>
+
+    <CollaboratorsModal
+      :visible="collabModal.visible"
+      entity-type="cmig"
+      :entity-id="collabModal.id"
+      :entity-label="collabModal.label"
+      @close="collabModal.visible = false"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCmigStore } from '@/stores/cmig'
 import { useAuthStore } from '@/stores/auth'
 import { storeToRefs } from 'pinia'
+import CollaboratorsModal from '@/components/common/CollaboratorsModal.vue'
 
 const router = useRouter()
 const cmigStore = useCmigStore()
 const authStore = useAuthStore()
 const { cmigs, loading } = storeToRefs(cmigStore)
 
-const isAC = computed(() => authStore.user?.role === 'ac')
+const isAC    = computed(() => authStore.user?.role === 'ac')
+const isAdmin = computed(() => authStore.user?.role === 'admin')
+
+function canManage(cmig) {
+  return isAdmin.value || (isAC.value && cmig.is_owner === true)
+}
+
+const collabModal = ref({ visible: false, id: null, label: '' })
+function openCollab(cmig) {
+  collabModal.value = { visible: true, id: cmig.id, label: cmig.company_name }
+}
 
 onMounted(() => cmigStore.fetchCmigs())
 </script>

@@ -127,7 +127,7 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
 
 # ── CMIG CRUD ──────────────────────────────────────────────────────────────────
 
-@router.get("", response_model=list[CMIGOut])
+@router.get("")
 async def list_cmigs(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -144,7 +144,46 @@ async def list_cmigs(
     else:
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
-    return result.scalars().all()
+    cmigs_list = result.scalars().all()
+
+    # Carrega is_owner por CMIG para o usuário corrente
+    owned_ids: set[int] = set()
+    if cmigs_list and current_user.role == "ac":
+        ids = [c.id for c in cmigs_list]
+        owned = await db.execute(
+            select(CMIGAdministrator.cmig_id).where(
+                CMIGAdministrator.user_id == current_user.id,
+                CMIGAdministrator.cmig_id.in_(ids),
+                CMIGAdministrator.is_owner == True,
+            )
+        )
+        owned_ids = {row[0] for row in owned.all()}
+
+    return [
+        {
+            "id": c.id,
+            "owner_ac_id": c.owner_ac_id,
+            "warehouse_id": c.warehouse_id,
+            "cnpj": c.cnpj,
+            "cpf": c.cpf,
+            "company_name": c.company_name,
+            "trade_name": c.trade_name,
+            "email": c.email,
+            "phone": c.phone,
+            "zip_code": c.zip_code,
+            "street": c.street,
+            "address_number": c.address_number,
+            "complement": c.complement,
+            "neighborhood": c.neighborhood,
+            "city": c.city,
+            "state": c.state,
+            "is_active": c.is_active,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            # is_owner: AC dono → flag em CMIGAdministrator; admin → sempre True (bypass total)
+            "is_owner": current_user.role == "admin" or c.id in owned_ids,
+        }
+        for c in cmigs_list
+    ]
 
 
 @router.post("", status_code=201, response_model=CMIGOut)
@@ -226,6 +265,32 @@ async def update_cmig(
 
 
 # ── Co-administração ───────────────────────────────────────────────────────────
+
+@router.get("/{cmig_id}/admins")
+async def list_cmig_admins(
+    cmig_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+
+    result = await db.execute(
+        select(CMIGAdministrator, User)
+        .join(User, CMIGAdministrator.user_id == User.id)
+        .where(CMIGAdministrator.cmig_id == cmig_id)
+        .order_by(CMIGAdministrator.is_owner.desc(), User.full_name)
+    )
+    return [
+        {
+            "user_id": admin.user_id,
+            "is_owner": admin.is_owner,
+            "full_name": user.full_name,
+            "email": user.email,
+        }
+        for admin, user in result.all()
+    ]
+
 
 @router.post("/{cmig_id}/admins", status_code=201)
 async def add_cmig_admin(
