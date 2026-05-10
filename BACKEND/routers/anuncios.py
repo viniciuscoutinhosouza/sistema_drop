@@ -1331,6 +1331,7 @@ async def update_anuncio(
     listing.last_sync_at = datetime.now(timezone.utc)
 
     ml_error: str | None = None
+    ml_skipped: list[str] = []
 
     # Sincroniza ML com payload completo se listing tem platform_item_id
     if listing.platform_item_id and listing.account.platform == "mercadolivre":
@@ -1374,7 +1375,8 @@ async def update_anuncio(
             if listing.ml_catalog_id:
                 ml_payload.pop("available_quantity", None)
 
-            await ml_service.update_item(access_token, listing.platform_item_id, ml_payload)
+            ml_resp = await ml_service.update_item(access_token, listing.platform_item_id, ml_payload)
+            ml_skipped = ml_resp.get("_skipped_fields") or []
 
             description = listing.description_override
             if description:
@@ -1403,6 +1405,8 @@ async def update_anuncio(
     result = _serialize_listing(listing)
     if ml_error:
         result["ml_sync_warning"] = ml_error
+    if ml_skipped:
+        result["ml_skipped_fields"] = ml_skipped
     return result
 
 
@@ -1544,7 +1548,8 @@ async def sync_listing_to_ml(
     if listing.ml_catalog_id:
         ml_payload.pop("available_quantity", None)
 
-    await ml_service.update_item(access_token, listing.platform_item_id, ml_payload)
+    ml_resp = await ml_service.update_item(access_token, listing.platform_item_id, ml_payload)
+    skipped = ml_resp.get("_skipped_fields") or []
 
     if listing.description_override:
         try:
@@ -1554,7 +1559,10 @@ async def sync_listing_to_ml(
 
     listing.last_sync_at = datetime.now(timezone.utc)
     await db.commit()
-    return _serialize_listing(listing)
+    result = _serialize_listing(listing)
+    if skipped:
+        result["ml_skipped_fields"] = skipped
+    return result
 
 
 @router.post("/{listing_id}/reactivate")

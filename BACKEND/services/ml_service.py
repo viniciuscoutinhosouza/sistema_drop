@@ -604,16 +604,59 @@ async def update_item_description(access_token: str, item_id: str, plain_text: s
 
 
 async def update_item(access_token: str, item_id: str, data: dict) -> dict:
-    """Generic PUT /items/{id} — only send changed fields."""
+    """Generic PUT /items/{id} — only send changed fields.
+
+    Resiliente a 'field_not_updatable': se o ML rejeitar campos imutáveis
+    (típico em itens com vendas/has_bids — ex: pictures, item.catalog_listing),
+    remove esses campos das references e tenta de novo. Se o retry for bem-sucedido,
+    retorna o JSON do item com a chave extra '_skipped_fields' listando o que foi pulado.
+    Limita a 3 tentativas para evitar loop em caso de erro persistente.
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = dict(data)
+    skipped: list[str] = []
+
     async with httpx.AsyncClient() as client:
-        resp = await client.put(
-            f"{ML_API_BASE}/items/{item_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            json=data,
-        )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}")
-    return resp.json()
+        for _ in range(3):
+            resp = await client.put(f"{ML_API_BASE}/items/{item_id}", headers=headers, json=payload)
+            if resp.status_code in (200, 201):
+                result = resp.json()
+                if skipped:
+                    result["_skipped_fields"] = skipped
+                return result
+
+            if resp.status_code != 400:
+                raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}")
+
+            try:
+                body = resp.json()
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}")
+
+            # Extrai campos imutáveis citados em causes[*].references
+            to_drop: list[str] = []
+            for cause in (body.get("cause") or []):
+                if (cause or {}).get("code") == "field_not_updatable":
+                    for ref in (cause.get("references") or []):
+                        # references vêm como "pictures" ou "item.catalog_listing" — usamos a 1ª chave
+                        key = ref.split(".", 1)[0] if isinstance(ref, str) else None
+                        if key and key in payload:
+                            to_drop.append(key)
+
+            to_drop = list(dict.fromkeys(to_drop))  # dedup preservando ordem
+            if not to_drop:
+                # 400 não relacionado a field_not_updatable — propaga
+                raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}")
+
+            for k in to_drop:
+                payload.pop(k, None)
+            skipped.extend(to_drop)
+
+            if not payload:
+                # Nada sobrou para enviar — devolve sucesso "vazio" sinalizando o que foi pulado
+                return {"id": item_id, "_skipped_fields": skipped, "_no_op": True}
+
+    raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML após retentativas: campos pulados={skipped}")
 
 
 async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) -> None:
