@@ -220,16 +220,21 @@ class ProductListing(Base):
     catalog_product = relationship("CatalogProduct")
 
 class MLFullTariff(Base):
-    """Tarifa Full do ML por faixa de peso faturável (mantida localmente — ML não expõe via API).
-    Populada via migration 53; ajustar conforme tabela oficial do vendedor."""
+    """Tarifa Full do ML por (reputação, faixa de preço, faixa de peso faturável).
+    O ML não expõe a tarifa Full via API — mantemos a tabela local. A partir de
+    março/2026 o ML diferencia tarifas por reputação do vendedor (green/yellow/red)
+    e por faixa de preço de venda. Ajuste manual via UPDATE conforme painel do vendedor."""
     __tablename__ = "ml_full_tariffs"
 
-    id            = Column(Integer, primary_key=True)
-    site_id       = Column(String(5), nullable=False, default="MLB")
-    weight_min_kg = Column(Numeric(8, 3), nullable=False)
-    weight_max_kg = Column(Numeric(8, 3), nullable=False)
-    tariff_brl    = Column(Numeric(8, 2), nullable=False)
-    notes         = Column(String(200))
-    updated_at    = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                           onupdate=text("SYSTIMESTAMP"))
+    id              = Column(Integer, primary_key=True)
+    site_id         = Column(String(5), nullable=False, default="MLB")
+    reputation_tier = Column(String(10), nullable=False)   # green | yellow | red
+    weight_min_kg   = Column(Numeric(8, 3), nullable=False)
+    weight_max_kg   = Column(Numeric(8, 3), nullable=False)
+    price_min_brl   = Column(Numeric(10, 2), nullable=False)
+    price_max_brl   = Column(Numeric(10, 2), nullable=False)
+    tariff_brl      = Column(Numeric(8, 2), nullable=False)
+    notes           = Column(String(200))
+    updated_at      = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
+                             onupdate=text("SYSTIMESTAMP"))
 

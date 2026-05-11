@@ -117,22 +117,54 @@ async def get_seller_reputation(access_token: str, seller_id: str) -> dict:
     }
 
 
-async def get_full_shipping_cost(billable_kg: float, db, site_id: str = "MLB") -> float:
-    """Lookup local da tarifa Full (tabela ml_full_tariffs) por faixa de peso faturável.
-    Retorna 0.0 se não houver faixa correspondente.
-    O ML não expõe a tarifa Full publicamente; mantemos uma tabela local atualizável.
+def reputation_tier_for_account(account) -> str:
+    """Mapeia (power_seller_status, level_id) de uma MarketplaceAccount para o tier
+    consolidado usado em ml_full_tariffs:
+      green  = MercadoLíder (platinum/gold/silver) ou level_id 5_green/4_light_green
+      yellow = level_id 3_yellow
+      red    = level_id 2_orange/1_red ou sem reputação (default conservador)
     """
-    if not billable_kg or billable_kg <= 0:
+    psl = (getattr(account, "power_seller_status", None) or "").lower()
+    if psl in ("platinum", "gold", "silver"):
+        return "green"
+    lvl = (getattr(account, "level_id", None) or "").lower()
+    if lvl in ("5_green", "4_light_green"):
+        return "green"
+    if lvl == "3_yellow":
+        return "yellow"
+    # 2_orange, 1_red ou null/desconhecido → red (worst case, evita subestimar custo)
+    return "red"
+
+
+async def get_full_shipping_cost(
+    billable_kg: float,
+    price: float,
+    reputation_tier: str,
+    db,
+    site_id: str = "MLB",
+) -> float:
+    """Lookup local da tarifa Full (tabela ml_full_tariffs) por (tier, faixa de preço, faixa de peso).
+    Retorna 0.0 se não houver linha correspondente.
+    O ML não expõe a tarifa Full publicamente; a tabela local é atualizada via UPDATE direto.
+    """
+    if not billable_kg or billable_kg <= 0 or not price or price <= 0:
         return 0.0
     from sqlalchemy import select
     from models.product import MLFullTariff
+
+    tier = (reputation_tier or "red").lower()
+    if tier not in ("green", "yellow", "red"):
+        tier = "red"
 
     result = await db.execute(
         select(MLFullTariff.tariff_brl)
         .where(
             MLFullTariff.site_id == site_id,
+            MLFullTariff.reputation_tier == tier,
             MLFullTariff.weight_min_kg <= billable_kg,
             MLFullTariff.weight_max_kg >= billable_kg,
+            MLFullTariff.price_min_brl <= price,
+            MLFullTariff.price_max_brl >= price,
         )
         .limit(1)
     )
