@@ -44,6 +44,18 @@
           </div>
 
           <div class="card-body">
+            <p v-if="acc.platform === 'mercadolivre' && (acc.power_seller_status || acc.level_id)" class="mb-1 small">
+              <span v-if="acc.power_seller_status" class="badge mr-1"
+                    :style="medalStyle(acc.power_seller_status)"
+                    :title="`Mercado Líder ${medalLabel(acc.power_seller_status)}`">
+                <i class="fas fa-medal mr-1"></i>{{ medalLabel(acc.power_seller_status) }}
+              </span>
+              <span v-if="acc.level_id" class="badge"
+                    :style="levelStyle(acc.level_id)"
+                    :title="`Reputação: ${levelLabel(acc.level_id)}`">
+                {{ levelLabel(acc.level_id) }}
+              </span>
+            </p>
             <p v-if="acc.cmig_id" class="mb-1 small">
               <i class="fas fa-id-card mr-1 text-primary"></i>
               <span class="text-primary font-weight-bold">{{ cmigName(acc.cmig_id) }}</span>
@@ -558,6 +570,32 @@ function platformLabel(platform) {
 function platformBadge(platform) {
   return { mercadolivre: 'badge-warning', shopee: 'badge-danger', bling: 'badge-info' }[platform] || 'badge-secondary'
 }
+
+const MEDAL_LABEL = { platinum: 'Platinum', gold: 'Gold', silver: 'Silver' }
+const MEDAL_STYLE = {
+  platinum: 'background:#e5e4e2;color:#1f2937;border:1px solid #9ca3af',
+  gold:     'background:#fde68a;color:#78350f;border:1px solid #f59e0b',
+  silver:   'background:#e2e8f0;color:#334155;border:1px solid #94a3b8',
+}
+function medalLabel(s) { return MEDAL_LABEL[s] || s }
+function medalStyle(s) { return MEDAL_STYLE[s] || '' }
+
+const LEVEL_LABEL = {
+  '5_green':       'Verde',
+  '4_light_green': 'Verde-claro',
+  '3_yellow':      'Amarelo',
+  '2_orange':      'Laranja',
+  '1_red':         'Vermelho',
+}
+const LEVEL_STYLE = {
+  '5_green':       'background:#16a34a;color:#fff',
+  '4_light_green': 'background:#86efac;color:#14532d',
+  '3_yellow':      'background:#fef08a;color:#78350f',
+  '2_orange':      'background:#fb923c;color:#fff',
+  '1_red':         'background:#dc2626;color:#fff',
+}
+function levelLabel(l) { return LEVEL_LABEL[l] || l }
+function levelStyle(l) { return LEVEL_STYLE[l] || '' }
 
 function formatDateTime(dt) {
   if (!dt) return '—'

@@ -263,6 +263,7 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "category_name": listing.category_name,
         "category_path_json": listing.category_path_json,
         "is_full": bool(listing.is_full) if listing.is_full is not None else False,
+        "logistic_type": listing.logistic_type or ("fulfillment" if listing.is_full else "cross_docking"),
         "ml_catalog_id": listing.ml_catalog_id,
         "catalog_listing": bool(listing.catalog_listing) if listing.catalog_listing is not None else False,
         "available_quantity":  listing.available_quantity,
@@ -365,6 +366,11 @@ async def _cache_costs(listing: ProductListing, access_token: str, seller_id: st
                 pass
 
         # 2. Custos com o preço real (pode ser o preço promocional)
+        # Resolve logistic_type real do listing — fallback para is_full legado
+        lt = (listing.logistic_type or "").strip().lower()
+        if not lt:
+            lt = "fulfillment" if listing.is_full else "cross_docking"
+
         costs = await ml_service.get_listing_costs(
             access_token=access_token,
             seller_id=seller_id,
@@ -372,18 +378,39 @@ async def _cache_costs(listing: ProductListing, access_token: str, seller_id: st
             category_id=listing.category_id or "",
             listing_type=listing.listing_type or "gold_special",
             shipping_mode=listing.shipping_mode or "me2",
-            logistic_type="fulfillment" if listing.is_full else "default",
+            logistic_type=lt,
             weight_kg=float(listing.weight_kg) if listing.weight_kg else None,
             height_cm=float(listing.height_cm) if listing.height_cm else None,
             width_cm=float(listing.width_cm) if listing.width_cm else None,
             length_cm=float(listing.length_cm) if listing.length_cm else None,
             free_shipping=bool(listing.free_shipping),
         )
+        shipping_cost_calc = float(costs.get("shipping_cost") or 0)
+
+        # Para Full: shipping_options/free não devolve custo (é gerenciado pelo ML).
+        # Adiciona tarifa Full local pela faixa de peso faturável.
+        if lt == "fulfillment" and listing.weight_kg and listing.height_cm and listing.width_cm and listing.length_cm:
+            from services.ml_service import _calc_billable_weight
+            wb = _calc_billable_weight(
+                float(listing.weight_kg), float(listing.height_cm),
+                float(listing.width_cm), float(listing.length_cm),
+            )
+            full_tariff = await ml_service.get_full_shipping_cost(wb["billable_kg"], db)
+            shipping_cost_calc += full_tariff
+
+        # Recalcula receita líquida e margem com o frete ajustado
+        commission   = float(costs.get("commission_amount") or 0)
+        fixed_fee    = float(costs.get("fixed_fee") or 0)
+        financing    = float(costs.get("financing_fee") or 0)
+        total_cost   = commission + shipping_cost_calc + fixed_fee + financing
+        net_revenue  = real_price - total_cost
+        margin_pct   = round((net_revenue / real_price) * 100, 2) if real_price > 0 else 0.0
+
         listing.commission_pct    = costs.get("commission_pct")
-        listing.commission_amount = costs.get("commission_amount")
-        listing.shipping_cost     = costs.get("shipping_cost")
-        listing.net_revenue       = costs.get("net_revenue")
-        listing.margin_pct        = costs.get("margin_pct")
+        listing.commission_amount = commission
+        listing.shipping_cost     = round(shipping_cost_calc, 2)
+        listing.net_revenue       = round(net_revenue, 2)
+        listing.margin_pct        = margin_pct
         listing.costs_cached_at   = datetime.now(timezone.utc)
     except Exception:
         pass
@@ -555,7 +582,9 @@ async def import_anuncios(
         shipping = item.get("shipping") or {}
         shipping_mode = shipping.get("mode") or "me2"
         free_shipping = bool(shipping.get("free_shipping", False))
-        is_full = (shipping.get("logistic_type") or "").lower() == "fulfillment"
+        # Captura logistic_type real do ML (cross_docking|drop_off|xd_drop_off|self_service|fulfillment)
+        logistic_type_raw = (shipping.get("logistic_type") or "cross_docking").lower()
+        is_full = logistic_type_raw == "fulfillment"
         qty_full  = available_qty if is_full else 0
         qty_local = 0 if is_full else available_qty
         ml_catalog_id   = item.get("catalog_product_id") or ""
@@ -733,6 +762,7 @@ async def import_anuncios(
                 existing.category_path_json = cat_path_json
             existing.listing_type = listing_type or existing.listing_type
             existing.is_full = is_full
+            existing.logistic_type = logistic_type_raw
             existing.ml_catalog_id   = ml_catalog_id or existing.ml_catalog_id
             existing.catalog_listing = catalog_listing
             existing.available_quantity = available_qty
@@ -791,6 +821,7 @@ async def import_anuncios(
                 category_path_json=cat_path_json,
                 listing_type=listing_type,
                 is_full=is_full,
+                logistic_type=logistic_type_raw,
                 ml_catalog_id=ml_catalog_id or None,
                 catalog_listing=catalog_listing,
                 available_quantity=available_qty,
@@ -1675,7 +1706,7 @@ async def get_anuncio_costs(
         except Exception:
             pass
 
-    logistic_type = "fulfillment" if listing.is_full else "drop_off"
+    logistic_type = (listing.logistic_type or "").strip().lower() or ("fulfillment" if listing.is_full else "cross_docking")
 
     costs = await ml_service.get_listing_costs(
         access_token=access_token,

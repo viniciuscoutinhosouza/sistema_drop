@@ -168,7 +168,8 @@ class ProductListing(Base):
     category_name      = Column(String(200))
     category_path_json = Column(String(4000), nullable=True)  # JSON: [{id, name}, ...]
     listing_type       = Column(String(20))
-    is_full            = Column(Boolean, default=False)
+    is_full            = Column(Boolean, default=False)  # legado — manter sincronizado com logistic_type
+    logistic_type      = Column(String(30), default="cross_docking")  # cross_docking|drop_off|xd_drop_off|self_service|fulfillment
     ml_catalog_id      = Column(String(200))
     catalog_listing    = Column(Boolean, nullable=True, default=False)  # true = anúncio DE catálogo; false + ml_catalog_id = optin
     status             = Column(String(20), nullable=False, default="draft")
@@ -217,3 +218,18 @@ class ProductListing(Base):
     account         = relationship("MarketplaceAccount")
     cmig_product    = relationship("CMIGProduct")
     catalog_product = relationship("CatalogProduct")
+
+class MLFullTariff(Base):
+    """Tarifa Full do ML por faixa de peso faturável (mantida localmente — ML não expõe via API).
+    Populada via migration 53; ajustar conforme tabela oficial do vendedor."""
+    __tablename__ = "ml_full_tariffs"
+
+    id            = Column(Integer, primary_key=True)
+    site_id       = Column(String(5), nullable=False, default="MLB")
+    weight_min_kg = Column(Numeric(8, 3), nullable=False)
+    weight_max_kg = Column(Numeric(8, 3), nullable=False)
+    tariff_brl    = Column(Numeric(8, 2), nullable=False)
+    notes         = Column(String(200))
+    updated_at    = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
+                           onupdate=text("SYSTIMESTAMP"))
+

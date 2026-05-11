@@ -80,6 +80,15 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    from tasks.sync_reputation import refresh_ml_reputation
+    scheduler.add_job(
+        refresh_ml_reputation,
+        CronTrigger(hour=3, minute=15),  # diário 03:15 UTC (~00:15 BRT)
+        id="refresh_ml_reputation",
+        name="Refresh reputação ML (medalhas) por conta ativa",
+        replace_existing=True,
+    )
+
     scheduler.start()
     print("Background scheduler started")
 

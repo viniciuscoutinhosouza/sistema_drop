@@ -30,6 +30,10 @@ class MarketplaceAccount(Base):
     otp_verified = Column(Boolean, nullable=False, default=False)
     requires_reauth = Column(Boolean, nullable=False, default=False)
     last_sync_at = Column(TIMESTAMP(timezone=True))
+    # Reputação ML (medalhas) — refresh diário via tasks.scheduler.refresh_ml_reputation
+    power_seller_status = Column(String(20))   # platinum | gold | silver | None
+    level_id = Column(String(20))              # 5_green | 4_light_green | 3_yellow | 2_orange | 1_red | None
+    reputation_cached_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
 
     __table_args__ = (

@@ -72,6 +72,9 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
         "cmig_id": acc.cmig_id,
         "requires_reauth": bool(acc.requires_reauth),
         "last_sync_at": acc.last_sync_at.isoformat() if acc.last_sync_at else None,
+        "power_seller_status": acc.power_seller_status,
+        "level_id": acc.level_id,
+        "reputation_cached_at": acc.reputation_cached_at.isoformat() if acc.reputation_cached_at else None,
         "created_at": acc.created_at.isoformat() if acc.created_at else None,
     }
 

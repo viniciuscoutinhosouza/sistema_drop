@@ -2,7 +2,7 @@
 from models.user import User, ACProfile, RefreshToken, AccessPlan, ACSubscription, AccountAdministrator
 from models.go import GO
 from models.warehouse import Warehouse
-from models.product import Category, CatalogProduct, CatalogProductImage, CatalogProductVariant, CatalogProductComponent, DropshipperProduct, DropshipperProductImage, ProductListing
+from models.product import Category, CatalogProduct, CatalogProductImage, CatalogProductVariant, CatalogProductComponent, DropshipperProduct, DropshipperProductImage, ProductListing, MLFullTariff
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductComponent
 from models.person import Person
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceItem, InvoiceEvent

@@ -73,6 +73,73 @@ async def get_user_info(access_token: str) -> dict:
     return resp.json()
 
 
+async def get_seller_reputation(access_token: str, seller_id: str) -> dict:
+    """Busca seller_reputation do vendedor.
+
+    Retorna dict normalizado:
+      {
+        "power_seller_status": "platinum"|"gold"|"silver"|None,
+        "level_id": "5_green"|"4_light_green"|"3_yellow"|"2_orange"|"1_red"|None,
+        "transactions": {"completed": int, "canceled": int, "total": int},
+        "ratings": {"positive": float, "neutral": float, "negative": float},
+        "raw": dict (payload completo do seller_reputation),
+      }
+    Em caso de erro, retorna {} para não bloquear chamadas em batch.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/users/{seller_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        if resp.status_code != 200:
+            return {}
+        rep = (resp.json() or {}).get("seller_reputation") or {}
+    except Exception:
+        return {}
+
+    txs = rep.get("transactions") or {}
+    ratings = txs.get("ratings") or {}
+    return {
+        "power_seller_status": rep.get("power_seller_status"),
+        "level_id": rep.get("level_id"),
+        "transactions": {
+            "completed": txs.get("completed") or 0,
+            "canceled": txs.get("canceled") or 0,
+            "total": txs.get("total") or 0,
+        },
+        "ratings": {
+            "positive": float(ratings.get("positive") or 0),
+            "neutral": float(ratings.get("neutral") or 0),
+            "negative": float(ratings.get("negative") or 0),
+        },
+        "raw": rep,
+    }
+
+
+async def get_full_shipping_cost(billable_kg: float, db, site_id: str = "MLB") -> float:
+    """Lookup local da tarifa Full (tabela ml_full_tariffs) por faixa de peso faturável.
+    Retorna 0.0 se não houver faixa correspondente.
+    O ML não expõe a tarifa Full publicamente; mantemos uma tabela local atualizável.
+    """
+    if not billable_kg or billable_kg <= 0:
+        return 0.0
+    from sqlalchemy import select
+    from models.product import MLFullTariff
+
+    result = await db.execute(
+        select(MLFullTariff.tariff_brl)
+        .where(
+            MLFullTariff.site_id == site_id,
+            MLFullTariff.weight_min_kg <= billable_kg,
+            MLFullTariff.weight_max_kg >= billable_kg,
+        )
+        .limit(1)
+    )
+    row = result.scalar_one_or_none()
+    return float(row) if row is not None else 0.0
+
+
 async def get_order(access_token: str, order_id: str) -> dict:
     """Fetch a single order from ML API."""
     async with httpx.AsyncClient() as client:

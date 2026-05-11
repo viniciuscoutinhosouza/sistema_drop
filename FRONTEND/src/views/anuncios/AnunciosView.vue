@@ -209,8 +209,11 @@
                       <!-- Preço: normal + promocional (quando há promoção) -->
                       <div class="mb-1">
                         <div class="d-flex align-items-center flex-wrap" style="gap:5px">
-                          <span v-if="pricingCalc(a).isReal"
+                          <span v-if="pricingCalc(a).isReal && !pricingCalc(a).isStale"
                                 style="font-size:10px;background:#dcfce7;color:#16a34a;border-radius:3px;padding:0 4px;font-weight:600">ML real</span>
+                          <span v-else-if="pricingCalc(a).isReal && pricingCalc(a).isStale"
+                                style="font-size:10px;background:#ffedd5;color:#c2410c;border-radius:3px;padding:0 4px;font-weight:600"
+                                title="Cache > 4h — clique em Recalcular para atualizar">desatualizado</span>
                           <span v-else
                                 style="font-size:10px;background:#fef9c3;color:#92400e;border-radius:3px;padding:0 4px">estimado</span>
                           <template v-if="promoData(a).hasPromo">
@@ -1951,6 +1954,9 @@ function pricingCalc(listing) {
 
   // Priority 2: BD-cached costs (set after import or refresh-costs)
   if (listing.costs_cached_at) {
+    const cachedAtMs = new Date(listing.costs_cached_at).getTime()
+    const ageHours   = (Date.now() - cachedAtMs) / (1000 * 60 * 60)
+    const isStale    = ageHours > 4   // TTL: 4h
     return {
       rate:            listing.commission_pct ?? 0,
       fee:             Number(listing.commission_amount ?? 0).toFixed(2),
@@ -1961,6 +1967,7 @@ function pricingCalc(listing) {
       margin:          Number(listing.net_revenue ?? 0).toFixed(2),
       marginPct:       Number(listing.margin_pct ?? 0).toFixed(2),
       isReal:          true,
+      isStale,
       cachedAt:        listing.costs_cached_at,
     }
   }
