@@ -1416,9 +1416,12 @@ async function saveWizard() {
         toast.error(`Aviso ML: ${data.ml_sync_warning}`)
       } else if (data?.ml_skipped_fields?.length) {
         toast.success('Anúncio atualizado no Mercado Livre.')
-        const labels = { pictures: 'fotos', title: 'título', condition: 'condição', listing_type_id: 'tipo de anúncio' }
+        const labels = {
+          pictures: 'fotos', title: 'título', condition: 'condição',
+          listing_type_id: 'tipo de anúncio', description: 'descrição',
+        }
         const skipped = data.ml_skipped_fields.map(f => labels[f] || f).join(', ')
-        toast.warning(`Itens com vendas no ML não permitem alterar: ${skipped}. Outros campos foram salvos.`)
+        toast.warning(`Esses campos não foram alterados no ML (anúncio com vendas ou de catálogo): ${skipped}. Os demais foram salvos.`)
       } else {
         toast.success('Anúncio atualizado e enviado ao Mercado Livre!')
       }

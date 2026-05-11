@@ -579,28 +579,51 @@ async def get_category_attributes(category_id: str) -> list[dict]:
     return resp.json() if resp.status_code == 200 else []
 
 
-async def post_item_description(access_token: str, item_id: str, plain_text: str) -> None:
-    """Create item description (call once, right after item creation)."""
+def _is_catalog_description_lock(resp) -> bool:
+    """Detecta o erro 400 do ML para descrição imutável em anúncio de catálogo
+    ('Description is not modifiable on catalog listing item')."""
+    if resp.status_code != 400:
+        return False
+    try:
+        body = resp.json()
+    except Exception:
+        return False
+    msg = (body.get("message") or "").lower()
+    return "not modifiable on catalog listing" in msg
+
+
+async def post_item_description(access_token: str, item_id: str, plain_text: str) -> bool:
+    """Create item description (call once, right after item creation).
+    Returns True em sucesso; False quando o ML rejeita por ser anúncio de catálogo
+    (descrição imutável). Outros erros propagam HTTPException."""
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{ML_API_BASE}/items/{item_id}/description",
             headers={"Authorization": f"Bearer {access_token}"},
             json={"plain_text": plain_text},
         )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=400, detail=f"Erro ao criar descrição ML: {resp.text}")
+    if resp.status_code in (200, 201):
+        return True
+    if _is_catalog_description_lock(resp):
+        return False
+    raise HTTPException(status_code=400, detail=f"Erro ao criar descrição ML: {resp.text}")
 
 
-async def update_item_description(access_token: str, item_id: str, plain_text: str) -> None:
-    """Update existing item description."""
+async def update_item_description(access_token: str, item_id: str, plain_text: str) -> bool:
+    """Update existing item description.
+    Returns True em sucesso; False quando o ML rejeita por ser anúncio de catálogo.
+    Outros erros propagam HTTPException."""
     async with httpx.AsyncClient() as client:
         resp = await client.put(
             f"{ML_API_BASE}/items/{item_id}/description",
             headers={"Authorization": f"Bearer {access_token}"},
             json={"plain_text": plain_text},
         )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=400, detail=f"Erro ao atualizar descrição ML: {resp.text}")
+    if resp.status_code in (200, 201):
+        return True
+    if _is_catalog_description_lock(resp):
+        return False
+    raise HTTPException(status_code=400, detail=f"Erro ao atualizar descrição ML: {resp.text}")
 
 
 async def update_item(access_token: str, item_id: str, data: dict) -> dict:

@@ -1380,10 +1380,16 @@ async def update_anuncio(
 
             description = listing.description_override
             if description:
+                desc_ok = True
                 try:
-                    await ml_service.update_item_description(access_token, listing.platform_item_id, description)
+                    desc_ok = await ml_service.update_item_description(access_token, listing.platform_item_id, description)
                 except Exception:
-                    await ml_service.post_item_description(access_token, listing.platform_item_id, description)
+                    try:
+                        desc_ok = await ml_service.post_item_description(access_token, listing.platform_item_id, description)
+                    except Exception:
+                        desc_ok = False
+                if desc_ok is False and "description" not in ml_skipped:
+                    ml_skipped.append("description")
 
         except HTTPException as exc:
             ml_error = exc.detail  # token inválido — salva no DB mas não sincroniza ML
@@ -1552,10 +1558,16 @@ async def sync_listing_to_ml(
     skipped = ml_resp.get("_skipped_fields") or []
 
     if listing.description_override:
+        desc_ok = True
         try:
-            await ml_service.update_item_description(access_token, listing.platform_item_id, listing.description_override)
+            desc_ok = await ml_service.update_item_description(access_token, listing.platform_item_id, listing.description_override)
         except Exception:
-            await ml_service.post_item_description(access_token, listing.platform_item_id, listing.description_override)
+            try:
+                desc_ok = await ml_service.post_item_description(access_token, listing.platform_item_id, listing.description_override)
+            except Exception:
+                desc_ok = False
+        if desc_ok is False and "description" not in skipped:
+            skipped.append("description")
 
     listing.last_sync_at = datetime.now(timezone.utc)
     await db.commit()
