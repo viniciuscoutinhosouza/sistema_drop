@@ -16,6 +16,9 @@ ID do aplicativo   6712718703908494
 Chave de Acesso    Z6bbtskvAUc9R9EZKkpQ7cAfvUZZ6d4e
 
 
+Aplicação Mercado Livre em Produção
+ID do aplicativo    2151323065230917
+Chave de Acesso     3LqyCX0Pi54YTU8G3NtEngGRvuZm6VKe
 
 
 SHOPEE
