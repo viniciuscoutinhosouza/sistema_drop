@@ -388,7 +388,7 @@ async def _cache_costs(listing: ProductListing, access_token: str, seller_id: st
         shipping_cost_calc = float(costs.get("shipping_cost") or 0)
 
         # Para Full: shipping_options/free não devolve custo (é gerenciado pelo ML).
-        # Tarifa Full depende de (reputação do vendedor, faixa de preço, faixa de peso faturável).
+        # Tarifa Full depende de (reputação, faixa de preço, faixa de peso, free_shipping).
         if lt == "fulfillment" and listing.weight_kg and listing.height_cm and listing.width_cm and listing.length_cm:
             from services.ml_service import _calc_billable_weight, reputation_tier_for_account
             wb = _calc_billable_weight(
@@ -398,6 +398,7 @@ async def _cache_costs(listing: ProductListing, access_token: str, seller_id: st
             tier = reputation_tier_for_account(listing.account)
             full_tariff = await ml_service.get_full_shipping_cost(
                 wb["billable_kg"], real_price, tier, db,
+                free_shipping=bool(listing.free_shipping),
             )
             shipping_cost_calc += full_tariff
 

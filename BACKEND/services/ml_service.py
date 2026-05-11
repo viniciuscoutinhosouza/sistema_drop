@@ -136,15 +136,28 @@ def reputation_tier_for_account(account) -> str:
     return "red"
 
 
+# Limiar de frete grátis no Brasil — a partir desse preço o ML aplica frete grátis automático
+# em itens ME2/Full e o vendedor passa a pagar a tarifa cheia da faixa de preço.
+ML_FREE_SHIPPING_THRESHOLD_BRL = 79.0
+
+
 async def get_full_shipping_cost(
     billable_kg: float,
     price: float,
     reputation_tier: str,
     db,
+    free_shipping: bool = False,
     site_id: str = "MLB",
 ) -> float:
     """Lookup local da tarifa Full (tabela ml_full_tariffs) por (tier, faixa de preço, faixa de peso).
     Retorna 0.0 se não houver linha correspondente.
+
+    Regra do ML:
+      - price >= R$ 79: frete grátis automático; vendedor paga tarifa da faixa do preço.
+      - price <  R$ 79 SEM free_shipping: comprador paga o frete; vendedor paga tarifa "baixa".
+      - price <  R$ 79 COM free_shipping: vendedor "subiu" voluntariamente para a faixa de
+        frete grátis e paga como se o item fosse R$ 79 — usamos lookup com price = 79.
+
     O ML não expõe a tarifa Full publicamente; a tabela local é atualizada via UPDATE direto.
     """
     if not billable_kg or billable_kg <= 0 or not price or price <= 0:
@@ -156,6 +169,12 @@ async def get_full_shipping_cost(
     if tier not in ("green", "yellow", "red"):
         tier = "red"
 
+    # Quando vendedor opta por frete grátis em item < R$ 79 no Full, ele assume o custo
+    # como se o produto estivesse na faixa de frete grátis obrigatório.
+    effective_price = price
+    if free_shipping and price < ML_FREE_SHIPPING_THRESHOLD_BRL:
+        effective_price = ML_FREE_SHIPPING_THRESHOLD_BRL
+
     result = await db.execute(
         select(MLFullTariff.tariff_brl)
         .where(
@@ -163,8 +182,8 @@ async def get_full_shipping_cost(
             MLFullTariff.reputation_tier == tier,
             MLFullTariff.weight_min_kg <= billable_kg,
             MLFullTariff.weight_max_kg >= billable_kg,
-            MLFullTariff.price_min_brl <= price,
-            MLFullTariff.price_max_brl >= price,
+            MLFullTariff.price_min_brl <= effective_price,
+            MLFullTariff.price_max_brl >= effective_price,
         )
         .limit(1)
     )
