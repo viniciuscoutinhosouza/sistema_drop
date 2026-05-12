@@ -95,6 +95,9 @@
                     >
                       <i class="fas fa-edit"></i>
                     </RouterLink>
+                    <button v-if="isAC || isUGO" class="btn btn-sm btn-outline-secondary mr-1" title="Duplicar produto" @click="duplicate(p)">
+                      <i class="fas fa-copy"></i>
+                    </button>
                     <button v-if="isAC && !p.pg_product_id" class="btn btn-sm btn-outline-secondary mr-1" @click="openLinkPg(p)" title="Vincular ao PG">
                       <i class="fas fa-link"></i>
                     </button>
@@ -115,6 +118,38 @@
         </div>
       </div>
     </section>
+
+    <!-- Modal Duplicar CMIG -->
+    <div v-if="duplicateModal.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title"><i class="fas fa-copy mr-2"></i>Duplicar Produto</h6>
+            <button type="button" class="close" @click="duplicateModal.show = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <p class="text-muted mb-2" style="font-size:12px">SKU de origem: <strong>{{ duplicateModal.srcSku }}</strong></p>
+            <div class="form-group mb-0">
+              <label class="font-weight-bold" style="font-size:13px">Novo SKU <span class="text-danger">*</span></label>
+              <input
+                v-model="duplicateModal.newSku"
+                type="text"
+                class="form-control form-control-sm"
+                placeholder="Digite o SKU do novo produto"
+                @keyup.enter="confirmDuplicate"
+              />
+            </div>
+          </div>
+          <div class="modal-footer py-2">
+            <button class="btn btn-sm btn-secondary" @click="duplicateModal.show = false">Cancelar</button>
+            <button class="btn btn-sm btn-primary" :disabled="!duplicateModal.newSku.trim() || duplicateModal.loading" @click="confirmDuplicate">
+              <i v-if="duplicateModal.loading" class="fas fa-spinner fa-spin mr-1"></i>
+              Duplicar
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Modal Vincular PG -->
     <div v-if="showLinkModal" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
@@ -146,14 +181,17 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 
 const route = useRoute()
+const router = useRouter()
 const authStore = useAuthStore()
 const toast = useToast()
+
+const duplicateModal = ref({ show: false, srcId: null, srcSku: '', newSku: '', loading: false })
 
 const cmigId = computed(() => route.query.cmig_id || route.params.cmig_id)
 const cmig = ref(null)
@@ -222,6 +260,25 @@ async function linkToPg() {
     toast.error(e.response?.data?.detail || 'Erro ao vincular produto.')
   } finally {
     savingLink.value = false
+  }
+}
+
+function duplicate(p) {
+  duplicateModal.value = { show: true, srcId: p.id, srcSku: p.sku_cmig, newSku: '', loading: false }
+}
+
+async function confirmDuplicate() {
+  const m = duplicateModal.value
+  if (!m.newSku.trim()) return
+  m.loading = true
+  try {
+    const { data } = await api.post(`/cmigs/${cmigId.value}/products/${m.srcId}/duplicate`, { sku_cmig: m.newSku.trim() })
+    toast.success(`Produto duplicado! SKU: ${data.sku_cmig}`)
+    duplicateModal.value.show = false
+    router.push(`/cmig-products/${data.id}/edit?cmig_id=${cmigId.value}`)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao duplicar produto.')
+    m.loading = false
   }
 }
 

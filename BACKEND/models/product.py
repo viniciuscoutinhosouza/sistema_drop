@@ -209,6 +209,7 @@ class ProductListing(Base):
     regular_price        = Column(Numeric(12, 2), nullable=True)       # preço sem promoção
     promo_type           = Column(String(50),     nullable=True)       # ex: PRICE_DISCOUNT
     promo_discount_pct   = Column(Numeric(5, 2),  nullable=True)       # % de desconto
+    has_auto_price_adj   = Column(Boolean,        nullable=True, default=False)  # ML ajustou preço automaticamente (PRICE_DISCOUNT / PRICE_MATCHING)
 
     created_at           = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at           = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),

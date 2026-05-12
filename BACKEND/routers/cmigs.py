@@ -482,6 +482,100 @@ async def update_cmig_product(
     return _serialize_cmig_product(product)
 
 
+@router.post("/{cmig_id}/products/{product_id}/duplicate", status_code=201)
+async def duplicate_cmig_product(
+    cmig_id: int,
+    product_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Duplica um produto CMIG com o SKU informado pelo usuário."""
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+
+    result = await db.execute(
+        select(CMIGProduct)
+        .options(
+            selectinload(CMIGProduct.images),
+            selectinload(CMIGProduct.variants),
+            selectinload(CMIGProduct.components),
+        )
+        .where(and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id))
+    )
+    src = result.scalar_one_or_none()
+    if not src:
+        raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
+
+    new_sku = (body.get("sku_cmig") or "").strip()
+    if not new_sku:
+        raise HTTPException(status_code=422, detail="SKU é obrigatório para duplicar o produto")
+    if (await db.execute(
+        select(CMIGProduct).where(and_(CMIGProduct.cmig_id == cmig_id, CMIGProduct.sku_cmig == new_sku))
+    )).scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"SKU '{new_sku}' já está em uso nesta CMIG")
+
+    copy = CMIGProduct(
+        cmig_id=cmig_id,
+        sku_cmig=new_sku,
+        title=f"{src.title} (Cópia)",
+        description=src.description,
+        brand=src.brand,
+        model=src.model,
+        ean=src.ean,
+        cost_price=src.cost_price,
+        suggested_price=src.suggested_price,
+        weight_kg=src.weight_kg,
+        height_cm=src.height_cm,
+        width_cm=src.width_cm,
+        length_cm=src.length_cm,
+        ncm=src.ncm,
+        cest=src.cest,
+        origin=src.origin,
+        category_id=src.category_id,
+        video_id=src.video_id,
+        attributes_json=src.attributes_json,
+        is_composite=src.is_composite,
+        # pg_product_id intencionalmente omitido — cópia começa sem vínculo
+    )
+    db.add(copy)
+    await db.flush()
+
+    for i, img in enumerate(sorted(src.images, key=lambda x: x.sort_order)):
+        db.add(CMIGProductImage(cmig_product_id=copy.id, url=img.url, sort_order=i, is_primary=(i == 0)))
+
+    for v in src.variants:
+        v_sku = f"{v.sku}-copia"
+        v_suffix = 2
+        while (await db.execute(select(CMIGProductVariant).where(CMIGProductVariant.sku == v_sku))).scalar_one_or_none():
+            v_sku = f"{v.sku}-copia-{v_suffix}"
+            v_suffix += 1
+        db.add(CMIGProductVariant(
+            cmig_product_id=copy.id,
+            sku=v_sku,
+            variant_name=v.variant_name,
+            color=v.color,
+            size_label=v.size_label,
+            voltage=v.voltage,
+            price_modifier=v.price_modifier,
+            suggested_price=v.suggested_price,
+            attributes_json=v.attributes_json,
+        ))
+
+    if src.is_composite:
+        for comp in src.components:
+            db.add(CMIGProductComponent(
+                composite_id=copy.id,
+                cmig_product_id=comp.cmig_product_id,
+                catalog_product_id=comp.catalog_product_id,
+                quantity=comp.quantity,
+            ))
+
+    await db.commit()
+    await db.refresh(copy)
+    return _serialize_cmig_product(copy)
+
+
 @router.delete("/{cmig_id}/products/{product_id}")
 async def delete_cmig_product(
     cmig_id: int,

@@ -110,6 +110,7 @@ class ShippingRequest(BaseModel):
     height_cm: float = Field(..., gt=0, description="Altura em cm")
     width_cm: float = Field(..., gt=0, description="Largura em cm")
     length_cm: float = Field(..., gt=0, description="Comprimento em cm")
+    free_shipping: bool = Field(True, description="Anúncio com frete grátis (vendedor arca com o custo)")
 
 
 class SimulatorFullRequest(BaseModel):
@@ -203,6 +204,7 @@ async def simulate_shipping(
         height_cm=body.height_cm,
         width_cm=body.width_cm,
         length_cm=body.length_cm,
+        free_shipping=body.free_shipping,
     )
 
 

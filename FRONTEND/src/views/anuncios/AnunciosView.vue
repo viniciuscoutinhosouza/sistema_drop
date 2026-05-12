@@ -145,8 +145,19 @@
                       <span class="text-muted" style="font-size:11px"><i class="fas fa-truck mr-1"></i>{{ logisticLabel(a) }}</span>
                       <span v-if="a.free_shipping" class="text-success font-weight-bold" style="font-size:11px">· Frete Grátis</span>
                       <span v-if="listingBrand(a)" class="text-muted" style="font-size:11px">· <i class="fas fa-tag mr-1"></i>{{ listingBrand(a) }}</span>
-                      <!-- Badge de promoção -->
-                      <template v-if="promoData(a).hasPromo">
+                      <!-- Badge de ajuste automático de preço (PRICE_DISCOUNT / PRICE_MATCHING) -->
+                      <span v-if="a.has_auto_price_adj || ['PRICE_DISCOUNT','PRICE_MATCHING'].includes(promoData(a).promoType)"
+                            class="badge"
+                            style="background:#0284c7;color:#fff;font-size:10px;cursor:default"
+                            title="O Mercado Livre está ajustando o preço automaticamente para ganhar competitividade">
+                        <span class="fa-stack" style="font-size:6px;line-height:2em;vertical-align:middle;margin-right:3px">
+                          <i class="fas fa-sync-alt fa-stack-2x"></i>
+                          <i class="fas fa-dollar-sign fa-stack-1x" style="color:#0284c7;font-size:0.7em"></i>
+                        </span>Preço Auto ML
+                        <template v-if="promoData(a).discountPct"> −{{ promoData(a).discountPct }}%</template>
+                      </span>
+                      <!-- Badge de promoção regular (campanhas ML) -->
+                      <template v-else-if="promoData(a).hasPromo">
                         <span class="badge" style="background:#e11d48;color:#fff;font-size:10px">
                           <i class="fas fa-tag mr-1"></i>
                           {{ PROMO_TYPE_LABEL[promoData(a).promoType] || 'Em promoção' }}
@@ -220,12 +231,35 @@
                             <span class="text-muted" style="font-size:11px;text-decoration:line-through">
                               {{ formatCurrency(promoData(a).regularPrice) }}
                             </span>
-                            <span style="font-size:13px;font-weight:700;color:#e11d48">
-                              {{ formatCurrency(promoData(a).salePrice) }}
+                            <!-- Preço com ajuste automático ML: azul + ícone -->
+                            <template v-if="a.has_auto_price_adj || ['PRICE_DISCOUNT','PRICE_MATCHING'].includes(promoData(a).promoType)">
+                              <span style="font-size:13px;font-weight:700;color:#0284c7">
+                                {{ formatCurrency(promoData(a).salePrice) }}
+                              </span>
+                              <span class="fa-stack" style="font-size:7px;line-height:2em;vertical-align:middle;margin-left:2px" title="Preço ajustado automaticamente pelo Mercado Livre">
+                                <i class="fas fa-sync-alt fa-stack-2x" style="color:#0284c7"></i>
+                                <i class="fas fa-dollar-sign fa-stack-1x" style="color:#fff"></i>
+                              </span>
+                            </template>
+                            <!-- Promoção regular: vermelho -->
+                            <template v-else>
+                              <span style="font-size:13px;font-weight:700;color:#e11d48">
+                                {{ formatCurrency(promoData(a).salePrice) }}
+                              </span>
+                              <span v-if="promoData(a).discountPct"
+                                    style="font-size:10px;background:#fce7f3;color:#be185d;border-radius:3px;padding:0 4px;font-weight:600">
+                                −{{ promoData(a).discountPct }}%
+                              </span>
+                            </template>
+                          </template>
+                          <!-- Preço sem promoção mas com ajuste automático ML silencioso -->
+                          <template v-else-if="a.has_auto_price_adj">
+                            <span style="font-size:13px;font-weight:700;color:#0284c7">
+                              {{ formatCurrency(a.sale_price) }}
                             </span>
-                            <span v-if="promoData(a).discountPct"
-                                  style="font-size:10px;background:#fce7f3;color:#be185d;border-radius:3px;padding:0 4px;font-weight:600">
-                              −{{ promoData(a).discountPct }}%
+                            <span class="fa-stack" style="font-size:7px;line-height:2em;vertical-align:middle;margin-left:2px" title="Preço ajustado automaticamente pelo Mercado Livre">
+                              <i class="fas fa-sync-alt fa-stack-2x" style="color:#0284c7"></i>
+                              <i class="fas fa-dollar-sign fa-stack-1x" style="color:#fff"></i>
                             </span>
                           </template>
                           <span v-else class="font-weight-bold" style="font-size:13px">
@@ -600,10 +634,35 @@
                 <div v-if="wf.pictures.length > 0">
                   <h6 class="text-muted small text-uppercase mb-1">Fotos selecionadas ({{ wf.pictures.length }}/12)</h6>
                   <div class="d-flex flex-wrap">
-                    <div v-for="(img, i) in wf.pictures" :key="i" class="mr-2 mb-2 position-relative">
-                      <img :src="img" style="width:70px;height:70px;object-fit:cover;border-radius:4px;border:2px solid #007bff" />
-                      <span class="badge badge-primary position-absolute" style="top:-6px;left:-6px;font-size:10px">{{ i+1 }}</span>
-                      <button class="btn btn-danger btn-xs position-absolute" style="top:-6px;right:-6px;padding:1px 5px;font-size:10px;line-height:1.2" @click="removeImage(i)">×</button>
+                    <div v-for="(img, i) in wf.pictures" :key="i" class="mr-2 mb-2 position-relative" style="width:70px"
+                      @mouseenter="startWizardPreview($event, img)"
+                      @mouseleave="stopWizardPreview"
+                    >
+                      <img :src="img" style="width:70px;height:70px;object-fit:cover;border-radius:4px;border:2px solid #007bff;display:block" />
+                      <!-- Badge posição / capa -->
+                      <span
+                        class="position-absolute d-flex align-items-center justify-content-center text-white rounded"
+                        style="top:2px;left:2px;min-width:18px;height:18px;font-size:9px;padding:0 3px;line-height:1"
+                        :style="i === 0 ? 'background:#007bff' : 'background:rgba(0,0,0,0.55)'"
+                        :title="i === 0 ? 'Foto de capa' : `Posição ${i+1}`"
+                      >{{ i === 0 ? '★' : i + 1 }}</span>
+                      <!-- Botão remover -->
+                      <button class="btn btn-danger position-absolute" style="top:-6px;right:-6px;width:20px;height:20px;padding:0;line-height:1;border-radius:50%;font-size:10px" @click="removeImage(i)"><i class="fas fa-times"></i></button>
+                      <!-- Botões mover -->
+                      <button
+                        v-if="i > 0"
+                        class="position-absolute"
+                        style="bottom:2px;left:2px;width:20px;height:20px;padding:0;border:none;border-radius:3px;font-size:9px;background:rgba(0,0,0,0.55);color:#fff;cursor:pointer"
+                        title="Mover para esquerda"
+                        @click="moveImage(i, -1)"
+                      ><i class="fas fa-chevron-left"></i></button>
+                      <button
+                        v-if="i < wf.pictures.length - 1"
+                        class="position-absolute"
+                        style="bottom:2px;right:2px;width:20px;height:20px;padding:0;border:none;border-radius:3px;font-size:9px;background:rgba(0,0,0,0.55);color:#fff;cursor:pointer"
+                        title="Mover para direita"
+                        @click="moveImage(i, 1)"
+                      ><i class="fas fa-chevron-right"></i></button>
                     </div>
                   </div>
                 </div>
@@ -1049,6 +1108,17 @@
     </div>
 
   </div>
+
+  <!-- Preview hover wizard photos -->
+  <Teleport to="body">
+    <div
+      v-if="wizardImgPreview.show"
+      style="position:fixed;z-index:9999;pointer-events:none;border-radius:8px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.5);background:#111"
+      :style="{ left: wizardImgPreview.left + 'px', top: wizardImgPreview.top + 'px' }"
+    >
+      <img :src="wizardImgPreview.src" style="width:300px;height:300px;object-fit:contain;display:block" />
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
@@ -1245,6 +1315,45 @@ function addExtraImage() {
 
 function removeImage(i) {
   wf.value.pictures.splice(i, 1)
+}
+
+const wizardImgPreview = ref({ show: false, src: '', x: 0, y: 0 })
+let wizardImgTimer = null
+function startWizardPreview(event, src) {
+  clearTimeout(wizardImgTimer)
+  const rect = event.currentTarget.getBoundingClientRect()
+  wizardImgTimer = setTimeout(() => {
+    const PW = 300, PH = 300, M = 10
+    const vw = window.innerWidth, vh = window.innerHeight
+    const cx = rect.left + rect.width / 2
+    const cy = rect.top + rect.height / 2
+    let left, top
+    if (rect.bottom + PH + M <= vh) {
+      top  = rect.bottom + M
+      left = Math.min(Math.max(cx - PW / 2, M), vw - PW - M)
+    } else if (rect.top - PH - M >= 0) {
+      top  = rect.top - PH - M
+      left = Math.min(Math.max(cx - PW / 2, M), vw - PW - M)
+    } else if (rect.right + PW + M <= vw) {
+      left = rect.right + M
+      top  = Math.min(Math.max(cy - PH / 2, M), vh - PH - M)
+    } else {
+      left = Math.max(rect.left - PW - M, M)
+      top  = Math.min(Math.max(cy - PH / 2, M), vh - PH - M)
+    }
+    wizardImgPreview.value = { show: true, src, left, top }
+  }, 1000)
+}
+function stopWizardPreview() {
+  clearTimeout(wizardImgTimer)
+  wizardImgPreview.value.show = false
+}
+
+function moveImage(i, dir) {
+  const pics = wf.value.pictures
+  const target = i + dir
+  if (target < 0 || target >= pics.length) return
+  ;[pics[i], pics[target]] = [pics[target], pics[i]]
 }
 
 async function openWizard(listing) {
@@ -1819,12 +1928,17 @@ async function fetchCost(listing) {
     listingCosts.value = { ...listingCosts.value, [id]: data }
     // Promo já vem junto — sem fetch separado
     listingPromos.value = { ...listingPromos.value, [id]: {
-      has_promotion: data.has_promotion ?? false,
-      sale_price:    data.sale_price    ?? null,
-      regular_price: data.regular_price ?? null,
+      has_promotion:  data.has_promotion  ?? false,
+      sale_price:     data.sale_price     ?? null,
+      regular_price:  data.regular_price  ?? null,
       promotion_type: data.promotion_type ?? null,
-      discount_pct:  data.discount_pct  ?? null,
+      discount_pct:   data.discount_pct   ?? null,
     }}
+    // Propaga ajuste automático e preço atualizado para o objeto do listing
+    listing.has_auto_price_adj = data.has_auto_price_adj ?? false
+    if (data.price && data.price > 0) listing.sale_price = data.price
+    if (data.regular_price)  listing.regular_price = data.regular_price
+    if (data.promo_type !== undefined) listing.promo_type = data.promo_type ?? null
   } catch { /* silencia — mantém estimativa */ }
   finally { loadingCosts.value = { ...loadingCosts.value, [id]: false } }
 }

@@ -300,9 +300,10 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "qty_full":           listing.qty_full or 0,
         "qty_local":          listing.qty_local or 0,
         # Promotion fields
-        "regular_price":      float(listing.regular_price) if listing.regular_price is not None else None,
-        "promo_type":         listing.promo_type,
-        "promo_discount_pct": float(listing.promo_discount_pct) if listing.promo_discount_pct is not None else None,
+        "regular_price":       float(listing.regular_price) if listing.regular_price is not None else None,
+        "promo_type":          listing.promo_type,
+        "promo_discount_pct":  float(listing.promo_discount_pct) if listing.promo_discount_pct is not None else None,
+        "has_auto_price_adj":  bool(listing.has_auto_price_adj) if listing.has_auto_price_adj is not None else False,
         "cmig_product": cmig_product,
         "catalog_product": catalog_product,
         "is_linked": cmig_product is not None or catalog_product is not None,
@@ -348,20 +349,29 @@ async def _cache_costs(listing: ProductListing, access_token: str, seller_id: st
     try:
         real_price = float(listing.sale_price or 0)
 
-        # 1. Promoção — preço real e campos de promoção
+        # 1. Preço real atual do ML (promo ou regular) + detecção de automação — em paralelo
         if listing.platform_item_id:
             try:
-                promo = await ml_service.get_sale_price_info(access_token, listing.platform_item_id)
-                if promo.get("has_promotion") and promo.get("sale_price"):
-                    real_price                 = float(promo["sale_price"])
-                    listing.sale_price         = real_price
+                import asyncio as _aio
+                promo, auto_info = await _aio.gather(
+                    ml_service.get_sale_price_info(access_token, listing.platform_item_id),
+                    ml_service.get_item_auto_pricing(access_token, listing.platform_item_id),
+                )
+                current_price = promo.get("sale_price")
+                if current_price and float(current_price) > 0:
+                    real_price         = float(current_price)
+                    listing.sale_price = real_price
+                promo_type_val = promo.get("promotion_type") if promo.get("has_promotion") else None
+                if promo.get("has_promotion"):
                     listing.regular_price      = promo.get("regular_price")
-                    listing.promo_type         = promo.get("promotion_type")
+                    listing.promo_type         = promo_type_val
                     listing.promo_discount_pct = promo.get("discount_pct")
                 else:
                     listing.regular_price      = None
                     listing.promo_type         = None
                     listing.promo_discount_pct = None
+                # Detecção via /items/{id}/prices e tags — fonte correta para automação de preço
+                listing.has_auto_price_adj = auto_info["is_auto"]
             except Exception:
                 pass
 
@@ -387,9 +397,10 @@ async def _cache_costs(listing: ProductListing, access_token: str, seller_id: st
         )
         shipping_cost_calc = float(costs.get("shipping_cost") or 0)
 
-        # Para Full: shipping_options/free não devolve custo (é gerenciado pelo ML).
-        # Tarifa Full depende de (reputação, faixa de preço, faixa de peso, free_shipping).
-        if lt == "fulfillment" and listing.weight_kg and listing.height_cm and listing.width_cm and listing.length_cm:
+        # Para Full: /shipping_options/free retorna o custo correto quando chamado com os
+        # parâmetros adequados (free_shipping, condition, verbose). A tabela local é fallback
+        # para quando a API não retornar valor (timeout, dimensões ausentes, erro).
+        if lt == "fulfillment" and shipping_cost_calc == 0 and listing.weight_kg and listing.height_cm and listing.width_cm and listing.length_cm:
             from services.ml_service import _calc_billable_weight, reputation_tier_for_account
             wb = _calc_billable_weight(
                 float(listing.weight_kg), float(listing.height_cm),
@@ -400,7 +411,7 @@ async def _cache_costs(listing: ProductListing, access_token: str, seller_id: st
                 wb["billable_kg"], real_price, tier, db,
                 free_shipping=bool(listing.free_shipping),
             )
-            shipping_cost_calc += full_tariff
+            shipping_cost_calc = full_tariff
 
         # Recalcula receita líquida e margem com o frete ajustado
         commission   = float(costs.get("commission_amount") or 0)
@@ -564,6 +575,14 @@ async def import_anuncios(
             regular_price  = None
             promo_type_val = None
             promo_disc_pct = None
+
+        # Detecta automação de preço pelas tags do item (já disponíveis na bulk API — sem custo extra)
+        _item_tags = [t.lower() for t in (item.get("tags") or [])]
+        _AUTO_TAGS = ml_service._AUTO_PRICE_TAGS
+        has_auto_price_adj_sync = any(
+            t in _AUTO_TAGS or "automat" in t or "smart_pric" in t
+            for t in _item_tags
+        )
         title = item.get("title", "")
         permalink = item.get("permalink", "") or ""
         sku = item.get("seller_custom_field") or ""
@@ -806,6 +825,7 @@ async def import_anuncios(
                 existing.regular_price      = None
                 existing.promo_type         = None
                 existing.promo_discount_pct = None
+            existing.has_auto_price_adj = has_auto_price_adj_sync
             existing.last_sync_at = datetime.now(timezone.utc)
             updated += 1
             listing = existing
@@ -847,6 +867,7 @@ async def import_anuncios(
                 regular_price=regular_price,
                 promo_type=promo_type_val,
                 promo_discount_pct=promo_disc_pct,
+                has_auto_price_adj=has_auto_price_adj_sync,
                 published_at=datetime.now(timezone.utc),
                 last_sync_at=datetime.now(timezone.utc),
             )
@@ -1699,14 +1720,32 @@ async def get_anuncio_costs(
     access_token = await _get_valid_token(listing.account, db)
     seller_id = listing.account.platform_user_id or ""
 
-    # Busca preço real (pode ser promocional) — 1 chamada ML rápida
+    # Busca preço real e detecta automação de preço — em paralelo
     promo_info: dict = {}
     real_price = float(listing.sale_price)
+    auto_price_adj = False
     if listing.platform_item_id:
         try:
-            promo_info = await ml_service.get_sale_price_info(access_token, listing.platform_item_id)
+            import asyncio as _aio
+            promo_info, auto_info = await _aio.gather(
+                ml_service.get_sale_price_info(access_token, listing.platform_item_id),
+                ml_service.get_item_auto_pricing(access_token, listing.platform_item_id),
+            )
             if promo_info.get("sale_price") and float(promo_info["sale_price"]) > 0:
                 real_price = float(promo_info["sale_price"])
+                listing.sale_price = real_price
+            promo_type_live = promo_info.get("promotion_type") if promo_info.get("has_promotion") else None
+            if promo_info.get("has_promotion"):
+                listing.regular_price      = promo_info.get("regular_price")
+                listing.promo_type         = promo_type_live
+                listing.promo_discount_pct = promo_info.get("discount_pct")
+            else:
+                listing.regular_price      = None
+                listing.promo_type         = None
+                listing.promo_discount_pct = None
+            # Detecção via /items/{id}/prices e tags — fonte correta para automação de preço
+            auto_price_adj = auto_info["is_auto"]
+            listing.has_auto_price_adj = auto_price_adj
         except Exception:
             pass
 
@@ -1727,6 +1766,42 @@ async def get_anuncio_costs(
         free_shipping=bool(listing.free_shipping),
     )
 
+    # Para Full: se a API não retornou custo (timeout, indisponível, dims ausentes),
+    # usa tabela local ml_full_tariffs como fallback.
+    shipping_cost_final = float(costs.get("shipping_cost") or 0)
+    if (
+        logistic_type == "fulfillment"
+        and shipping_cost_final == 0
+        and listing.weight_kg
+        and listing.height_cm
+        and listing.width_cm
+        and listing.length_cm
+    ):
+        wb = ml_service._calc_billable_weight(
+            float(listing.weight_kg),
+            float(listing.height_cm),
+            float(listing.width_cm),
+            float(listing.length_cm),
+        )
+        tier = ml_service.reputation_tier_for_account(listing.account)
+        full_tariff = await ml_service.get_full_shipping_cost(
+            wb["billable_kg"], real_price, tier, db,
+            free_shipping=bool(listing.free_shipping),
+        )
+        if full_tariff > 0:
+            commission  = float(costs.get("commission_amount") or 0)
+            fixed_fee   = float(costs.get("fixed_fee") or 0)
+            financing   = float(costs.get("financing_fee") or 0)
+            total       = commission + full_tariff + fixed_fee + financing
+            costs = {
+                **costs,
+                "shipping_cost": round(full_tariff, 2),
+                "total_cost":    round(total, 2),
+                "net_revenue":   round(real_price - total, 2),
+                "margin_pct":    round(((real_price - total) / real_price) * 100, 2) if real_price > 0 else 0.0,
+                "shipping_source": "local_table_fallback",
+            }
+
     # Persiste os custos calculados para evitar recalculo e manter histórico
     listing.commission_pct    = costs.get("commission_pct")
     listing.commission_amount = costs.get("commission_amount")
@@ -1736,8 +1811,29 @@ async def get_anuncio_costs(
     listing.costs_cached_at   = datetime.now(timezone.utc)
     await db.commit()
 
-    # Devolve custos + dados de promoção em uma única resposta
-    return {**costs, **promo_info}
+    # Devolve custos + dados de promoção + flag de ajuste automático
+    return {**costs, **promo_info, "has_auto_price_adj": auto_price_adj}
+
+
+@router.get("/{listing_id}/prices-debug")
+async def get_anuncio_prices_debug(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Diagnóstico: retorna raw de /items/{id}/prices e tags do item — para identificar campos de automação de preço."""
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID no marketplace")
+    access_token = await _get_valid_token(listing.account, db)
+    result = await ml_service.get_item_auto_pricing(access_token, listing.platform_item_id)
+    return {
+        "platform_item_id": listing.platform_item_id,
+        "is_auto_detected":  result["is_auto"],
+        "auto_type":         result["auto_type"],
+        "prices_raw":        result["prices_raw"],
+        "tags_raw":          result["tags_raw"],
+    }
 
 
 @router.get("/{listing_id}/promotion")

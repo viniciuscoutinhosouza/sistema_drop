@@ -81,6 +81,9 @@
                     >
                       <i class="fas fa-edit"></i>
                     </RouterLink>
+                    <button class="btn btn-sm btn-outline-secondary mr-1" title="Duplicar produto" @click="duplicate(p)">
+                      <i class="fas fa-copy"></i>
+                    </button>
                     <button class="btn btn-sm btn-outline-danger" title="Desativar" @click="deactivate(p)">
                       <i class="fas fa-trash"></i>
                     </button>
@@ -93,16 +96,53 @@
       </div>
     </section>
   </div>
+
+  <!-- Modal Duplicar PG -->
+  <div v-if="duplicateModal.show" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+    <div class="modal-dialog modal-sm">
+      <div class="modal-content">
+        <div class="modal-header py-2">
+          <h6 class="modal-title"><i class="fas fa-copy mr-2"></i>Duplicar Produto</h6>
+          <button type="button" class="close" @click="duplicateModal.show = false"><span>&times;</span></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-muted mb-2" style="font-size:12px">SKU de origem: <strong>{{ duplicateModal.srcSku }}</strong></p>
+          <div class="form-group mb-0">
+            <label class="font-weight-bold" style="font-size:13px">Novo SKU <span class="text-danger">*</span></label>
+            <input
+              v-model="duplicateModal.newSku"
+              type="text"
+              class="form-control form-control-sm"
+              placeholder="Digite o SKU do novo produto"
+              @keyup.enter="confirmDuplicate"
+              autofocus
+            />
+          </div>
+        </div>
+        <div class="modal-footer py-2">
+          <button class="btn btn-sm btn-secondary" @click="duplicateModal.show = false">Cancelar</button>
+          <button class="btn btn-sm btn-primary" :disabled="!duplicateModal.newSku.trim() || duplicateModal.loading" @click="confirmDuplicate">
+            <i v-if="duplicateModal.loading" class="fas fa-spinner fa-spin mr-1"></i>
+            Duplicar
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 
 const products = ref([])
 const loading  = ref(true)
 const toast    = useToast()
+const router   = useRouter()
+
+const duplicateModal = ref({ show: false, srcId: null, srcSku: '', newSku: '', loading: false })
 
 async function load() {
   loading.value = true
@@ -119,6 +159,25 @@ async function updateStock(id, qty) {
     await api.put(`/pg/${id}/stock`, { stock_quantity: parseInt(qty) })
   } catch (e) {
     toast.error('Erro ao atualizar estoque.')
+  }
+}
+
+function duplicate(p) {
+  duplicateModal.value = { show: true, srcId: p.id, srcSku: p.sku, newSku: '', loading: false }
+}
+
+async function confirmDuplicate() {
+  const m = duplicateModal.value
+  if (!m.newSku.trim()) return
+  m.loading = true
+  try {
+    const { data } = await api.post(`/pg/${m.srcId}/duplicate`, { sku: m.newSku.trim() })
+    toast.success(`Produto duplicado! SKU: ${data.sku}`)
+    duplicateModal.value.show = false
+    router.push(`/pg/${data.id}/edit`)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao duplicar produto.')
+    m.loading = false
   }
 }
 

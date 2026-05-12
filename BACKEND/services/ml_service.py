@@ -1025,9 +1025,12 @@ async def get_listing_costs(
 
         wb = _calc_billable_weight(weight_kg, height_cm, width_cm, length_cm)
         weight_detail = wb
-        billable_g = int(round(wb["billable_kg"] * 1000))
-        # Formato ML: comprimentoxalturaxlargura,peso_gramas
-        dims = f"{int(length_cm)}x{int(height_cm)}x{int(width_cm)},{billable_g}"
+        # Peso físico em gramas — a API calcula o cúbico internamente a partir das dimensões
+        physical_g = int(round(weight_kg * 1000))
+        # Preservar decimais nas dimensões (ML API aceita float, ex: 9.5)
+        dims = f"{round(length_cm,1)}x{round(height_cm,1)}x{round(width_cm,1)},{physical_g}"
+        # Para Full, o vendedor sempre arca com o frete grátis perante o ML
+        effective_free = free_shipping or (logistic_type.lower() == "fulfillment")
 
         resp = await client.get(
             f"{ML_API_BASE}/users/{seller_id}/shipping_options/free",
@@ -1038,20 +1041,25 @@ async def get_listing_costs(
                 "listing_type_id": listing_type,
                 "mode":            shipping_mode,
                 "logistic_type":   logistic_type,
+                "free_shipping":   str(effective_free).lower(),
+                "condition":       "new",
+                "verbose":         "true",
             },
         )
         if resp.status_code != 200:
             return
 
-        parsed = _parse_shipping_response(resp.json())
+        raw = resp.json()
+        parsed = _parse_shipping_response(raw)
         shipping_net_cost = parsed["net_cost"]
         shipping_detail = {
             **parsed,
-            "dimensions":          dims,
-            "physical_weight_kg":  wb["physical_kg"],
-            "cubic_weight_kg":     wb["cubic_kg"],
-            "billable_weight_kg":  wb["billable_kg"],
-            "billable_weight_used": wb["used"],
+            "dimensions":            dims,
+            "physical_weight_kg":    wb["physical_kg"],
+            "cubic_weight_kg":       wb["cubic_kg"],
+            "billable_weight_kg":    wb["billable_kg"],
+            "billable_weight_used":  wb["used"],
+            "api_billable_weight_g": raw.get("billable_weight"),
         }
 
     async with httpx.AsyncClient(timeout=15) as client:
@@ -1111,6 +1119,66 @@ async def get_sale_price_info(access_token: str, item_id: str) -> dict:
         "promotion_type": promo_type,
         "discount_pct":   discount_pct,
     }
+
+
+_AUTO_PRICE_TYPES = {"automated", "smart", "competitive"}
+_AUTO_PRICE_TAGS  = {"automated_pricing", "smart_pricing", "competitive_price", "price_automatic",
+                     "dynamic_standard_price"}
+_AUTO_META_TYPES  = {"price_matching", "smart", "automated_pricing", "automated"}
+
+
+async def get_item_auto_pricing(access_token: str, item_id: str) -> dict:
+    """Detecta automação de preço ativa no ML para o item.
+
+    Faz duas chamadas sequenciais (evita cancelamentos do anyio com gather):
+    1. /items/{id}/prices  → verifica price.type e price.metadata.promotion_type
+    2. /items/{id}?attributes=tags,price → verifica item.tags (só se /prices não detectou)
+
+    Retorna sempre, nunca lança exceção (CancelledError incluído).
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    prices_raw: list = []
+    tags_raw:   list = []
+    is_auto  = False
+    auto_type: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            # 1. Checa /prices
+            try:
+                resp = await client.get(f"{ML_API_BASE}/items/{item_id}/prices", headers=headers)
+                if resp.status_code == 200:
+                    prices_raw = resp.json().get("prices", [])
+                    for p in prices_raw:
+                        ptype = (p.get("type") or "").lower()
+                        if ptype in _AUTO_PRICE_TYPES:
+                            is_auto, auto_type = True, ptype
+                            break
+                        meta_type = ((p.get("metadata") or {}).get("promotion_type") or "").lower()
+                        if meta_type in _AUTO_META_TYPES:
+                            is_auto, auto_type = True, meta_type
+                            break
+            except Exception:
+                pass
+
+            # 2. Checa tags do item (apenas se /prices não encontrou automação)
+            if not is_auto:
+                try:
+                    resp = await client.get(
+                        f"{ML_API_BASE}/items/{item_id}", headers=headers,
+                        params={"attributes": "tags,price"},
+                    )
+                    if resp.status_code == 200:
+                        tags_raw = resp.json().get("tags") or []
+                        for tag in (t.lower() for t in tags_raw):
+                            if tag in _AUTO_PRICE_TAGS or "automat" in tag or "smart_pric" in tag:
+                                is_auto, auto_type = True, tag
+                                break
+                except Exception:
+                    pass
+    except BaseException:
+        pass
+
+    return {"is_auto": is_auto, "auto_type": auto_type, "prices_raw": prices_raw, "tags_raw": tags_raw}
 
 
 async def get_item_promotion(access_token: str, item_id: str) -> dict:
@@ -1247,20 +1315,23 @@ async def get_shipping_details(
     height_cm: float,
     width_cm: float,
     length_cm: float,
+    free_shipping: bool = True,
 ) -> dict:
     """
     Consulta custo de frete via /users/{seller_id}/shipping_options/free.
 
-    Implementa cálculo correto do peso faturável (billable weight):
-      billable = max(peso físico, peso cúbico)
-      peso cúbico = (altura × largura × comprimento) / 6.000  [em kg]
+    Peso físico em gramas enviado à API; a API calcula internamente o peso cúbico
+    a partir das dimensões e retorna o peso faturável (billable_weight).
 
-    Retorna breakdown completo: pesos, custo bruto, desconto por reputação e custo líquido.
+    Parâmetros free_shipping, condition e verbose são obrigatórios para que a API
+    retorne a tarifa correta (especialmente para logistic_type=fulfillment).
     """
     wb = _calc_billable_weight(weight_kg, height_cm, width_cm, length_cm)
-    billable_g = int(round(wb["billable_kg"] * 1000))
-    # Formato ML: comprimentoxalturaxlargura,peso_gramas (usa peso faturável)
-    dims = f"{int(length_cm)}x{int(height_cm)}x{int(width_cm)},{billable_g}"
+    physical_g = int(round(weight_kg * 1000))
+    # Preservar decimais nas dimensões (ML API aceita float, ex: 9.5)
+    dims = f"{round(length_cm,1)}x{round(height_cm,1)}x{round(width_cm,1)},{physical_g}"
+    # Para Full, o vendedor sempre arca com o frete grátis perante o ML
+    effective_free = free_shipping or (logistic_type.lower() == "fulfillment")
 
     headers = {"Authorization": f"Bearer {access_token}"}
     async with httpx.AsyncClient(timeout=15) as client:
@@ -1273,6 +1344,9 @@ async def get_shipping_details(
                 "listing_type_id": listing_type,
                 "mode":            shipping_mode,
                 "logistic_type":   logistic_type,
+                "free_shipping":   str(effective_free).lower(),
+                "condition":       "new",
+                "verbose":         "true",
             },
         )
     if resp.status_code != 200:
@@ -1281,13 +1355,15 @@ async def get_shipping_details(
             detail=f"Erro ao consultar frete ML: {resp.text}",
         )
 
-    parsed = _parse_shipping_response(resp.json())
+    raw = resp.json()
+    parsed = _parse_shipping_response(raw)
     return {
         # Pesos
-        "physical_weight_kg":  wb["physical_kg"],
-        "cubic_weight_kg":     wb["cubic_kg"],
-        "billable_weight_kg":  wb["billable_kg"],
-        "billable_weight_used": wb["used"],
+        "physical_weight_kg":    wb["physical_kg"],
+        "cubic_weight_kg":       wb["cubic_kg"],
+        "billable_weight_kg":    wb["billable_kg"],
+        "billable_weight_used":  wb["used"],
+        "api_billable_weight_g": raw.get("billable_weight"),
         # Frete
         "dimensions":          dims,
         "list_cost":           parsed["list_cost"],

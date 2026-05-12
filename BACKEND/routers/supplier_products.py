@@ -227,6 +227,91 @@ async def update_product(
     return {"ok": True}
 
 
+@router.post("/{product_id}/duplicate", status_code=201)
+async def duplicate_product(
+    product_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ugo", "admin")),
+):
+    """Duplica um produto PG com o SKU informado pelo usuário."""
+    result = await db.execute(
+        select(CatalogProduct)
+        .options(
+            selectinload(CatalogProduct.images),
+            selectinload(CatalogProduct.variants),
+            selectinload(CatalogProduct.components),
+        )
+        .where(CatalogProduct.id == product_id)
+    )
+    src = result.scalar_one_or_none()
+    if not src:
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
+
+    new_sku = (body.get("sku") or "").strip()
+    if not new_sku:
+        raise HTTPException(status_code=422, detail="SKU é obrigatório para duplicar o produto")
+    if (await db.execute(select(CatalogProduct).where(CatalogProduct.sku == new_sku))).scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"SKU '{new_sku}' já está em uso")
+
+    copy = CatalogProduct(
+        warehouse_id=src.warehouse_id,
+        sku=new_sku,
+        title=f"{src.title} (Cópia)",
+        description=src.description,
+        cost_price=src.cost_price,
+        suggested_price=src.suggested_price,
+        model=src.model,
+        ean=src.ean,
+        weight_kg=src.weight_kg,
+        height_cm=src.height_cm,
+        width_cm=src.width_cm,
+        length_cm=src.length_cm,
+        ncm=src.ncm,
+        cest=src.cest,
+        brand=src.brand,
+        origin=src.origin,
+        category_id=src.category_id,
+        video_id=src.video_id,
+        attributes_json=src.attributes_json,
+        is_composite=src.is_composite,
+    )
+    db.add(copy)
+    await db.flush()
+
+    for i, img in enumerate(sorted(src.images, key=lambda x: x.sort_order)):
+        db.add(CatalogProductImage(product_id=copy.id, url=img.url, sort_order=i, is_primary=(i == 0)))
+
+    for v in src.variants:
+        v_sku = f"{v.sku}-copia"
+        v_suffix = 2
+        while (await db.execute(select(CatalogProductVariant).where(CatalogProductVariant.sku == v_sku))).scalar_one_or_none():
+            v_sku = f"{v.sku}-copia-{v_suffix}"
+            v_suffix += 1
+        db.add(CatalogProductVariant(
+            product_id=copy.id,
+            sku=v_sku,
+            variant_name=v.variant_name,
+            color=v.color,
+            size_label=v.size_label,
+            voltage=v.voltage,
+            price_modifier=v.price_modifier,
+            suggested_price=v.suggested_price,
+            attributes_json=v.attributes_json,
+        ))
+
+    if src.is_composite:
+        for comp in src.components:
+            db.add(CatalogProductComponent(
+                composite_id=copy.id,
+                component_id=comp.component_id,
+                quantity=comp.quantity,
+            ))
+
+    await db.commit()
+    return {"id": copy.id, "sku": copy.sku}
+
+
 @router.post("/{product_id}/photos")
 async def upload_product_photo(
     product_id: int,
