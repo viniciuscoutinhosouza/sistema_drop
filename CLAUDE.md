@@ -257,6 +257,8 @@ BLING_CLIENT_SECRET=
 7. **Testes**: não há suite de testes automatizados — validar manualmente via Swagger (`/docs`) ou frontend.
 8. **Sem TypeScript no frontend** — manter JS puro; não introduzir TS sem acordar com o usuário.
 
+9. Crie um arquivo LOG.md e a cada alteração ou planejamento, atualize o LOG com um resumo, informando data e hora do processamento, para facilitar o uso do contexto
+
 ---
 
 ## Gotchas e Armadilhas Conhecidas

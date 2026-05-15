@@ -26,6 +26,42 @@ export const useFiscalStore = defineStore('fiscal', () => {
     return data
   }
 
+  // Saídas unificadas: NF-e do módulo fiscal + NF-e do Faturador ML
+  async function fetchOutbound(filters = {}) {
+    loading.value = true
+    try {
+      const { data } = await api.get('/invoices/outbound', { params: filters })
+      invoices.value = data.items || []
+      total.value = data.total || 0
+      return data
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // Popula o cache de NF-e do Faturador ML (lotes de até 25 pedidos por chamada)
+  async function syncMlOutbound(params = {}) {
+    const { data } = await api.post('/invoices/outbound/sync-ml', null, { params })
+    return data
+  }
+
+  // Exporta um .zip com XMLs ou DANFEs das NF-e de saída filtradas
+  async function exportOutbound(kind, filters = {}) {
+    const { data, headers } = await api.get('/invoices/outbound/export', {
+      params: { ...filters, kind },
+      responseType: 'blob',
+    })
+    const cd = headers['content-disposition'] || ''
+    const match = cd.match(/filename="?([^"]+)"?/)
+    const filename = match ? match[1] : `nfe_saidas_${kind}.zip`
+    const url = URL.createObjectURL(new Blob([data], { type: 'application/zip' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+  }
+
   async function createInvoice(payload) {
     const { data } = await api.post('/invoices', payload)
     return data
@@ -62,6 +98,12 @@ export const useFiscalStore = defineStore('fiscal', () => {
 
   async function transmit(invoiceId) {
     const { data } = await api.post(`/invoices/${invoiceId}/transmit`)
+    return data
+  }
+
+  // Finaliza sem transmitir à SEFAZ (status='finalized'): movimenta estoque e entra nos totalizadores
+  async function finalizeNoSefaz(invoiceId) {
+    const { data } = await api.post(`/invoices/${invoiceId}/finalize-no-sefaz`)
     return data
   }
 
@@ -102,9 +144,10 @@ export const useFiscalStore = defineStore('fiscal', () => {
 
   return {
     invoices, total, loading, currentInvoice,
-    fetchInvoices, fetchInvoice, createInvoice, updateInvoice, deleteInvoice,
+    fetchInvoices, fetchInvoice, fetchOutbound, exportOutbound, syncMlOutbound,
+    createInvoice, updateInvoice, deleteInvoice,
     addItem, updateItem, deleteItem,
-    calculateTaxes, transmit, cancel, correctionLetter, sendEmail, refreshStatus,
+    calculateTaxes, transmit, finalizeNoSefaz, cancel, correctionLetter, sendEmail, refreshStatus,
     syncReceived, manifest, updateStock,
   }
 })

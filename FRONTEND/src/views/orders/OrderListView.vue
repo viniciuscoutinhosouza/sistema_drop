@@ -696,6 +696,8 @@ function labelAvailable(order) {
 }
 function labelCircleClass(order) {
   const s = order.shipment_status
+  // Pedido Full — etiqueta gerenciada pelo ML, sem ação para o vendedor
+  if (isFullOrder(order)) return 'bg-light text-muted border'
   // Já tem cache local: indicador verde-escuro com check
   if (order.label_cached_at) return 'bg-success text-white'
   if (s === 'shipped' || s === 'delivered') return 'bg-success text-white'
@@ -707,6 +709,7 @@ function labelCircleClass(order) {
 }
 function labelCircleTooltip(order) {
   const s = order.shipment_status
+  if (isFullOrder(order)) return 'Pedido Full — etiqueta gerenciada pelo Mercado Livre'
   if (s === 'cancelled') return 'Envio cancelado — etiqueta indisponível'
   if (s === 'pending' || !s) return 'Aguardando aprovação do pagamento — etiqueta ainda não disponível'
   if (!order.shipment_id) return 'Sem envio'
@@ -742,7 +745,12 @@ async function printShippingLabel(order) {
     } else if (err.response?.data?.detail) {
       msg = err.response.data.detail
     }
-    toast.error(typeof msg === 'string' ? msg : 'Erro ao gerar etiqueta')
+    if (typeof msg === 'string' && msg.includes('NF-e')) {
+      // Aviso acionável (NF-e sendo emitida), não é um erro
+      toast.warning(msg)
+    } else {
+      toast.error(typeof msg === 'string' ? msg : 'Erro ao gerar etiqueta')
+    }
   } finally {
     labelLoading.value[order.id] = false
   }

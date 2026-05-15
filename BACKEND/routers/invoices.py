@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import selectinload
@@ -11,11 +12,17 @@ from models.user import User
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.person import Person
 from models.order import Order, OrderItem
+from models.integration import MarketplaceAccount
 from models.fiscal import Invoice, InvoiceItem, InvoiceEvent, CMIGFiscalConfig
 import json as _json
+import io as _io
+import zipfile as _zipfile
+import re as _re
+import httpx
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
 from services.fiscal import focus_service, dfe_service
 from services.fiscal.tax_calculator import calculate_item_taxes, suggest_cfop
+from services import ml_service as _ml
 import uuid as _uuid
 
 router = APIRouter()
@@ -295,6 +302,473 @@ async def list_invoices(
         "page": page,
         "page_size": page_size,
     }
+
+
+# ── Saídas unificadas (NF-e do módulo fiscal + Faturador ML) ──────────────────
+
+# Status da order (Faturador ML) -> status normalizado usado na UI unificada
+_ML_STATUS_MAP = {"in_process": "processing", "pending": "pending", "authorized": "authorized"}
+
+# Rótulos de finalidade do módulo fiscal (Invoice.purpose)
+_PURPOSE_LABELS = {
+    "venda": "Venda", "devolucao": "Devolução", "remessa": "Simples Remessa",
+    "retorno": "Retorno", "transferencia": "Transferência",
+    "complementar": "Complementar", "ajuste": "Ajuste", "outros": "Outros",
+}
+
+# Rótulos de tipo de transação das NF-e do Faturador ML (transaction_type)
+_ML_TYPE_LABELS = {
+    "sale": "Venda", "devolution": "Devolução", "sale_return": "Retorno de Venda",
+    "inbound": "Remessa", "inbound_return": "Retorno de Remessa",
+    "symbolic_inbound": "Remessa Simbólica", "symbolic_inbound_return": "Retorno Simbólico",
+    "removal": "Retirada", "input": "Alta de Estoque", "output": "Baixa de Estoque",
+    "correction_letter": "Carta de Correção", "cte": "CT-e",
+}
+
+
+def _parse_access_key(key: str | None) -> dict:
+    """Extrai número e série de uma chave de acesso de NF-e (44 dígitos).
+
+    Layout: cUF(2) AAMM(4) CNPJ(14) mod(2) serie(3) nNF(9) tpEmis(1) cNF(8) cDV(1).
+    """
+    k = "".join(c for c in (key or "") if c.isdigit())
+    if len(k) != 44:
+        return {}
+    try:
+        return {"serie": int(k[22:25]), "nfe_number": int(k[25:34])}
+    except (ValueError, IndexError):
+        return {}
+
+
+def _ml_invoice_id_from_order(order: Order) -> str | None:
+    """O invoice_id do Faturador ML é salvo em order.nfe_url como string de dígitos."""
+    stored = str(order.nfe_url or "").strip()
+    if stored.isdigit():
+        return stored
+    if "/danfe/" in stored:
+        tail = stored.rstrip("/").split("/danfe/")[-1]
+        return tail if tail.isdigit() else None
+    return None
+
+
+async def _collect_outbound_rows(
+    db: AsyncSession,
+    accessible: list[int],
+    cmig_id: int | None,
+    source: str | None,
+    status: str | None,
+    date_from: date | None,
+    date_to: date | None,
+    search: str | None,
+) -> list[dict]:
+    """Monta a lista unificada de NF-e de saída: Invoices do módulo fiscal +
+    NF-e do Faturador ML (a partir de orders.nfe_*). Linhas normalizadas, sem
+    paginação, ordenadas por data de emissão desc."""
+    cmig_ids = [cmig_id] if cmig_id is not None else accessible
+
+    cmig_rows = (await db.execute(
+        select(CMIG.id, CMIG.company_name).where(CMIG.id.in_(cmig_ids))
+    )).all()
+    cmig_names = {cid: name for cid, name in cmig_rows}
+
+    rows: list[dict] = []
+
+    # ── Fonte 1: módulo fiscal (Invoice direction='out') ──────────────────────
+    if source in (None, "", "all", "fiscal"):
+        stmt = select(Invoice).where(
+            and_(Invoice.direction == "out", Invoice.cmig_id.in_(cmig_ids))
+        )
+        if date_from:
+            stmt = stmt.where(Invoice.issue_date >= date_from)
+        if date_to:
+            stmt = stmt.where(Invoice.issue_date <= date_to)
+        if search:
+            s = f"%{search.strip()}%"
+            digits = "".join(c for c in search if c.isdigit())
+            conds = [Invoice.access_key.like(s)]
+            if digits:
+                try:
+                    conds.append(Invoice.nfe_number == int(digits))
+                except ValueError:
+                    pass
+            stmt = stmt.where(or_(*conds))
+        invs = (await db.execute(stmt)).scalars().all()
+
+        person_ids = {i.person_id for i in invs if i.person_id}
+        persons = {}
+        if person_ids:
+            ps = (await db.execute(select(Person).where(Person.id.in_(person_ids)))).scalars().all()
+            persons = {p.id: p for p in ps}
+
+        for inv in invs:
+            p = persons.get(inv.person_id)
+            rows.append({
+                "source": "fiscal",
+                "id": inv.id,
+                "order_id": inv.order_id,
+                "platform_order_id": None,
+                "cmig_id": inv.cmig_id,
+                "cmig_name": cmig_names.get(inv.cmig_id),
+                "nfe_number": inv.nfe_number,
+                "serie": inv.serie,
+                "access_key": inv.access_key,
+                "issue_date": inv.issue_date.isoformat() if inv.issue_date else None,
+                "recipient": p.name if p else None,
+                "recipient_document": p.document if p else None,
+                "total": _f(inv.total_invoice),
+                "status": inv.status,
+                "nfe_type": inv.purpose,
+                "nfe_type_label": _PURPOSE_LABELS.get(inv.purpose, inv.purpose or "—"),
+                "xml_url": inv.xml_url,
+                "danfe_url": inv.danfe_url,
+                "ml_invoice_id": None,
+                "xml_available": bool(inv.xml_url),
+                "danfe_available": bool(inv.danfe_url),
+            })
+
+    # ── Fonte 2: Faturador ML (orders.nfe_*) ──────────────────────────────────
+    # Quando o pedido já teve as NF-e consultadas (modal de NF-e), a lista
+    # completa — venda + notas de referência, como Retorno Simbólico de
+    # pedidos Full — fica cacheada em orders.nfe_invoices_json. Caímos no
+    # registro único derivado de orders.nfe_* só quando esse cache não existe.
+    if source in (None, "", "all", "ml"):
+        stmt = select(Order).where(
+            and_(
+                Order.cmig_id.in_(cmig_ids),
+                Order.platform == "mercadolivre",
+                Order.nfe_status.isnot(None),
+            )
+        )
+        if date_from:
+            stmt = stmt.where(
+                Order.created_at >= datetime(date_from.year, date_from.month, date_from.day)
+            )
+        if date_to:
+            stmt = stmt.where(
+                Order.created_at <= datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59)
+            )
+        if search:
+            s = f"%{search.strip()}%"
+            stmt = stmt.where(or_(Order.nfe_key.like(s), Order.platform_order_id.like(s)))
+        orders = (await db.execute(stmt)).scalars().all()
+
+        for o in orders:
+            issue_dt = o.paid_at or o.created_at
+            order_issue = issue_dt.isoformat() if issue_dt else None
+
+            cached = []
+            if o.nfe_invoices_json:
+                try:
+                    parsed_json = _json.loads(o.nfe_invoices_json)
+                    if isinstance(parsed_json, list):
+                        cached = parsed_json
+                except (ValueError, TypeError):
+                    cached = []
+
+            if cached:
+                for inv in cached:
+                    t_type = inv.get("transaction_type") or "sale"
+                    rows.append({
+                        "source": "ml",
+                        "id": inv.get("id") or f"order-{o.id}",
+                        "order_id": o.id,
+                        "platform_order_id": o.platform_order_id,
+                        "cmig_id": o.cmig_id,
+                        "cmig_name": cmig_names.get(o.cmig_id),
+                        "nfe_number": inv.get("invoice_number"),
+                        "serie": inv.get("invoice_series"),
+                        "access_key": inv.get("invoice_key"),
+                        "issue_date": inv.get("issued_date") or order_issue,
+                        "recipient": o.buyer_name,
+                        "recipient_document": o.buyer_document,
+                        "total": _f(inv.get("amount")),
+                        "status": _ML_STATUS_MAP.get(inv.get("status"), inv.get("status") or "authorized"),
+                        "nfe_type": t_type,
+                        "nfe_type_label": inv.get("transaction_type_label")
+                            or _ML_TYPE_LABELS.get(t_type, t_type.replace("_", " ").title()),
+                        "xml_url": None,
+                        "danfe_url": None,
+                        "ml_invoice_id": str(inv.get("id")) if inv.get("id") else None,
+                        "xml_available": bool(inv.get("xml_location")),
+                        "danfe_available": bool(inv.get("danfe_location")),
+                    })
+            else:
+                # Fallback: pedido ainda não teve as NF-e consultadas — só a de venda
+                parsed = _parse_access_key(o.nfe_key)
+                ml_inv_id = _ml_invoice_id_from_order(o)
+                authorized = o.nfe_status == "authorized"
+                rows.append({
+                    "source": "ml",
+                    "id": ml_inv_id or f"order-{o.id}",
+                    "order_id": o.id,
+                    "platform_order_id": o.platform_order_id,
+                    "cmig_id": o.cmig_id,
+                    "cmig_name": cmig_names.get(o.cmig_id),
+                    "nfe_number": parsed.get("nfe_number"),
+                    "serie": parsed.get("serie"),
+                    "access_key": o.nfe_key,
+                    "issue_date": order_issue,
+                    "recipient": o.buyer_name,
+                    "recipient_document": o.buyer_document,
+                    "total": _f(o.sale_amount),
+                    "status": _ML_STATUS_MAP.get(o.nfe_status, o.nfe_status),
+                    "nfe_type": "sale",
+                    "nfe_type_label": "Venda",
+                    "xml_url": None,
+                    "danfe_url": None,
+                    "ml_invoice_id": ml_inv_id,
+                    "xml_available": authorized and bool(ml_inv_id),
+                    "danfe_available": authorized and bool(ml_inv_id),
+                })
+
+    # Filtro de status aplicado de forma uniforme (após expandir o cache ML)
+    if status:
+        rows = [r for r in rows if r["status"] == status]
+
+    rows.sort(key=lambda r: r["issue_date"] or "", reverse=True)
+    return rows
+
+
+@router.get("/outbound")
+async def list_outbound_invoices(
+    cmig_id: int | None = Query(None),
+    source: str | None = Query(None, regex="^(all|fiscal|ml)$"),
+    status: str | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    search: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(30, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lista unificada de NF-e de saída por CMIG: módulo fiscal + Faturador ML."""
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if not accessible:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size, "by_cmig": []}
+    if cmig_id is not None and cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+
+    rows = await _collect_outbound_rows(
+        db, accessible, cmig_id, source, status, date_from, date_to, search
+    )
+
+    # Resumo por CMIG sobre o conjunto filtrado completo
+    by_cmig: dict[int, dict] = {}
+    for r in rows:
+        b = by_cmig.setdefault(r["cmig_id"], {
+            "cmig_id": r["cmig_id"], "cmig_name": r["cmig_name"], "count": 0, "total": 0.0,
+        })
+        b["count"] += 1
+        b["total"] += r["total"] or 0.0
+
+    total = len(rows)
+    start = (page - 1) * page_size
+    return {
+        "items": rows[start:start + page_size],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "by_cmig": sorted(by_cmig.values(), key=lambda x: (x["cmig_name"] or "")),
+    }
+
+
+@router.get("/outbound/export")
+async def export_outbound_invoices(
+    kind: str = Query(..., regex="^(xml|danfe)$"),
+    cmig_id: int | None = Query(None),
+    source: str | None = Query(None, regex="^(all|fiscal|ml)$"),
+    status: str | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    search: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Exporta um .zip com os XMLs (ou DANFEs) de todas as NF-e de saída filtradas."""
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if not accessible:
+        raise HTTPException(status_code=404, detail="Nenhuma CMIG acessível")
+    if cmig_id is not None and cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+
+    rows = await _collect_outbound_rows(
+        db, accessible, cmig_id, source, status, date_from, date_to, search
+    )
+    avail_key = "xml_available" if kind == "xml" else "danfe_available"
+    rows = [r for r in rows if r.get(avail_key)]
+    MAX = 400
+    capped = len(rows) > MAX
+    rows = rows[:MAX]
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail="Nenhuma NF-e com documento disponível no filtro atual",
+        )
+
+    # Tokens ML necessários para baixar XML/DANFE do Faturador
+    ml_order_ids = [r["order_id"] for r in rows if r["source"] == "ml"]
+    accounts_by_order: dict[int, MarketplaceAccount] = {}
+    if ml_order_ids:
+        o_rows = (await db.execute(
+            select(Order.id, Order.account_id).where(Order.id.in_(ml_order_ids))
+        )).all()
+        acc_ids = {aid for _, aid in o_rows if aid}
+        accs = {}
+        if acc_ids:
+            accs = {
+                a.id: a for a in (await db.execute(
+                    select(MarketplaceAccount).where(MarketplaceAccount.id.in_(acc_ids))
+                )).scalars().all()
+            }
+        accounts_by_order = {oid: accs.get(aid) for oid, aid in o_rows}
+
+    ext = "xml" if kind == "xml" else "pdf"
+    errors: list[str] = []
+    used_names: set[str] = set()
+    buf = _io.BytesIO()
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
+            for r in rows:
+                label = f"NFe {r['nfe_number'] or r['access_key'] or r['id']}"
+                try:
+                    if r["source"] == "fiscal":
+                        url = r["xml_url"] if kind == "xml" else r["danfe_url"]
+                        if not url:
+                            errors.append(f"{label}: sem URL de {kind}")
+                            continue
+                        resp = await client.get(url)
+                        if resp.status_code != 200:
+                            errors.append(f"{label}: Focus retornou HTTP {resp.status_code}")
+                            continue
+                        content = resp.content
+                    else:  # ml
+                        acc = accounts_by_order.get(r["order_id"])
+                        inv_id = r["ml_invoice_id"]
+                        if not acc or not acc.access_token or not inv_id:
+                            errors.append(f"{label}: pedido ML sem conta válida ou invoice_id")
+                            continue
+                        if kind == "xml":
+                            path = (
+                                f"/users/{acc.platform_user_id}/invoices/documents"
+                                f"/xml/{inv_id}/authorized"
+                            )
+                        else:
+                            path = (
+                                f"/users/{acc.platform_user_id}/invoices/sites/MLB"
+                                f"/documents/danfe/{inv_id}"
+                            )
+                        content, _ = await _ml.fetch_invoice_file(acc.access_token, path)
+
+                    folder = _re.sub(
+                        r"[^\w\- ]", "_", (r["cmig_name"] or f"CMIG_{r['cmig_id']}")
+                    ).strip() or f"CMIG_{r['cmig_id']}"
+                    base = r["access_key"] or f"{r['source']}_{r['id']}"
+                    name = f"{folder}/{base}.{ext}"
+                    n = 1
+                    while name in used_names:
+                        name = f"{folder}/{base}_{n}.{ext}"
+                        n += 1
+                    used_names.add(name)
+                    zf.writestr(name, content)
+                except HTTPException as e:
+                    errors.append(f"{label}: {e.detail}")
+                except Exception as e:
+                    errors.append(f"{label}: {e}")
+
+            notes = []
+            if capped:
+                notes.append(
+                    f"Exportação limitada a {MAX} NF-e. Refine os filtros (CMIG, "
+                    f"período) para exportar o restante."
+                )
+            if errors:
+                notes.append(
+                    f"{len(errors)} NF-e não puderam ser baixadas:\n" + "\n".join(errors)
+                )
+            if notes:
+                zf.writestr("_avisos.txt", "\n\n".join(notes))
+
+    buf.seek(0)
+    fname = f"nfe_saidas_{kind}_{date.today().isoformat()}.zip"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.post("/outbound/sync-ml")
+async def sync_ml_outbound_invoices(
+    cmig_id: int | None = Query(None),
+    limit: int = Query(25, ge=1, le=60),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Popula o cache de NF-e do Faturador ML (orders.nfe_invoices_json) para os
+    pedidos que ainda não foram consultados — assim a tela Fiscal>Saídas passa a
+    listar também as notas de referência (ex.: Retorno Simbólico de pedidos Full).
+
+    Processa no máximo `limit` pedidos por chamada e retorna `remaining`; o
+    frontend repete a chamada até zerar. Reaproveita o mesmo endpoint do botão
+    de NF-e da tela de Pedidos (fetch_and_cache_order_invoices)."""
+    from routers.orders import fetch_and_cache_order_invoices
+
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if not accessible:
+        return {"processed": 0, "remaining": 0, "errors": []}
+    cmig_ids = [cmig_id] if cmig_id is not None else accessible
+    if cmig_id is not None and cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+
+    base_filter = and_(
+        Order.cmig_id.in_(cmig_ids),
+        Order.platform == "mercadolivre",
+        Order.nfe_status.isnot(None),
+        Order.nfe_invoices_json.is_(None),
+    )
+
+    remaining = (await db.execute(
+        select(func.count()).select_from(Order).where(base_filter)
+    )).scalar() or 0
+    if remaining == 0:
+        return {"processed": 0, "remaining": 0, "errors": []}
+
+    orders = (await db.execute(
+        select(Order).where(base_filter).order_by(Order.created_at.desc()).limit(limit)
+    )).scalars().all()
+
+    # Contas em batch
+    acc_ids = {o.account_id for o in orders if o.account_id}
+    accounts = {}
+    if acc_ids:
+        accounts = {
+            a.id: a for a in (await db.execute(
+                select(MarketplaceAccount).where(MarketplaceAccount.id.in_(acc_ids))
+            )).scalars().all()
+        }
+
+    processed = 0
+    errors: list[str] = []
+    for o in orders:
+        acc = accounts.get(o.account_id)
+        if not acc or not acc.access_token:
+            # Sem conta válida — marca como vazio para não reprocessar infinitamente
+            o.nfe_invoices_json = "[]"
+            await db.commit()
+            errors.append(f"Pedido {o.platform_order_id or o.id}: conta ML sem token")
+            continue
+        try:
+            await fetch_and_cache_order_invoices(db, o, acc)
+            if o.nfe_invoices_json is None:
+                o.nfe_invoices_json = "[]"  # nada retornado — evita reprocessar
+                await db.commit()
+            processed += 1
+        except Exception as e:
+            errors.append(f"Pedido {o.platform_order_id or o.id}: {e}")
+
+    return {"processed": processed, "remaining": max(0, remaining - processed), "errors": errors}
 
 
 @router.get("/{invoice_id}")
@@ -714,6 +1188,100 @@ async def _apply_authorized(inv: Invoice, cfg: CMIGFiscalConfig, focus_payload: 
     )
     inv.xml_url = focus_service.absolutize_focus_url(cfg, focus_payload.get("caminho_xml_nota_fiscal") or "")
     inv.danfe_url = focus_service.absolutize_focus_url(cfg, focus_payload.get("caminho_danfe") or "")
+
+
+async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
+    """Movimenta estoque a partir dos itens da NFe.
+    - Saída ('out') decrementa CMIGProduct.stock_quantity por EAN ou cmig_product_id.
+    - Entrada ('in') incrementa.
+    Idempotente: marca inv.stock_updated=True e retorna sem efeito se já aplicado.
+    """
+    if inv.stock_updated:
+        return {"matched": 0, "unmatched": 0, "already_updated": True}
+
+    sign = -1 if inv.direction == "out" else 1
+    matched = 0
+    unmatched = 0
+    for item in (inv.items or []):
+        prod = None
+        if item.cmig_product_id:
+            prod = (
+                await db.execute(
+                    select(CMIGProduct).where(CMIGProduct.id == item.cmig_product_id)
+                )
+            ).scalar_one_or_none()
+        if not prod:
+            ean = (item.ean or "").strip()
+            if ean:
+                prod = (
+                    await db.execute(
+                        select(CMIGProduct).where(
+                            and_(CMIGProduct.cmig_id == inv.cmig_id, CMIGProduct.ean == ean)
+                        )
+                    )
+                ).scalar_one_or_none()
+        if not prod:
+            unmatched += 1
+            continue
+        qty = int(item.quantity or 0)
+        prod.stock_quantity = (prod.stock_quantity or 0) + (sign * qty)
+        if not item.cmig_product_id:
+            item.cmig_product_id = prod.id
+        matched += 1
+
+    inv.stock_updated = True
+    return {"matched": matched, "unmatched": unmatched, "already_updated": False}
+
+
+@router.post("/{invoice_id}/finalize-no-sefaz")
+async def finalize_invoice_no_sefaz(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Finaliza a NFe SEM transmitir à SEFAZ.
+
+    A NFe entra no status 'finalized' e:
+    - É contabilizada nos totalizadores da tela Fiscal > Saídas (por Natureza da Operação);
+    - Movimenta o estoque dos CMIGProducts vinculados (decrementa em saídas, incrementa em entradas).
+
+    Útil para NFes auxiliares (devolução manual, ajustes, controles internos) onde o cliente
+    não exige a transmissão à SEFAZ via Focus NFe, mas o estoque precisa refletir a operação.
+    """
+    inv = await _get_invoice_for_edit(invoice_id, current_user, db)
+
+    if not inv.items:
+        raise HTTPException(status_code=400, detail="NFe sem itens — adicione itens antes de finalizar")
+    if not inv.person_id:
+        recipient = "destinatário" if inv.direction == "out" else "fornecedor"
+        raise HTTPException(status_code=400, detail=f"Selecione o {recipient} antes de finalizar")
+
+    if not inv.issue_date:
+        inv.issue_date = datetime.utcnow()
+
+    stock = await _apply_stock_movement(inv, db)
+
+    inv.status = "finalized"
+    inv.focus_status = None
+    inv.focus_message = "Finalizada sem transmissão à SEFAZ"
+
+    db.add(InvoiceEvent(
+        invoice_id=inv.id,
+        event_type="finalize_no_sefaz",
+        reason=(
+            f"Finalizada sem transmissão à SEFAZ "
+            f"(estoque: {stock.get('matched', 0)} OK, {stock.get('unmatched', 0)} sem vínculo)"
+        ),
+        created_by_user_id=current_user.id,
+    ))
+
+    _recompute_totals(inv)
+    await db.commit()
+    await db.refresh(inv, attribute_names=["items"])
+    return {
+        **_serialize(inv, with_items=True),
+        "stock_movement": stock,
+    }
 
 
 @router.post("/{invoice_id}/refresh-status")

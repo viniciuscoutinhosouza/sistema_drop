@@ -146,6 +146,13 @@ async function load() {
   try {
     const { data } = await api.get(`/orders/${props.order.id}/invoices`)
     invoices.value = data.invoices || []
+    // O backend persiste o status real da NF-e ao consultar (importante para
+    // pedidos Full, cuja nota o ML emite sozinho). Reflete na lista sem reload.
+    if (props.order && data.nfe_status) {
+      props.order.nfe_status = data.nfe_status
+      props.order.nfe_key = data.nfe_key
+      props.order.nfe_url = data.nfe_url
+    }
   } catch (err) {
     error.value = err.response?.data?.detail || 'Erro ao consultar notas fiscais'
   } finally {

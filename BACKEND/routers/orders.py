@@ -1696,26 +1696,36 @@ async def _get_account_for_order(db, order: Order):
     return account
 
 
-@router.get("/{order_id}/invoices")
-async def list_order_invoices(
-    order_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """List all NF-e invoices for an ML order, including reference invoices."""
-    order = await _get_order_checked(db, order_id, current_user)
-    if order.platform != "mercadolivre":
-        return {"invoices": []}
-
-    account = await _get_account_for_order(db, order)
-
-    invoices = []
+async def fetch_and_cache_order_invoices(db, order: Order, account) -> list[dict]:
+    """Busca no ML todas as NF-e de um pedido (venda + notas de referência, ex.:
+    Retorno Simbólico de pedidos Full), persiste nfe_status/nfe_key/nfe_url e
+    cacheia a lista completa em order.nfe_invoices_json. Retorna a lista
+    serializada. Reutilizado pela tela Fiscal>Saídas (sync de NF-e do ML).
+    """
+    invoices: list[dict] = []
     main = await _ml.get_invoices_by_order(
         account.access_token, account.platform_user_id, order.platform_order_id
     )
     if main:
         invoices.append(_serialize_invoice(main))
-        # Collect any reference invoices (Fulfillment chain)
+        # Persistir o status real da NF-e no pedido. Para pedidos Full o ML
+        # emite a nota automaticamente, então o vendedor nunca clica em
+        # "Emitir NF-e" e o nfe_status local ficava preso em vazio.
+        try:
+            new_key, new_status, new_url = _extract_nfe_fields(main)
+            if new_status and (
+                order.nfe_status != new_status
+                or (new_key and order.nfe_key != new_key)
+                or (new_url and order.nfe_url != new_url)
+            ):
+                order.nfe_status = new_status
+                if new_key:
+                    order.nfe_key = new_key
+                if new_url:
+                    order.nfe_url = new_url
+        except Exception as e:
+            print(f"[orders] failed to persist nfe status order={order.id}: {e}")
+        # Notas de referência (cadeia Fulfillment — inclui o Retorno Simbólico)
         attrs = main.get("attributes") or {}
         refs = attrs.get("reference_invoices") or []
         if isinstance(refs, list):
@@ -1728,7 +1738,38 @@ async def list_order_invoices(
                     if ref_inv:
                         invoices.append(_serialize_invoice(ref_inv))
 
-    return {"invoices": invoices}
+    # Cache da lista completa — usado pela tela Fiscal>Saídas sem refazer
+    # chamadas ao ML por pedido.
+    try:
+        snapshot = json.dumps(invoices, ensure_ascii=False) if invoices else None
+        if snapshot != order.nfe_invoices_json:
+            order.nfe_invoices_json = snapshot
+        await db.commit()
+    except Exception as e:
+        print(f"[orders] failed to cache nfe invoices order={order.id}: {e}")
+    return invoices
+
+
+@router.get("/{order_id}/invoices")
+async def list_order_invoices(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all NF-e invoices for an ML order, including reference invoices."""
+    order = await _get_order_checked(db, order_id, current_user)
+    if order.platform != "mercadolivre":
+        return {"invoices": []}
+
+    account = await _get_account_for_order(db, order)
+    invoices = await fetch_and_cache_order_invoices(db, order, account)
+
+    return {
+        "invoices": invoices,
+        "nfe_status": order.nfe_status,
+        "nfe_key": order.nfe_key,
+        "nfe_url": _ml_nfe_url(order),
+    }
 
 
 @router.get("/{order_id}/invoices/{invoice_id}/xml")
@@ -1755,6 +1796,26 @@ async def download_invoice_xml(
 
 
 _LABELS_DIR = Path(__file__).resolve().parent.parent / "static" / "labels"
+
+
+async def _emit_nfe_for_label(order: Order, account, db) -> None:
+    """Emite a NF-e de um pedido cujo envio está aguardando nota (invoice_pending).
+
+    Best-effort: se a NF-e já estiver em andamento, não reemite. Reaproveita o
+    mesmo fluxo de emit_order_nfe.
+    """
+    if order.nfe_status in ("authorized", "pending", "in_process"):
+        return
+    try:
+        ml_order_id = int(order.platform_order_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ID do pedido inválido para emissão de NF-e")
+    await _ml.emit_nfe(account.access_token, account.platform_user_id, [ml_order_id])
+    order.nfe_status = "pending"
+    try:
+        await db.commit()
+    except Exception as e:
+        print(f"[orders] failed to mark nfe pending order={order.id}: {e}")
 
 
 @router.get("/{order_id}/label")
@@ -1812,7 +1873,69 @@ async def get_order_shipping_label(
     if not account.access_token:
         raise HTTPException(status_code=400, detail="Conta sem token válido")
 
-    content, ctype = await _ml.get_shipment_label(account.access_token, order.shipment_id, fmt)
+    # Buscar shipment fresco do ML para detectar Full (logistic_type) e
+    # NF-e pendente (substatus invoice_pending) com dados atualizados.
+    try:
+        shipment = await _ml.get_shipment(account.access_token, order.shipment_id)
+    except Exception:
+        shipment = {}
+
+    if shipment:
+        # Backfill de logistic_type e status quando o ML divergir do que temos
+        fresh_logistic = shipment.get("logistic_type")
+        fresh_status = shipment.get("status")
+        changed = False
+        if fresh_logistic and fresh_logistic != order.shipping_method:
+            order.shipping_method = fresh_logistic
+            changed = True
+        if fresh_status and fresh_status != order.shipment_status:
+            order.shipment_status = fresh_status
+            changed = True
+        if changed:
+            try:
+                await db.commit()
+            except Exception as e:
+                print(f"[orders] failed to backfill shipment fields shipment={order.shipment_id}: {e}")
+
+        # Pedido Full — etiqueta é gerenciada pelo ML, não há o que imprimir
+        if "fulfillment" in (shipment.get("logistic_type") or ""):
+            raise HTTPException(
+                status_code=400,
+                detail="Pedido Full — a logística é gerenciada pelo Mercado Livre, não há etiqueta para o vendedor imprimir",
+            )
+
+        # NF-e pendente — emitir automaticamente (pedido aqui já não é Full)
+        if shipment.get("substatus") == "invoice_pending":
+            await _emit_nfe_for_label(order, account, db)
+            raise HTTPException(
+                status_code=400,
+                detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
+            )
+
+    # Rede de segurança: se o pré-fetch falhou, o erro bruto do ML ainda revela
+    # pedidos Full / NF-e pendente.
+    try:
+        content, ctype = await _ml.get_shipment_label(account.access_token, order.shipment_id, fmt)
+    except HTTPException as e:
+        msg = str(e.detail or "")
+        if "is FF" in msg or "fulfillment" in msg.lower():
+            if order.shipping_method != "fulfillment":
+                order.shipping_method = "fulfillment"
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=400,
+                detail="Pedido Full — a logística é gerenciada pelo Mercado Livre, não há etiqueta para o vendedor imprimir",
+            )
+        if "invoice_pending" in msg:
+            await _emit_nfe_for_label(order, account, db)
+            raise HTTPException(
+                status_code=400,
+                detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
+            )
+        raise
 
     # Persist to disk + mark cached_at
     try:

@@ -34,8 +34,10 @@ export const fmt = {
     const map = {
       draft: 'Rascunho',
       queued: 'Em fila',
+      pending: 'Pendente',
       processing: 'Processando',
       authorized: 'Autorizada',
+      finalized: 'Finalizada (sem SEFAZ)',
       rejected: 'Rejeitada',
       cancelled: 'Cancelada',
       denied: 'Denegada',
@@ -47,8 +49,10 @@ export const fmt = {
     const map = {
       draft: 'badge-secondary',
       queued: 'badge-info',
+      pending: 'badge-warning',
       processing: 'badge-info',
       authorized: 'badge-success',
+      finalized: 'badge-primary',
       rejected: 'badge-danger',
       cancelled: 'badge-warning',
       denied: 'badge-dark',

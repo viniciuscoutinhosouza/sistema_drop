@@ -30,6 +30,7 @@ class Order(Base):
     nfe_url = Column(String(1000))
     nfe_key = Column(String(50))
     nfe_status = Column(String(30))
+    nfe_invoices_json = Column(String)  # CLOB — cache da lista de NF-e do Faturador ML (venda + referências)
     invoice_id = Column(Integer, ForeignKey("invoices.id"))
     estimated_delivery_date = Column(Date)
     estimated_handling_limit = Column(Date)

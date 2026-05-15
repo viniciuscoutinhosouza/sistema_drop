@@ -174,6 +174,12 @@
             <i class="fas" :class="calculating ? 'fa-spinner fa-spin' : 'fa-calculator'"></i>
             {{ calculating ? 'Calculando...' : 'Calcular Impostos' }}
           </button>
+          <button class="btn btn-primary mr-2" :disabled="finalizing || !form.items?.length"
+                  :title="'Marca a NFe como finalizada sem transmitir à SEFAZ. O estoque é movimentado e ela entra nos totalizadores por Natureza da Operação.'"
+                  @click="finalizeNoSefaz">
+            <i class="fas" :class="finalizing ? 'fa-spinner fa-spin' : 'fa-check-double'"></i>
+            {{ finalizing ? 'Salvando...' : 'Salvar sem SEFAZ' }}
+          </button>
           <button class="btn btn-success" :disabled="transmitting || !form.items?.length" @click="transmit">
             <i class="fas" :class="transmitting ? 'fa-spinner fa-spin' : 'fa-paper-plane'"></i>
             {{ transmitting ? 'Transmitindo...' : 'Transmitir SEFAZ' }}
@@ -187,12 +193,17 @@
       <div class="modal-dialog modal-lg">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title">Selecionar Pessoa</h5>
+            <h5 class="modal-title">Selecionar {{ form.direction === 'in' ? 'Fornecedor' : 'Destinatário' }}</h5>
             <button type="button" class="close" @click="showPersonPicker = false"><span>&times;</span></button>
           </div>
           <div class="modal-body">
-            <input v-model="personSearch" class="form-control mb-3" placeholder="Buscar por nome ou documento..."
-                   @input="searchPeople">
+            <div class="d-flex mb-3" style="gap:.5rem">
+              <input v-model="personSearch" class="form-control" placeholder="Buscar por nome ou documento..."
+                     @input="searchPeople">
+              <button class="btn btn-primary text-nowrap" type="button" @click="openCreatePerson">
+                <i class="fas fa-user-plus mr-1"></i> Novo {{ form.direction === 'in' ? 'Fornecedor' : 'Cliente' }}
+              </button>
+            </div>
             <div v-if="loadingPeople" class="text-center py-3">
               <i class="fas fa-spinner fa-spin"></i>
             </div>
@@ -214,6 +225,112 @@
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: criar nova Pessoa (Cliente/Fornecedor) -->
+    <div v-if="showCreatePerson" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5); z-index: 1060">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">
+              Novo {{ form.direction === 'in' ? 'Fornecedor' : 'Cliente' }}
+            </h5>
+            <button type="button" class="close" @click="showCreatePerson = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <div class="row">
+              <div class="col-md-4">
+                <label class="small mb-1">Tipo</label>
+                <select v-model="newPerson.person_type" class="form-control">
+                  <option value="PJ">PJ — Pessoa Jurídica</option>
+                  <option value="PF">PF — Pessoa Física</option>
+                </select>
+              </div>
+              <div class="col-md-5">
+                <label class="small mb-1">{{ newPerson.person_type === 'PJ' ? 'CNPJ' : 'CPF' }} <span class="text-danger">*</span></label>
+                <div class="input-group">
+                  <input v-model="newPerson.document" class="form-control"
+                         :placeholder="newPerson.person_type === 'PJ' ? '00.000.000/0000-00' : '000.000.000-00'">
+                  <div v-if="newPerson.person_type === 'PJ'" class="input-group-append">
+                    <button class="btn btn-outline-info" type="button"
+                            :disabled="lookingUpCnpj || !newPerson.document"
+                            @click="lookupCnpj">
+                      <i class="fas" :class="lookingUpCnpj ? 'fa-spinner fa-spin' : 'fa-search'"></i>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-3">
+                <label class="small mb-1">IE</label>
+                <input v-model="newPerson.ie" class="form-control" :disabled="newPerson.ie_isento">
+                <div class="form-check mt-1">
+                  <input v-model="newPerson.ie_isento" type="checkbox" class="form-check-input" id="ieIsentoChk">
+                  <label class="form-check-label small" for="ieIsentoChk">Isento de IE</label>
+                </div>
+              </div>
+            </div>
+            <div class="row mt-2">
+              <div class="col-md-7">
+                <label class="small mb-1">Nome / Razão Social <span class="text-danger">*</span></label>
+                <input v-model="newPerson.name" class="form-control">
+              </div>
+              <div class="col-md-5">
+                <label class="small mb-1">Nome Fantasia</label>
+                <input v-model="newPerson.trade_name" class="form-control">
+              </div>
+            </div>
+            <div class="row mt-2">
+              <div class="col-md-6">
+                <label class="small mb-1">E-mail</label>
+                <input v-model="newPerson.email" class="form-control" type="email">
+              </div>
+              <div class="col-md-3">
+                <label class="small mb-1">Telefone</label>
+                <input v-model="newPerson.phone" class="form-control">
+              </div>
+              <div class="col-md-3">
+                <label class="small mb-1">CEP</label>
+                <input v-model="newPerson.zip_code" class="form-control" maxlength="9">
+              </div>
+            </div>
+            <div class="row mt-2">
+              <div class="col-md-6">
+                <label class="small mb-1">Logradouro</label>
+                <input v-model="newPerson.street" class="form-control">
+              </div>
+              <div class="col-md-2">
+                <label class="small mb-1">Número</label>
+                <input v-model="newPerson.address_number" class="form-control">
+              </div>
+              <div class="col-md-4">
+                <label class="small mb-1">Complemento</label>
+                <input v-model="newPerson.complement" class="form-control">
+              </div>
+            </div>
+            <div class="row mt-2">
+              <div class="col-md-5">
+                <label class="small mb-1">Bairro</label>
+                <input v-model="newPerson.neighborhood" class="form-control">
+              </div>
+              <div class="col-md-5">
+                <label class="small mb-1">Cidade</label>
+                <input v-model="newPerson.city" class="form-control">
+              </div>
+              <div class="col-md-2">
+                <label class="small mb-1">UF</label>
+                <input v-model="newPerson.state" class="form-control" maxlength="2" style="text-transform:uppercase">
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="showCreatePerson = false">Cancelar</button>
+            <button class="btn btn-primary" :disabled="savingPerson" @click="saveNewPerson">
+              <i class="fas" :class="savingPerson ? 'fa-spinner fa-spin' : 'fa-save'"></i>
+              {{ savingPerson ? 'Salvando...' : 'Salvar e Selecionar' }}
+            </button>
           </div>
         </div>
       </div>
@@ -318,12 +435,37 @@ const saving = ref(false)
 const savingItem = ref(false)
 const calculating = ref(false)
 const transmitting = ref(false)
+const finalizing = ref(false)
 const showPersonPicker = ref(false)
+const showCreatePerson = ref(false)
 const showItemModal = ref(false)
 const personSearch = ref('')
 const loadingPeople = ref(false)
 const peopleList = ref([])
 const selectedPerson = ref(null)
+const savingPerson = ref(false)
+const lookingUpCnpj = ref(false)
+
+function _emptyNewPerson() {
+  return {
+    person_type: 'PJ',
+    document: '',
+    ie: '',
+    ie_isento: false,
+    name: '',
+    trade_name: '',
+    email: '',
+    phone: '',
+    zip_code: '',
+    street: '',
+    address_number: '',
+    complement: '',
+    neighborhood: '',
+    city: '',
+    state: '',
+  }
+}
+const newPerson = reactive(_emptyNewPerson())
 
 const form = reactive({
   id: null,
@@ -447,6 +589,100 @@ function selectPerson(p) {
   selectedPerson.value = p
   form.person_id = p.id
   showPersonPicker.value = false
+}
+
+function openCreatePerson() {
+  if (!form.cmig_id) {
+    toast.warning('Selecione a CMIG antes de cadastrar uma pessoa.')
+    return
+  }
+  Object.assign(newPerson, _emptyNewPerson())
+  // Pré-preenche o documento se o usuário digitou algo na busca
+  const digits = (personSearch.value || '').replace(/\D/g, '')
+  if (digits.length === 11 || digits.length === 14) {
+    newPerson.document = digits
+    newPerson.person_type = digits.length === 14 ? 'PJ' : 'PF'
+  }
+  showCreatePerson.value = true
+}
+
+async function lookupCnpj() {
+  const cnpj = (newPerson.document || '').replace(/\D/g, '')
+  if (cnpj.length !== 14) {
+    toast.warning('Informe um CNPJ válido (14 dígitos).')
+    return
+  }
+  lookingUpCnpj.value = true
+  try {
+    const data = await peopleStore.lookupCnpj(cnpj)
+    Object.assign(newPerson, {
+      document: cnpj,
+      name: data.razao_social || data.nome || newPerson.name,
+      trade_name: data.nome_fantasia || newPerson.trade_name,
+      email: data.email || newPerson.email,
+      phone: data.ddd_telefone_1 || data.telefone || newPerson.phone,
+      zip_code: data.cep || newPerson.zip_code,
+      street: data.logradouro || newPerson.street,
+      address_number: data.numero || newPerson.address_number,
+      complement: data.complemento || newPerson.complement,
+      neighborhood: data.bairro || newPerson.neighborhood,
+      city: data.municipio || newPerson.city,
+      state: data.uf || newPerson.state,
+    })
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'CNPJ não encontrado')
+  } finally {
+    lookingUpCnpj.value = false
+  }
+}
+
+async function saveNewPerson() {
+  if (!form.cmig_id) {
+    toast.warning('Selecione a CMIG antes de cadastrar uma pessoa.')
+    return
+  }
+  const doc = (newPerson.document || '').replace(/\D/g, '')
+  if (doc.length !== 11 && doc.length !== 14) {
+    toast.warning('Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos.')
+    return
+  }
+  if (!newPerson.name?.trim()) {
+    toast.warning('Nome / Razão Social é obrigatório.')
+    return
+  }
+  savingPerson.value = true
+  try {
+    const payload = {
+      cmig_id: form.cmig_id,
+      person_type: newPerson.person_type,
+      document: doc,
+      ie: newPerson.ie || null,
+      ie_isento: !!newPerson.ie_isento,
+      name: newPerson.name.trim(),
+      trade_name: newPerson.trade_name || null,
+      email: newPerson.email || null,
+      phone: newPerson.phone || null,
+      zip_code: newPerson.zip_code || null,
+      street: newPerson.street || null,
+      address_number: newPerson.address_number || null,
+      complement: newPerson.complement || null,
+      neighborhood: newPerson.neighborhood || null,
+      city: newPerson.city || null,
+      state: (newPerson.state || '').toUpperCase() || null,
+      is_customer: form.direction !== 'in',
+      is_supplier: form.direction === 'in',
+    }
+    const created = await peopleStore.createPerson(payload)
+    toast.success(`${form.direction === 'in' ? 'Fornecedor' : 'Cliente'} cadastrado`)
+    showCreatePerson.value = false
+    selectPerson(created)
+    // Atualiza a lista do picker em segundo plano para refletir o novo registro
+    reloadPeople(personSearch.value)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao cadastrar pessoa')
+  } finally {
+    savingPerson.value = false
+  }
 }
 
 async function loadInvoice() {
@@ -614,6 +850,30 @@ async function transmit() {
     await loadInvoice()
   } finally {
     transmitting.value = false
+  }
+}
+
+async function finalizeNoSefaz() {
+  if (!confirm(
+    'Finalizar esta NFe SEM transmitir à SEFAZ?\n\n' +
+    '• O estoque dos CMIGProducts vinculados será movimentado.\n' +
+    '• A NFe entrará nos totalizadores por Natureza da Operação.\n' +
+    '• Não será possível editá-la depois.'
+  )) return
+  finalizing.value = true
+  try {
+    const result = await fiscalStore.finalizeNoSefaz(invoiceId.value)
+    const sm = result.stock_movement || {}
+    toast.success(
+      `NFe finalizada — estoque: ${sm.matched || 0} item(ns) OK` +
+      (sm.unmatched ? `, ${sm.unmatched} sem vínculo` : '')
+    )
+    router.push(`/fiscal/invoices/${invoiceId.value}`)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao finalizar')
+    await loadInvoice()
+  } finally {
+    finalizing.value = false
   }
 }
 
