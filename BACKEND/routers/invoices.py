@@ -1,34 +1,37 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
-from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func
-from sqlalchemy.orm import selectinload
-from datetime import datetime, date
+import io as _io
+import json as _json
+import re as _re
+import uuid as _uuid
+import zipfile as _zipfile
+from datetime import date, datetime
 from decimal import Decimal
+
+import httpx
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user
-from models.user import User
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
-from models.person import Person
-from models.order import Order, OrderItem
+from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem
 from models.integration import MarketplaceAccount
-from models.fiscal import Invoice, InvoiceItem, InvoiceEvent, CMIGFiscalConfig
-import json as _json
-import io as _io
-import zipfile as _zipfile
-import re as _re
-import httpx
-from services.fiscal.nfe_xml_parser import parse_nfe_xml
-from services.fiscal import focus_service, dfe_service
-from services.fiscal.tax_calculator import calculate_item_taxes, suggest_cfop
+from models.order import Order
+from models.person import Person
+from models.user import User
 from services import ml_service as _ml
-import uuid as _uuid
+from services.fiscal import dfe_service, focus_service
+from services.fiscal.nfe_xml_parser import parse_nfe_xml
+from services.fiscal.tax_calculator import calculate_item_taxes, suggest_cfop
 
 router = APIRouter()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG:
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
@@ -132,8 +135,9 @@ def _serialize_event(ev: InvoiceEvent) -> dict:
     }
 
 
-def _serialize(inv: Invoice, with_items: bool = False, with_events: bool = False,
-               person: Person | None = None) -> dict:
+def _serialize(
+    inv: Invoice, with_items: bool = False, with_events: bool = False, person: Person | None = None
+) -> dict:
     out = {
         "id": inv.id,
         "cmig_id": inv.cmig_id,
@@ -227,6 +231,7 @@ def _recompute_totals(inv: Invoice):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+
 @router.get("")
 async def list_invoices(
     cmig_id: int | None = Query(None),
@@ -311,18 +316,30 @@ _ML_STATUS_MAP = {"in_process": "processing", "pending": "pending", "authorized"
 
 # Rótulos de finalidade do módulo fiscal (Invoice.purpose)
 _PURPOSE_LABELS = {
-    "venda": "Venda", "devolucao": "Devolução", "remessa": "Simples Remessa",
-    "retorno": "Retorno", "transferencia": "Transferência",
-    "complementar": "Complementar", "ajuste": "Ajuste", "outros": "Outros",
+    "venda": "Venda",
+    "devolucao": "Devolução",
+    "remessa": "Simples Remessa",
+    "retorno": "Retorno",
+    "transferencia": "Transferência",
+    "complementar": "Complementar",
+    "ajuste": "Ajuste",
+    "outros": "Outros",
 }
 
 # Rótulos de tipo de transação das NF-e do Faturador ML (transaction_type)
 _ML_TYPE_LABELS = {
-    "sale": "Venda", "devolution": "Devolução", "sale_return": "Retorno de Venda",
-    "inbound": "Remessa", "inbound_return": "Retorno de Remessa",
-    "symbolic_inbound": "Remessa Simbólica", "symbolic_inbound_return": "Retorno Simbólico",
-    "removal": "Retirada", "input": "Alta de Estoque", "output": "Baixa de Estoque",
-    "correction_letter": "Carta de Correção", "cte": "CT-e",
+    "sale": "Venda",
+    "devolution": "Devolução",
+    "sale_return": "Retorno de Venda",
+    "inbound": "Remessa",
+    "inbound_return": "Retorno de Remessa",
+    "symbolic_inbound": "Remessa Simbólica",
+    "symbolic_inbound_return": "Retorno Simbólico",
+    "removal": "Retirada",
+    "input": "Alta de Estoque",
+    "output": "Baixa de Estoque",
+    "correction_letter": "Carta de Correção",
+    "cte": "CT-e",
 }
 
 
@@ -366,10 +383,10 @@ async def _collect_outbound_rows(
     paginação, ordenadas por data de emissão desc."""
     cmig_ids = [cmig_id] if cmig_id is not None else accessible
 
-    cmig_rows = (await db.execute(
-        select(CMIG.id, CMIG.company_name).where(CMIG.id.in_(cmig_ids))
-    )).all()
-    cmig_names = {cid: name for cid, name in cmig_rows}
+    cmig_rows = (
+        await db.execute(select(CMIG.id, CMIG.company_name).where(CMIG.id.in_(cmig_ids)))
+    ).all()
+    cmig_names = dict(cmig_rows)
 
     rows: list[dict] = []
 
@@ -402,29 +419,31 @@ async def _collect_outbound_rows(
 
         for inv in invs:
             p = persons.get(inv.person_id)
-            rows.append({
-                "source": "fiscal",
-                "id": inv.id,
-                "order_id": inv.order_id,
-                "platform_order_id": None,
-                "cmig_id": inv.cmig_id,
-                "cmig_name": cmig_names.get(inv.cmig_id),
-                "nfe_number": inv.nfe_number,
-                "serie": inv.serie,
-                "access_key": inv.access_key,
-                "issue_date": inv.issue_date.isoformat() if inv.issue_date else None,
-                "recipient": p.name if p else None,
-                "recipient_document": p.document if p else None,
-                "total": _f(inv.total_invoice),
-                "status": inv.status,
-                "nfe_type": inv.purpose,
-                "nfe_type_label": _PURPOSE_LABELS.get(inv.purpose, inv.purpose or "—"),
-                "xml_url": inv.xml_url,
-                "danfe_url": inv.danfe_url,
-                "ml_invoice_id": None,
-                "xml_available": bool(inv.xml_url),
-                "danfe_available": bool(inv.danfe_url),
-            })
+            rows.append(
+                {
+                    "source": "fiscal",
+                    "id": inv.id,
+                    "order_id": inv.order_id,
+                    "platform_order_id": None,
+                    "cmig_id": inv.cmig_id,
+                    "cmig_name": cmig_names.get(inv.cmig_id),
+                    "nfe_number": inv.nfe_number,
+                    "serie": inv.serie,
+                    "access_key": inv.access_key,
+                    "issue_date": inv.issue_date.isoformat() if inv.issue_date else None,
+                    "recipient": p.name if p else None,
+                    "recipient_document": p.document if p else None,
+                    "total": _f(inv.total_invoice),
+                    "status": inv.status,
+                    "nfe_type": inv.purpose,
+                    "nfe_type_label": _PURPOSE_LABELS.get(inv.purpose, inv.purpose or "—"),
+                    "xml_url": inv.xml_url,
+                    "danfe_url": inv.danfe_url,
+                    "ml_invoice_id": None,
+                    "xml_available": bool(inv.xml_url),
+                    "danfe_available": bool(inv.danfe_url),
+                }
+            )
 
     # ── Fonte 2: Faturador ML (orders.nfe_*) ──────────────────────────────────
     # Quando o pedido já teve as NF-e consultadas (modal de NF-e), a lista
@@ -468,58 +487,64 @@ async def _collect_outbound_rows(
             if cached:
                 for inv in cached:
                     t_type = inv.get("transaction_type") or "sale"
-                    rows.append({
-                        "source": "ml",
-                        "id": inv.get("id") or f"order-{o.id}",
-                        "order_id": o.id,
-                        "platform_order_id": o.platform_order_id,
-                        "cmig_id": o.cmig_id,
-                        "cmig_name": cmig_names.get(o.cmig_id),
-                        "nfe_number": inv.get("invoice_number"),
-                        "serie": inv.get("invoice_series"),
-                        "access_key": inv.get("invoice_key"),
-                        "issue_date": inv.get("issued_date") or order_issue,
-                        "recipient": o.buyer_name,
-                        "recipient_document": o.buyer_document,
-                        "total": _f(inv.get("amount")),
-                        "status": _ML_STATUS_MAP.get(inv.get("status"), inv.get("status") or "authorized"),
-                        "nfe_type": t_type,
-                        "nfe_type_label": inv.get("transaction_type_label")
+                    rows.append(
+                        {
+                            "source": "ml",
+                            "id": inv.get("id") or f"order-{o.id}",
+                            "order_id": o.id,
+                            "platform_order_id": o.platform_order_id,
+                            "cmig_id": o.cmig_id,
+                            "cmig_name": cmig_names.get(o.cmig_id),
+                            "nfe_number": inv.get("invoice_number"),
+                            "serie": inv.get("invoice_series"),
+                            "access_key": inv.get("invoice_key"),
+                            "issue_date": inv.get("issued_date") or order_issue,
+                            "recipient": o.buyer_name,
+                            "recipient_document": o.buyer_document,
+                            "total": _f(inv.get("amount")),
+                            "status": _ML_STATUS_MAP.get(
+                                inv.get("status"), inv.get("status") or "authorized"
+                            ),
+                            "nfe_type": t_type,
+                            "nfe_type_label": inv.get("transaction_type_label")
                             or _ML_TYPE_LABELS.get(t_type, t_type.replace("_", " ").title()),
-                        "xml_url": None,
-                        "danfe_url": None,
-                        "ml_invoice_id": str(inv.get("id")) if inv.get("id") else None,
-                        "xml_available": bool(inv.get("xml_location")),
-                        "danfe_available": bool(inv.get("danfe_location")),
-                    })
+                            "xml_url": None,
+                            "danfe_url": None,
+                            "ml_invoice_id": str(inv.get("id")) if inv.get("id") else None,
+                            "xml_available": bool(inv.get("xml_location")),
+                            "danfe_available": bool(inv.get("danfe_location")),
+                        }
+                    )
             else:
                 # Fallback: pedido ainda não teve as NF-e consultadas — só a de venda
                 parsed = _parse_access_key(o.nfe_key)
                 ml_inv_id = _ml_invoice_id_from_order(o)
                 authorized = o.nfe_status == "authorized"
-                rows.append({
-                    "source": "ml",
-                    "id": ml_inv_id or f"order-{o.id}",
-                    "order_id": o.id,
-                    "platform_order_id": o.platform_order_id,
-                    "cmig_id": o.cmig_id,
-                    "cmig_name": cmig_names.get(o.cmig_id),
-                    "nfe_number": parsed.get("nfe_number"),
-                    "serie": parsed.get("serie"),
-                    "access_key": o.nfe_key,
-                    "issue_date": order_issue,
-                    "recipient": o.buyer_name,
-                    "recipient_document": o.buyer_document,
-                    "total": _f(o.sale_amount),
-                    "status": _ML_STATUS_MAP.get(o.nfe_status, o.nfe_status),
-                    "nfe_type": "sale",
-                    "nfe_type_label": "Venda",
-                    "xml_url": None,
-                    "danfe_url": None,
-                    "ml_invoice_id": ml_inv_id,
-                    "xml_available": authorized and bool(ml_inv_id),
-                    "danfe_available": authorized and bool(ml_inv_id),
-                })
+                rows.append(
+                    {
+                        "source": "ml",
+                        "id": ml_inv_id or f"order-{o.id}",
+                        "order_id": o.id,
+                        "platform_order_id": o.platform_order_id,
+                        "cmig_id": o.cmig_id,
+                        "cmig_name": cmig_names.get(o.cmig_id),
+                        "nfe_number": parsed.get("nfe_number"),
+                        "serie": parsed.get("serie"),
+                        "access_key": o.nfe_key,
+                        "issue_date": order_issue,
+                        "recipient": o.buyer_name,
+                        "recipient_document": o.buyer_document,
+                        "total": _f(o.sale_amount),
+                        "status": _ML_STATUS_MAP.get(o.nfe_status, o.nfe_status),
+                        "nfe_type": "sale",
+                        "nfe_type_label": "Venda",
+                        "xml_url": None,
+                        "danfe_url": None,
+                        "ml_invoice_id": ml_inv_id,
+                        "xml_available": authorized and bool(ml_inv_id),
+                        "danfe_available": authorized and bool(ml_inv_id),
+                    }
+                )
 
     # Filtro de status aplicado de forma uniforme (após expandir o cache ML)
     if status:
@@ -556,20 +581,26 @@ async def list_outbound_invoices(
     # Resumo por CMIG sobre o conjunto filtrado completo
     by_cmig: dict[int, dict] = {}
     for r in rows:
-        b = by_cmig.setdefault(r["cmig_id"], {
-            "cmig_id": r["cmig_id"], "cmig_name": r["cmig_name"], "count": 0, "total": 0.0,
-        })
+        b = by_cmig.setdefault(
+            r["cmig_id"],
+            {
+                "cmig_id": r["cmig_id"],
+                "cmig_name": r["cmig_name"],
+                "count": 0,
+                "total": 0.0,
+            },
+        )
         b["count"] += 1
         b["total"] += r["total"] or 0.0
 
     total = len(rows)
     start = (page - 1) * page_size
     return {
-        "items": rows[start:start + page_size],
+        "items": rows[start : start + page_size],
         "total": total,
         "page": page,
         "page_size": page_size,
-        "by_cmig": sorted(by_cmig.values(), key=lambda x: (x["cmig_name"] or "")),
+        "by_cmig": sorted(by_cmig.values(), key=lambda x: x["cmig_name"] or ""),
     }
 
 
@@ -610,16 +641,21 @@ async def export_outbound_invoices(
     ml_order_ids = [r["order_id"] for r in rows if r["source"] == "ml"]
     accounts_by_order: dict[int, MarketplaceAccount] = {}
     if ml_order_ids:
-        o_rows = (await db.execute(
-            select(Order.id, Order.account_id).where(Order.id.in_(ml_order_ids))
-        )).all()
+        o_rows = (
+            await db.execute(select(Order.id, Order.account_id).where(Order.id.in_(ml_order_ids)))
+        ).all()
         acc_ids = {aid for _, aid in o_rows if aid}
         accs = {}
         if acc_ids:
             accs = {
-                a.id: a for a in (await db.execute(
-                    select(MarketplaceAccount).where(MarketplaceAccount.id.in_(acc_ids))
-                )).scalars().all()
+                a.id: a
+                for a in (
+                    await db.execute(
+                        select(MarketplaceAccount).where(MarketplaceAccount.id.in_(acc_ids))
+                    )
+                )
+                .scalars()
+                .all()
             }
         accounts_by_order = {oid: accs.get(aid) for oid, aid in o_rows}
 
@@ -661,9 +697,12 @@ async def export_outbound_invoices(
                             )
                         content, _ = await _ml.fetch_invoice_file(acc.access_token, path)
 
-                    folder = _re.sub(
-                        r"[^\w\- ]", "_", (r["cmig_name"] or f"CMIG_{r['cmig_id']}")
-                    ).strip() or f"CMIG_{r['cmig_id']}"
+                    folder = (
+                        _re.sub(
+                            r"[^\w\- ]", "_", (r["cmig_name"] or f"CMIG_{r['cmig_id']}")
+                        ).strip()
+                        or f"CMIG_{r['cmig_id']}"
+                    )
                     base = r["access_key"] or f"{r['source']}_{r['id']}"
                     name = f"{folder}/{base}.{ext}"
                     n = 1
@@ -684,9 +723,7 @@ async def export_outbound_invoices(
                     f"período) para exportar o restante."
                 )
             if errors:
-                notes.append(
-                    f"{len(errors)} NF-e não puderam ser baixadas:\n" + "\n".join(errors)
-                )
+                notes.append(f"{len(errors)} NF-e não puderam ser baixadas:\n" + "\n".join(errors))
             if notes:
                 zf.writestr("_avisos.txt", "\n\n".join(notes))
 
@@ -729,24 +766,35 @@ async def sync_ml_outbound_invoices(
         Order.nfe_invoices_json.is_(None),
     )
 
-    remaining = (await db.execute(
-        select(func.count()).select_from(Order).where(base_filter)
-    )).scalar() or 0
+    remaining = (
+        await db.execute(select(func.count()).select_from(Order).where(base_filter))
+    ).scalar() or 0
     if remaining == 0:
         return {"processed": 0, "remaining": 0, "errors": []}
 
-    orders = (await db.execute(
-        select(Order).where(base_filter).order_by(Order.created_at.desc()).limit(limit)
-    )).scalars().all()
+    orders = (
+        (
+            await db.execute(
+                select(Order).where(base_filter).order_by(Order.created_at.desc()).limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     # Contas em batch
     acc_ids = {o.account_id for o in orders if o.account_id}
     accounts = {}
     if acc_ids:
         accounts = {
-            a.id: a for a in (await db.execute(
-                select(MarketplaceAccount).where(MarketplaceAccount.id.in_(acc_ids))
-            )).scalars().all()
+            a.id: a
+            for a in (
+                await db.execute(
+                    select(MarketplaceAccount).where(MarketplaceAccount.id.in_(acc_ids))
+                )
+            )
+            .scalars()
+            .all()
         }
 
     processed = 0
@@ -790,7 +838,9 @@ async def get_invoice(
 
     person = None
     if inv.person_id:
-        person = (await db.execute(select(Person).where(Person.id == inv.person_id))).scalar_one_or_none()
+        person = (
+            await db.execute(select(Person).where(Person.id == inv.person_id))
+        ).scalar_one_or_none()
 
     return _serialize(inv, with_items=True, with_events=True, person=person)
 
@@ -811,16 +861,26 @@ async def create_invoice(
         raise HTTPException(status_code=422, detail="direction deve ser 'in' ou 'out'")
 
     purpose = body.get("purpose") or "venda"
-    valid_purposes = ("venda", "devolucao", "remessa", "retorno",
-                       "transferencia", "complementar", "ajuste", "outros")
+    valid_purposes = (
+        "venda",
+        "devolucao",
+        "remessa",
+        "retorno",
+        "transferencia",
+        "complementar",
+        "ajuste",
+        "outros",
+    )
     if purpose not in valid_purposes:
         raise HTTPException(status_code=422, detail=f"purpose deve ser um de: {valid_purposes}")
 
     person_id = body.get("person_id")
     if person_id:
-        p = (await db.execute(
-            select(Person).where(and_(Person.id == person_id, Person.cmig_id == cmig_id))
-        )).scalar_one_or_none()
+        p = (
+            await db.execute(
+                select(Person).where(and_(Person.id == person_id, Person.cmig_id == cmig_id))
+            )
+        ).scalar_one_or_none()
         if not p:
             raise HTTPException(status_code=404, detail="Pessoa não encontrada nesta CMIG")
 
@@ -851,7 +911,14 @@ async def create_invoice(
         inbound_source="manual" if direction == "in" else None,
     )
     db.add(inv)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Já existe uma NF-e com essa série e número para esta CMIG. Verifique os dados e tente novamente.",
+        )
     await db.refresh(inv)
     return _serialize(inv, with_items=True, with_events=True)
 
@@ -869,12 +936,22 @@ async def update_invoice(
     await _check_cmig_access(inv.cmig_id, current_user, db)
 
     if inv.status not in ("draft",):
-        raise HTTPException(status_code=400, detail=f"Não é possível editar NFe com status '{inv.status}'")
+        raise HTTPException(
+            status_code=400, detail=f"Não é possível editar NFe com status '{inv.status}'"
+        )
 
     editable = {
-        "purpose", "natureza_operacao", "person_id", "freight_modality",
-        "carrier_person_id", "payment_method", "payment_terms_json",
-        "additional_info", "fiscal_info", "exit_date", "issue_date",
+        "purpose",
+        "natureza_operacao",
+        "person_id",
+        "freight_modality",
+        "carrier_person_id",
+        "payment_method",
+        "payment_terms_json",
+        "additional_info",
+        "fiscal_info",
+        "exit_date",
+        "issue_date",
         "inbound_invoice_id",
     }
     for k, v in body.items():
@@ -902,12 +979,15 @@ async def delete_invoice(
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, current_user, db)
     if inv.status not in ("draft",):
-        raise HTTPException(status_code=400, detail=f"Não é possível excluir NFe com status '{inv.status}'")
+        raise HTTPException(
+            status_code=400, detail=f"Não é possível excluir NFe com status '{inv.status}'"
+        )
     db.delete(inv)
     await db.commit()
 
 
 # ── Itens ─────────────────────────────────────────────────────────────────────
+
 
 async def _get_invoice_for_edit(invoice_id: int, user: User, db: AsyncSession) -> Invoice:
     inv = (
@@ -919,7 +999,9 @@ async def _get_invoice_for_edit(invoice_id: int, user: User, db: AsyncSession) -
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, user, db)
     if inv.status != "draft":
-        raise HTTPException(status_code=400, detail=f"NFe em status '{inv.status}' não pode ser editada")
+        raise HTTPException(
+            status_code=400, detail=f"NFe em status '{inv.status}' não pode ser editada"
+        )
     return inv
 
 
@@ -1004,15 +1086,39 @@ async def update_item(
         raise HTTPException(status_code=404, detail="Item não encontrado")
 
     decimal_fields = {
-        "quantity", "unit_value", "total_value", "discount", "freight_value",
-        "insurance_value", "other_value", "icms_base", "icms_aliquota", "icms_value",
-        "icms_st_base", "icms_st_aliquota", "icms_st_value",
-        "ipi_aliquota", "ipi_value", "pis_aliquota", "pis_value",
-        "cofins_aliquota", "cofins_value",
+        "quantity",
+        "unit_value",
+        "total_value",
+        "discount",
+        "freight_value",
+        "insurance_value",
+        "other_value",
+        "icms_base",
+        "icms_aliquota",
+        "icms_value",
+        "icms_st_base",
+        "icms_st_aliquota",
+        "icms_st_value",
+        "ipi_aliquota",
+        "ipi_value",
+        "pis_aliquota",
+        "pis_value",
+        "cofins_aliquota",
+        "cofins_value",
     }
     str_fields = {
-        "cfop", "ncm", "cest", "description", "ean", "unit",
-        "icms_cst", "icms_csosn", "ipi_cst", "pis_cst", "cofins_cst", "additional_info",
+        "cfop",
+        "ncm",
+        "cest",
+        "description",
+        "ean",
+        "unit",
+        "icms_cst",
+        "icms_csosn",
+        "ipi_cst",
+        "pis_cst",
+        "cofins_cst",
+        "additional_info",
     }
     int_fields = {"origin", "cmig_product_id"}
 
@@ -1054,6 +1160,7 @@ async def delete_item(
 
 # ── Cálculo de impostos / Transmissão Focus NFe ──────────────────────────────
 
+
 async def _get_fiscal_config(cmig_id: int, db: AsyncSession) -> CMIGFiscalConfig:
     cfg = (
         await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))
@@ -1075,7 +1182,9 @@ async def calculate_taxes(
     cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
     person = None
     if inv.person_id:
-        person = (await db.execute(select(Person).where(Person.id == inv.person_id))).scalar_one_or_none()
+        person = (
+            await db.execute(select(Person).where(Person.id == inv.person_id))
+        ).scalar_one_or_none()
 
     # Sugerir CFOP se ainda não tiver
     suggested_cfop = suggest_cfop(
@@ -1084,7 +1193,7 @@ async def calculate_taxes(
         uf_dest=person.state if person else cmig.state,
     )
 
-    for item in (inv.items or []):
+    for item in inv.items or []:
         if not item.cfop:
             item.cfop = suggested_cfop
         result = calculate_item_taxes(
@@ -1107,7 +1216,9 @@ async def calculate_taxes(
 
 def _validate_ready_to_transmit(inv: Invoice, cfg: CMIGFiscalConfig, person: Person | None):
     if inv.status != "draft":
-        raise HTTPException(status_code=400, detail=f"NFe em status '{inv.status}' não pode ser transmitida")
+        raise HTTPException(
+            status_code=400, detail=f"NFe em status '{inv.status}' não pode ser transmitida"
+        )
     if not cfg.focus_company_token:
         raise HTTPException(status_code=400, detail="CMIG não está registrada no Focus NFe")
     if not cfg.certificate_uploaded_at:
@@ -1118,7 +1229,10 @@ def _validate_ready_to_transmit(inv: Invoice, cfg: CMIGFiscalConfig, person: Per
         raise HTTPException(status_code=400, detail="NFe sem itens")
     for it in inv.items:
         if not it.cfop:
-            raise HTTPException(status_code=400, detail=f"Item {it.item_number} sem CFOP — clique em 'Calcular Impostos'")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Item {it.item_number} sem CFOP — clique em 'Calcular Impostos'",
+            )
         if not it.ncm:
             raise HTTPException(status_code=400, detail=f"Item {it.item_number} sem NCM")
 
@@ -1135,10 +1249,14 @@ async def transmit_invoice(
     cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
     person = None
     if inv.person_id:
-        person = (await db.execute(select(Person).where(Person.id == inv.person_id))).scalar_one_or_none()
+        person = (
+            await db.execute(select(Person).where(Person.id == inv.person_id))
+        ).scalar_one_or_none()
     carrier = None
     if inv.carrier_person_id:
-        carrier = (await db.execute(select(Person).where(Person.id == inv.carrier_person_id))).scalar_one_or_none()
+        carrier = (
+            await db.execute(select(Person).where(Person.id == inv.carrier_person_id))
+        ).scalar_one_or_none()
 
     _validate_ready_to_transmit(inv, cfg, person)
 
@@ -1183,11 +1301,13 @@ async def _apply_authorized(inv: Invoice, cfg: CMIGFiscalConfig, focus_payload: 
     inv.nfe_number = (
         int(focus_payload.get("numero")) if focus_payload.get("numero") else inv.nfe_number
     )
-    inv.serie = (
-        int(focus_payload.get("serie")) if focus_payload.get("serie") else inv.serie
+    inv.serie = int(focus_payload.get("serie")) if focus_payload.get("serie") else inv.serie
+    inv.xml_url = focus_service.absolutize_focus_url(
+        cfg, focus_payload.get("caminho_xml_nota_fiscal") or ""
     )
-    inv.xml_url = focus_service.absolutize_focus_url(cfg, focus_payload.get("caminho_xml_nota_fiscal") or "")
-    inv.danfe_url = focus_service.absolutize_focus_url(cfg, focus_payload.get("caminho_danfe") or "")
+    inv.danfe_url = focus_service.absolutize_focus_url(
+        cfg, focus_payload.get("caminho_danfe") or ""
+    )
 
 
 async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
@@ -1202,13 +1322,11 @@ async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
     sign = -1 if inv.direction == "out" else 1
     matched = 0
     unmatched = 0
-    for item in (inv.items or []):
+    for item in inv.items or []:
         prod = None
         if item.cmig_product_id:
             prod = (
-                await db.execute(
-                    select(CMIGProduct).where(CMIGProduct.id == item.cmig_product_id)
-                )
+                await db.execute(select(CMIGProduct).where(CMIGProduct.id == item.cmig_product_id))
             ).scalar_one_or_none()
         if not prod:
             ean = (item.ean or "").strip()
@@ -1251,7 +1369,9 @@ async def finalize_invoice_no_sefaz(
     inv = await _get_invoice_for_edit(invoice_id, current_user, db)
 
     if not inv.items:
-        raise HTTPException(status_code=400, detail="NFe sem itens — adicione itens antes de finalizar")
+        raise HTTPException(
+            status_code=400, detail="NFe sem itens — adicione itens antes de finalizar"
+        )
     if not inv.person_id:
         recipient = "destinatário" if inv.direction == "out" else "fornecedor"
         raise HTTPException(status_code=400, detail=f"Selecione o {recipient} antes de finalizar")
@@ -1265,15 +1385,17 @@ async def finalize_invoice_no_sefaz(
     inv.focus_status = None
     inv.focus_message = "Finalizada sem transmissão à SEFAZ"
 
-    db.add(InvoiceEvent(
-        invoice_id=inv.id,
-        event_type="finalize_no_sefaz",
-        reason=(
-            f"Finalizada sem transmissão à SEFAZ "
-            f"(estoque: {stock.get('matched', 0)} OK, {stock.get('unmatched', 0)} sem vínculo)"
-        ),
-        created_by_user_id=current_user.id,
-    ))
+    db.add(
+        InvoiceEvent(
+            invoice_id=inv.id,
+            event_type="finalize_no_sefaz",
+            reason=(
+                f"Finalizada sem transmissão à SEFAZ "
+                f"(estoque: {stock.get('matched', 0)} OK, {stock.get('unmatched', 0)} sem vínculo)"
+            ),
+            created_by_user_id=current_user.id,
+        )
+    )
 
     _recompute_totals(inv)
     await db.commit()
@@ -1315,7 +1437,11 @@ async def refresh_status(
     elif inv.focus_status in ("erro_autorizacao",):
         inv.status = "rejected"
     await db.commit()
-    return {"status": inv.status, "focus_status": inv.focus_status, "focus_message": inv.focus_message}
+    return {
+        "status": inv.status,
+        "focus_status": inv.focus_status,
+        "focus_message": inv.focus_message,
+    }
 
 
 @router.post("/{invoice_id}/cancel")
@@ -1337,7 +1463,9 @@ async def cancel_invoice(
 
     reason = (body.get("reason") or "").strip()
     if len(reason) < 15:
-        raise HTTPException(status_code=422, detail="Justificativa deve ter no mínimo 15 caracteres")
+        raise HTTPException(
+            status_code=422, detail="Justificativa deve ter no mínimo 15 caracteres"
+        )
 
     cfg = await _get_fiscal_config(inv.cmig_id, db)
     try:
@@ -1349,16 +1477,18 @@ async def cancel_invoice(
     inv.cancelled_at = datetime.utcnow()
     inv.cancel_reason = reason
     inv.cancel_protocol = result.get("numero_protocolo") or result.get("protocolo")
-    db.add(InvoiceEvent(
-        invoice_id=inv.id,
-        event_type="cancellation",
-        reason=reason,
-        focus_ref=inv.focus_ref,
-        sefaz_protocol=inv.cancel_protocol,
-        sefaz_status_code=str(result.get("status_sefaz") or ""),
-        sefaz_message=result.get("mensagem_sefaz") or result.get("mensagem"),
-        created_by_user_id=current_user.id,
-    ))
+    db.add(
+        InvoiceEvent(
+            invoice_id=inv.id,
+            event_type="cancellation",
+            reason=reason,
+            focus_ref=inv.focus_ref,
+            sefaz_protocol=inv.cancel_protocol,
+            sefaz_status_code=str(result.get("status_sefaz") or ""),
+            sefaz_message=result.get("mensagem_sefaz") or result.get("mensagem"),
+            created_by_user_id=current_user.id,
+        )
+    )
     await db.commit()
     return {"detail": "NFe cancelada", "protocol": inv.cancel_protocol}
 
@@ -1392,16 +1522,18 @@ async def send_correction_letter(
 
     # Próximo número da CCe (sequência)
     cce_count = sum(1 for ev in (inv.events or []) if ev.event_type == "correction_letter")
-    db.add(InvoiceEvent(
-        invoice_id=inv.id,
-        event_type="correction_letter",
-        sequence_number=cce_count + 1,
-        reason=text,
-        focus_ref=inv.focus_ref,
-        sefaz_protocol=result.get("numero_protocolo") or result.get("protocolo"),
-        sefaz_message=result.get("mensagem_sefaz") or result.get("mensagem"),
-        created_by_user_id=current_user.id,
-    ))
+    db.add(
+        InvoiceEvent(
+            invoice_id=inv.id,
+            event_type="correction_letter",
+            sequence_number=cce_count + 1,
+            reason=text,
+            focus_ref=inv.focus_ref,
+            sefaz_protocol=result.get("numero_protocolo") or result.get("protocolo"),
+            sefaz_message=result.get("mensagem_sefaz") or result.get("mensagem"),
+            created_by_user_id=current_user.id,
+        )
+    )
     await db.commit()
     return {"detail": "Carta de correção enviada"}
 
@@ -1429,7 +1561,9 @@ async def email_invoice(
     if not emails:
         # fallback: e-mail do destinatário
         if inv.person_id:
-            person = (await db.execute(select(Person).where(Person.id == inv.person_id))).scalar_one_or_none()
+            person = (
+                await db.execute(select(Person).where(Person.id == inv.person_id))
+            ).scalar_one_or_none()
             if person and person.email:
                 emails = [person.email]
     if not emails:
@@ -1445,6 +1579,7 @@ async def email_invoice(
 
 
 # ── DFe — coleta de NFes recebidas e manifestação ────────────────────────────
+
 
 @router.post("/sync-received/{cmig_id}")
 async def sync_received(
@@ -1500,7 +1635,9 @@ async def manifest_invoice(
     justificativa = (body.get("justificativa") or "").strip() or None
     if tipo in ("desconhecimento", "nao_realizada"):
         if not justificativa or len(justificativa) < 15:
-            raise HTTPException(status_code=422, detail="Justificativa obrigatória (15+ caracteres)")
+            raise HTTPException(
+                status_code=422, detail="Justificativa obrigatória (15+ caracteres)"
+            )
 
     cfg = await _get_fiscal_config(inv.cmig_id, db)
     if not cfg.focus_company_token:
@@ -1515,15 +1652,17 @@ async def manifest_invoice(
     inv.manifestation_at = datetime.utcnow()
     inv.manifestation_protocol = result.get("numero_protocolo") or result.get("protocolo")
 
-    db.add(InvoiceEvent(
-        invoice_id=inv.id,
-        event_type="manifestation",
-        reason=justificativa,
-        focus_ref=inv.focus_ref,
-        sefaz_protocol=inv.manifestation_protocol,
-        sefaz_message=result.get("mensagem_sefaz") or result.get("mensagem") or tipo,
-        created_by_user_id=current_user.id,
-    ))
+    db.add(
+        InvoiceEvent(
+            invoice_id=inv.id,
+            event_type="manifestation",
+            reason=justificativa,
+            focus_ref=inv.focus_ref,
+            sefaz_protocol=inv.manifestation_protocol,
+            sefaz_message=result.get("mensagem_sefaz") or result.get("mensagem") or tipo,
+            created_by_user_id=current_user.id,
+        )
+    )
     await db.commit()
 
     # Atualizar estoque opcionalmente (apenas em Confirmação)
@@ -1563,8 +1702,10 @@ async def update_stock(
 
 # ── Importação de XML (entrada) ───────────────────────────────────────────────
 
+
 def _normalize_cnpj(s: str) -> str:
     import re as _re
+
     return _re.sub(r"\D", "", s or "")
 
 
@@ -1572,7 +1713,9 @@ async def _upsert_supplier(parsed_emit: dict, cmig_id: int, db: AsyncSession) ->
     """Cria ou atualiza Person (fornecedor) a partir do bloco emit do XML."""
     document = parsed_emit.get("document") or ""
     if not document:
-        raise HTTPException(status_code=422, detail="XML não contém documento (CNPJ/CPF) do emitente")
+        raise HTTPException(
+            status_code=422, detail="XML não contém documento (CNPJ/CPF) do emitente"
+        )
 
     existing = (
         await db.execute(
@@ -1800,6 +1943,7 @@ async def import_xml(
 
 # ── Geração de NFe a partir de Pedido (saída automática) ─────────────────────
 
+
 def _parse_shipping_address(raw: str | None) -> dict:
     """O campo orders.shipping_address é JSON-string (CLOB). Parseia tolerante."""
     if not raw:
@@ -1817,7 +1961,9 @@ def _detect_person_type(document: str) -> str:
     return "PJ" if len(digits) == 14 else "PF"
 
 
-async def _upsert_customer_from_order(db: AsyncSession, order: Order, cmig_id: int) -> Person | None:
+async def _upsert_customer_from_order(
+    db: AsyncSession, order: Order, cmig_id: int
+) -> Person | None:
     """Cria ou encontra Person (cliente) a partir do buyer do Order."""
     document = "".join(c for c in (order.buyer_document or "") if c.isdigit())
     if not document or len(document) not in (11, 14):
@@ -1835,11 +1981,13 @@ async def _upsert_customer_from_order(db: AsyncSession, order: Order, cmig_id: i
     number = str(addr.get("street_number") or addr.get("number") or "") or ""
     neighborhood = addr.get("neighborhood") or addr.get("bairro") or ""
     city = (
-        (addr.get("city") or {}).get("name") if isinstance(addr.get("city"), dict)
+        (addr.get("city") or {}).get("name")
+        if isinstance(addr.get("city"), dict)
         else addr.get("city") or addr.get("municipio") or ""
     )
     state = (
-        (addr.get("state") or {}).get("id") if isinstance(addr.get("state"), dict)
+        (addr.get("state") or {}).get("id")
+        if isinstance(addr.get("state"), dict)
         else addr.get("state") or addr.get("uf") or ""
     )
     if isinstance(state, str) and len(state) > 2:
@@ -1999,7 +2147,9 @@ async def create_invoice_from_order(
             cfop=cfop,
             ncm=cmig_product.ncm if cmig_product else None,
             cest=cmig_product.cest if cmig_product else None,
-            description=(oi.title or (cmig_product.title if cmig_product else "(sem descrição)"))[:500],
+            description=(oi.title or (cmig_product.title if cmig_product else "(sem descrição)"))[
+                :500
+            ],
             ean=cmig_product.ean if cmig_product else None,
             unit="UN",
             quantity=quantity,
@@ -2012,7 +2162,14 @@ async def create_invoice_from_order(
     # Vincular order ↔ invoice
     order.invoice_id = inv.id
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Já existe uma NF-e com essa série e número para esta CMIG.",
+        )
     await db.refresh(inv, attribute_names=["items"])
     _recompute_totals(inv)
     await db.commit()
@@ -2028,6 +2185,7 @@ async def create_invoice_from_order(
         "total_invoice": float(inv.total_invoice or 0),
         "warnings": (
             [f"Sem produto CMIG vinculado: {', '.join(items_unmapped[:5])}"]
-            if items_unmapped else []
+            if items_unmapped
+            else []
         ),
     }

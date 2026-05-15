@@ -49,13 +49,22 @@
               </div>
             </div>
 
+            <!-- Emitente (CMIG selecionada) -->
+            <div v-if="selectedCmig" class="callout callout-info mt-3 py-2">
+              <i class="fas fa-building mr-1"></i>
+              <strong>Emitente:</strong>
+              {{ selectedCmig.company_name }}
+              <span v-if="selectedCmig.trade_name" class="text-muted"> — {{ selectedCmig.trade_name }}</span>
+              <code class="ml-2">{{ selectedCmig.cnpj || selectedCmig.cpf }}</code>
+            </div>
+
             <div class="row mt-3">
               <div class="col-md-6">
                 <label class="small mb-1">{{ form.direction === 'in' ? 'Fornecedor' : 'Destinatário' }}</label>
                 <div class="input-group">
                   <input :value="selectedPersonLabel" class="form-control" readonly placeholder="Nenhuma pessoa selecionada">
                   <div class="input-group-append" v-if="editable">
-                    <button class="btn btn-outline-info" type="button" @click="showPersonPicker = true">
+                    <button class="btn btn-outline-info" type="button" @click="openPersonPicker">
                       <i class="fas fa-search mr-1"></i> Selecionar
                     </button>
                   </div>
@@ -114,7 +123,7 @@
         <div v-if="!isNew" class="card">
           <div class="card-header d-flex align-items-center">
             <h3 class="card-title flex-grow-1"><i class="fas fa-boxes mr-2"></i>Itens</h3>
-            <button v-if="editable" class="btn btn-sm btn-primary" @click="openItemModal()">
+            <button v-if="editable" class="btn btn-sm btn-primary" @click="openProductPicker()">
               <i class="fas fa-plus mr-1"></i> Adicionar Item
             </button>
           </div>
@@ -210,7 +219,14 @@
             <table v-else class="table table-sm table-hover">
               <tbody>
                 <tr v-if="peopleList.length === 0">
-                  <td colspan="3" class="text-center text-muted py-3">Nenhuma pessoa encontrada.</td>
+                  <td colspan="3" class="text-center text-muted py-3">
+                    <i class="fas fa-search mr-1"></i>
+                    Nenhuma pessoa encontrada.
+                    <div class="small mt-1">
+                      Verifique se a pessoa está cadastrada <strong>na mesma CMIG desta NF-e</strong>,
+                      ou clique em <strong>"Novo {{ form.direction === 'in' ? 'Fornecedor' : 'Cliente' }}"</strong> para cadastrar.
+                    </div>
+                  </td>
                 </tr>
                 <tr v-for="p in peopleList" :key="p.id" style="cursor:pointer" @click="selectPerson(p)">
                   <td><code>{{ p.document }}</code></td>
@@ -336,12 +352,146 @@
       </div>
     </div>
 
+    <!-- Modal: Selecionar Produto (CMIG ou PG) -->
+    <div v-if="showProductPicker" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="fas fa-box-open mr-2"></i>Selecionar Produto</h5>
+            <button type="button" class="close" @click="showProductPicker = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <input v-model="productSearch" class="form-control mb-3"
+                   placeholder="Buscar por nome ou SKU...">
+            <!-- Tabs -->
+            <ul class="nav nav-tabs mb-3">
+              <li class="nav-item">
+                <a class="nav-link" :class="{ active: productPickerTab === 'cmig' }"
+                   href="#" @click.prevent="productPickerTab = 'cmig'">
+                  <i class="fas fa-tag mr-1"></i>Produtos CMIG
+                  <span class="badge badge-secondary ml-1">{{ cmigProductsFiltered.length }}</span>
+                </a>
+              </li>
+              <li class="nav-item">
+                <a class="nav-link" :class="{ active: productPickerTab === 'pg' }"
+                   href="#" @click.prevent="switchToPgTab()">
+                  <i class="fas fa-warehouse mr-1"></i>Catálogo PG
+                  <span class="badge badge-secondary ml-1">{{ pgProductsFiltered.length }}</span>
+                </a>
+              </li>
+            </ul>
+
+            <!-- Tab CMIG -->
+            <div v-if="productPickerTab === 'cmig'">
+              <div v-if="loadingCmigProducts" class="text-center py-4">
+                <i class="fas fa-spinner fa-spin fa-2x text-muted"></i>
+              </div>
+              <div v-else-if="cmigProductsFiltered.length === 0" class="text-center text-muted py-4">
+                <i class="fas fa-box-open fa-2x mb-2 d-block"></i>
+                Nenhum produto CMIG encontrado.
+              </div>
+              <div v-else class="table-responsive" style="max-height:400px;overflow-y:auto">
+                <table class="table table-sm table-hover mb-0">
+                  <thead class="thead-light sticky-top">
+                    <tr>
+                      <th style="width:56px"></th>
+                      <th>SKU</th>
+                      <th>Nome</th>
+                      <th>NCM</th>
+                      <th class="text-right">Estoque</th>
+                      <th class="text-right">Preço sugerido</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="p in cmigProductsFiltered" :key="p.id"
+                        style="cursor:pointer" @click="selectProduct(p, 'cmig')">
+                      <td class="text-center">
+                        <img v-if="p.thumbnail" :src="p.thumbnail" style="width:40px;height:40px;object-fit:cover;border-radius:4px">
+                        <i v-else class="fas fa-image text-muted" style="font-size:1.5rem"></i>
+                      </td>
+                      <td><code>{{ p.sku_cmig || '—' }}</code></td>
+                      <td>
+                        <strong>{{ p.title }}</strong>
+                        <small v-if="p.brand" class="d-block text-muted">{{ p.brand }}</small>
+                      </td>
+                      <td>{{ p.ncm || '—' }}</td>
+                      <td class="text-right">
+                        <span :class="p.stock_quantity > 0 ? 'text-success' : 'text-danger'">
+                          {{ p.stock_quantity ?? 0 }}
+                        </span>
+                      </td>
+                      <td class="text-right">{{ p.suggested_price != null ? formatCurrency(p.suggested_price) : '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Tab PG -->
+            <div v-if="productPickerTab === 'pg'">
+              <div v-if="loadingPgProducts" class="text-center py-4">
+                <i class="fas fa-spinner fa-spin fa-2x text-muted"></i>
+              </div>
+              <div v-else-if="pgProductsFiltered.length === 0" class="text-center text-muted py-4">
+                <i class="fas fa-warehouse fa-2x mb-2 d-block"></i>
+                Nenhum produto PG encontrado.
+              </div>
+              <div v-else class="table-responsive" style="max-height:400px;overflow-y:auto">
+                <table class="table table-sm table-hover mb-0">
+                  <thead class="thead-light sticky-top">
+                    <tr>
+                      <th style="width:56px"></th>
+                      <th>SKU</th>
+                      <th>Nome</th>
+                      <th>NCM</th>
+                      <th class="text-right">Estoque</th>
+                      <th class="text-right">Preço sugerido</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="p in pgProductsFiltered" :key="p.id"
+                        style="cursor:pointer" @click="selectProduct(p, 'pg')">
+                      <td class="text-center">
+                        <img v-if="p.thumbnail" :src="p.thumbnail" style="width:40px;height:40px;object-fit:cover;border-radius:4px">
+                        <i v-else class="fas fa-image text-muted" style="font-size:1.5rem"></i>
+                      </td>
+                      <td><code>{{ p.sku || '—' }}</code></td>
+                      <td>
+                        <strong>{{ p.title }}</strong>
+                        <small v-if="p.brand" class="d-block text-muted">{{ p.brand }}</small>
+                      </td>
+                      <td>{{ p.ncm || '—' }}</td>
+                      <td class="text-right">
+                        <span :class="p.stock_quantity > 0 ? 'text-success' : 'text-danger'">
+                          {{ p.stock_quantity ?? 0 }}
+                        </span>
+                      </td>
+                      <td class="text-right">{{ p.suggested_price != null ? formatCurrency(p.suggested_price) : '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <small class="text-muted mr-auto">Clique em um produto para adicioná-lo à NF-e.</small>
+            <button class="btn btn-secondary" @click="showProductPicker = false">Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal: Item -->
     <div v-if="showItemModal" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
       <div class="modal-dialog modal-lg">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title">{{ itemForm.id ? 'Editar Item' : 'Novo Item' }}</h5>
+            <div>
+              <h5 class="modal-title mb-0">{{ itemForm.id ? 'Editar Item' : 'Confirmar Item' }}</h5>
+              <small v-if="!itemForm.id && itemForm.description" class="text-muted">
+                Produto: {{ itemForm.description }}
+              </small>
+            </div>
             <button type="button" class="close" @click="showItemModal = false"><span>&times;</span></button>
           </div>
           <div class="modal-body">
@@ -418,6 +568,7 @@ import { useCmigStore } from '@/stores/cmig'
 import { usePeopleStore } from '@/stores/people'
 import { useToast } from '@/composables/useToast'
 import { fmt } from '@/views/fiscal/_helpers'
+import api from '@/composables/useApi'
 
 const route = useRoute()
 const router = useRouter()
@@ -445,6 +596,15 @@ const peopleList = ref([])
 const selectedPerson = ref(null)
 const savingPerson = ref(false)
 const lookingUpCnpj = ref(false)
+
+// Product Picker
+const showProductPicker = ref(false)
+const productPickerTab = ref('cmig')
+const productSearch = ref('')
+const cmigProductsAll = ref([])
+const pgProductsAll = ref([])
+const loadingCmigProducts = ref(false)
+const loadingPgProducts = ref(false)
 
 function _emptyNewPerson() {
   return {
@@ -486,6 +646,7 @@ const form = reactive({
 
 const itemForm = reactive({
   id: null,
+  cmig_product_id: null,
   description: '',
   ncm: '',
   cest: '',
@@ -542,10 +703,35 @@ const selectedPersonLabel = computed(() => {
   return `${p.name} — ${p.document}`
 })
 
+const selectedCmig = computed(() => cmigs.value.find(c => c.id === form.cmig_id) || null)
+
+const cmigProductsFiltered = computed(() => {
+  const q = productSearch.value.toLowerCase()
+  if (!q) return cmigProductsAll.value
+  return cmigProductsAll.value.filter(p =>
+    (p.title || '').toLowerCase().includes(q) ||
+    (p.sku_cmig || '').toLowerCase().includes(q)
+  )
+})
+
+const pgProductsFiltered = computed(() => {
+  const q = productSearch.value.toLowerCase()
+  if (!q) return pgProductsAll.value
+  return pgProductsAll.value.filter(p =>
+    (p.title || '').toLowerCase().includes(q) ||
+    (p.sku || '').toLowerCase().includes(q)
+  )
+})
+
 const calcTotal = computed(() => Number((itemForm.quantity || 0) * (itemForm.unit_value || 0)).toFixed(2))
 const formatNumber = (v, dec = 2) => v == null ? '—' : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: dec, maximumFractionDigits: dec })
 const formatCurrency = fmt.currency
 const statusLabel = fmt.statusLabel
+
+// Limpa cache de produtos CMIG ao trocar de CMIG
+watch(() => form.cmig_id, () => {
+  cmigProductsAll.value = []
+})
 
 watch(() => form.purpose, (p) => {
   // Sugerir CFOP padrão (intra-estadual). Usuário ajusta depois se for interestadual.
@@ -564,19 +750,84 @@ watch(() => form.purpose, (p) => {
   }
 })
 
+// ── Product Picker ─────────────────────────────────────────────────────────────
+
+async function openProductPicker() {
+  if (!form.cmig_id) {
+    toast.warning('Selecione a CMIG antes de adicionar itens.')
+    return
+  }
+  productSearch.value = ''
+  productPickerTab.value = 'cmig'
+  showProductPicker.value = true
+  if (cmigProductsAll.value.length === 0) {
+    loadingCmigProducts.value = true
+    try {
+      const { data } = await api.get(`/cmigs/${form.cmig_id}/products`)
+      cmigProductsAll.value = data
+    } catch (e) {
+      toast.error('Erro ao carregar produtos CMIG')
+    } finally {
+      loadingCmigProducts.value = false
+    }
+  }
+}
+
+async function switchToPgTab() {
+  productPickerTab.value = 'pg'
+  if (pgProductsAll.value.length === 0) {
+    loadingPgProducts.value = true
+    try {
+      const { data } = await api.get('/pg')
+      pgProductsAll.value = data
+    } catch (e) {
+      toast.error('Erro ao carregar catálogo PG')
+    } finally {
+      loadingPgProducts.value = false
+    }
+  }
+}
+
+function selectProduct(p, source) {
+  const cfop = form.direction === 'in' ? '1102' : '5102'
+  Object.assign(itemForm, {
+    id: null,
+    cmig_product_id: source === 'cmig' ? p.id : null,
+    description: p.title || '',
+    ncm: p.ncm || '',
+    cest: p.cest || '',
+    cfop,
+    ean: p.ean || '',
+    unit: 'UN',
+    quantity: 1,
+    unit_value: p.suggested_price ?? p.cost_price ?? 0,
+    origin: p.origin ?? 0,
+  })
+  showProductPicker.value = false
+  showItemModal.value = true
+}
+
+// ── People ─────────────────────────────────────────────────────────────────────
+
 async function reloadPeople(query = '') {
   if (!form.cmig_id) return
   loadingPeople.value = true
   try {
-    const params = { cmig_id: form.cmig_id, page_size: 50 }
-    if (form.direction === 'in') params.is_supplier = true
-    else params.is_customer = true
+    const params = { cmig_id: form.cmig_id, page_size: 100, is_active: true }
+    // Sem filtro is_customer/is_supplier: mostra todas as pessoas ativas da CMIG
+    // O tipo (Cliente/Fornecedor) é exibido como badge na lista para o usuário escolher
     if (query) params.search = query
     const data = await peopleStore.fetchPeople(params)
     peopleList.value = data.items || []
   } finally {
     loadingPeople.value = false
   }
+}
+
+function openPersonPicker() {
+  showPersonPicker.value = true
+  personSearch.value = ''
+  reloadPeople()
 }
 
 let searchTimer = null
@@ -747,6 +998,7 @@ function openItemModal(it) {
   if (it) {
     Object.assign(itemForm, {
       id: it.id,
+      cmig_product_id: it.cmig_product_id || null,
       description: it.description,
       ncm: it.ncm || '',
       cest: it.cest || '',
@@ -757,21 +1009,9 @@ function openItemModal(it) {
       unit_value: Number(it.unit_value || 0),
       origin: it.origin ?? 0,
     })
-  } else {
-    Object.assign(itemForm, {
-      id: null,
-      description: '',
-      ncm: '',
-      cest: '',
-      cfop: form.direction === 'in' ? '1102' : '5102',
-      ean: '',
-      unit: 'UN',
-      quantity: 1,
-      unit_value: 0,
-      origin: 0,
-    })
+    showItemModal.value = true
   }
-  showItemModal.value = true
+  // Novos itens sempre passam pelo openProductPicker() antes de chegar aqui
 }
 
 async function saveItem() {
@@ -782,6 +1022,7 @@ async function saveItem() {
   savingItem.value = true
   try {
     const payload = {
+      cmig_product_id: itemForm.cmig_product_id || null,
       description: itemForm.description,
       ncm: itemForm.ncm || null,
       cest: itemForm.cest || null,
