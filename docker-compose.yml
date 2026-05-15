@@ -1,0 +1,33 @@
+services:
+  backend:
+    build:
+      context: ./BACKEND
+      dockerfile: Dockerfile
+    container_name: sistema_drop_backend
+    env_file: ./BACKEND/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads_data:/app/static/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./FRONTEND
+      dockerfile: Dockerfile
+    container_name: sistema_drop_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  uploads_data:

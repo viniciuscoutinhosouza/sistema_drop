@@ -1,0 +1,31 @@
+{
+  "env": {
+    "GITHUB_PERSONAL_ACCESS_TOKEN": "SEU_TOKEN_GITHUB_AQUI",
+    "SUPABASE_ACCESS_TOKEN": "SEU_TOKEN_SUPABASE_AQUI"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(npm run *)",
+      "Bash(npm install *)",
+      "Bash(npm ci *)",
+      "Bash(npx *)",
+      "Bash(pip install *)",
+      "Bash(pip3 install *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(uv *)",
+      "Bash(docker compose *)",
+      "Bash(docker build *)",
+      "Bash(curl *)",
+      "Bash(ssh *)",
+      "Bash(node *)",
+      "Bash(supabase *)",
+      "Bash(winget install *)",
+      "Bash(npm show *)",
+      "Bash(pip show *)",
+      "WebSearch",
+      "WebFetch(*)"
+    ]
+  }
+}

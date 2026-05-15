@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(pip install *)",
+      "Bash(pip list*)",
+      "Bash(uvicorn *)",
+      "Bash(python *)",
+      "Bash(ruff *)",
+      "Bash(mypy *)",
+      "Bash(pytest *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(docker *)",
+      "Bash(docker compose *)",
+      "Bash(curl *)",
+      "Bash(ssh -i * ubuntu@163.176.165.201 *)",
+      "Bash(ls *)",
+      "Bash(mkdir *)",
+      "Bash(cat *)",
+      "Bash(echo *)"
+    ]
+  }
+}
