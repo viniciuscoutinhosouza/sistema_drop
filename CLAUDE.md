@@ -246,6 +246,59 @@ BLING_CLIENT_SECRET=
 
 ---
 
+## Governança e Processo
+
+### Regra de Proporcionalidade
+
+Toda mudança se enquadra em um de dois níveis:
+
+| Nível | Quando aplicar | O que fazer |
+|-------|---------------|-------------|
+| **Lightweight** | Mudança isolada, baixo risco, 1-2 arquivos | Implementar diretamente, atualizar LOG.md |
+| **Full** | Estrutural, multi-arquivo, novo padrão, dado sensível | Specialist agent + auditoria + ADR se necessário + session-closer |
+
+### Regras Invioláveis
+
+1. **Conventional Commits obrigatório** — todo commit segue `<type>(<scope>): <descrição>`. Tipos: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`, `style`, `perf`. Exemplo: `feat(fiscal): add finalize-no-sefaz endpoint`.
+2. **Nunca commitar `.env` ou segredos** — apenas `.env.example` com valores em branco.
+3. **Experimentos e arquivos temporários** vão em `sandbox/` — nunca na raiz ou em módulos de produção.
+4. **Código em inglês, conversação em português.**
+
+### Procedimento de Auditoria (Nível Full)
+
+Antes de fechar qualquer feature estrutural, invocar em **paralelo**:
+- `quality-guardian` — segurança, bugs, LGPD, tratamento de erros
+- `consistency-auditor` — CRUDs incompletos, padrões inconsistentes
+- `adr-consistency-checker` — respeito às decisões arquiteturais
+
+Só entrega se nenhum tiver CRITICAL/HIGH/BLOQUEADO.
+
+### Agentes Disponíveis
+
+| Agente | Quando invocar |
+|--------|---------------|
+| `quality-guardian` | Antes de fechar qualquer feature |
+| `consistency-auditor` | Antes de fechar qualquer feature |
+| `adr-consistency-checker` | Features estruturais / novos padrões |
+| `debug-specialist` | Bugs, erros, comportamento inesperado |
+| `deploy-operator` | Qualquer deploy em produção |
+| `session-closer` | Ao final de sessão de trabalho significativa |
+
+### ADRs (Architecture Decision Records)
+
+Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de propor mudanças estruturais:
+- [ADR-0001](docs/decisions/ADR-0001-oracle-asyncsyncsession.md) — Oracle + AsyncSyncSession
+- [ADR-0002](docs/decisions/ADR-0002-vue3-adminlte-bootstrap.md) — Vue 3 + AdminLTE sem TypeScript
+- [ADR-0003](docs/decisions/ADR-0003-jwt-localstorage.md) — JWT em localStorage
+
+Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
+
+### Lições Aprendidas
+
+Ver `docs/lessons-learned.md` para armadilhas conhecidas documentadas (L-001 a L-011).
+
+---
+
 ## Regras Específicas para Claude
 
 1. **Nunca use `await` em `db.add()` ou `db.delete()`** — são síncronos no `AsyncSyncSession`.
@@ -254,10 +307,9 @@ BLING_CLIENT_SECRET=
 4. **Migrations SQL numeradas** em `Sistema_Drop/Scripts SQL/` (raiz do projeto, **não** dentro de BACKEND) — criar novos scripts seguindo o padrão `NN_descricao.sql`; usar bloco `DECLARE ... EXCEPTION WHEN e_col_exists` para ser idempotente.
 5. **Oracle CLOB**: `oracledb.defaults.fetch_lobs = False` já está ativo — campos Text/CLOB chegam como string normalmente.
 6. **Windows + asyncio**: `WindowsSelectorEventLoopPolicy` já configurado em `main.py` — não remover.
-7. **Testes**: não há suite de testes automatizados — validar manualmente via Swagger (`/docs`) ou frontend.
+7. **Testes**: suite pytest em `BACKEND/tests/` — rodar `pytest tests/ -m "not integration"` para testes sem Oracle. Testes de integração requerem `.env` configurado.
 8. **Sem TypeScript no frontend** — manter JS puro; não introduzir TS sem acordar com o usuário.
-
-9. Crie um arquivo LOG.md e a cada alteração ou planejamento, atualize o LOG com um resumo, informando data e hora do processamento, para facilitar o uso do contexto
+9. **Atualizar LOG.md** a cada alteração significativa com data/hora e resumo da mudança.
 
 ---
 
@@ -269,3 +321,21 @@ BLING_CLIENT_SECRET=
 - Campos ML vindos do webhook chegam como snake_case; já tratados em `ml_service.py`.
 - Shopee OAuth usa HMAC-SHA256 com timestamp no header — `shopee_service.py` cuida disso.
 - `fiscal_json` em anúncios armazena raw `{ncm, cest, gtin, origin}` — extrair com `json.loads()`.
+
+---
+
+## State Current
+
+> Atualizar esta seção ao fechar cada fase de trabalho.
+
+**Objetivo atual:** Implementação de melhorias de maturidade do projeto (governança, testes, Docker, CI/CD).
+
+**Fase:** Configuração de infraestrutura de desenvolvimento — em andamento (2026-05-15).
+
+**Última validação:** Agentes, ADRs, lessons-learned e governança no CLAUDE.md criados.
+
+**Próximo passo:** Implementar pyproject.toml (ruff + mypy), testes pytest, Docker e GitHub Actions CI.
+
+**Bloqueadores:** Nenhum.
+
+**Decisões pendentes:** Definir se o deploy em produção usará Docker ou continuará com uvicorn direto.

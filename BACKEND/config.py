@@ -1,19 +1,20 @@
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     # Oracle ATP
     ORACLE_USER: str
     ORACLE_PASSWORD: str
-    ORACLE_DSN: str                      # e.g. "(description=(address=(protocol=tcps)...)"
-    ORACLE_WALLET_DIR: str = ""          # path to unzipped Oracle Cloud Wallet folder
-    ORACLE_WALLET_PASSWORD: str = ""     # password set when downloading the wallet from Oracle Cloud
+    ORACLE_DSN: str  # e.g. "(description=(address=(protocol=tcps)...)"
+    ORACLE_WALLET_DIR: str = ""  # path to unzipped Oracle Cloud Wallet folder
+    ORACLE_WALLET_PASSWORD: str = ""  # password set when downloading the wallet from Oracle Cloud
 
     # JWT
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 480        # 8 hours
+    JWT_EXPIRE_MINUTES: int = 480  # 8 hours
     JWT_REFRESH_EXPIRE_DAYS: int = 30
 
     # CORS / Frontend
@@ -44,6 +45,6 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     return Settings()

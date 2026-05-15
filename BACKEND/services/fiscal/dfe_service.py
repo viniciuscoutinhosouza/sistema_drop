@@ -6,17 +6,20 @@ Fluxo:
 2. `process_received_nfe` é o entrypoint do webhook (1 chave por vez).
 3. `update_stock_from_invoice` movimenta estoque CMIG por EAN.
 """
+
 from __future__ import annotations
+
 import logging
 from decimal import Decimal
-from sqlalchemy import select, and_
+
+from sqlalchemy import and_, select
 from sqlalchemy.orm import selectinload
 
 from database import task_db
 from models.cmig import CMIG, CMIGProduct
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceItem
-from models.person import Person
 from models.notification import Notification
+from models.person import Person
 from services.fiscal import focus_service
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
 
@@ -29,10 +32,16 @@ async def sync_all() -> dict:
     stats = {"cmigs": 0, "new": 0, "skipped": 0, "errors": 0}
     async with task_db() as db:
         cfgs = (
-            await db.execute(
-                select(CMIGFiscalConfig).where(CMIGFiscalConfig.focus_company_token.is_not(None))
+            (
+                await db.execute(
+                    select(CMIGFiscalConfig).where(
+                        CMIGFiscalConfig.focus_company_token.is_not(None)
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     for cfg in cfgs:
         try:
@@ -51,9 +60,7 @@ async def sync_received_for_cmig(cmig_id: int) -> dict:
     Cria Invoices novas para chaves que ainda não existem."""
     async with task_db() as db:
         cfg = (
-            await db.execute(
-                select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id)
-            )
+            await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))
         ).scalar_one_or_none()
         if not cfg or not cfg.focus_company_token:
             raise ValueError("CMIG sem configuração Focus NFe")
@@ -104,9 +111,7 @@ async def process_received_nfe(cmig_id: int, chave: str) -> Invoice | None:
             return existing
 
         cfg = (
-            await db.execute(
-                select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id)
-            )
+            await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))
         ).scalar_one_or_none()
         if not cfg or not cfg.focus_company_token:
             raise ValueError("CMIG sem configuração Focus NFe")
@@ -117,7 +122,9 @@ async def process_received_nfe(cmig_id: int, chave: str) -> Invoice | None:
         return inv
 
 
-async def _create_invoice_from_received(db, cfg: CMIGFiscalConfig, cmig: CMIG, chave: str) -> Invoice:
+async def _create_invoice_from_received(
+    db, cfg: CMIGFiscalConfig, cmig: CMIG, chave: str
+) -> Invoice:
     """Baixa XML, parseia e cria Invoice (direction='in', source='dfe_focus')."""
     try:
         xml_bytes = await focus_service.download_received_xml(cfg, chave)
@@ -165,53 +172,57 @@ async def _create_invoice_from_received(db, cfg: CMIGFiscalConfig, cmig: CMIG, c
     await db.flush()
 
     for it_data in parsed.get("items", []):
-        db.add(InvoiceItem(
-            invoice_id=inv.id,
-            item_number=it_data.get("item_number") or 1,
-            cfop=it_data.get("cfop") or None,
-            ncm=it_data.get("ncm") or None,
-            cest=it_data.get("cest") or None,
-            description=it_data.get("description") or "(sem descrição)",
-            ean=it_data.get("ean") or None,
-            unit=it_data.get("unit") or "UN",
-            quantity=it_data.get("quantity") or Decimal("0"),
-            unit_value=it_data.get("unit_value") or Decimal("0"),
-            total_value=it_data.get("total_value") or Decimal("0"),
-            discount=it_data.get("discount") or Decimal("0"),
-            freight_value=it_data.get("freight_value") or Decimal("0"),
-            insurance_value=it_data.get("insurance_value") or Decimal("0"),
-            other_value=it_data.get("other_value") or Decimal("0"),
-            origin=it_data.get("origin") or 0,
-            icms_cst=it_data.get("icms_cst") or None,
-            icms_csosn=it_data.get("icms_csosn") or None,
-            icms_base=it_data.get("icms_base") or Decimal("0"),
-            icms_aliquota=it_data.get("icms_aliquota") or Decimal("0"),
-            icms_value=it_data.get("icms_value") or Decimal("0"),
-            icms_st_base=it_data.get("icms_st_base") or Decimal("0"),
-            icms_st_aliquota=it_data.get("icms_st_aliquota") or Decimal("0"),
-            icms_st_value=it_data.get("icms_st_value") or Decimal("0"),
-            ipi_cst=it_data.get("ipi_cst") or None,
-            ipi_aliquota=it_data.get("ipi_aliquota") or Decimal("0"),
-            ipi_value=it_data.get("ipi_value") or Decimal("0"),
-            pis_cst=it_data.get("pis_cst") or None,
-            pis_aliquota=it_data.get("pis_aliquota") or Decimal("0"),
-            pis_value=it_data.get("pis_value") or Decimal("0"),
-            cofins_cst=it_data.get("cofins_cst") or None,
-            cofins_aliquota=it_data.get("cofins_aliquota") or Decimal("0"),
-            cofins_value=it_data.get("cofins_value") or Decimal("0"),
-            additional_info=it_data.get("additional_info") or None,
-        ))
+        db.add(
+            InvoiceItem(
+                invoice_id=inv.id,
+                item_number=it_data.get("item_number") or 1,
+                cfop=it_data.get("cfop") or None,
+                ncm=it_data.get("ncm") or None,
+                cest=it_data.get("cest") or None,
+                description=it_data.get("description") or "(sem descrição)",
+                ean=it_data.get("ean") or None,
+                unit=it_data.get("unit") or "UN",
+                quantity=it_data.get("quantity") or Decimal("0"),
+                unit_value=it_data.get("unit_value") or Decimal("0"),
+                total_value=it_data.get("total_value") or Decimal("0"),
+                discount=it_data.get("discount") or Decimal("0"),
+                freight_value=it_data.get("freight_value") or Decimal("0"),
+                insurance_value=it_data.get("insurance_value") or Decimal("0"),
+                other_value=it_data.get("other_value") or Decimal("0"),
+                origin=it_data.get("origin") or 0,
+                icms_cst=it_data.get("icms_cst") or None,
+                icms_csosn=it_data.get("icms_csosn") or None,
+                icms_base=it_data.get("icms_base") or Decimal("0"),
+                icms_aliquota=it_data.get("icms_aliquota") or Decimal("0"),
+                icms_value=it_data.get("icms_value") or Decimal("0"),
+                icms_st_base=it_data.get("icms_st_base") or Decimal("0"),
+                icms_st_aliquota=it_data.get("icms_st_aliquota") or Decimal("0"),
+                icms_st_value=it_data.get("icms_st_value") or Decimal("0"),
+                ipi_cst=it_data.get("ipi_cst") or None,
+                ipi_aliquota=it_data.get("ipi_aliquota") or Decimal("0"),
+                ipi_value=it_data.get("ipi_value") or Decimal("0"),
+                pis_cst=it_data.get("pis_cst") or None,
+                pis_aliquota=it_data.get("pis_aliquota") or Decimal("0"),
+                pis_value=it_data.get("pis_value") or Decimal("0"),
+                cofins_cst=it_data.get("cofins_cst") or None,
+                cofins_aliquota=it_data.get("cofins_aliquota") or Decimal("0"),
+                cofins_value=it_data.get("cofins_value") or Decimal("0"),
+                additional_info=it_data.get("additional_info") or None,
+            )
+        )
 
     # Notification para o AC owner
     try:
-        db.add(Notification(
-            dropshipper_id=cmig.owner_ac_id,
-            title="Nova NFe recebida",
-            body=f"Fornecedor: {supplier.name} — Total R$ {inv.total_invoice} — Manifestação pendente",
-            reference_type="invoice",
-            reference_id=inv.id,
-            type="fiscal",
-        ))
+        db.add(
+            Notification(
+                dropshipper_id=cmig.owner_ac_id,
+                title="Nova NFe recebida",
+                body=f"Fornecedor: {supplier.name} — Total R$ {inv.total_invoice} — Manifestação pendente",
+                reference_type="invoice",
+                reference_id=inv.id,
+                type="fiscal",
+            )
+        )
     except Exception:
         # Defensivo — não derruba o sync se Notification falhar
         pass
@@ -286,7 +297,7 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
 
         matched = 0
         unmatched = 0
-        for item in (inv.items or []):
+        for item in inv.items or []:
             ean = (item.ean or "").strip()
             if not ean:
                 unmatched += 1

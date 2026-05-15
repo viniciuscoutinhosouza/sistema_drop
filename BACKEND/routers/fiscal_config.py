@@ -1,13 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
 from datetime import datetime
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user
-from models.user import User
 from models.cmig import CMIG, CMIGAdministrator
 from models.fiscal import CMIGFiscalConfig
+from models.user import User
 from services.fiscal import focus_service
 
 router = APIRouter()
@@ -15,7 +16,10 @@ router = APIRouter()
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 
-async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession, require_owner: bool = False) -> CMIG:
+
+async def _check_cmig_access(
+    cmig_id: int, user: User, db: AsyncSession, require_owner: bool = False
+) -> CMIG:
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
@@ -26,7 +30,9 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession, require
         if cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         if require_owner:
-            raise HTTPException(status_code=403, detail="Apenas o AC proprietário pode realizar esta ação")
+            raise HTTPException(
+                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
+            )
         return cmig
     if user.role == "ac":
         admin = (
@@ -39,7 +45,9 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession, require
         if not admin:
             raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
         if require_owner and not admin.is_owner:
-            raise HTTPException(status_code=403, detail="Apenas o AC proprietário pode realizar esta ação")
+            raise HTTPException(
+                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
+            )
         return cmig
     raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
@@ -54,10 +62,16 @@ def _serialize(cfg: CMIGFiscalConfig | None) -> dict:
         "environment": cfg.environment,
         "focus_registered": bool(cfg.focus_company_token),
         "focus_company_id": cfg.focus_company_id,
-        "focus_registered_at": cfg.focus_registered_at.isoformat() if cfg.focus_registered_at else None,
+        "focus_registered_at": cfg.focus_registered_at.isoformat()
+        if cfg.focus_registered_at
+        else None,
         "certificate_loaded": bool(cfg.certificate_uploaded_at),
-        "certificate_uploaded_at": cfg.certificate_uploaded_at.isoformat() if cfg.certificate_uploaded_at else None,
-        "certificate_expires_at": cfg.certificate_expires_at.isoformat() if cfg.certificate_expires_at else None,
+        "certificate_uploaded_at": cfg.certificate_uploaded_at.isoformat()
+        if cfg.certificate_uploaded_at
+        else None,
+        "certificate_expires_at": cfg.certificate_expires_at.isoformat()
+        if cfg.certificate_expires_at
+        else None,
         "certificate_subject": cfg.certificate_subject,
         "ie": cfg.ie,
         "im": cfg.im,
@@ -72,6 +86,7 @@ def _serialize(cfg: CMIGFiscalConfig | None) -> dict:
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @router.get("")
 async def get_fiscal_config(
@@ -101,7 +116,9 @@ async def update_fiscal_config(
 ):
     await _check_cmig_access(cmig_id, current_user, db, require_owner=False)
     if current_user.role not in ("ac", "admin"):
-        raise HTTPException(status_code=403, detail="Apenas AC ou admin podem editar configuração fiscal")
+        raise HTTPException(
+            status_code=403, detail="Apenas AC ou admin podem editar configuração fiscal"
+        )
 
     cfg = (
         await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))
@@ -112,13 +129,22 @@ async def update_fiscal_config(
         await db.flush()
 
     editable = {
-        "crt", "environment", "ie", "im", "cnae", "default_natureza_operacao",
-        "nfe_serie", "nfe_next_number", "fiscal_email_copy",
+        "crt",
+        "environment",
+        "ie",
+        "im",
+        "cnae",
+        "default_natureza_operacao",
+        "nfe_serie",
+        "nfe_next_number",
+        "fiscal_email_copy",
     }
     if body.get("crt") is not None and body["crt"] not in (1, 2, 3, 4):
         raise HTTPException(status_code=422, detail="crt deve ser 1, 2, 3 ou 4")
     if body.get("environment") and body["environment"] not in ("homolog", "production"):
-        raise HTTPException(status_code=422, detail="environment deve ser 'homolog' ou 'production'")
+        raise HTTPException(
+            status_code=422, detail="environment deve ser 'homolog' ou 'production'"
+        )
 
     for k, v in body.items():
         if k in editable:
@@ -130,6 +156,7 @@ async def update_fiscal_config(
 
 
 # ── Registro Focus NFe ────────────────────────────────────────────────────────
+
 
 @router.post("/register-focus")
 async def register_focus(
@@ -168,7 +195,8 @@ async def register_focus(
 
     # Focus retorna `token_homologacao` ou `token_producao` da empresa registrada
     company_token = (
-        result.get("token_homologacao") if cfg.environment == "homolog"
+        result.get("token_homologacao")
+        if cfg.environment == "homolog"
         else result.get("token_producao")
     )
     if not company_token:
@@ -207,7 +235,9 @@ async def upload_certificate(
         await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))
     ).scalar_one_or_none()
     if not cfg:
-        raise HTTPException(status_code=400, detail="Configure a CMIG no Focus antes de enviar o certificado")
+        raise HTTPException(
+            status_code=400, detail="Configure a CMIG no Focus antes de enviar o certificado"
+        )
 
     pfx_bytes = await pfx_file.read()
     if not pfx_bytes:
@@ -240,6 +270,7 @@ async def upload_certificate(
 
 def _digits_only(s: str | None) -> str:
     import re
+
     return re.sub(r"\D", "", s or "")
 
 
@@ -247,6 +278,7 @@ def _validate_pfx(pfx_bytes: bytes, password: str):
     """Valida o .pfx; retorna (expires_at, subject) ou (None, None) se inválido."""
     try:
         from cryptography.hazmat.primitives.serialization import pkcs12
+
         _, cert, _ = pkcs12.load_key_and_certificates(pfx_bytes, password.encode("utf-8"))
         if cert is None:
             return None, None

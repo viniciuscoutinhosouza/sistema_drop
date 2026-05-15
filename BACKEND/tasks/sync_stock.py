@@ -7,15 +7,16 @@ Modos de estoque por listing (stock_mode):
                se keep_stock_fixed=True o job restaura o valor a cada ciclo (estoque fixo);
                se keep_stock_fixed=False o job pula este listing (estoque gerenciado apenas por vendas)
 """
+
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from database import task_db, AsyncSyncSession
-from models.integration import MarketplaceAccount
-from models.product import DropshipperProduct, CatalogProduct, ProductListing
+from database import AsyncSyncSession, task_db
 from models.cmig import CMIGProduct
+from models.integration import MarketplaceAccount
+from models.product import CatalogProduct, DropshipperProduct, ProductListing
 from services.ml_service import update_item_stock as ml_update_stock
 from services.shopee_service import update_item_stock as shopee_update_stock
 
@@ -78,11 +79,13 @@ async def _sync(db: AsyncSyncSession) -> None:
                     stock,
                 )
             listing.available_quantity = stock
-            listing.last_sync_at = datetime.now(timezone.utc)
+            listing.last_sync_at = datetime.now(UTC)
         except Exception as exc:
             logger.warning(
                 "sync_stock: falha listing_id=%s platform_item=%s: %s",
-                listing.id, listing.platform_item_id, exc,
+                listing.id,
+                listing.platform_item_id,
+                exc,
             )
 
     await db.commit()
@@ -94,7 +97,9 @@ async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) 
     # Listing publicado direto do catálogo PG (sem DropshipperProduct)
     if listing.catalog_product_id and not listing.product_id:
         result = await db.execute(
-            select(CatalogProduct.stock_quantity).where(CatalogProduct.id == listing.catalog_product_id)
+            select(CatalogProduct.stock_quantity).where(
+                CatalogProduct.id == listing.catalog_product_id
+            )
         )
         qty = result.scalar_one_or_none()
         return int(qty) if qty is not None else 0
@@ -117,7 +122,9 @@ async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) 
             return 0
         if product.catalog_product_id:
             result = await db.execute(
-                select(CatalogProduct.stock_quantity).where(CatalogProduct.id == product.catalog_product_id)
+                select(CatalogProduct.stock_quantity).where(
+                    CatalogProduct.id == product.catalog_product_id
+                )
             )
             qty = result.scalar_one_or_none()
             return int(qty) if qty is not None else 0

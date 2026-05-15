@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Boolean, TIMESTAMP, text
+from sqlalchemy import TIMESTAMP, Boolean, Column, Integer, String, text
+
 from database import Base
 
 
@@ -9,7 +10,7 @@ class WebhookEvent(Base):
     platform = Column(String(20), nullable=False)
     event_id = Column(String(200), nullable=False)
     event_type = Column(String(100))
-    payload = Column(String)   # CLOB JSON
+    payload = Column(String)  # CLOB JSON
     processed = Column(Boolean, nullable=False, default=False)
     error_message = Column(String(1000))
     received_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))

@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from database import get_db
 from dependencies import get_active_ac
-from models.user import User
 from models.order import Order, OrderItem
 from models.product import CatalogProduct
+from models.user import User
 
 router = APIRouter()
 
@@ -27,9 +28,7 @@ async def create_manual_order(
     quantity = body.get("quantity", 1)
     shipping_address = body.get("shipping_address", {})
 
-    result = await db.execute(
-        select(CatalogProduct).where(CatalogProduct.id == catalog_product_id)
-    )
+    result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == catalog_product_id))
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Produto do catálogo não encontrado")
@@ -47,14 +46,16 @@ async def create_manual_order(
     db.add(order)
     await db.flush()
 
-    db.add(OrderItem(
-        order_id=order.id,
-        catalog_product_id=product.id,
-        sku=product.sku,
-        title=product.title,
-        quantity=quantity,
-        unit_cost=product.cost_price,
-    ))
+    db.add(
+        OrderItem(
+            order_id=order.id,
+            catalog_product_id=product.id,
+            sku=product.sku,
+            title=product.title,
+            quantity=quantity,
+            unit_cost=product.cost_price,
+        )
+    )
 
     await db.commit()
     return {"id": order.id, "status": order.status}

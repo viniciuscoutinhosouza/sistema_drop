@@ -2,9 +2,12 @@
 Background task: Poll Mercado Livre and Shopee for new orders.
 Runs every 15 minutes via APScheduler.
 """
+
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import select
+
 from database import task_db
 from models.integration import MarketplaceAccount
 from services import ml_service, shopee_service, webhook_service
@@ -19,7 +22,7 @@ async def sync_all_orders():
             )
         )
         ml_accounts = list(result.scalars().all())
-        date_from = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
+        date_from = (datetime.now(UTC) - timedelta(minutes=60)).isoformat()
         for integration in ml_accounts:
             await sync_ml_integration(db, integration, date_from)
 
@@ -37,6 +40,7 @@ async def sync_all_orders():
         if ml_accounts:
             try:
                 from routers.orders import _refresh_shipments
+
                 await _refresh_shipments(db, ml_accounts, dropshipper_id=None, limit=200)
             except Exception as e:
                 print(f"[SYNC] Error refreshing shipments: {e}")
@@ -92,8 +96,10 @@ async def sync_ml_integration(
             date_from,
             date_to,
         )
-        print(f"[SYNC] ML account {integration.id}: {len(orders)} orders found "
-              f"from {date_from}" + (f" to {date_to}" if date_to else ""))
+        print(
+            f"[SYNC] ML account {integration.id}: {len(orders)} orders found "
+            f"from {date_from}" + (f" to {date_to}" if date_to else "")
+        )
 
         for order_data in orders:
             order_id = str(order_data.get("id", ""))
@@ -102,7 +108,9 @@ async def sync_ml_integration(
 
             event_id = f"poll:{integration.platform_user_id}:{order_id}"
             ml_status = order_data.get("status", "")
-            already_processed = await webhook_service.is_already_processed(db, "mercadolivre", event_id)
+            already_processed = await webhook_service.is_already_processed(
+                db, "mercadolivre", event_id
+            )
 
             # Cancelled orders: always re-process to sync status even if already imported
             if already_processed and ml_status != "cancelled":
@@ -116,16 +124,18 @@ async def sync_ml_integration(
                     )
                     if event:
                         event.processed = True
-                        event.processed_at = datetime.now(timezone.utc)
+                        event.processed_at = datetime.now(UTC)
                 await webhook_service.process_ml_order(db, full_order, integration)
                 await db.commit()
                 if not already_processed:
                     imported += 1
             except Exception as e:
                 await db.rollback()
-                print(f"[SYNC] Error processing ML order {order_id} (account {integration.id}): {e}")
+                print(
+                    f"[SYNC] Error processing ML order {order_id} (account {integration.id}): {e}"
+                )
 
-        integration.last_sync_at = datetime.now(timezone.utc)
+        integration.last_sync_at = datetime.now(UTC)
         await db.commit()
     except Exception as e:
         print(f"[SYNC] Error syncing ML integration {integration.id}: {e}")
@@ -159,15 +169,17 @@ async def sync_shopee_integration(
                 if event:
                     await webhook_service.process_shopee_order(db, order_sn, integration)
                     event.processed = True
-                    event.processed_at = datetime.now(timezone.utc)
+                    event.processed_at = datetime.now(UTC)
                     await db.commit()
                     imported += 1
             except Exception as e:
                 await db.rollback()
-                print(f"[SYNC] Error processing Shopee order {order_sn.get('order_sn')} "
-                      f"(account {integration.id}): {e}")
+                print(
+                    f"[SYNC] Error processing Shopee order {order_sn.get('order_sn')} "
+                    f"(account {integration.id}): {e}"
+                )
 
-        integration.last_sync_at = datetime.now(timezone.utc)
+        integration.last_sync_at = datetime.now(UTC)
         await db.commit()
     except Exception as e:
         print(f"[SYNC] Error syncing Shopee integration {integration.id}: {e}")

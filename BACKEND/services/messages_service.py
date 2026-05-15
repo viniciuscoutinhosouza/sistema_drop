@@ -4,8 +4,10 @@ Mercado Livre Messages & Questions API service.
 Post-sale messages: /messages/packs/{pack_id}/sellers/{seller_id}
 Pre-sale questions: /questions/{id}
 """
-import httpx
+
 import logging
+
+import httpx
 from fastapi import HTTPException
 
 ML_API_BASE = "https://api.mercadolibre.com"
@@ -21,6 +23,7 @@ def _auth(access_token: str) -> dict:
 # ---------------------------------------------------------------------------
 # POST-SALE MESSAGES
 # ---------------------------------------------------------------------------
+
 
 async def get_seller_messages_inbox(
     access_token: str,
@@ -54,7 +57,9 @@ async def get_pack_messages(
         return {}
     if resp.status_code != 200:
         logger.warning("ML pack messages error %s: %s", resp.status_code, resp.text)
-        raise HTTPException(status_code=resp.status_code, detail=f"Erro ML mensagens pack: {resp.text}")
+        raise HTTPException(
+            status_code=resp.status_code, detail=f"Erro ML mensagens pack: {resp.text}"
+        )
     return resp.json()
 
 
@@ -76,13 +81,16 @@ async def send_pack_message(
         resp = await client.post(url, headers=_auth(access_token), json=payload)
     if resp.status_code not in (200, 201):
         logger.warning("ML send message error %s: %s", resp.status_code, resp.text)
-        raise HTTPException(status_code=resp.status_code, detail=f"Erro ao enviar mensagem ML: {resp.text}")
+        raise HTTPException(
+            status_code=resp.status_code, detail=f"Erro ao enviar mensagem ML: {resp.text}"
+        )
     return resp.json()
 
 
 # ---------------------------------------------------------------------------
 # PRE-SALE QUESTIONS
 # ---------------------------------------------------------------------------
+
 
 async def get_seller_questions(
     access_token: str,
@@ -126,5 +134,7 @@ async def answer_question(access_token: str, question_id: str, text: str) -> dic
         resp = await client.post(url, headers=_auth(access_token), json=payload)
     if resp.status_code not in (200, 201):
         logger.warning("ML answer question error %s: %s", resp.status_code, resp.text)
-        raise HTTPException(status_code=resp.status_code, detail=f"Erro ao responder pergunta ML: {resp.text}")
+        raise HTTPException(
+            status_code=resp.status_code, detail=f"Erro ao responder pergunta ML: {resp.text}"
+        )
     return resp.json()

@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Numeric, Boolean, TIMESTAMP, Date, ForeignKey, text
+from sqlalchemy import TIMESTAMP, Boolean, Column, Date, ForeignKey, Integer, Numeric, String, text
 from sqlalchemy.orm import relationship
+
 from database import Base
 
 
@@ -19,7 +20,7 @@ class Order(Base):
     buyer_name = Column(String(255))
     buyer_email = Column(String(255))
     buyer_document = Column(String(20))
-    shipping_address = Column(String)   # JSON CLOB
+    shipping_address = Column(String)  # JSON CLOB
     shipping_method = Column(String(100))
     shipment_status = Column(String(50))
     tracking_code = Column(String(100))
@@ -30,7 +31,9 @@ class Order(Base):
     nfe_url = Column(String(1000))
     nfe_key = Column(String(50))
     nfe_status = Column(String(30))
-    nfe_invoices_json = Column(String)  # CLOB — cache da lista de NF-e do Faturador ML (venda + referências)
+    nfe_invoices_json = Column(
+        String
+    )  # CLOB — cache da lista de NF-e do Faturador ML (venda + referências)
     invoice_id = Column(Integer, ForeignKey("invoices.id"))
     estimated_delivery_date = Column(Date)
     estimated_handling_limit = Column(Date)
@@ -38,19 +41,20 @@ class Order(Base):
     order_tags = Column(String(500))
     sale_amount = Column(Numeric(15, 2))
     product_cost = Column(Numeric(15, 2))
-    platform_fee = Column(Numeric(15, 2))            # tarifa ML (sale_fee somado dos itens)
-    shipping_cost = Column(Numeric(15, 2))           # legacy / agregado
-    buyer_shipping_paid = Column(Numeric(15, 2))     # frete que o comprador pagou
-    seller_shipping_cost = Column(Numeric(15, 2))    # frete deduzido do vendedor (list_cost - cost)
-    ml_fee_pct = Column(Numeric(8, 4))               # % da tarifa ML sobre o valor da venda
+    platform_fee = Column(Numeric(15, 2))  # tarifa ML (sale_fee somado dos itens)
+    shipping_cost = Column(Numeric(15, 2))  # legacy / agregado
+    buyer_shipping_paid = Column(Numeric(15, 2))  # frete que o comprador pagou
+    seller_shipping_cost = Column(Numeric(15, 2))  # frete deduzido do vendedor (list_cost - cost)
+    ml_fee_pct = Column(Numeric(8, 4))  # % da tarifa ML sobre o valor da venda
     total_debit = Column(Numeric(15, 2))
     is_hidden = Column(Boolean, default=False)
     notes = Column(String)
     paid_at = Column(TIMESTAMP(timezone=True))
     shipped_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
-    updated_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                        onupdate=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
 
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     invoice = relationship("Invoice", foreign_keys=[invoice_id])

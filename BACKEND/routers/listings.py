@@ -2,15 +2,18 @@
 Gerenciamento de anúncios (ProductListings) por CONTA de marketplace.
 Um AC pode ter anúncios de uma mesma CONTA publicados em marketplace.
 """
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from database import get_db
 from dependencies import get_current_user
-from models.user import User, AccountAdministrator
-from models.product import DropshipperProduct, ProductListing
 from models.integration import MarketplaceAccount
+from models.product import DropshipperProduct, ProductListing
+from models.user import AccountAdministrator, User
 from services import ml_service, shopee_service
 
 router = APIRouter()
@@ -35,7 +38,9 @@ def _serialize_listing(listing: ProductListing, account: MarketplaceAccount) -> 
     }
 
 
-async def _get_product_for_user(product_id: int, user_id: int, db: AsyncSession) -> DropshipperProduct:
+async def _get_product_for_user(
+    product_id: int, user_id: int, db: AsyncSession
+) -> DropshipperProduct:
     result = await db.execute(
         select(DropshipperProduct).where(
             DropshipperProduct.id == product_id,
@@ -48,7 +53,9 @@ async def _get_product_for_user(product_id: int, user_id: int, db: AsyncSession)
     return product
 
 
-async def _assert_account_access(account_id: int, user_id: int, db: AsyncSession) -> MarketplaceAccount:
+async def _assert_account_access(
+    account_id: int, user_id: int, db: AsyncSession
+) -> MarketplaceAccount:
     """Verifica que o usuário é co-administrador da CONTA."""
     result = await db.execute(
         select(MarketplaceAccount)
@@ -60,11 +67,15 @@ async def _assert_account_access(account_id: int, user_id: int, db: AsyncSession
     )
     account = result.scalar_one_or_none()
     if not account:
-        raise HTTPException(status_code=404, detail="Conta de marketplace não encontrada ou sem permissão")
+        raise HTTPException(
+            status_code=404, detail="Conta de marketplace não encontrada ou sem permissão"
+        )
     return account
 
 
-async def _get_listing_for_user(listing_id: int, product_id: int, user_id: int, db: AsyncSession) -> tuple:
+async def _get_listing_for_user(
+    listing_id: int, product_id: int, user_id: int, db: AsyncSession
+) -> tuple:
     result = await db.execute(
         select(ProductListing, MarketplaceAccount)
         .join(MarketplaceAccount, ProductListing.account_id == MarketplaceAccount.id)
@@ -85,6 +96,7 @@ async def _get_listing_for_user(listing_id: int, product_id: int, user_id: int, 
 
 # ─── Listar anúncios de um produto ───────────────────────────────────────────
 
+
 @router.get("")
 async def list_listings(
     product_id: int,
@@ -103,6 +115,7 @@ async def list_listings(
 
 
 # ─── Criar anúncio (draft) ────────────────────────────────────────────────────
+
 
 @router.post("", status_code=201)
 async def create_listing(
@@ -133,7 +146,9 @@ async def create_listing(
         )
     )
     if dup.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Já existe um anúncio para este produto nesta conta")
+        raise HTTPException(
+            status_code=409, detail="Já existe um anúncio para este produto nesta conta"
+        )
 
     listing = ProductListing(
         product_id=product_id,
@@ -151,6 +166,7 @@ async def create_listing(
 
 
 # ─── Atualizar anúncio ────────────────────────────────────────────────────────
+
 
 @router.put("/{listing_id}")
 async def update_listing(
@@ -177,6 +193,7 @@ async def update_listing(
 
 # ─── Remover anúncio ──────────────────────────────────────────────────────────
 
+
 @router.delete("/{listing_id}", status_code=204)
 async def delete_listing(
     product_id: int,
@@ -190,6 +207,7 @@ async def delete_listing(
 
 
 # ─── Publicar anúncio no marketplace ─────────────────────────────────────────
+
 
 @router.post("/{listing_id}/publish")
 async def publish_listing(
@@ -214,7 +232,9 @@ async def publish_listing(
         if mode == "link":
             platform_item_id = body.get("platform_item_id") or listing.platform_item_id
             if not platform_item_id:
-                raise HTTPException(status_code=400, detail="platform_item_id é obrigatório para mode=link")
+                raise HTTPException(
+                    status_code=400, detail="platform_item_id é obrigatório para mode=link"
+                )
 
             if account.platform == "mercadolivre":
                 item = await ml_service.get_item(account.access_token, platform_item_id)
@@ -228,7 +248,7 @@ async def publish_listing(
 
             listing.platform_item_id = str(platform_item_id)
             listing.status = "published"
-            listing.published_at = datetime.now(timezone.utc)
+            listing.published_at = datetime.now(UTC)
             listing.error_message = None
 
         elif mode == "create":
@@ -243,10 +263,13 @@ async def publish_listing(
                 )
                 listing.platform_item_id = str(item_id)
             else:
-                raise HTTPException(status_code=400, detail=f"Criação automática não suportada para {account.platform}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Criação automática não suportada para {account.platform}",
+                )
 
             listing.status = "published"
-            listing.published_at = datetime.now(timezone.utc)
+            listing.published_at = datetime.now(UTC)
             listing.error_message = None
         else:
             raise HTTPException(status_code=400, detail="mode deve ser 'create' ou 'link'")
@@ -265,6 +288,7 @@ async def publish_listing(
 
 # ─── Pausar anúncio ───────────────────────────────────────────────────────────
 
+
 @router.post("/{listing_id}/pause")
 async def pause_listing(
     product_id: int,
@@ -275,7 +299,9 @@ async def pause_listing(
     listing, account = await _get_listing_for_user(listing_id, product_id, current_user.id, db)
 
     if listing.status != "published":
-        raise HTTPException(status_code=400, detail="Somente anúncios publicados podem ser pausados")
+        raise HTTPException(
+            status_code=400, detail="Somente anúncios publicados podem ser pausados"
+        )
     if not listing.platform_item_id:
         raise HTTPException(status_code=400, detail="Anúncio sem ID no marketplace")
 
@@ -292,11 +318,16 @@ async def pause_listing(
 
 # ─── Helpers de payload ───────────────────────────────────────────────────────
 
+
 def _build_ml_item(product: DropshipperProduct, listing: ProductListing) -> dict:
     if not listing.category_id:
-        raise HTTPException(status_code=400, detail="category_id é obrigatório para criar anúncio no ML")
+        raise HTTPException(
+            status_code=400, detail="category_id é obrigatório para criar anúncio no ML"
+        )
     if not listing.listing_type:
-        raise HTTPException(status_code=400, detail="listing_type é obrigatório para criar anúncio no ML")
+        raise HTTPException(
+            status_code=400, detail="listing_type é obrigatório para criar anúncio no ML"
+        )
     return {
         "title": listing.title_override or product.title,
         "category_id": listing.category_id,
@@ -311,7 +342,9 @@ def _build_ml_item(product: DropshipperProduct, listing: ProductListing) -> dict
 
 def _build_shopee_item(product: DropshipperProduct, listing: ProductListing) -> dict:
     if not listing.category_id:
-        raise HTTPException(status_code=400, detail="category_id é obrigatório para criar anúncio na Shopee")
+        raise HTTPException(
+            status_code=400, detail="category_id é obrigatório para criar anúncio na Shopee"
+        )
     return {
         "original_price": float(listing.sale_price),
         "item_name": listing.title_override or product.title,

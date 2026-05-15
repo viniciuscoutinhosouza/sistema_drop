@@ -1,12 +1,12 @@
-from pydantic import BaseModel
-from typing import List
 from decimal import Decimal
+
+from pydantic import BaseModel
 
 
 class KPIResponse(BaseModel):
     monthly_sales_count: int
     monthly_sales_value: Decimal
-    monthly_sales_change_pct: float   # vs previous month
+    monthly_sales_change_pct: float  # vs previous month
     unpaid_orders_count: int
     unlinked_orders_count: int
     cancelled_orders_count: int

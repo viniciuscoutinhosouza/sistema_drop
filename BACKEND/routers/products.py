@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+
 from database import get_db
 from dependencies import get_active_ac
+from models.product import DropshipperProduct
 from models.user import User
-from models.product import DropshipperProduct, CatalogProduct
 
 router = APIRouter()
 
@@ -27,7 +28,11 @@ async def list_products(
     count_q = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_q)).scalar()
 
-    query = query.order_by(DropshipperProduct.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    query = (
+        query.order_by(DropshipperProduct.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await db.execute(query)
     items = result.scalars().all()
 
@@ -98,7 +103,9 @@ async def get_product(
         "title_ml": product.title_ml,
         "title_shopee": product.title_shopee,
         "sale_price_ml": float(product.sale_price_ml) if product.sale_price_ml else None,
-        "sale_price_shopee": float(product.sale_price_shopee) if product.sale_price_shopee else None,
+        "sale_price_shopee": float(product.sale_price_shopee)
+        if product.sale_price_shopee
+        else None,
         "ml_item_id": product.ml_item_id,
         "ml_category_id": product.ml_category_id,
         "ml_listing_type": product.ml_listing_type,
@@ -125,8 +132,17 @@ async def update_product(
     if not product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
 
-    for field in ["title", "title_ml", "title_shopee", "sale_price_ml", "sale_price_shopee",
-                  "ml_category_id", "ml_listing_type", "shopee_category_id", "status"]:
+    for field in [
+        "title",
+        "title_ml",
+        "title_shopee",
+        "sale_price_ml",
+        "sale_price_shopee",
+        "ml_category_id",
+        "ml_listing_type",
+        "shopee_category_id",
+        "status",
+    ]:
         if field in body:
             setattr(product, field, body[field])
 

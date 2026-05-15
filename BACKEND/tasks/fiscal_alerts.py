@@ -4,12 +4,15 @@ Roda diariamente às 09:00:
 1. Certificados A1 que expiram em ≤ 30 dias → cria Notification para AC owner
 2. Invoices em status 'queued'/'processing' há > 1h → reconsulta Focus
 """
+
 import logging
 from datetime import datetime, timedelta
-from sqlalchemy import select, and_, or_
+
+from sqlalchemy import and_, select
+
 from database import task_db
-from models.fiscal import CMIGFiscalConfig, Invoice
 from models.cmig import CMIG
+from models.fiscal import CMIGFiscalConfig, Invoice
 from models.notification import Notification
 from services.fiscal import focus_service
 
@@ -27,7 +30,9 @@ async def run_fiscal_alerts():
 
     log.info(
         "Fiscal alerts: %d alertas de cert, %d invoices reconsultadas, %d erros",
-        stats["cert_alerts"], stats["stale_invoices"], stats["errors"],
+        stats["cert_alerts"],
+        stats["stale_invoices"],
+        stats["errors"],
     )
     return stats
 
@@ -38,15 +43,19 @@ async def _check_expiring_certificates(db, stats: dict):
     threshold = now + timedelta(days=30)
 
     cfgs = (
-        await db.execute(
-            select(CMIGFiscalConfig).where(
-                and_(
-                    CMIGFiscalConfig.certificate_expires_at.is_not(None),
-                    CMIGFiscalConfig.certificate_expires_at <= threshold,
+        (
+            await db.execute(
+                select(CMIGFiscalConfig).where(
+                    and_(
+                        CMIGFiscalConfig.certificate_expires_at.is_not(None),
+                        CMIGFiscalConfig.certificate_expires_at <= threshold,
+                    )
                 )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     for cfg in cfgs:
         cmig = (await db.execute(select(CMIG).where(CMIG.id == cfg.cmig_id))).scalar_one_or_none()
@@ -87,14 +96,16 @@ async def _check_expiring_certificates(db, stats: dict):
             )
 
         try:
-            db.add(Notification(
-                dropshipper_id=cmig.owner_ac_id,
-                title=title,
-                body=body,
-                reference_type="cert_expiring",
-                reference_id=cfg.id,
-                type="fiscal",
-            ))
+            db.add(
+                Notification(
+                    dropshipper_id=cmig.owner_ac_id,
+                    title=title,
+                    body=body,
+                    reference_type="cert_expiring",
+                    reference_id=cfg.id,
+                    type="fiscal",
+                )
+            )
             stats["cert_alerts"] += 1
         except Exception as e:
             log.exception("Erro criando notification cert: %s", e)
@@ -108,16 +119,20 @@ async def _refresh_stale_invoices(db, stats: dict):
     cutoff = datetime.utcnow() - timedelta(hours=1)
 
     stale = (
-        await db.execute(
-            select(Invoice).where(
-                and_(
-                    Invoice.status.in_(("queued", "processing")),
-                    Invoice.focus_ref.is_not(None),
-                    Invoice.updated_at <= cutoff,
+        (
+            await db.execute(
+                select(Invoice).where(
+                    and_(
+                        Invoice.status.in_(("queued", "processing")),
+                        Invoice.focus_ref.is_not(None),
+                        Invoice.updated_at <= cutoff,
+                    )
                 )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     for inv in stale:
         cfg = (
@@ -143,13 +158,21 @@ async def _refresh_stale_invoices(db, stats: dict):
             inv.status = "authorized"
             inv.access_key = result.get("chave_nfe") or inv.access_key
             if result.get("numero"):
-                try: inv.nfe_number = int(result["numero"])
-                except (ValueError, TypeError): pass
+                try:
+                    inv.nfe_number = int(result["numero"])
+                except (ValueError, TypeError):
+                    pass
             if result.get("serie"):
-                try: inv.serie = int(result["serie"])
-                except (ValueError, TypeError): pass
-            inv.xml_url = focus_service.absolutize_focus_url(cfg, result.get("caminho_xml_nota_fiscal") or "")
-            inv.danfe_url = focus_service.absolutize_focus_url(cfg, result.get("caminho_danfe") or "")
+                try:
+                    inv.serie = int(result["serie"])
+                except (ValueError, TypeError):
+                    pass
+            inv.xml_url = focus_service.absolutize_focus_url(
+                cfg, result.get("caminho_xml_nota_fiscal") or ""
+            )
+            inv.danfe_url = focus_service.absolutize_focus_url(
+                cfg, result.get("caminho_danfe") or ""
+            )
         elif focus_status == "cancelado":
             inv.status = "cancelled"
         elif focus_status == "denegado":

@@ -1,25 +1,25 @@
-from pydantic import BaseModel, model_validator
 from datetime import datetime
-from typing import Optional, List
 
+from pydantic import BaseModel, model_validator
 
 # ── CMIG ──────────────────────────────────────────────────────────────────────
 
+
 class CMIGCreate(BaseModel):
     warehouse_id: int
-    cnpj: Optional[str] = None
-    cpf: Optional[str] = None
-    company_name: str                   # Razão Social (PJ) ou Nome completo (PF)
-    trade_name: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    zip_code: Optional[str] = None
-    street: Optional[str] = None
-    address_number: Optional[str] = None
-    complement: Optional[str] = None
-    neighborhood: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
+    cnpj: str | None = None
+    cpf: str | None = None
+    company_name: str  # Razão Social (PJ) ou Nome completo (PF)
+    trade_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    zip_code: str | None = None
+    street: str | None = None
+    address_number: str | None = None
+    complement: str | None = None
+    neighborhood: str | None = None
+    city: str | None = None
+    state: str | None = None
 
     @model_validator(mode="after")
     def check_document(self):
@@ -31,39 +31,39 @@ class CMIGCreate(BaseModel):
 
 
 class CMIGUpdate(BaseModel):
-    cnpj: Optional[str] = None
-    cpf: Optional[str] = None
-    company_name: Optional[str] = None
-    trade_name: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    zip_code: Optional[str] = None
-    street: Optional[str] = None
-    address_number: Optional[str] = None
-    complement: Optional[str] = None
-    neighborhood: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    is_active: Optional[bool] = None
+    cnpj: str | None = None
+    cpf: str | None = None
+    company_name: str | None = None
+    trade_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    zip_code: str | None = None
+    street: str | None = None
+    address_number: str | None = None
+    complement: str | None = None
+    neighborhood: str | None = None
+    city: str | None = None
+    state: str | None = None
+    is_active: bool | None = None
 
 
 class CMIGOut(BaseModel):
     id: int
     owner_ac_id: int
     warehouse_id: int
-    cnpj: Optional[str]
-    cpf: Optional[str]
-    company_name: Optional[str]
-    trade_name: Optional[str]
-    email: Optional[str]
-    phone: Optional[str]
-    zip_code: Optional[str]
-    street: Optional[str]
-    address_number: Optional[str]
-    complement: Optional[str]
-    neighborhood: Optional[str]
-    city: Optional[str]
-    state: Optional[str]
+    cnpj: str | None
+    cpf: str | None
+    company_name: str | None
+    trade_name: str | None
+    email: str | None
+    phone: str | None
+    zip_code: str | None
+    street: str | None
+    address_number: str | None
+    complement: str | None
+    neighborhood: str | None
+    city: str | None
+    state: str | None
     is_active: bool
     created_at: datetime
 
@@ -76,6 +76,7 @@ class CMIGAdminAdd(BaseModel):
 
 # ── Produto CMIG ───────────────────────────────────────────────────────────────
 
+
 class CMIGProductImageOut(BaseModel):
     id: int
     url: str
@@ -86,8 +87,8 @@ class CMIGProductImageOut(BaseModel):
 
 
 class CMIGProductComponentIn(BaseModel):
-    cmig_product_id: Optional[int] = None
-    catalog_product_id: Optional[int] = None
+    cmig_product_id: int | None = None
+    catalog_product_id: int | None = None
     quantity: int = 1
 
 
@@ -95,48 +96,50 @@ class CMIGProductCreate(BaseModel):
     # stock_quantity intencionalmente fora — gerenciado por eventos de NF-e/pedido
     sku_cmig: str
     title: str
-    description: Optional[str] = None
-    brand: Optional[str] = None
-    model: Optional[str] = None
-    ean: Optional[str] = None
-    cost_price: Optional[float] = None
-    suggested_price: Optional[float] = None
-    weight_kg: Optional[float] = None
-    height_cm: Optional[float] = None
-    width_cm: Optional[float] = None
-    length_cm: Optional[float] = None
-    ncm: Optional[str] = None
-    cest: Optional[str] = None
-    origin: Optional[int] = 0
-    category_id: Optional[int] = None
-    video_id: Optional[str] = None
-    attributes_json: Optional[str] = None
-    is_composite: Optional[bool] = False
-    components: Optional[List[CMIGProductComponentIn]] = None
+    description: str | None = None
+    brand: str | None = None
+    model: str | None = None
+    ean: str | None = None
+    cost_price: float | None = None
+    suggested_price: float | None = None
+    weight_kg: float | None = None
+    height_cm: float | None = None
+    width_cm: float | None = None
+    length_cm: float | None = None
+    ncm: str | None = None
+    cest: str | None = None
+    origin: int | None = 0
+    category_id: int | None = None
+    video_id: str | None = None
+    attributes_json: str | None = None
+    is_composite: bool | None = False
+    components: list[CMIGProductComponentIn] | None = None
 
 
 class CMIGProductUpdate(BaseModel):
     # stock_quantity intencionalmente fora — gerenciado por eventos de NF-e/pedido
-    title: Optional[str] = None
-    description: Optional[str] = None
-    brand: Optional[str] = None
-    model: Optional[str] = None
-    ean: Optional[str] = None
-    cost_price: Optional[float] = None
-    suggested_price: Optional[float] = None
-    weight_kg: Optional[float] = None
-    height_cm: Optional[float] = None
-    width_cm: Optional[float] = None
-    length_cm: Optional[float] = None
-    ncm: Optional[str] = None
-    cest: Optional[str] = None
-    origin: Optional[int] = None
-    is_active: Optional[bool] = None
-    category_id: Optional[int] = None
-    video_id: Optional[str] = None
-    attributes_json: Optional[str] = None
-    images: Optional[list] = None  # [{url: "..."}]; quando presente, sincroniza cmig_product_images
-    components: Optional[List[CMIGProductComponentIn]] = None  # quando presente, substitui todos os componentes
+    title: str | None = None
+    description: str | None = None
+    brand: str | None = None
+    model: str | None = None
+    ean: str | None = None
+    cost_price: float | None = None
+    suggested_price: float | None = None
+    weight_kg: float | None = None
+    height_cm: float | None = None
+    width_cm: float | None = None
+    length_cm: float | None = None
+    ncm: str | None = None
+    cest: str | None = None
+    origin: int | None = None
+    is_active: bool | None = None
+    category_id: int | None = None
+    video_id: str | None = None
+    attributes_json: str | None = None
+    images: list | None = None  # [{url: "..."}]; quando presente, sincroniza cmig_product_images
+    components: list[CMIGProductComponentIn] | None = (
+        None  # quando presente, substitui todos os componentes
+    )
 
 
 class CMIGProductLinkPG(BaseModel):
@@ -161,46 +164,47 @@ class CMIGProductOut(BaseModel):
     cmig_id: int
     sku_cmig: str
     title: str
-    description: Optional[str]
-    brand: Optional[str]
-    model: Optional[str]
-    ean: Optional[str]
-    cost_price: Optional[float]
-    suggested_price: Optional[float]
+    description: str | None
+    brand: str | None
+    model: str | None
+    ean: str | None
+    cost_price: float | None
+    suggested_price: float | None
     stock_quantity: int
-    weight_kg: Optional[float]
-    height_cm: Optional[float]
-    width_cm: Optional[float]
-    length_cm: Optional[float]
-    ncm: Optional[str]
-    cest: Optional[str]
-    origin: Optional[int]
-    category_id: Optional[int] = None
-    category_name: Optional[str] = None  # derivado do join (read-only)
-    video_id: Optional[str]
-    attributes_json: Optional[str] = None
-    pictures_json: Optional[str] = None  # legado — fallback de leitura
-    pg_product_id: Optional[int]
+    weight_kg: float | None
+    height_cm: float | None
+    width_cm: float | None
+    length_cm: float | None
+    ncm: str | None
+    cest: str | None
+    origin: int | None
+    category_id: int | None = None
+    category_name: str | None = None  # derivado do join (read-only)
+    video_id: str | None
+    attributes_json: str | None = None
+    pictures_json: str | None = None  # legado — fallback de leitura
+    pg_product_id: int | None
     is_composite: bool = False
     is_active: bool
     created_at: datetime
-    images: List[CMIGProductImageOut] = []
-    components: List[CMIGProductComponentOut] = []
+    images: list[CMIGProductImageOut] = []
+    components: list[CMIGProductComponentOut] = []
 
     model_config = {"from_attributes": True}
 
 
 # ── NF-e Config ───────────────────────────────────────────────────────────────
 
+
 class NFeConfigCreate(BaseModel):
     shipping_method: str
     issuer: str  # marketplace | system
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 class NFeConfigUpdate(BaseModel):
-    issuer: Optional[str] = None
-    notes: Optional[str] = None
+    issuer: str | None = None
+    notes: str | None = None
 
 
 class NFeConfigOut(BaseModel):
@@ -208,7 +212,7 @@ class NFeConfigOut(BaseModel):
     cm_id: int
     shipping_method: str
     issuer: str
-    notes: Optional[str]
+    notes: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}

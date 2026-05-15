@@ -8,6 +8,7 @@ Jobs:
   - check_subscriptions_job: Check overdue subscriptions daily at midnight
   - sync_stock_job: Update ML/Shopee listing stock every 30 minutes
 """
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -16,12 +17,12 @@ scheduler = AsyncIOScheduler()
 
 
 def start_scheduler():
-    from tasks.sync_orders import sync_all_orders
-    from tasks.sync_tokens import refresh_expiring_tokens
     from tasks.check_subscriptions import check_overdue_subscriptions
-    from tasks.sync_stock import sync_all_stock
-    from tasks.sync_dfe import sync_all_dfe
     from tasks.fiscal_alerts import run_fiscal_alerts
+    from tasks.sync_dfe import sync_all_dfe
+    from tasks.sync_orders import sync_all_orders
+    from tasks.sync_stock import sync_all_stock
+    from tasks.sync_tokens import refresh_expiring_tokens
 
     scheduler.add_job(
         sync_all_orders,
@@ -72,6 +73,7 @@ def start_scheduler():
     )
 
     from tasks.messages_sync import sync_all_messages
+
     scheduler.add_job(
         sync_all_messages,
         IntervalTrigger(minutes=15),
@@ -81,6 +83,7 @@ def start_scheduler():
     )
 
     from tasks.sync_reputation import refresh_ml_reputation
+
     scheduler.add_job(
         refresh_ml_reputation,
         CronTrigger(hour=3, minute=15),  # diário 03:15 UTC (~00:15 BRT)

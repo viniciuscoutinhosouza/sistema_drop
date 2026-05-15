@@ -1,13 +1,14 @@
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, text
+
 from database import get_db
 from dependencies import get_current_user
 from models.user import User
-from models.notification import Notification
 from schemas.dashboard import KPIResponse, TopProductSchema
-from datetime import datetime, timezone, timedelta
-from decimal import Decimal
 
 router = APIRouter()
 
@@ -17,7 +18,7 @@ async def get_kpis(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     start_of_prev_month = (start_of_month - timedelta(days=1)).replace(day=1)
     start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -26,8 +27,6 @@ async def get_kpis(
     uid = current_user.id
 
     # Lazy import to avoid circular imports
-    from models.order import Order, OrderItem
-    from models.product import DropshipperProduct
 
     # Monthly sales (current month) – count and value
     res = await db.execute(
@@ -62,7 +61,9 @@ async def get_kpis(
 
     # Unpaid orders
     res = await db.execute(
-        text("SELECT COUNT(*) FROM orders WHERE dropshipper_id = :uid AND payment_status = 'pending' AND status NOT IN ('cancelled','returned')"),
+        text(
+            "SELECT COUNT(*) FROM orders WHERE dropshipper_id = :uid AND payment_status = 'pending' AND status NOT IN ('cancelled','returned')"
+        ),
         {"uid": uid},
     )
     unpaid_count = res.scalar() or 0
@@ -90,7 +91,9 @@ async def get_kpis(
 
     # Total active products
     res = await db.execute(
-        text("SELECT COUNT(*) FROM dropshipper_products WHERE dropshipper_id = :uid AND status != 'closed'"),
+        text(
+            "SELECT COUNT(*) FROM dropshipper_products WHERE dropshipper_id = :uid AND status != 'closed'"
+        ),
         {"uid": uid},
     )
     total_products = res.scalar() or 0
@@ -156,12 +159,14 @@ async def get_top_products(db: AsyncSession = Depends(get_db)):
             .limit(1)
         )
         img = img_result.scalar_one_or_none()
-        out.append(TopProductSchema(
-            id=p.id,
-            sku=p.sku,
-            title=p.title,
-            cost_price=p.cost_price,
-            stock_quantity=p.stock_quantity,
-            image_url=img.url if img else "",
-        ))
+        out.append(
+            TopProductSchema(
+                id=p.id,
+                sku=p.sku,
+                title=p.title,
+                cost_price=p.cost_price,
+                stock_quantity=p.stock_quantity,
+                image_url=img.url if img else "",
+            )
+        )
     return out

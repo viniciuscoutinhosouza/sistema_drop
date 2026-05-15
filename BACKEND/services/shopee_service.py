@@ -3,11 +3,14 @@ Shopee Open Platform API service.
 Authentication: HMAC-SHA256 signed requests
 Docs: https://open.shopee.com/developer-guide/4
 """
+
 import hashlib
 import hmac
 import time
+
 import httpx
 from fastapi import HTTPException
+
 from config import get_settings
 
 settings = get_settings()
@@ -139,7 +142,9 @@ async def get_item_base_info(access_token: str, shop_id: int, item_id: int) -> d
         )
     data = resp.json()
     if data.get("error"):
-        raise HTTPException(status_code=404, detail=f"Item Shopee não encontrado: {data.get('message')}")
+        raise HTTPException(
+            status_code=404, detail=f"Item Shopee não encontrado: {data.get('message')}"
+        )
     items = data.get("response", {}).get("item_list", [])
     if not items:
         raise HTTPException(status_code=404, detail=f"Item {item_id} não encontrado na Shopee")
@@ -165,7 +170,9 @@ async def create_item(access_token: str, shop_id: int, item_data: dict) -> int:
         )
     data = resp.json()
     if data.get("error"):
-        raise HTTPException(status_code=400, detail=f"Erro ao criar anúncio Shopee: {data.get('message')}")
+        raise HTTPException(
+            status_code=400, detail=f"Erro ao criar anúncio Shopee: {data.get('message')}"
+        )
     return data["response"]["item_id"]
 
 
@@ -191,7 +198,9 @@ async def update_item_price(access_token: str, shop_id: int, item_id: int, price
         )
     data = resp.json()
     if data.get("error"):
-        raise HTTPException(status_code=400, detail=f"Erro ao atualizar preço Shopee: {data.get('message')}")
+        raise HTTPException(
+            status_code=400, detail=f"Erro ao atualizar preço Shopee: {data.get('message')}"
+        )
 
 
 async def update_item_stock(access_token: str, shop_id: int, item_id: int, stock: int) -> None:

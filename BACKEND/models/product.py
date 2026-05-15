@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Numeric, Boolean, TIMESTAMP, ForeignKey, text
+from sqlalchemy import TIMESTAMP, Boolean, Column, ForeignKey, Integer, Numeric, String, text
 from sqlalchemy.orm import relationship
+
 from database import Base
 
 
@@ -43,17 +44,28 @@ class CatalogProduct(Base):
     is_composite = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
-    updated_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                        onupdate=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
 
     category = relationship("Category", back_populates="products", lazy="joined")
-    images = relationship("CatalogProductImage", back_populates="product",
-                          order_by="CatalogProductImage.sort_order", cascade="all, delete-orphan")
-    variants = relationship("CatalogProductVariant", back_populates="product",
-                            cascade="all, delete-orphan")
+    images = relationship(
+        "CatalogProductImage",
+        back_populates="product",
+        order_by="CatalogProductImage.sort_order",
+        cascade="all, delete-orphan",
+    )
+    variants = relationship(
+        "CatalogProductVariant", back_populates="product", cascade="all, delete-orphan"
+    )
     cmig_products = relationship("CMIGProduct", back_populates="pg_product")
-    components = relationship("CatalogProductComponent", foreign_keys="CatalogProductComponent.composite_id",
-                              back_populates="composite", cascade="all, delete-orphan", lazy="selectin")
+    components = relationship(
+        "CatalogProductComponent",
+        foreign_keys="CatalogProductComponent.composite_id",
+        back_populates="composite",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
     @property
     def category_name(self):
@@ -92,15 +104,18 @@ class CatalogProductVariant(Base):
 
 class CatalogProductComponent(Base):
     """Componente de um Produto PG Composto."""
+
     __tablename__ = "catalog_product_components"
 
-    id           = Column(Integer, primary_key=True)
+    id = Column(Integer, primary_key=True)
     composite_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=False)
     component_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=False)
-    quantity     = Column(Integer, nullable=False, default=1)
+    quantity = Column(Integer, nullable=False, default=1)
 
-    composite  = relationship("CatalogProduct", foreign_keys=[composite_id], back_populates="components")
-    component  = relationship("CatalogProduct", foreign_keys=[component_id], lazy="selectin")
+    composite = relationship(
+        "CatalogProduct", foreign_keys=[composite_id], back_populates="components"
+    )
+    component = relationship("CatalogProduct", foreign_keys=[component_id], lazy="selectin")
 
 
 class DropshipperProduct(Base):
@@ -122,13 +137,16 @@ class DropshipperProduct(Base):
     bling_product_id = Column(Integer)
     status = Column(String(20), nullable=False, default="draft")
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
-    updated_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                        onupdate=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
 
-    images = relationship("DropshipperProductImage", back_populates="product",
-                          cascade="all, delete-orphan")
-    listings = relationship("ProductListing", back_populates="product",
-                            cascade="all, delete-orphan")
+    images = relationship(
+        "DropshipperProductImage", back_populates="product", cascade="all, delete-orphan"
+    )
+    listings = relationship(
+        "ProductListing", back_populates="product", cascade="all, delete-orphan"
+    )
 
 
 class DropshipperProductImage(Base):
@@ -146,96 +164,111 @@ class DropshipperProductImage(Base):
 class ProductListing(Base):
     __tablename__ = "product_listings"
 
-    id                 = Column(Integer, primary_key=True)
-    product_id         = Column(Integer, ForeignKey("dropshipper_products.id", ondelete="CASCADE"), nullable=True)
-    account_id         = Column(Integer, ForeignKey("marketplace_accounts.id", ondelete="CASCADE"), nullable=False)
-    cmig_product_id    = Column(Integer, ForeignKey("cmig_products.id"), nullable=True)
+    id = Column(Integer, primary_key=True)
+    product_id = Column(
+        Integer, ForeignKey("dropshipper_products.id", ondelete="CASCADE"), nullable=True
+    )
+    account_id = Column(
+        Integer, ForeignKey("marketplace_accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    cmig_product_id = Column(Integer, ForeignKey("cmig_products.id"), nullable=True)
     catalog_product_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=True)
-    platform_item_id   = Column(String(200))
-    permalink          = Column(String(1000))
-    thumbnail          = Column(String(1000))
-    sku                = Column(String(100))
-    weight_kg          = Column(Numeric(8, 3))
-    height_cm          = Column(Numeric(8, 2))
-    width_cm           = Column(Numeric(8, 2))
-    length_cm          = Column(Numeric(8, 2))
-    pictures_json      = Column(String)         # CLOB
-    fiscal_json        = Column(String(2000))
-    variations_json    = Column(String)         # CLOB
-    sale_price         = Column(Numeric(15, 2), nullable=False)
-    title_override     = Column(String(500))
-    category_id        = Column(String(100))
-    category_name      = Column(String(200))
+    platform_item_id = Column(String(200))
+    permalink = Column(String(1000))
+    thumbnail = Column(String(1000))
+    sku = Column(String(100))
+    weight_kg = Column(Numeric(8, 3))
+    height_cm = Column(Numeric(8, 2))
+    width_cm = Column(Numeric(8, 2))
+    length_cm = Column(Numeric(8, 2))
+    pictures_json = Column(String)  # CLOB
+    fiscal_json = Column(String(2000))
+    variations_json = Column(String)  # CLOB
+    sale_price = Column(Numeric(15, 2), nullable=False)
+    title_override = Column(String(500))
+    category_id = Column(String(100))
+    category_name = Column(String(200))
     category_path_json = Column(String(4000), nullable=True)  # JSON: [{id, name}, ...]
-    listing_type       = Column(String(20))
-    is_full            = Column(Boolean, default=False)  # legado — manter sincronizado com logistic_type
-    logistic_type      = Column(String(30), default="cross_docking")  # cross_docking|drop_off|xd_drop_off|self_service|fulfillment
-    ml_catalog_id      = Column(String(200))
-    catalog_listing    = Column(Boolean, nullable=True, default=False)  # true = anúncio DE catálogo; false + ml_catalog_id = optin
-    status             = Column(String(20), nullable=False, default="draft")
-    error_message      = Column(String(2000))
-    published_at         = Column(TIMESTAMP(timezone=True))
-    last_sync_at         = Column(TIMESTAMP(timezone=True))
-    description_override = Column(String)            # CLOB
-    attributes_json      = Column(String(4000))
-    available_quantity   = Column(Integer, default=1)
-    sold_quantity        = Column(Integer, default=0)
-    visits_7d            = Column(Integer, default=0)
-    item_condition       = Column(String(20), default="new")
-    warranty_type        = Column(String(50))
-    warranty_time        = Column(String(20))
-    shipping_mode        = Column(String(20), default="me2")
-    free_shipping        = Column(Boolean, default=False)
-    video_id             = Column(String(100))
+    listing_type = Column(String(20))
+    is_full = Column(Boolean, default=False)  # legado — manter sincronizado com logistic_type
+    logistic_type = Column(
+        String(30), default="cross_docking"
+    )  # cross_docking|drop_off|xd_drop_off|self_service|fulfillment
+    ml_catalog_id = Column(String(200))
+    catalog_listing = Column(
+        Boolean, nullable=True, default=False
+    )  # true = anúncio DE catálogo; false + ml_catalog_id = optin
+    status = Column(String(20), nullable=False, default="draft")
+    error_message = Column(String(2000))
+    published_at = Column(TIMESTAMP(timezone=True))
+    last_sync_at = Column(TIMESTAMP(timezone=True))
+    description_override = Column(String)  # CLOB
+    attributes_json = Column(String(4000))
+    available_quantity = Column(Integer, default=1)
+    sold_quantity = Column(Integer, default=0)
+    visits_7d = Column(Integer, default=0)
+    item_condition = Column(String(20), default="new")
+    warranty_type = Column(String(50))
+    warranty_time = Column(String(20))
+    shipping_mode = Column(String(20), default="me2")
+    free_shipping = Column(Boolean, default=False)
+    video_id = Column(String(100))
 
     # Cache de custos ML (comissão + frete + margem)
-    commission_pct       = Column(Numeric(8, 4),  nullable=True)
-    commission_amount    = Column(Numeric(10, 2), nullable=True)
-    shipping_cost        = Column(Numeric(10, 2), nullable=True)
-    net_revenue          = Column(Numeric(10, 2), nullable=True)
-    margin_pct           = Column(Numeric(8, 4),  nullable=True)
-    costs_cached_at      = Column(TIMESTAMP(timezone=True), nullable=True)
+    commission_pct = Column(Numeric(8, 4), nullable=True)
+    commission_amount = Column(Numeric(10, 2), nullable=True)
+    shipping_cost = Column(Numeric(10, 2), nullable=True)
+    net_revenue = Column(Numeric(10, 2), nullable=True)
+    margin_pct = Column(Numeric(8, 4), nullable=True)
+    costs_cached_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
     # Estoque por tipo
-    qty_full             = Column(Integer, default=0, nullable=True)   # Full ML (fulfillment)
-    qty_local            = Column(Integer, default=0, nullable=True)   # Estoque local/cross-docking
+    qty_full = Column(Integer, default=0, nullable=True)  # Full ML (fulfillment)
+    qty_local = Column(Integer, default=0, nullable=True)  # Estoque local/cross-docking
 
     # Controle de estoque local
-    stock_mode           = Column(String(10), default="product")  # 'product' | 'fixed'
-    fixed_quantity       = Column(Integer,    default=1)          # qtd fixa quando stock_mode='fixed'
-    keep_stock_fixed     = Column(Boolean,    default=False)       # se True, sync restaura fixed_quantity após vendas
+    stock_mode = Column(String(10), default="product")  # 'product' | 'fixed'
+    fixed_quantity = Column(Integer, default=1)  # qtd fixa quando stock_mode='fixed'
+    keep_stock_fixed = Column(
+        Boolean, default=False
+    )  # se True, sync restaura fixed_quantity após vendas
 
     # Preço regular e promoção
-    regular_price        = Column(Numeric(12, 2), nullable=True)       # preço sem promoção
-    promo_type           = Column(String(50),     nullable=True)       # ex: PRICE_DISCOUNT
-    promo_discount_pct   = Column(Numeric(5, 2),  nullable=True)       # % de desconto
-    has_auto_price_adj   = Column(Boolean,        nullable=True, default=False)  # ML ajustou preço automaticamente (PRICE_DISCOUNT / PRICE_MATCHING)
+    regular_price = Column(Numeric(12, 2), nullable=True)  # preço sem promoção
+    promo_type = Column(String(50), nullable=True)  # ex: PRICE_DISCOUNT
+    promo_discount_pct = Column(Numeric(5, 2), nullable=True)  # % de desconto
+    has_auto_price_adj = Column(
+        Boolean, nullable=True, default=False
+    )  # ML ajustou preço automaticamente (PRICE_DISCOUNT / PRICE_MATCHING)
 
-    created_at           = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
-    updated_at           = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                                  onupdate=text("SYSTIMESTAMP"))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
 
-    product         = relationship("DropshipperProduct", back_populates="listings")
-    account         = relationship("MarketplaceAccount")
-    cmig_product    = relationship("CMIGProduct")
+    product = relationship("DropshipperProduct", back_populates="listings")
+    account = relationship("MarketplaceAccount")
+    cmig_product = relationship("CMIGProduct")
     catalog_product = relationship("CatalogProduct")
+
 
 class MLFullTariff(Base):
     """Tarifa Full do ML por (reputação, faixa de preço, faixa de peso faturável).
     O ML não expõe a tarifa Full via API — mantemos a tabela local. A partir de
     março/2026 o ML diferencia tarifas por reputação do vendedor (green/yellow/red)
     e por faixa de preço de venda. Ajuste manual via UPDATE conforme painel do vendedor."""
+
     __tablename__ = "ml_full_tariffs"
 
-    id              = Column(Integer, primary_key=True)
-    site_id         = Column(String(5), nullable=False, default="MLB")
-    reputation_tier = Column(String(10), nullable=False)   # green | yellow | red
-    weight_min_kg   = Column(Numeric(8, 3), nullable=False)
-    weight_max_kg   = Column(Numeric(8, 3), nullable=False)
-    price_min_brl   = Column(Numeric(10, 2), nullable=False)
-    price_max_brl   = Column(Numeric(10, 2), nullable=False)
-    tariff_brl      = Column(Numeric(8, 2), nullable=False)
-    notes           = Column(String(200))
-    updated_at      = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                             onupdate=text("SYSTIMESTAMP"))
-
+    id = Column(Integer, primary_key=True)
+    site_id = Column(String(5), nullable=False, default="MLB")
+    reputation_tier = Column(String(10), nullable=False)  # green | yellow | red
+    weight_min_kg = Column(Numeric(8, 3), nullable=False)
+    weight_max_kg = Column(Numeric(8, 3), nullable=False)
+    price_min_brl = Column(Numeric(10, 2), nullable=False)
+    price_max_brl = Column(Numeric(10, 2), nullable=False)
+    tariff_brl = Column(Numeric(8, 2), nullable=False)
+    notes = Column(String(200))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )

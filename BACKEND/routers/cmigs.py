@@ -1,27 +1,52 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+import os as _os
+import shutil as _shutil
+import uuid as _uuid_mod
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy import and_, func, select
+from sqlalchemy import delete as _sa_delete
+from sqlalchemy import update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func, update as _sa_update, delete as _sa_delete
 from sqlalchemy.orm import selectinload
-import os as _os, shutil as _shutil, uuid as _uuid_mod
+
 from database import get_db
 from dependencies import get_current_user
-from models.user import User
-from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant, CMIGProductComponent
-from models.warehouse import Warehouse
-from models.product import CatalogProduct, CatalogProductImage, CatalogProductVariant, ProductListing
-from models.order import OrderItem
-from models.integration import MarketplaceAccount
+from models.cmig import (
+    CMIG,
+    CMIGAdministrator,
+    CMIGProduct,
+    CMIGProductComponent,
+    CMIGProductImage,
+    CMIGProductVariant,
+)
 from models.nfe_config import NFeConfig
+from models.order import OrderItem
+from models.product import (
+    CatalogProduct,
+    CatalogProductImage,
+    CatalogProductVariant,
+    ProductListing,
+)
+from models.user import User
+from models.warehouse import Warehouse
 from schemas.cmig import (
-    CMIGCreate, CMIGUpdate, CMIGOut, CMIGAdminAdd,
-    CMIGProductCreate, CMIGProductUpdate, CMIGProductLinkPG,
-    NFeConfigCreate, NFeConfigUpdate, NFeConfigOut,
+    CMIGAdminAdd,
+    CMIGCreate,
+    CMIGOut,
+    CMIGProductCreate,
+    CMIGProductLinkPG,
+    CMIGProductUpdate,
+    CMIGUpdate,
+    NFeConfigCreate,
+    NFeConfigOut,
+    NFeConfigUpdate,
 )
 
 router = APIRouter()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 async def _get_cmig_or_404(cmig_id: int, db: AsyncSession) -> CMIG:
     result = await db.execute(select(CMIG).where(CMIG.id == cmig_id))
@@ -39,7 +64,9 @@ async def _check_cmig_access(cmig: CMIG, user: User, db: AsyncSession, require_o
         if cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         if require_owner:
-            raise HTTPException(status_code=403, detail="Apenas o AC proprietário pode realizar esta ação")
+            raise HTTPException(
+                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
+            )
         return
     if user.role == "ac":
         result = await db.execute(
@@ -51,12 +78,15 @@ async def _check_cmig_access(cmig: CMIG, user: User, db: AsyncSession, require_o
         if not admin:
             raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
         if require_owner and not admin.is_owner:
-            raise HTTPException(status_code=403, detail="Apenas o AC proprietário pode realizar esta ação")
+            raise HTTPException(
+                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
+            )
         return
     raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
 
 # ── Helpers de Produto Composto ────────────────────────────────────────────────
+
 
 def _calculate_cmig_composite_stock(components) -> int:
     """Retorna MIN(floor(estoque_comp / qtd)) para todos os componentes do composto."""
@@ -81,16 +111,18 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
             source = comp.cmig_product if comp.cmig_product_id else comp.catalog_product
             if source:
                 qty = max(comp.quantity, 1)
-                components.append({
-                    "id": comp.id,
-                    "type": "cmig" if comp.cmig_product_id else "pg",
-                    "product_id": comp.cmig_product_id or comp.catalog_product_id,
-                    "title": source.title,
-                    "sku": source.sku_cmig if comp.cmig_product_id else source.sku,
-                    "stock_quantity": source.stock_quantity,
-                    "quantity": comp.quantity,
-                    "contribution": source.stock_quantity // qty,
-                })
+                components.append(
+                    {
+                        "id": comp.id,
+                        "type": "cmig" if comp.cmig_product_id else "pg",
+                        "product_id": comp.cmig_product_id or comp.catalog_product_id,
+                        "title": source.title,
+                        "sku": source.sku_cmig if comp.cmig_product_id else source.sku,
+                        "stock_quantity": source.stock_quantity,
+                        "quantity": comp.quantity,
+                        "contribution": source.stock_quantity // qty,
+                    }
+                )
     return {
         "id": p.id,
         "cmig_id": p.cmig_id,
@@ -120,12 +152,16 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
         "is_active": p.is_active,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "thumbnail": thumbnail,
-        "images": [{"id": i.id, "url": i.url, "sort_order": i.sort_order, "is_primary": i.is_primary} for i in p.images],
+        "images": [
+            {"id": i.id, "url": i.url, "sort_order": i.sort_order, "is_primary": i.is_primary}
+            for i in p.images
+        ],
         "components": components,
     }
 
 
 # ── CMIG CRUD ──────────────────────────────────────────────────────────────────
+
 
 @router.get("")
 async def list_cmigs(
@@ -266,6 +302,7 @@ async def update_cmig(
 
 # ── Co-administração ───────────────────────────────────────────────────────────
 
+
 @router.get("/{cmig_id}/admins")
 async def list_cmig_admins(
     cmig_id: int,
@@ -333,13 +370,16 @@ async def remove_cmig_admin(
     )
     entry = result.scalar_one_or_none()
     if not entry or entry.is_owner:
-        raise HTTPException(status_code=404, detail="Co-administrador não encontrado ou é o proprietário")
+        raise HTTPException(
+            status_code=404, detail="Co-administrador não encontrado ou é o proprietário"
+        )
 
     db.delete(entry)
     await db.commit()
 
 
 # ── Produtos CMIG ──────────────────────────────────────────────────────────────
+
 
 @router.get("/{cmig_id}/products")
 async def list_cmig_products(
@@ -395,7 +435,9 @@ async def create_cmig_product(
     await _check_cmig_access(cmig, current_user, db)
 
     if current_user.role == "ugo":
-        raise HTTPException(status_code=403, detail="UGO não pode criar Produtos CMIG. Use importação de PG.")
+        raise HTTPException(
+            status_code=403, detail="UGO não pode criar Produtos CMIG. Use importação de PG."
+        )
 
     dup = await db.execute(
         select(CMIGProduct).where(
@@ -414,12 +456,14 @@ async def create_cmig_product(
         for comp in body.components:
             if not comp.cmig_product_id and not comp.catalog_product_id:
                 continue
-            db.add(CMIGProductComponent(
-                composite_id=product.id,
-                cmig_product_id=comp.cmig_product_id,
-                catalog_product_id=comp.catalog_product_id,
-                quantity=max(comp.quantity, 1),
-            ))
+            db.add(
+                CMIGProductComponent(
+                    composite_id=product.id,
+                    cmig_product_id=comp.cmig_product_id,
+                    catalog_product_id=comp.catalog_product_id,
+                    quantity=max(comp.quantity, 1),
+                )
+            )
 
     await db.commit()
     await db.refresh(product)
@@ -438,7 +482,9 @@ async def update_cmig_product(
     await _check_cmig_access(cmig, current_user, db)
 
     result = await db.execute(
-        select(CMIGProduct).where(and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id))
+        select(CMIGProduct).where(
+            and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id)
+        )
     )
     product = result.scalar_one_or_none()
     if not product:
@@ -453,29 +499,37 @@ async def update_cmig_product(
 
     # Sincronizar imagens se fornecidas (substitui o conteúdo da tabela)
     if images is not None:
-        await db.execute(_sa_delete(CMIGProductImage).where(CMIGProductImage.cmig_product_id == product_id))
+        await db.execute(
+            _sa_delete(CMIGProductImage).where(CMIGProductImage.cmig_product_id == product_id)
+        )
         for i, img in enumerate(images):
             url = img.get("url") if isinstance(img, dict) else str(img)
             if url:
-                db.add(CMIGProductImage(
-                    cmig_product_id=product_id,
-                    url=url,
-                    sort_order=i,
-                    is_primary=(i == 0),
-                ))
+                db.add(
+                    CMIGProductImage(
+                        cmig_product_id=product_id,
+                        url=url,
+                        sort_order=i,
+                        is_primary=(i == 0),
+                    )
+                )
 
     # Substituir componentes se fornecidos e produto é composto
     if components is not None and product.is_composite:
-        await db.execute(_sa_delete(CMIGProductComponent).where(CMIGProductComponent.composite_id == product_id))
+        await db.execute(
+            _sa_delete(CMIGProductComponent).where(CMIGProductComponent.composite_id == product_id)
+        )
         for comp in components:
             if not comp.get("cmig_product_id") and not comp.get("catalog_product_id"):
                 continue
-            db.add(CMIGProductComponent(
-                composite_id=product_id,
-                cmig_product_id=comp.get("cmig_product_id"),
-                catalog_product_id=comp.get("catalog_product_id"),
-                quantity=max(comp.get("quantity", 1), 1),
-            ))
+            db.add(
+                CMIGProductComponent(
+                    composite_id=product_id,
+                    cmig_product_id=comp.get("cmig_product_id"),
+                    catalog_product_id=comp.get("catalog_product_id"),
+                    quantity=max(comp.get("quantity", 1), 1),
+                )
+            )
 
     await db.commit()
     await db.refresh(product)
@@ -510,9 +564,13 @@ async def duplicate_cmig_product(
     new_sku = (body.get("sku_cmig") or "").strip()
     if not new_sku:
         raise HTTPException(status_code=422, detail="SKU é obrigatório para duplicar o produto")
-    if (await db.execute(
-        select(CMIGProduct).where(and_(CMIGProduct.cmig_id == cmig_id, CMIGProduct.sku_cmig == new_sku))
-    )).scalar_one_or_none():
+    if (
+        await db.execute(
+            select(CMIGProduct).where(
+                and_(CMIGProduct.cmig_id == cmig_id, CMIGProduct.sku_cmig == new_sku)
+            )
+        )
+    ).scalar_one_or_none():
         raise HTTPException(status_code=409, detail=f"SKU '{new_sku}' já está em uso nesta CMIG")
 
     copy = CMIGProduct(
@@ -542,34 +600,44 @@ async def duplicate_cmig_product(
     await db.flush()
 
     for i, img in enumerate(sorted(src.images, key=lambda x: x.sort_order)):
-        db.add(CMIGProductImage(cmig_product_id=copy.id, url=img.url, sort_order=i, is_primary=(i == 0)))
+        db.add(
+            CMIGProductImage(
+                cmig_product_id=copy.id, url=img.url, sort_order=i, is_primary=(i == 0)
+            )
+        )
 
     for v in src.variants:
         v_sku = f"{v.sku}-copia"
         v_suffix = 2
-        while (await db.execute(select(CMIGProductVariant).where(CMIGProductVariant.sku == v_sku))).scalar_one_or_none():
+        while (
+            await db.execute(select(CMIGProductVariant).where(CMIGProductVariant.sku == v_sku))
+        ).scalar_one_or_none():
             v_sku = f"{v.sku}-copia-{v_suffix}"
             v_suffix += 1
-        db.add(CMIGProductVariant(
-            cmig_product_id=copy.id,
-            sku=v_sku,
-            variant_name=v.variant_name,
-            color=v.color,
-            size_label=v.size_label,
-            voltage=v.voltage,
-            price_modifier=v.price_modifier,
-            suggested_price=v.suggested_price,
-            attributes_json=v.attributes_json,
-        ))
+        db.add(
+            CMIGProductVariant(
+                cmig_product_id=copy.id,
+                sku=v_sku,
+                variant_name=v.variant_name,
+                color=v.color,
+                size_label=v.size_label,
+                voltage=v.voltage,
+                price_modifier=v.price_modifier,
+                suggested_price=v.suggested_price,
+                attributes_json=v.attributes_json,
+            )
+        )
 
     if src.is_composite:
         for comp in src.components:
-            db.add(CMIGProductComponent(
-                composite_id=copy.id,
-                cmig_product_id=comp.cmig_product_id,
-                catalog_product_id=comp.catalog_product_id,
-                quantity=comp.quantity,
-            ))
+            db.add(
+                CMIGProductComponent(
+                    composite_id=copy.id,
+                    cmig_product_id=comp.cmig_product_id,
+                    catalog_product_id=comp.catalog_product_id,
+                    quantity=comp.quantity,
+                )
+            )
 
     await db.commit()
     await db.refresh(copy)
@@ -587,7 +655,9 @@ async def delete_cmig_product(
     await _check_cmig_access(cmig, current_user, db)
 
     result = await db.execute(
-        select(CMIGProduct).where(and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id))
+        select(CMIGProduct).where(
+            and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id)
+        )
     )
     product = result.scalar_one_or_none()
     if not product:
@@ -597,7 +667,8 @@ async def delete_cmig_product(
     has_sales = False
     if product.pg_product_id:
         r = await db.execute(
-            select(func.count()).select_from(OrderItem)
+            select(func.count())
+            .select_from(OrderItem)
             .where(OrderItem.catalog_product_id == product.pg_product_id)
         )
         has_sales = (r.scalar() or 0) > 0
@@ -605,7 +676,10 @@ async def delete_cmig_product(
     if has_sales:
         product.is_active = False
         await db.commit()
-        return {"action": "deactivated", "message": "Produto desativado pois possui pedidos registrados."}
+        return {
+            "action": "deactivated",
+            "message": "Produto desativado pois possui pedidos registrados.",
+        }
 
     # Sem vendas — limpar FK em ProductListing antes de deletar
     await db.execute(
@@ -633,7 +707,9 @@ async def upload_cmig_product_photo(
 
     ext = _os.path.splitext(file.filename or "")[1].lower() or ".jpg"
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-        raise HTTPException(status_code=400, detail="Tipo de arquivo não permitido. Use JPG, PNG, WEBP ou GIF.")
+        raise HTTPException(
+            status_code=400, detail="Tipo de arquivo não permitido. Use JPG, PNG, WEBP ou GIF."
+        )
 
     filename = f"{_uuid_mod.uuid4().hex}{ext}"
     dest_dir = "static/uploads/cmig-products"
@@ -657,7 +733,9 @@ async def link_cmig_product_to_pg(
     await _check_cmig_access(cmig, current_user, db)
 
     result = await db.execute(
-        select(CMIGProduct).where(and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id))
+        select(CMIGProduct).where(
+            and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id)
+        )
     )
     product = result.scalar_one_or_none()
     if not product:
@@ -680,11 +758,13 @@ async def import_cmig_product_to_pg(
     current_user: User = Depends(get_current_user),
 ):
     """UGO importa um Produto CMIG para o PG do seu Galpão (um a um)."""
-    import secrets as _secrets
     import json as _json_imp
+    import secrets as _secrets
 
     if current_user.role not in ("ugo", "admin"):
-        raise HTTPException(status_code=403, detail="Apenas UGO pode importar Produtos CMIG para o PG")
+        raise HTTPException(
+            status_code=403, detail="Apenas UGO pode importar Produtos CMIG para o PG"
+        )
 
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
@@ -733,12 +813,14 @@ async def import_cmig_product_to_pg(
     photos_imported = 0
     if cp.images:
         for i, img in enumerate(cp.images):
-            db.add(CatalogProductImage(
-                product_id=pg.id,
-                url=img.url,
-                sort_order=img.sort_order if img.sort_order is not None else i,
-                is_primary=bool(img.is_primary) or (i == 0),
-            ))
+            db.add(
+                CatalogProductImage(
+                    product_id=pg.id,
+                    url=img.url,
+                    sort_order=img.sort_order if img.sort_order is not None else i,
+                    is_primary=bool(img.is_primary) or (i == 0),
+                )
+            )
             photos_imported += 1
     elif cp.pictures_json:
         try:
@@ -746,31 +828,35 @@ async def import_cmig_product_to_pg(
             for i, pic in enumerate(pics):
                 url = pic.get("url") if isinstance(pic, dict) else str(pic)
                 if url:
-                    db.add(CatalogProductImage(
-                        product_id=pg.id,
-                        url=url,
-                        sort_order=i,
-                        is_primary=(i == 0),
-                    ))
+                    db.add(
+                        CatalogProductImage(
+                            product_id=pg.id,
+                            url=url,
+                            sort_order=i,
+                            is_primary=(i == 0),
+                        )
+                    )
                     photos_imported += 1
         except Exception:
             pass
 
     # Importar variantes → CatalogProductVariant
     variants_imported = 0
-    for i, v in enumerate(cp.variants or []):
+    for _i, v in enumerate(cp.variants or []):
         var_sku = f"PG-{v.sku}-{_secrets.token_hex(2).upper()}"
-        db.add(CatalogProductVariant(
-            product_id=pg.id,
-            sku=var_sku,
-            variant_name=v.variant_name,
-            color=v.color,
-            size_label=v.size_label,
-            voltage=v.voltage,
-            stock_quantity=v.stock_quantity or 0,
-            price_modifier=v.price_modifier or 0,
-            attributes_json=v.attributes_json,
-        ))
+        db.add(
+            CatalogProductVariant(
+                product_id=pg.id,
+                sku=var_sku,
+                variant_name=v.variant_name,
+                color=v.color,
+                size_label=v.size_label,
+                voltage=v.voltage,
+                stock_quantity=v.stock_quantity or 0,
+                price_modifier=v.price_modifier or 0,
+                attributes_json=v.attributes_json,
+            )
+        )
         variants_imported += 1
 
     cp.pg_product_id = pg.id
@@ -797,13 +883,17 @@ async def sync_pg_from_cmig(
 ):
     """Atualiza os campos do PG vinculado com os dados atuais do Produto CMIG."""
     if current_user.role not in ("ugo", "admin"):
-        raise HTTPException(status_code=403, detail="Apenas UGO pode sincronizar Produtos CMIG com PG")
+        raise HTTPException(
+            status_code=403, detail="Apenas UGO pode sincronizar Produtos CMIG com PG"
+        )
 
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
 
     result = await db.execute(
-        select(CMIGProduct).where(and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id))
+        select(CMIGProduct).where(
+            and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id)
+        )
     )
     cp = result.scalar_one_or_none()
     if not cp:
@@ -811,7 +901,9 @@ async def sync_pg_from_cmig(
     if not cp.pg_product_id:
         raise HTTPException(status_code=400, detail="Produto CMIG não está vinculado a um PG")
 
-    pg_result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == cp.pg_product_id))
+    pg_result = await db.execute(
+        select(CatalogProduct).where(CatalogProduct.id == cp.pg_product_id)
+    )
     pg = pg_result.scalar_one_or_none()
     if not pg:
         raise HTTPException(status_code=404, detail="Produto PG vinculado não encontrado")
@@ -856,6 +948,7 @@ async def sync_pg_from_cmig(
 
 
 # ── Variantes de Produtos CMIG ─────────────────────────────────────────────────
+
 
 async def _get_cmig_product_or_404(product_id: int, cmig_id: int, db: AsyncSession) -> CMIGProduct:
     result = await db.execute(
@@ -945,7 +1038,16 @@ async def update_cmig_product_variant(
     if not variant:
         raise HTTPException(status_code=404, detail="Variante não encontrada")
 
-    for field in ("variant_name", "color", "size_label", "voltage", "stock_quantity", "price_modifier", "suggested_price", "attributes_json"):
+    for field in (
+        "variant_name",
+        "color",
+        "size_label",
+        "voltage",
+        "stock_quantity",
+        "price_modifier",
+        "suggested_price",
+        "attributes_json",
+    ):
         if field in body:
             setattr(variant, field, body[field])
 
@@ -997,6 +1099,7 @@ def _serialize_variant(v: CMIGProductVariant) -> dict:
 
 # ── Configuração NF-e ──────────────────────────────────────────────────────────
 
+
 @router.get("/{cmig_id}/nfe-configs/{cm_id}", response_model=list[NFeConfigOut])
 async def list_nfe_configs(
     cmig_id: int,
@@ -1026,10 +1129,14 @@ async def create_nfe_config(
         raise HTTPException(status_code=422, detail="issuer deve ser 'marketplace' ou 'system'")
 
     dup = await db.execute(
-        select(NFeConfig).where(and_(NFeConfig.cm_id == cm_id, NFeConfig.shipping_method == body.shipping_method))
+        select(NFeConfig).where(
+            and_(NFeConfig.cm_id == cm_id, NFeConfig.shipping_method == body.shipping_method)
+        )
     )
     if dup.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Regra NF-e já existe para este método de envio")
+        raise HTTPException(
+            status_code=409, detail="Regra NF-e já existe para este método de envio"
+        )
 
     config = NFeConfig(cm_id=cm_id, **body.model_dump())
     db.add(config)

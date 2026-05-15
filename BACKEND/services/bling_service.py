@@ -3,6 +3,7 @@ Bling V3 API service.
 Authentication: API Key (Bearer token)
 Docs: https://developer.bling.com.br/bling-api
 """
+
 import httpx
 from fastapi import HTTPException
 
@@ -30,5 +31,7 @@ async def sync_product(api_key: str, product_data: dict) -> dict:
             json=product_data,
         )
     if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=400, detail=f"Erro ao sincronizar produto Bling: {resp.text}")
+        raise HTTPException(
+            status_code=400, detail=f"Erro ao sincronizar produto Bling: {resp.text}"
+        )
     return resp.json()

@@ -1,10 +1,11 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from database import get_db
-from services.auth_service import verify_token
 from models.user import User
+from services.auth_service import verify_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
@@ -41,6 +42,7 @@ def require_role(*roles: str):
                 detail="Permissão insuficiente",
             )
         return current_user
+
     return checker
 
 
@@ -49,15 +51,13 @@ async def get_active_ac(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Retorna o usuário atual se for um AC ativo com assinatura em dia."""
+
     from models.user import ACProfile
-    from datetime import date
 
     if current_user.role not in ("ac", "admin"):
         raise HTTPException(status_code=403, detail="Acesso apenas para Gestores de Conta (AC)")
 
-    result = await db.execute(
-        select(ACProfile).where(ACProfile.user_id == current_user.id)
-    )
+    result = await db.execute(select(ACProfile).where(ACProfile.user_id == current_user.id))
     profile = result.scalar_one_or_none()
 
     if profile and profile.subscription_status == "suspended":
@@ -73,7 +73,9 @@ async def get_active_ugo(
 ) -> User:
     """Retorna o usuário atual se for um Operador Logístico (UGO) ativo."""
     if current_user.role not in ("ugo", "admin"):
-        raise HTTPException(status_code=403, detail="Acesso apenas para Operadores Logísticos (UGO)")
+        raise HTTPException(
+            status_code=403, detail="Acesso apenas para Operadores Logísticos (UGO)"
+        )
     return current_user
 
 

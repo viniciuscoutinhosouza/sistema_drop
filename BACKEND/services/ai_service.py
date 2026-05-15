@@ -2,8 +2,10 @@
 AI service para geração de respostas de atendimento.
 Suporta OpenAI e Anthropic (Claude).
 """
-import httpx
+
 import logging
+
+import httpx
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
@@ -45,7 +47,9 @@ async def generate_reply(
 
     history = _build_history(conversation_history)
     if not history:
-        raise HTTPException(status_code=400, detail="Histórico de conversa vazio para gerar resposta.")
+        raise HTTPException(
+            status_code=400, detail="Histórico de conversa vazio para gerar resposta."
+        )
 
     # Garante que a última mensagem é do comprador
     if history[-1]["role"] != "user":
@@ -59,7 +63,9 @@ async def generate_reply(
         raise HTTPException(status_code=400, detail=f"Provedor de IA desconhecido: {provider}")
 
 
-async def _generate_openai(api_key: str, model: str, system_prompt: str, history: list[dict]) -> str:
+async def _generate_openai(
+    api_key: str, model: str, system_prompt: str, history: list[dict]
+) -> str:
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -80,7 +86,9 @@ async def _generate_openai(api_key: str, model: str, system_prompt: str, history
     return data["choices"][0]["message"]["content"].strip()
 
 
-async def _generate_anthropic(api_key: str, model: str, system_prompt: str, history: list[dict]) -> str:
+async def _generate_anthropic(
+    api_key: str, model: str, system_prompt: str, history: list[dict]
+) -> str:
     payload: dict = {
         "model": model,
         "max_tokens": DEFAULT_MAX_TOKENS,

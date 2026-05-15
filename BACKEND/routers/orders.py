@@ -1,29 +1,31 @@
 import json
 import time as time_module
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete as sa_delete, or_
 from sqlalchemy.orm import selectinload
-from decimal import Decimal
-from datetime import datetime, timezone, timedelta
+
+from config import get_settings
 from database import get_db
-from dependencies import get_current_user, get_active_ac
-from models.user import User
-from models.order import Order, OrderItem
-from models.webhook import WebhookEvent
+from dependencies import get_active_ac, get_current_user
 from models.integration import MarketplaceAccount
+from models.order import Order, OrderItem
 from models.product import (
     CatalogProductImage,
     DropshipperProduct,
     DropshipperProductImage,
     ProductListing,
 )
-from services.financial_service import debit_balance
-from services.notification_service import create_notification
+from models.user import User
+from models.webhook import WebhookEvent
 from services import ml_service as _ml
-from config import get_settings
+from services.financial_service import debit_balance
 
 settings = get_settings()
 router = APIRouter()
@@ -78,7 +80,7 @@ def _serialize_order_list(
             listing = sku_listing_map.get((o.account_id, i.sku))
 
         # ML item ID fallback — covers items with empty seller_sku
-        if not listing and getattr(i, 'ml_item_id', None):
+        if not listing and getattr(i, "ml_item_id", None):
             listing = ml_item_listing_map.get((o.account_id, i.ml_item_id))
 
         # Thumbnail priority: stored thumbnail_url > listing thumbnail > dp image > catalog image
@@ -87,7 +89,11 @@ def _serialize_order_list(
             or (listing.thumbnail if listing and listing.thumbnail else None)
             or dp_images.get(i.dropshipper_product_id)
             or (images_by_catalog.get(i.catalog_product_id) if i.catalog_product_id else None)
-            or (images_by_catalog.get(listing.catalog_product_id) if listing and listing.catalog_product_id else None)
+            or (
+                images_by_catalog.get(listing.catalog_product_id)
+                if listing and listing.catalog_product_id
+                else None
+            )
         )
 
         # Listing type: gold_special / gold_pro = Premium, rest = Clássico
@@ -99,27 +105,28 @@ def _serialize_order_list(
 
         # FULL: shipping_method (logistic_type) is authoritative for new orders;
         # listing.is_full is used as fallback for old orders where shipping_method was not stored
-        is_full = (
-            "fulfillment" in (o.shipping_method or "")
-            or (bool(listing.is_full) if listing is not None and not o.shipping_method else False)
+        is_full = "fulfillment" in (o.shipping_method or "") or (
+            bool(listing.is_full) if listing is not None and not o.shipping_method else False
         )
 
-        items.append({
-            "id": i.id,
-            "sku": i.sku,
-            "title": i.title,
-            "quantity": i.quantity,
-            "unit_price": float(i.unit_price) if i.unit_price else None,
-            "image_url": thumbnail,
-            "ml_item_id": (dp.ml_item_id if dp else None) or getattr(i, 'ml_item_id', None),
-            "platform_item_id": listing.platform_item_id if listing else None,
-            "permalink": listing.permalink if listing else None,
-            "listing_type": listing_type,
-            "is_full": is_full,
-            "catalog_listing": bool(listing.catalog_listing) if listing else False,
-            "free_shipping": bool(listing.free_shipping) if listing else False,
-            "available_quantity": listing.available_quantity if listing else None,
-        })
+        items.append(
+            {
+                "id": i.id,
+                "sku": i.sku,
+                "title": i.title,
+                "quantity": i.quantity,
+                "unit_price": float(i.unit_price) if i.unit_price else None,
+                "image_url": thumbnail,
+                "ml_item_id": (dp.ml_item_id if dp else None) or getattr(i, "ml_item_id", None),
+                "platform_item_id": listing.platform_item_id if listing else None,
+                "permalink": listing.permalink if listing else None,
+                "listing_type": listing_type,
+                "is_full": is_full,
+                "catalog_listing": bool(listing.catalog_listing) if listing else False,
+                "free_shipping": bool(listing.free_shipping) if listing else False,
+                "available_quantity": listing.available_quantity if listing else None,
+            }
+        )
 
     shipping_address = {}
     if o.shipping_address:
@@ -133,8 +140,10 @@ def _serialize_order_list(
     buyer_shipping = float(o.buyer_shipping_paid) if o.buyer_shipping_paid is not None else None
     seller_shipping = float(o.seller_shipping_cost) if o.seller_shipping_cost is not None else None
     ml_fee = float(o.platform_fee) if o.platform_fee is not None else None
-    ml_fee_pct = float(o.ml_fee_pct) if o.ml_fee_pct is not None else (
-        round(ml_fee / sale * 100, 2) if (sale and sale > 0 and ml_fee is not None) else None
+    ml_fee_pct = (
+        float(o.ml_fee_pct)
+        if o.ml_fee_pct is not None
+        else (round(ml_fee / sale * 100, 2) if (sale and sale > 0 and ml_fee is not None) else None)
     )
     product_cost = float(o.product_cost) if o.product_cost is not None else None
 
@@ -182,9 +191,15 @@ def _serialize_order_list(
         "nfe_key": o.nfe_key,
         "nfe_status": o.nfe_status,
         "shipment_id": o.shipment_id,
-        "estimated_delivery_date": o.estimated_delivery_date.isoformat() if o.estimated_delivery_date else None,
-        "estimated_handling_limit": o.estimated_handling_limit.isoformat() if o.estimated_handling_limit else None,
-        "estimated_delivery_final": o.estimated_delivery_final.isoformat() if o.estimated_delivery_final else None,
+        "estimated_delivery_date": o.estimated_delivery_date.isoformat()
+        if o.estimated_delivery_date
+        else None,
+        "estimated_handling_limit": o.estimated_handling_limit.isoformat()
+        if o.estimated_handling_limit
+        else None,
+        "estimated_delivery_final": o.estimated_delivery_final.isoformat()
+        if o.estimated_delivery_final
+        else None,
         "order_tags": o.order_tags,
         "sale_amount": sale,
         "buyer_shipping_paid": buyer_shipping,
@@ -219,8 +234,11 @@ async def list_available_cmigs(
     - ac: CMIGs they administer
     """
     from models.cmig import CMIG, CMIGAdministrator
+
     if current_user.role == "admin":
-        result = await db.execute(select(CMIG).where(CMIG.is_active == True).order_by(CMIG.trade_name))
+        result = await db.execute(
+            select(CMIG).where(CMIG.is_active == True).order_by(CMIG.trade_name)
+        )
     elif current_user.role == "ugo":
         if not current_user.warehouse_id:
             return {"items": []}
@@ -232,9 +250,7 @@ async def list_available_cmigs(
     elif current_user.role == "ac":
         subq = select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == current_user.id)
         result = await db.execute(
-            select(CMIG)
-            .where(CMIG.id.in_(subq), CMIG.is_active == True)
-            .order_by(CMIG.trade_name)
+            select(CMIG).where(CMIG.id.in_(subq), CMIG.is_active == True).order_by(CMIG.trade_name)
         )
     else:
         return {"items": []}
@@ -292,7 +308,9 @@ async def list_orders(
                 raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
         elif current_user.role == "ugo":
             cmig_check = await db.execute(
-                select(CMIG).where(CMIG.id == cmig_id, CMIG.warehouse_id == current_user.warehouse_id)
+                select(CMIG).where(
+                    CMIG.id == cmig_id, CMIG.warehouse_id == current_user.warehouse_id
+                )
             )
             if not cmig_check.scalar_one_or_none():
                 raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
@@ -314,8 +332,7 @@ async def list_orders(
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
 
     query = (
-        query
-        .options(selectinload(Order.items))
+        query.options(selectinload(Order.items))
         .order_by(Order.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -373,10 +390,7 @@ async def list_orders(
                 listing_map[lst.product_id] = lst
 
     # Batch: SKU-based ProductListing fallback for items with no linked DropshipperProduct
-    orphan_skus = {
-        i.sku for o in orders for i in o.items
-        if i.sku and not i.dropshipper_product_id
-    }
+    orphan_skus = {i.sku for o in orders for i in o.items if i.sku and not i.dropshipper_product_id}
     account_ids_set = {o.account_id for o in orders if o.account_id}
     sku_listing_map: dict = {}  # (account_id, sku) -> ProductListing
     if orphan_skus and account_ids_set:
@@ -395,8 +409,10 @@ async def list_orders(
 
     # Batch: ML item ID fallback — items with no DP link and no SKU (empty seller_sku from ML)
     orphan_ml_ids = {
-        i.ml_item_id for o in orders for i in o.items
-        if getattr(i, 'ml_item_id', None) and not i.dropshipper_product_id
+        i.ml_item_id
+        for o in orders
+        for i in o.items
+        if getattr(i, "ml_item_id", None) and not i.dropshipper_product_id
     }
     ml_item_listing_map: dict = {}  # (account_id, ml_item_id) -> ProductListing
     if orphan_ml_ids and account_ids_set:
@@ -435,11 +451,25 @@ async def list_orders(
     if cmig_ids:
         cmig_result = await db.execute(select(CMIG).where(CMIG.id.in_(cmig_ids)))
         for c in cmig_result.scalars().all():
-            cmig_map[c.id] = {"id": c.id, "trade_name": c.trade_name, "company_name": c.company_name, "cnpj": c.cnpj}
+            cmig_map[c.id] = {
+                "id": c.id,
+                "trade_name": c.trade_name,
+                "company_name": c.company_name,
+                "cnpj": c.cnpj,
+            }
 
     return {
         "items": [
-            _serialize_order_list(o, images_by_catalog, dp_map, listing_map, dp_images, sku_listing_map, ml_item_listing_map, cmig_map)
+            _serialize_order_list(
+                o,
+                images_by_catalog,
+                dp_map,
+                listing_map,
+                dp_images,
+                sku_listing_map,
+                ml_item_listing_map,
+                cmig_map,
+            )
             for o in orders
         ],
         "total": total,
@@ -492,7 +522,9 @@ async def get_order(
         "nfe_url": _ml_nfe_url(order),
         "nfe_key": order.nfe_key,
         "nfe_status": order.nfe_status,
-        "estimated_delivery_date": order.estimated_delivery_date.isoformat() if order.estimated_delivery_date else None,
+        "estimated_delivery_date": order.estimated_delivery_date.isoformat()
+        if order.estimated_delivery_date
+        else None,
         "sale_amount": float(order.sale_amount) if order.sale_amount else None,
         "product_cost": float(order.product_cost) if order.product_cost else None,
         "platform_fee": float(order.platform_fee) if order.platform_fee else None,
@@ -535,9 +567,7 @@ async def pay_order(
 
     items_result = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
     items = items_result.scalars().all()
-    product_cost = sum(
-        (i.unit_cost or Decimal("0")) * i.quantity for i in items
-    )
+    product_cost = sum((i.unit_cost or Decimal("0")) * i.quantity for i in items)
     platform_fee = Decimal(str(settings.PLATFORM_FEE))
     shipping_cost = Decimal(str(order.shipping_cost or 0))
     total_debit = product_cost + platform_fee + shipping_cost
@@ -557,7 +587,7 @@ async def pay_order(
     order.platform_fee = platform_fee
     order.shipping_cost = shipping_cost
     order.total_debit = total_debit
-    order.paid_at = datetime.now(timezone.utc)
+    order.paid_at = datetime.now(UTC)
     await db.commit()
 
     return {
@@ -577,7 +607,9 @@ async def update_order_status(
     valid_statuses = ["label_generated", "label_printed", "separated", "shipped"]
     new_status = body.get("status")
     if new_status not in valid_statuses:
-        raise HTTPException(status_code=400, detail=f"Status inválido. Permitidos: {valid_statuses}")
+        raise HTTPException(
+            status_code=400, detail=f"Status inválido. Permitidos: {valid_statuses}"
+        )
 
     query = select(Order).where(Order.id == order_id)
     if current_user.role in ("ac",):
@@ -590,7 +622,7 @@ async def update_order_status(
 
     order.status = new_status
     if new_status == "shipped":
-        order.shipped_at = datetime.now(timezone.utc)
+        order.shipped_at = datetime.now(UTC)
     await db.commit()
     return {"status": order.status}
 
@@ -673,9 +705,12 @@ def _extract_nfe_fields(invoice: dict) -> tuple[str | None, str | None, str | No
     # can detect and use it without any path parsing.
     faturador_id = str(invoice.get("id") or "").strip() if attrs else ""
     nfe_url = (
-        faturador_id if faturador_id and faturador_id.isdigit()
+        faturador_id
+        if faturador_id and faturador_id.isdigit()
         else attrs.get("danfe_location")
-        or invoice.get("pdf_url") or invoice.get("cdg_post") or invoice.get("url")
+        or invoice.get("pdf_url")
+        or invoice.get("cdg_post")
+        or invoice.get("url")
         or None
     )
     return nfe_key, nfe_status, nfe_url
@@ -690,9 +725,14 @@ async def emit_order_nfe(
     """Emit NF-e for an ML order via the ML Faturador API."""
     order = await _get_order_checked(db, order_id, current_user)
     if order.platform != "mercadolivre":
-        raise HTTPException(status_code=400, detail="Emissão via Faturador ML disponível apenas para pedidos do Mercado Livre")
+        raise HTTPException(
+            status_code=400,
+            detail="Emissão via Faturador ML disponível apenas para pedidos do Mercado Livre",
+        )
     if order.nfe_status in ("authorized", "pending", "in_process"):
-        raise HTTPException(status_code=400, detail=f"NF-e já em processamento (status: {order.nfe_status})")
+        raise HTTPException(
+            status_code=400, detail=f"NF-e já em processamento (status: {order.nfe_status})"
+        )
 
     acc_result = await db.execute(
         select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
@@ -743,7 +783,12 @@ async def sync_order_nfe(
     """Pull fresh NF-e data from ML for one order and update local record."""
     order = await _get_order_checked(db, order_id, current_user)
     if order.platform != "mercadolivre":
-        return {"ok": True, "nfe_status": order.nfe_status, "nfe_key": order.nfe_key, "nfe_url": order.nfe_url}
+        return {
+            "ok": True,
+            "nfe_status": order.nfe_status,
+            "nfe_key": order.nfe_key,
+            "nfe_url": order.nfe_url,
+        }
 
     acc_result = await db.execute(
         select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
@@ -788,73 +833,73 @@ _SHIPMENT_HISTORY_LABELS = {
 }
 
 _SHIPMENT_STATUS_PT = {
-    "pending":       "Aguardando",
-    "handling":      "Em Preparação",
+    "pending": "Aguardando",
+    "handling": "Em Preparação",
     "ready_to_ship": "Pronto para Envio",
-    "shipped":       "Despachado",
-    "delivered":     "Entregue",
+    "shipped": "Despachado",
+    "delivered": "Entregue",
     "not_delivered": "Não Entregue",
-    "cancelled":     "Cancelado",
-    "returned":      "Devolvido",
+    "cancelled": "Cancelado",
+    "returned": "Devolvido",
 }
 
 _SHIPMENT_SUBSTATUS_PT = {
     # pending
-    "shipment_paid":          "Pagamento Confirmado",
-    "buffered":               "Em Espera",
+    "shipment_paid": "Pagamento Confirmado",
+    "buffered": "Em Espera",
     "waiting_for_collection": "Aguardando Coleta",
     # handling
-    "regenerating":           "Regerando Etiqueta",
-    "stale":                  "Pendente Há Muito Tempo",
+    "regenerating": "Regerando Etiqueta",
+    "stale": "Pendente Há Muito Tempo",
     "contact_with_carrier_needed": "Contato com Transportadora Necessário",
     # ready_to_ship
-    "ready_to_print":         "Pronto para Imprimir",
-    "ready_to_pack":          "Pronto para Embalar",
-    "printed":                "Etiqueta Impressa",
-    "packed":                 "Embalado",
-    "in_packing_list":        "Na Lista de Embalagem",
-    "ready_for_pickup":       "Pronto para Retirada",
-    "in_hub":                 "No Centro de Distribuição",
-    "invoice_pending":        "Aguardando NF-e",
+    "ready_to_print": "Pronto para Imprimir",
+    "ready_to_pack": "Pronto para Embalar",
+    "printed": "Etiqueta Impressa",
+    "packed": "Embalado",
+    "in_packing_list": "Na Lista de Embalagem",
+    "ready_for_pickup": "Pronto para Retirada",
+    "in_hub": "No Centro de Distribuição",
+    "invoice_pending": "Aguardando NF-e",
     # shipped
-    "first_visit":            "1ª Tentativa de Entrega",
-    "in_transit":             "Em Trânsito",
-    "in_transfer":            "Em Transferência",
-    "out_for_delivery":       "Saiu para Entrega",
-    "arrived":                "Chegou no Destino",
-    "soon_deliver":           "Entrega em Breve",
-    "delayed":                "Atrasado",
-    "second_visit":           "2ª Tentativa de Entrega",
-    "third_visit":            "3ª Tentativa de Entrega",
-    "not_visited":            "Não Visitado",
+    "first_visit": "1ª Tentativa de Entrega",
+    "in_transit": "Em Trânsito",
+    "in_transfer": "Em Transferência",
+    "out_for_delivery": "Saiu para Entrega",
+    "arrived": "Chegou no Destino",
+    "soon_deliver": "Entrega em Breve",
+    "delayed": "Atrasado",
+    "second_visit": "2ª Tentativa de Entrega",
+    "third_visit": "3ª Tentativa de Entrega",
+    "not_visited": "Não Visitado",
     "waiting_for_withdrawal": "Aguardando Retirada",
-    "receiver_absent":        "Destinatário Ausente",
-    "bad_address":            "Endereço Incorreto",
+    "receiver_absent": "Destinatário Ausente",
+    "bad_address": "Endereço Incorreto",
     "could_not_be_delivered": "Não Pôde Ser Entregue",
-    "retained":               "Retido",
-    "claimed_me":             "Reclamação Aberta",
-    "to_review":              "Em Revisão",
-    "stolen":                 "Roubado/Furtado",
-    "lost":                   "Extraviado",
-    "damaged":                "Danificado",
-    "forwarded_to_third":     "Encaminhado a Terceiro",
-    "returning_to_sender":    "Retornando ao Remetente",
-    "returned_to_origin":     "Devolvido à Origem",
+    "retained": "Retido",
+    "claimed_me": "Reclamação Aberta",
+    "to_review": "Em Revisão",
+    "stolen": "Roubado/Furtado",
+    "lost": "Extraviado",
+    "damaged": "Danificado",
+    "forwarded_to_third": "Encaminhado a Terceiro",
+    "returning_to_sender": "Retornando ao Remetente",
+    "returned_to_origin": "Devolvido à Origem",
     # delivered
-    "delivered":              "Entregue",
+    "delivered": "Entregue",
     # not_delivered
-    "not_localized":          "Não Localizado",
-    "not_dispatched":         "Não Despachado",
-    "rejected_damaged":       "Rejeitado por Avaria",
-    "rejected_other":         "Rejeitado",
-    "returned":               "Devolvido",
-    "destroyed":              "Destruído",
-    "fraud":                  "Fraude Detectada",
-    "confiscated":            "Confiscado",
+    "not_localized": "Não Localizado",
+    "not_dispatched": "Não Despachado",
+    "rejected_damaged": "Rejeitado por Avaria",
+    "rejected_other": "Rejeitado",
+    "returned": "Devolvido",
+    "destroyed": "Destruído",
+    "fraud": "Fraude Detectada",
+    "confiscated": "Confiscado",
     # cancelled
-    "buyer_cancelled":        "Cancelado pelo Comprador",
-    "seller_cancelled":       "Cancelado pelo Vendedor",
-    "system_cancelled":       "Cancelado pelo Sistema",
+    "buyer_cancelled": "Cancelado pelo Comprador",
+    "seller_cancelled": "Cancelado pelo Vendedor",
+    "system_cancelled": "Cancelado pelo Sistema",
 }
 
 
@@ -883,12 +928,14 @@ def _build_shipment_timeline(shipment: dict, history) -> list[dict]:
                 key,
                 {"label": key.replace("date_", "").replace("_", " ").title(), "icon": "fa-circle"},
             )
-            events.append({
-                "date": value,
-                "label": meta["label"],
-                "icon": meta["icon"],
-                "code": key,
-            })
+            events.append(
+                {
+                    "date": value,
+                    "label": meta["label"],
+                    "icon": meta["icon"],
+                    "code": key,
+                }
+            )
             seen_dates.add(value)
 
     # 2. Detailed history items from /shipments/{id}/history
@@ -908,12 +955,14 @@ def _build_shipment_timeline(shipment: dict, history) -> list[dict]:
         substatus = item.get("substatus") or ""
         if not date or date in seen_dates:
             continue
-        events.append({
-            "date": date,
-            "label": _translate_shipment_event(status, substatus),
-            "icon": "fa-circle",
-            "code": f"hist_{status}_{substatus}",
-        })
+        events.append(
+            {
+                "date": date,
+                "label": _translate_shipment_event(status, substatus),
+                "icon": "fa-circle",
+                "code": f"hist_{status}_{substatus}",
+            }
+        )
         seen_dates.add(date)
 
     # Sort by date ascending
@@ -976,7 +1025,8 @@ async def get_shipment_tracking(
         },
         "estimated": {
             "handling_limit": _date_or_str(ship_opt.get("estimated_handling_limit")),
-            "delivery_time": _date_or_str(ship_opt.get("estimated_delivery_time")) or _date_or_str(shipment.get("estimated_delivery_time")),
+            "delivery_time": _date_or_str(ship_opt.get("estimated_delivery_time"))
+            or _date_or_str(shipment.get("estimated_delivery_time")),
             "delivery_limit": _date_or_str(ship_opt.get("estimated_delivery_limit")),
             "delivery_extended": _date_or_str(ship_opt.get("estimated_delivery_extended")),
             "delivery_final": _date_or_str(ship_opt.get("estimated_delivery_final")),
@@ -1058,7 +1108,7 @@ async def _apply_ml_dates(db: AsyncSession, order: Order, ml_data: dict) -> bool
             new_created = datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
             local = order.created_at
             if local is not None and local.tzinfo is None:
-                local = local.replace(tzinfo=timezone.utc)
+                local = local.replace(tzinfo=UTC)
             if not local or abs((local - new_created).total_seconds()) > 60:
                 order.created_at = new_created
                 changed = True
@@ -1070,7 +1120,9 @@ async def _apply_ml_dates(db: AsyncSession, order: Order, ml_data: dict) -> bool
             date_approved = pmt.get("date_approved")
             if date_approved:
                 try:
-                    order.paid_at = datetime.fromisoformat(str(date_approved).replace("Z", "+00:00"))
+                    order.paid_at = datetime.fromisoformat(
+                        str(date_approved).replace("Z", "+00:00")
+                    )
                     changed = True
                 except Exception:
                     pass
@@ -1097,6 +1149,7 @@ async def _apply_ml_dates(db: AsyncSession, order: Order, ml_data: dict) -> bool
 
     # Refresh ML fees (sale_fee aggregate) from order_items
     from services.webhook_service import _apply_fees_to_order
+
     if not order.sale_amount:
         try:
             order.sale_amount = Decimal(str(ml_data.get("total_amount") or 0))
@@ -1125,6 +1178,7 @@ async def _refresh_shipments(
     When dropshipper_id is given, restricts to that user's orders. Otherwise updates all.
     """
     import asyncio as _asyncio
+
     from services.webhook_service import _apply_shipment_to_order
 
     if not ml_accounts:
@@ -1146,10 +1200,12 @@ async def _refresh_shipments(
             *base_where,
             or_(
                 # Has shipment_id but status missing or active
-                (Order.shipment_id != None) & or_(
+                (Order.shipment_id != None)
+                & or_(
                     Order.shipment_status == None,
                     Order.shipment_status.in_(["pending", "handling", "ready_to_ship", "shipped"]),
-                    Order.shipment_status.in_(["delivered", "not_delivered", "cancelled"]) & (
+                    Order.shipment_status.in_(["delivered", "not_delivered", "cancelled"])
+                    & (
                         (Order.estimated_delivery_date == None)
                         | (Order.estimated_delivery_final == None)
                     ),
@@ -1209,6 +1265,7 @@ async def _backfill_order_dates(
     Otherwise uses heuristic detection (created_at > paid_at or paid_at missing).
     """
     import asyncio as _asyncio
+
     if not ml_accounts:
         return 0
     accounts_map = {a.id: a for a in ml_accounts}
@@ -1276,9 +1333,10 @@ async def trigger_sync(
 ):
     """Trigger an immediate sync for the current user's marketplace accounts (last 7 days) and check pending NF-e."""
     import asyncio
+
     from tasks.sync_orders import sync_ml_integration, sync_shopee_integration
 
-    date_from = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    date_from = (datetime.now(UTC) - timedelta(days=7)).isoformat()
     now_ts = int(time_module.time())
 
     ml_accs_result = await db.execute(
@@ -1314,6 +1372,7 @@ async def trigger_sync(
     if ml_accounts:
         accounts_map = {a.id: a for a in ml_accounts}
         from sqlalchemy import and_
+
         q = (
             select(Order)
             .where(
@@ -1346,7 +1405,9 @@ async def trigger_sync(
 
             if not order.shipment_id:
                 try:
-                    ml_order_data = await _ml.get_order(account.access_token, order.platform_order_id)
+                    ml_order_data = await _ml.get_order(
+                        account.access_token, order.platform_order_id
+                    )
                     sid = (ml_order_data.get("shipping") or {}).get("id")
                     if sid:
                         order.shipment_id = str(sid)
@@ -1384,9 +1445,17 @@ async def trigger_sync(
         limit=100,
     )
 
-    dates_fixed = await _backfill_order_dates(db, ml_accounts, current_user, platform_order_ids=ml_order_ids or None)
+    dates_fixed = await _backfill_order_dates(
+        db, ml_accounts, current_user, platform_order_ids=ml_order_ids or None
+    )
 
-    return {"ok": True, "imported": imported, "nfe_updated": nfe_updated, "ship_updated": ship_updated, "dates_fixed": dates_fixed}
+    return {
+        "ok": True,
+        "imported": imported,
+        "nfe_updated": nfe_updated,
+        "ship_updated": ship_updated,
+        "dates_fixed": dates_fixed,
+    }
 
 
 @router.post("/sync-range")
@@ -1409,7 +1478,7 @@ async def sync_range(
     try:
         dt_from = datetime.fromisoformat(date_from_str)
         if dt_from.tzinfo is None:
-            dt_from = dt_from.replace(tzinfo=timezone.utc)
+            dt_from = dt_from.replace(tzinfo=UTC)
         date_from_iso = dt_from.isoformat()
     except ValueError:
         raise HTTPException(status_code=400, detail="date_from inválido — use formato YYYY-MM-DD")
@@ -1421,7 +1490,7 @@ async def sync_range(
             dt_to = datetime.fromisoformat(date_to_str)
             if dt_to.tzinfo is None:
                 # date_to is end-of-day
-                dt_to = dt_to.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+                dt_to = dt_to.replace(hour=23, minute=59, second=59, tzinfo=UTC)
             date_to_iso = dt_to.isoformat()
             ts_to = int(dt_to.timestamp())
         except ValueError:
@@ -1463,10 +1532,12 @@ async def sync_range(
 
     # NF-e sync: check pending ML orders in the synced range
     import asyncio
+
     nfe_updated = 0
     if ml_accounts:
         accounts_map = {a.id: a for a in ml_accounts}
         from sqlalchemy import and_
+
         q = (
             select(Order)
             .where(
@@ -1498,7 +1569,9 @@ async def sync_range(
 
             if not order.shipment_id:
                 try:
-                    ml_order_data = await _ml.get_order(account.access_token, order.platform_order_id)
+                    ml_order_data = await _ml.get_order(
+                        account.access_token, order.platform_order_id
+                    )
                     sid = (ml_order_data.get("shipping") or {}).get("id")
                     if sid:
                         order.shipment_id = str(sid)
@@ -1529,7 +1602,9 @@ async def sync_range(
             await db.commit()
 
     # Targeted backfill: fix dates for all ML orders found in this range
-    dates_fixed = await _backfill_order_dates(db, ml_accounts, current_user, platform_order_ids=ml_order_ids or None)
+    dates_fixed = await _backfill_order_dates(
+        db, ml_accounts, current_user, platform_order_ids=ml_order_ids or None
+    )
 
     # Also refresh shipment status/dates for orders missing it
     ship_updated = await _refresh_shipments(
@@ -1568,6 +1643,7 @@ async def sync_nfe_batch(
     import asyncio
 
     from sqlalchemy import and_
+
     q = (
         select(Order)
         .where(
@@ -1677,7 +1753,9 @@ def _serialize_invoice(inv: dict) -> dict:
         "issued_date": inv.get("issued_date"),
         "amount": inv.get("amount"),
         "transaction_type": t_type,
-        "transaction_type_label": _INVOICE_TYPE_LABELS.get(t_type, t_type.replace("_", " ").title()),
+        "transaction_type_label": _INVOICE_TYPE_LABELS.get(
+            t_type, t_type.replace("_", " ").title()
+        ),
         "transaction_type_description": fiscal.get("transaction_type_description"),
         "invoice_key": attrs.get("invoice_key"),
         "xml_location": attrs.get("xml_location"),
@@ -1837,9 +1915,13 @@ async def get_order_shipping_label(
     """
     order = await _get_order_checked(db, order_id, current_user)
     if order.platform != "mercadolivre":
-        raise HTTPException(status_code=400, detail="Etiqueta disponível apenas para pedidos do Mercado Livre")
+        raise HTTPException(
+            status_code=400, detail="Etiqueta disponível apenas para pedidos do Mercado Livre"
+        )
     if not order.shipment_id:
-        raise HTTPException(status_code=400, detail="Pedido sem envio — não é possível gerar etiqueta")
+        raise HTTPException(
+            status_code=400, detail="Pedido sem envio — não é possível gerar etiqueta"
+        )
     if order.shipping_method and "fulfillment" in order.shipping_method:
         raise HTTPException(
             status_code=400,
@@ -1895,7 +1977,9 @@ async def get_order_shipping_label(
             try:
                 await db.commit()
             except Exception as e:
-                print(f"[orders] failed to backfill shipment fields shipment={order.shipment_id}: {e}")
+                print(
+                    f"[orders] failed to backfill shipment fields shipment={order.shipment_id}: {e}"
+                )
 
         # Pedido Full — etiqueta é gerenciada pelo ML, não há o que imprimir
         if "fulfillment" in (shipment.get("logistic_type") or ""):
@@ -1941,7 +2025,7 @@ async def get_order_shipping_label(
     try:
         _LABELS_DIR.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(content)
-        order.label_cached_at = datetime.now(timezone.utc)
+        order.label_cached_at = datetime.now(UTC)
         await db.commit()
     except Exception as e:
         print(f"[orders] failed to cache label shipment={order.shipment_id}: {e}")

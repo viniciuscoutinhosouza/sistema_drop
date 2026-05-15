@@ -1,12 +1,13 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime
-from decimal import Decimal
+
 from database import get_db
 from dependencies import get_active_ac
 from models.user import User
-from schemas.financial import PIXDepositRequest, BalanceOut
-from services.financial_service import get_balance, credit_balance, get_transactions
+from schemas.financial import BalanceOut, PIXDepositRequest
+from services.financial_service import credit_balance, get_balance, get_transactions
 
 router = APIRouter()
 

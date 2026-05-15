@@ -2,23 +2,24 @@
 Gestão de Anúncios — fluxo AC-centrado.
 Cada anúncio (ProductListing) pode estar vinculado a CMIGProduct OU CatalogProduct OU sem vínculo.
 """
+
 import json as _json
 import os as _os
 import shutil as _shutil
 import uuid as _uuid_mod
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user
-from models.user import User
-from models.product import ProductListing, CatalogProduct
-from models.cmig import CMIG, CMIGProduct, CMIGProductImage, CMIGProductVariant, CMIGAdministrator
+from models.cmig import CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
 from models.integration import MarketplaceAccount
-from models.user import AccountAdministrator
+from models.product import CatalogProduct, ProductListing
+from models.user import User
 from services import ml_service
 
 router = APIRouter()
@@ -32,7 +33,9 @@ async def upload_anuncio_image(
     """Upload de imagem para usar em anúncios. Retorna URL pública."""
     ext = _os.path.splitext(file.filename or "")[1].lower()
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-        raise HTTPException(status_code=400, detail="Tipo de arquivo não permitido. Use JPG, PNG, WEBP ou GIF.")
+        raise HTTPException(
+            status_code=400, detail="Tipo de arquivo não permitido. Use JPG, PNG, WEBP ou GIF."
+        )
     filename = f"{_uuid_mod.uuid4().hex}{ext}"
     dest_dir = "static/uploads/anuncio-images"
     _os.makedirs(dest_dir, exist_ok=True)
@@ -42,6 +45,7 @@ async def upload_anuncio_image(
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
+
 
 def _title_similarity(a: str, b: str) -> float:
     """Jaccard similarity entre palavras de dois títulos (case-insensitive)."""
@@ -88,7 +92,9 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
     return listing
 
 
-def _build_ml_payload(product, form: dict, *, use_family_name: bool = False, for_update: bool = False) -> dict:
+def _build_ml_payload(
+    product, form: dict, *, use_family_name: bool = False, for_update: bool = False
+) -> dict:
     """Build full ML item payload from a product (CMIGProduct or CatalogProduct) + form data.
 
     use_family_name=True → categorias de catálogo ML: usa family_name em vez de title.
@@ -134,7 +140,7 @@ def _build_ml_payload(product, form: dict, *, use_family_name: bool = False, for
 
     for field, attr_id in [
         ("height_cm", "SELLER_PACKAGE_HEIGHT"),
-        ("width_cm",  "SELLER_PACKAGE_WIDTH"),
+        ("width_cm", "SELLER_PACKAGE_WIDTH"),
         ("length_cm", "SELLER_PACKAGE_LENGTH"),
     ]:
         val = form.get(field)
@@ -146,7 +152,9 @@ def _build_ml_payload(product, form: dict, *, use_family_name: bool = False, for
     if weight in (None, ""):
         weight = getattr(product, "weight_kg", None)
     if weight not in (None, "") and "SELLER_PACKAGE_WEIGHT" not in existing_ids:
-        attributes.append({"id": "SELLER_PACKAGE_WEIGHT", "value_name": f"{int(float(weight) * 1000)} g"})
+        attributes.append(
+            {"id": "SELLER_PACKAGE_WEIGHT", "value_name": f"{int(float(weight) * 1000)} g"}
+        )
 
     if attributes:
         payload["attributes"] = attributes
@@ -166,14 +174,13 @@ def _build_ml_payload(product, form: dict, *, use_family_name: bool = False, for
 
     # Dimensões do pacote para cálculo de frete ME2 — somente na criação (imutável após)
     if not for_update:
-        _h  = form.get("height_cm") or getattr(product, "height_cm", None)
-        _w  = form.get("width_cm")  or getattr(product, "width_cm",  None)
-        _l  = form.get("length_cm") or getattr(product, "length_cm", None)
+        _h = form.get("height_cm") or getattr(product, "height_cm", None)
+        _w = form.get("width_cm") or getattr(product, "width_cm", None)
+        _l = form.get("length_cm") or getattr(product, "length_cm", None)
         _kg = form.get("weight_kg") or getattr(product, "weight_kg", None)
         if _h and _w and _l and _kg:
             shipping_payload["dimensions"] = (
-                f"{int(float(_h))}x{int(float(_w))}x{int(float(_l))},"
-                f"{int(float(_kg) * 1000)}"
+                f"{int(float(_h))}x{int(float(_w))}x{int(float(_l))},{int(float(_kg) * 1000)}"
             )
 
     payload["shipping"] = shipping_payload
@@ -185,7 +192,7 @@ def _ml_requires_family_name(error_body: dict) -> bool:
     """Retorna True se o erro do ML indica que family_name é obrigatório."""
     for cause in error_body.get("cause", []):
         code = cause.get("code", "")
-        msg  = cause.get("message", "")
+        msg = cause.get("message", "")
         if "family_name" in msg or "family_name" in code:
             return True
     return False
@@ -194,6 +201,7 @@ def _ml_requires_family_name(error_body: dict) -> bool:
 async def _create_ml_item_with_retry(access_token: str, prod, ml_form: dict) -> dict:
     """Tenta criar item ML; se a categoria exigir family_name, retenta sem title."""
     import httpx
+
     ML_API_BASE = "https://api.mercadolibre.com"
 
     # 1ª tentativa: payload normal com title
@@ -233,8 +241,8 @@ def _serialize_listing(listing: ProductListing) -> dict:
     cmig_product = None
     if listing.cmig_product:
         cmig_product = {
-            "id":    listing.cmig_product.id,
-            "sku":   listing.cmig_product.sku_cmig,
+            "id": listing.cmig_product.id,
+            "sku": listing.cmig_product.sku_cmig,
             "title": listing.cmig_product.title,
             "brand": listing.cmig_product.brand,
             "model": listing.cmig_product.model,
@@ -242,8 +250,8 @@ def _serialize_listing(listing: ProductListing) -> dict:
     catalog_product = None
     if listing.catalog_product:
         catalog_product = {
-            "id":    listing.catalog_product.id,
-            "sku":   listing.catalog_product.sku,
+            "id": listing.catalog_product.id,
+            "sku": listing.catalog_product.sku,
             "title": listing.catalog_product.title,
             "brand": listing.catalog_product.brand,
             "model": listing.catalog_product.model,
@@ -263,13 +271,18 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "category_name": listing.category_name,
         "category_path_json": listing.category_path_json,
         "is_full": bool(listing.is_full) if listing.is_full is not None else False,
-        "logistic_type": listing.logistic_type or ("fulfillment" if listing.is_full else "cross_docking"),
+        "logistic_type": listing.logistic_type
+        or ("fulfillment" if listing.is_full else "cross_docking"),
         "ml_catalog_id": listing.ml_catalog_id,
-        "catalog_listing": bool(listing.catalog_listing) if listing.catalog_listing is not None else False,
-        "available_quantity":  listing.available_quantity,
-        "stock_mode":         listing.stock_mode or "product",
-        "fixed_quantity":     listing.fixed_quantity or 1,
-        "keep_stock_fixed":   bool(listing.keep_stock_fixed) if listing.keep_stock_fixed is not None else False,
+        "catalog_listing": bool(listing.catalog_listing)
+        if listing.catalog_listing is not None
+        else False,
+        "available_quantity": listing.available_quantity,
+        "stock_mode": listing.stock_mode or "product",
+        "fixed_quantity": listing.fixed_quantity or 1,
+        "keep_stock_fixed": bool(listing.keep_stock_fixed)
+        if listing.keep_stock_fixed is not None
+        else False,
         "sold_quantity": listing.sold_quantity or 0,
         "visits_7d": listing.visits_7d or 0,
         "item_condition": listing.item_condition,
@@ -290,20 +303,32 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "free_shipping": listing.free_shipping,
         "video_id": listing.video_id,
         # Cached cost fields
-        "commission_pct":     float(listing.commission_pct) if listing.commission_pct is not None else None,
-        "commission_amount":  float(listing.commission_amount) if listing.commission_amount is not None else None,
-        "shipping_cost":      float(listing.shipping_cost) if listing.shipping_cost is not None else None,
-        "net_revenue":        float(listing.net_revenue) if listing.net_revenue is not None else None,
-        "margin_pct":         float(listing.margin_pct) if listing.margin_pct is not None else None,
-        "costs_cached_at":    listing.costs_cached_at.isoformat() if listing.costs_cached_at else None,
+        "commission_pct": float(listing.commission_pct)
+        if listing.commission_pct is not None
+        else None,
+        "commission_amount": float(listing.commission_amount)
+        if listing.commission_amount is not None
+        else None,
+        "shipping_cost": float(listing.shipping_cost)
+        if listing.shipping_cost is not None
+        else None,
+        "net_revenue": float(listing.net_revenue) if listing.net_revenue is not None else None,
+        "margin_pct": float(listing.margin_pct) if listing.margin_pct is not None else None,
+        "costs_cached_at": listing.costs_cached_at.isoformat() if listing.costs_cached_at else None,
         # Stock by type
-        "qty_full":           listing.qty_full or 0,
-        "qty_local":          listing.qty_local or 0,
+        "qty_full": listing.qty_full or 0,
+        "qty_local": listing.qty_local or 0,
         # Promotion fields
-        "regular_price":       float(listing.regular_price) if listing.regular_price is not None else None,
-        "promo_type":          listing.promo_type,
-        "promo_discount_pct":  float(listing.promo_discount_pct) if listing.promo_discount_pct is not None else None,
-        "has_auto_price_adj":  bool(listing.has_auto_price_adj) if listing.has_auto_price_adj is not None else False,
+        "regular_price": float(listing.regular_price)
+        if listing.regular_price is not None
+        else None,
+        "promo_type": listing.promo_type,
+        "promo_discount_pct": float(listing.promo_discount_pct)
+        if listing.promo_discount_pct is not None
+        else None,
+        "has_auto_price_adj": bool(listing.has_auto_price_adj)
+        if listing.has_auto_price_adj is not None
+        else False,
         "cmig_product": cmig_product,
         "catalog_product": catalog_product,
         "is_linked": cmig_product is not None or catalog_product is not None,
@@ -313,12 +338,14 @@ def _serialize_listing(listing: ProductListing) -> dict:
 async def _get_valid_token(account: MarketplaceAccount, db: AsyncSession) -> str:
     """Retorna o access_token da conta; tenta refresh se expirado."""
     if account.platform != "mercadolivre":
-        raise HTTPException(status_code=400, detail="Importação automática disponível apenas para Mercado Livre")
+        raise HTTPException(
+            status_code=400, detail="Importação automática disponível apenas para Mercado Livre"
+        )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires = account.token_expires_at
     if expires and expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
+        expires = expires.replace(tzinfo=UTC)
 
     token_expired = expires and expires <= now
 
@@ -329,6 +356,7 @@ async def _get_valid_token(account: MarketplaceAccount, db: AsyncSession) -> str
                 detail="Token do Mercado Livre expirado. Reconecte a conta em Integrações → editar conta.",
             )
         from datetime import timedelta
+
         token_data = await ml_service.refresh_ml_token(account.refresh_token)
         account.access_token = token_data["access_token"]
         account.refresh_token = token_data.get("refresh_token", account.refresh_token)
@@ -344,7 +372,9 @@ async def _get_valid_token(account: MarketplaceAccount, db: AsyncSession) -> str
     return account.access_token
 
 
-async def _cache_costs(listing: ProductListing, access_token: str, seller_id: str, db: AsyncSession) -> None:
+async def _cache_costs(
+    listing: ProductListing, access_token: str, seller_id: str, db: AsyncSession
+) -> None:
     """Calcula e salva custos + promoção ML em cache no listing (sem commit — chame db.commit() externamente)."""
     try:
         real_price = float(listing.sale_price or 0)
@@ -353,22 +383,23 @@ async def _cache_costs(listing: ProductListing, access_token: str, seller_id: st
         if listing.platform_item_id:
             try:
                 import asyncio as _aio
+
                 promo, auto_info = await _aio.gather(
                     ml_service.get_sale_price_info(access_token, listing.platform_item_id),
                     ml_service.get_item_auto_pricing(access_token, listing.platform_item_id),
                 )
                 current_price = promo.get("sale_price")
                 if current_price and float(current_price) > 0:
-                    real_price         = float(current_price)
+                    real_price = float(current_price)
                     listing.sale_price = real_price
                 promo_type_val = promo.get("promotion_type") if promo.get("has_promotion") else None
                 if promo.get("has_promotion"):
-                    listing.regular_price      = promo.get("regular_price")
-                    listing.promo_type         = promo_type_val
+                    listing.regular_price = promo.get("regular_price")
+                    listing.promo_type = promo_type_val
                     listing.promo_discount_pct = promo.get("discount_pct")
                 else:
-                    listing.regular_price      = None
-                    listing.promo_type         = None
+                    listing.regular_price = None
+                    listing.promo_type = None
                     listing.promo_discount_pct = None
                 # Detecção via /items/{id}/prices e tags — fonte correta para automação de preço
                 listing.has_auto_price_adj = auto_info["is_auto"]
@@ -400,33 +431,46 @@ async def _cache_costs(listing: ProductListing, access_token: str, seller_id: st
         # Para Full: /shipping_options/free retorna o custo correto quando chamado com os
         # parâmetros adequados (free_shipping, condition, verbose). A tabela local é fallback
         # para quando a API não retornar valor (timeout, dimensões ausentes, erro).
-        if lt == "fulfillment" and shipping_cost_calc == 0 and listing.weight_kg and listing.height_cm and listing.width_cm and listing.length_cm:
+        if (
+            lt == "fulfillment"
+            and shipping_cost_calc == 0
+            and listing.weight_kg
+            and listing.height_cm
+            and listing.width_cm
+            and listing.length_cm
+        ):
             from services.ml_service import _calc_billable_weight, reputation_tier_for_account
+
             wb = _calc_billable_weight(
-                float(listing.weight_kg), float(listing.height_cm),
-                float(listing.width_cm), float(listing.length_cm),
+                float(listing.weight_kg),
+                float(listing.height_cm),
+                float(listing.width_cm),
+                float(listing.length_cm),
             )
             tier = reputation_tier_for_account(listing.account)
             full_tariff = await ml_service.get_full_shipping_cost(
-                wb["billable_kg"], real_price, tier, db,
+                wb["billable_kg"],
+                real_price,
+                tier,
+                db,
                 free_shipping=bool(listing.free_shipping),
             )
             shipping_cost_calc = full_tariff
 
         # Recalcula receita líquida e margem com o frete ajustado
-        commission   = float(costs.get("commission_amount") or 0)
-        fixed_fee    = float(costs.get("fixed_fee") or 0)
-        financing    = float(costs.get("financing_fee") or 0)
-        total_cost   = commission + shipping_cost_calc + fixed_fee + financing
-        net_revenue  = real_price - total_cost
-        margin_pct   = round((net_revenue / real_price) * 100, 2) if real_price > 0 else 0.0
+        commission = float(costs.get("commission_amount") or 0)
+        fixed_fee = float(costs.get("fixed_fee") or 0)
+        financing = float(costs.get("financing_fee") or 0)
+        total_cost = commission + shipping_cost_calc + fixed_fee + financing
+        net_revenue = real_price - total_cost
+        margin_pct = round((net_revenue / real_price) * 100, 2) if real_price > 0 else 0.0
 
-        listing.commission_pct    = costs.get("commission_pct")
+        listing.commission_pct = costs.get("commission_pct")
         listing.commission_amount = commission
-        listing.shipping_cost     = round(shipping_cost_calc, 2)
-        listing.net_revenue       = round(net_revenue, 2)
-        listing.margin_pct        = margin_pct
-        listing.costs_cached_at   = datetime.now(timezone.utc)
+        listing.shipping_cost = round(shipping_cost_calc, 2)
+        listing.net_revenue = round(net_revenue, 2)
+        listing.margin_pct = margin_pct
+        listing.costs_cached_at = datetime.now(UTC)
     except Exception:
         pass
 
@@ -436,7 +480,9 @@ async def _validate_token_owner(account: MarketplaceAccount, access_token: str) 
     user_info = await ml_service.get_user_info(access_token)
     seller_id = str(user_info.get("id", ""))
     if not seller_id:
-        raise HTTPException(status_code=400, detail="Não foi possível obter o ID do vendedor no Mercado Livre")
+        raise HTTPException(
+            status_code=400, detail="Não foi possível obter o ID do vendedor no Mercado Livre"
+        )
 
     token_email = (user_info.get("email") or "").lower().strip()
     account_email = (account.email or "").lower().strip()
@@ -467,16 +513,17 @@ async def _validate_token_owner(account: MarketplaceAccount, access_token: str) 
 
 # ── endpoints ──────────────────────────────────────────────────────────────────
 
+
 @router.get("")
 async def list_anuncios(
     account_id: int,
-    vinculo: str = "all",   # all | linked | unlinked
+    vinculo: str = "all",  # all | linked | unlinked
     status: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Lista anúncios de uma conta de marketplace do AC."""
-    account = await _get_account_or_403(account_id, current_user, db)
+    await _get_account_or_403(account_id, current_user, db)
 
     q = (
         select(ProductListing)
@@ -522,11 +569,14 @@ async def import_anuncios(
         descriptions = await ml_service.get_items_descriptions(access_token, item_ids)
 
     # Busca nomes, paths de categorias e visitas 7d em paralelo
-    unique_category_ids = list({item.get("category_id") for item in items if item.get("category_id")})
+    unique_category_ids = list(
+        {item.get("category_id") for item in items if item.get("category_id")}
+    )
     category_names: dict[str, str] = {}
     category_paths_map: dict[str, list] = {}
     per_item_visits: dict[str, int] = {}
     import asyncio as _asyncio
+
     async def _fetch_extra():
         nonlocal category_names, category_paths_map, per_item_visits
         tasks = []
@@ -545,6 +595,7 @@ async def import_anuncios(
             idx += 1
         if not isinstance(results[idx], Exception):
             per_item_visits = results[idx]
+
     await _fetch_extra()
 
     imported = updated = auto_matched = unlinked = 0
@@ -554,7 +605,9 @@ async def import_anuncios(
     cmig_products: list[CMIGProduct] = []
     if account.cmig_id:
         cp_result = await db.execute(
-            select(CMIGProduct).where(CMIGProduct.cmig_id == account.cmig_id, CMIGProduct.is_active == True)
+            select(CMIGProduct).where(
+                CMIGProduct.cmig_id == account.cmig_id, CMIGProduct.is_active == True
+            )
         )
         cmig_products = cp_result.scalars().all()
 
@@ -564,15 +617,15 @@ async def import_anuncios(
             continue
 
         # Bulk API retorna price=preço atual e original_price=preço sem desconto (se houver promoção)
-        price      = float(item.get("price") or 0)
-        _original  = float(item.get("original_price") or 0)
+        price = float(item.get("price") or 0)
+        _original = float(item.get("original_price") or 0)
 
         if _original > 0 and price > 0 and _original > price * 1.01:
-            regular_price  = _original
+            regular_price = _original
             promo_type_val = None  # tipo exato vem via _cache_costs → get_sale_price_info
             promo_disc_pct = round((_original - price) / _original * 100, 1)
         else:
-            regular_price  = None
+            regular_price = None
             promo_type_val = None
             promo_disc_pct = None
 
@@ -580,8 +633,7 @@ async def import_anuncios(
         _item_tags = [t.lower() for t in (item.get("tags") or [])]
         _AUTO_TAGS = ml_service._AUTO_PRICE_TAGS
         has_auto_price_adj_sync = any(
-            t in _AUTO_TAGS or "automat" in t or "smart_pric" in t
-            for t in _item_tags
+            t in _AUTO_TAGS or "automat" in t or "smart_pric" in t for t in _item_tags
         )
         title = item.get("title", "")
         permalink = item.get("permalink", "") or ""
@@ -608,18 +660,27 @@ async def import_anuncios(
         # Captura logistic_type real do ML (cross_docking|drop_off|xd_drop_off|self_service|fulfillment)
         logistic_type_raw = (shipping.get("logistic_type") or "cross_docking").lower()
         is_full = logistic_type_raw == "fulfillment"
-        qty_full  = available_qty if is_full else 0
+        qty_full = available_qty if is_full else 0
         qty_local = 0 if is_full else available_qty
-        ml_catalog_id   = item.get("catalog_product_id") or ""
+        ml_catalog_id = item.get("catalog_product_id") or ""
         catalog_listing = bool(item.get("catalog_listing", False))
         visits_7d = per_item_visits.get(str(platform_item_id), 0)
 
         # Fotos — todas as pictures com URL HTTPS
         _DIMENSIONAL_IDS = {
-            "WEIGHT", "NET_WEIGHT", "GROSS_WEIGHT",
-            "PACKAGE_WEIGHT", "PACKAGE_NET_WEIGHT",
-            "HEIGHT", "WIDTH", "LENGTH", "DEPTH",
-            "PACKAGE_HEIGHT", "PACKAGE_WIDTH", "PACKAGE_LENGTH", "PACKAGE_DEPTH",
+            "WEIGHT",
+            "NET_WEIGHT",
+            "GROSS_WEIGHT",
+            "PACKAGE_WEIGHT",
+            "PACKAGE_NET_WEIGHT",
+            "HEIGHT",
+            "WIDTH",
+            "LENGTH",
+            "DEPTH",
+            "PACKAGE_HEIGHT",
+            "PACKAGE_WIDTH",
+            "PACKAGE_LENGTH",
+            "PACKAGE_DEPTH",
         }
         _FISCAL_IDS = {"GTIN", "EAN", "NCM", "CEST", "FISCAL_CLASSIFICATION"}
 
@@ -627,7 +688,9 @@ async def import_anuncios(
         for pic in item.get("pictures", []):
             url = pic.get("secure_url") or pic.get("url", "")
             if url:
-                pics_list.append({"id": pic.get("id", ""), "url": url.replace("http://", "https://")})
+                pics_list.append(
+                    {"id": pic.get("id", ""), "url": url.replace("http://", "https://")}
+                )
 
         thumbnail = item.get("thumbnail", "") or ""
         if not thumbnail and pics_list:
@@ -651,6 +714,7 @@ async def import_anuncios(
             # When val_struct is absent, try to parse val_name for dimensional attrs
             if val_num is None and attr_id in _DIMENSIONAL_IDS and val_name:
                 import re as _re
+
                 _m = _re.match(r"([\d.,]+)\s*(.*)", val_name.strip())
                 if _m:
                     try:
@@ -680,12 +744,18 @@ async def import_anuncios(
 
         # Fallback de SKU pelo atributo SELLER_SKU
         if not sku:
-            _sku_attr = next((a for a in item.get("attributes", [])
-                              if (a.get("id") or "").upper() == "SELLER_SKU"), None)
+            _sku_attr = next(
+                (
+                    a
+                    for a in item.get("attributes", [])
+                    if (a.get("id") or "").upper() == "SELLER_SKU"
+                ),
+                None,
+            )
             if _sku_attr:
                 sku = _sku_attr.get("value_name") or ""
 
-        def _to_kg(key):
+        def _to_kg(key, dim=dim):
             """Converte valor dimensional para kg respeitando a unidade retornada pelo ML."""
             d = dim.get(key, {})
             v = d.get("value")
@@ -702,7 +772,7 @@ async def import_anuncios(
                 return round(v / 1_000_000, 3)
             return round(v, 3)  # assume kg
 
-        def _to_cm(key):
+        def _to_cm(key, dim=dim):
             """Converte valor dimensional para cm respeitando a unidade retornada pelo ML."""
             d = dim.get(key, {})
             v = d.get("value")
@@ -719,12 +789,21 @@ async def import_anuncios(
                 return round(v * 100, 2)
             return round(v, 2)  # assume cm
 
-        weight_kg = _to_kg("WEIGHT") or _to_kg("NET_WEIGHT") or _to_kg("GROSS_WEIGHT") \
-                    or _to_kg("PACKAGE_WEIGHT") or _to_kg("PACKAGE_NET_WEIGHT")
+        weight_kg = (
+            _to_kg("WEIGHT")
+            or _to_kg("NET_WEIGHT")
+            or _to_kg("GROSS_WEIGHT")
+            or _to_kg("PACKAGE_WEIGHT")
+            or _to_kg("PACKAGE_NET_WEIGHT")
+        )
         height_cm = _to_cm("HEIGHT") or _to_cm("PACKAGE_HEIGHT")
-        width_cm  = _to_cm("WIDTH")  or _to_cm("PACKAGE_WIDTH")
-        length_cm = _to_cm("LENGTH") or _to_cm("DEPTH") \
-                    or _to_cm("PACKAGE_LENGTH") or _to_cm("PACKAGE_DEPTH")
+        width_cm = _to_cm("WIDTH") or _to_cm("PACKAGE_WIDTH")
+        length_cm = (
+            _to_cm("LENGTH")
+            or _to_cm("DEPTH")
+            or _to_cm("PACKAGE_LENGTH")
+            or _to_cm("PACKAGE_DEPTH")
+        )
 
         # Fallback: parse shipping.dimensions string ("HxWxL,weight_g") for missing values
         _dims_str = (shipping.get("dimensions") or "").strip()
@@ -748,21 +827,25 @@ async def import_anuncios(
         # Variações
         variations_list = []
         for var in item.get("variations", []):
-            variations_list.append({
-                "id": var.get("id"),
-                "price": var.get("price"),
-                "available_quantity": var.get("available_quantity"),
-                "sold_quantity": var.get("sold_quantity"),
-                "attributes": [
-                    {"id": a.get("id"), "name": a.get("name"), "value": a.get("value_name")}
-                    for a in var.get("attribute_combinations", [])
-                ],
-                "picture_ids": var.get("picture_ids", []),
-            })
+            variations_list.append(
+                {
+                    "id": var.get("id"),
+                    "price": var.get("price"),
+                    "available_quantity": var.get("available_quantity"),
+                    "sold_quantity": var.get("sold_quantity"),
+                    "attributes": [
+                        {"id": a.get("id"), "name": a.get("name"), "value": a.get("value_name")}
+                        for a in var.get("attribute_combinations", [])
+                    ],
+                    "picture_ids": var.get("picture_ids", []),
+                }
+            )
 
-        pictures_json  = _json.dumps(pics_list, ensure_ascii=False) if pics_list else None
-        fiscal_json    = _json.dumps(fiscal, ensure_ascii=False) if fiscal else None
-        variations_json = _json.dumps(variations_list, ensure_ascii=False) if variations_list else None
+        pictures_json = _json.dumps(pics_list, ensure_ascii=False) if pics_list else None
+        fiscal_json = _json.dumps(fiscal, ensure_ascii=False) if fiscal else None
+        variations_json = (
+            _json.dumps(variations_list, ensure_ascii=False) if variations_list else None
+        )
         attributes_json = _json.dumps(tech, ensure_ascii=False) if tech else None
 
         # Upsert
@@ -786,7 +869,7 @@ async def import_anuncios(
             existing.listing_type = listing_type or existing.listing_type
             existing.is_full = is_full
             existing.logistic_type = logistic_type_raw
-            existing.ml_catalog_id   = ml_catalog_id or existing.ml_catalog_id
+            existing.ml_catalog_id = ml_catalog_id or existing.ml_catalog_id
             existing.catalog_listing = catalog_listing
             existing.available_quantity = available_qty
             existing.sold_quantity = sold_qty
@@ -804,7 +887,7 @@ async def import_anuncios(
                 existing.description_override = description_text
             existing.weight_kg = weight_kg
             existing.height_cm = height_cm
-            existing.width_cm  = width_cm
+            existing.width_cm = width_cm
             existing.length_cm = length_cm
             if pictures_json:
                 existing.pictures_json = pictures_json
@@ -814,19 +897,22 @@ async def import_anuncios(
                 existing.variations_json = variations_json
             if attributes_json:
                 existing.attributes_json = attributes_json
-            existing.qty_full  = qty_full
+            existing.qty_full = qty_full
             existing.qty_local = qty_local
             if regular_price is not None:
-                existing.regular_price     = regular_price
-                existing.promo_type        = promo_type_val
+                existing.regular_price = regular_price
+                existing.promo_type = promo_type_val
                 existing.promo_discount_pct = promo_disc_pct
-            elif existing.regular_price is not None and price >= float(existing.regular_price or 0) * 0.99:
+            elif (
+                existing.regular_price is not None
+                and price >= float(existing.regular_price or 0) * 0.99
+            ):
                 # promoção acabou — limpa os campos
-                existing.regular_price      = None
-                existing.promo_type         = None
+                existing.regular_price = None
+                existing.promo_type = None
                 existing.promo_discount_pct = None
             existing.has_auto_price_adj = has_auto_price_adj_sync
-            existing.last_sync_at = datetime.now(timezone.utc)
+            existing.last_sync_at = datetime.now(UTC)
             updated += 1
             listing = existing
         else:
@@ -868,8 +954,8 @@ async def import_anuncios(
                 promo_type=promo_type_val,
                 promo_discount_pct=promo_disc_pct,
                 has_auto_price_adj=has_auto_price_adj_sync,
-                published_at=datetime.now(timezone.utc),
-                last_sync_at=datetime.now(timezone.utc),
+                published_at=datetime.now(UTC),
+                last_sync_at=datetime.now(UTC),
             )
             db.add(listing)
             imported += 1
@@ -893,6 +979,7 @@ async def import_anuncios(
 
     # Cache de custos ML com concorrência 5
     import asyncio as _aio
+
     _sem = _aio.Semaphore(5)
 
     async def _cache_one(lst):
@@ -902,7 +989,12 @@ async def import_anuncios(
     await _aio.gather(*[_cache_one(l) for l in saved_listings])
 
     await db.commit()
-    return {"imported": imported, "updated": updated, "auto_matched": auto_matched, "unlinked": unlinked}
+    return {
+        "imported": imported,
+        "updated": updated,
+        "auto_matched": auto_matched,
+        "unlinked": unlinked,
+    }
 
 
 @router.post("/{listing_id}/refresh-costs", status_code=200)
@@ -959,8 +1051,12 @@ async def suggest_products(
         products = cp_result.scalars().all()
         scored = sorted(products, key=lambda p: _title_similarity(title, p.title), reverse=True)
         cmig_suggestions = [
-            {"id": p.id, "sku": p.sku_cmig, "title": p.title,
-             "similarity": round(_title_similarity(title, p.title), 2)}
+            {
+                "id": p.id,
+                "sku": p.sku_cmig,
+                "title": p.title,
+                "similarity": round(_title_similarity(title, p.title), 2),
+            }
             for p in scored[:5]
         ]
 
@@ -974,10 +1070,16 @@ async def suggest_products(
             )
         )
         pg_products = pg_result.scalars().all()
-        pg_scored = sorted(pg_products, key=lambda p: _title_similarity(title, p.title), reverse=True)
+        pg_scored = sorted(
+            pg_products, key=lambda p: _title_similarity(title, p.title), reverse=True
+        )
         pg_suggestions = [
-            {"id": p.id, "sku": p.sku, "title": p.title,
-             "similarity": round(_title_similarity(title, p.title), 2)}
+            {
+                "id": p.id,
+                "sku": p.sku,
+                "title": p.title,
+                "similarity": round(_title_similarity(title, p.title), 2),
+            }
             for p in pg_scored[:5]
         ]
 
@@ -1082,8 +1184,13 @@ async def create_cmig_product_from_listing(
     brand_from_attrs = None
     model_from_attrs = None
     if listing.attributes_json:
-        _FISCAL_MAP = {"NCM": "ncm", "CEST": "cest", "GTIN": "gtin", "EAN": "ean",
-                       "FISCAL_CLASSIFICATION": "fiscal_classification"}
+        _FISCAL_MAP = {
+            "NCM": "ncm",
+            "CEST": "cest",
+            "GTIN": "gtin",
+            "EAN": "ean",
+            "FISCAL_CLASSIFICATION": "fiscal_classification",
+        }
         try:
             for a in _json.loads(listing.attributes_json):
                 aid = (a.get("id") or "").upper()
@@ -1105,31 +1212,31 @@ async def create_cmig_product_from_listing(
         """Remove pontos/hífens do CEST; limita a 7 chars."""
         return v.replace(".", "").replace("-", "")[:7] if v else v
 
-    ncm  = _norm_ncm(body.get("ncm")  or fiscal_dict.get("ncm"))
+    ncm = _norm_ncm(body.get("ncm") or fiscal_dict.get("ncm"))
     cest = _norm_cest(body.get("cest") or fiscal_dict.get("cest"))
-    ean  = body.get("ean")  or fiscal_dict.get("ean") or fiscal_dict.get("gtin")
+    ean = body.get("ean") or fiscal_dict.get("ean") or fiscal_dict.get("gtin")
 
     product = CMIGProduct(
-        cmig_id        = cmig_id,
-        sku_cmig       = sku_cmig,
-        title          = body.get("title") or listing.title_override or "",
-        description    = body.get("description") or listing.description_override,
-        brand          = body.get("brand") or brand_from_attrs,
-        model          = body.get("model") or model_from_attrs,
-        cost_price     = body.get("cost_price"),
-        stock_quantity = listing.available_quantity or 0,
-        weight_kg      = body.get("weight_kg")  or listing.weight_kg,
-        height_cm      = body.get("height_cm") or listing.height_cm,
-        width_cm       = body.get("width_cm")  or listing.width_cm,
-        length_cm      = body.get("length_cm") or listing.length_cm,
-        ncm            = ncm,
-        cest           = cest,
-        ean            = ean,
-        origin         = body.get("origin", 0),
-        suggested_price = body.get("suggested_price") or body.get("sale_price") or listing.sale_price,
-        video_id       = body.get("video_id") or listing.video_id,
-        attributes_json= listing.attributes_json,
-        fiscal_json    = listing.fiscal_json,
+        cmig_id=cmig_id,
+        sku_cmig=sku_cmig,
+        title=body.get("title") or listing.title_override or "",
+        description=body.get("description") or listing.description_override,
+        brand=body.get("brand") or brand_from_attrs,
+        model=body.get("model") or model_from_attrs,
+        cost_price=body.get("cost_price"),
+        stock_quantity=listing.available_quantity or 0,
+        weight_kg=body.get("weight_kg") or listing.weight_kg,
+        height_cm=body.get("height_cm") or listing.height_cm,
+        width_cm=body.get("width_cm") or listing.width_cm,
+        length_cm=body.get("length_cm") or listing.length_cm,
+        ncm=ncm,
+        cest=cest,
+        ean=ean,
+        origin=body.get("origin", 0),
+        suggested_price=body.get("suggested_price") or body.get("sale_price") or listing.sale_price,
+        video_id=body.get("video_id") or listing.video_id,
+        attributes_json=listing.attributes_json,
+        fiscal_json=listing.fiscal_json,
     )
     db.add(product)
     await db.flush()  # gera o ID
@@ -1140,12 +1247,14 @@ async def create_cmig_product_from_listing(
             for i, pic in enumerate(_json.loads(listing.pictures_json)):
                 url = pic.get("url") if isinstance(pic, dict) else str(pic)
                 if url:
-                    db.add(CMIGProductImage(
-                        cmig_product_id=product.id,
-                        url=url,
-                        sort_order=i,
-                        is_primary=(i == 0),
-                    ))
+                    db.add(
+                        CMIGProductImage(
+                            cmig_product_id=product.id,
+                            url=url,
+                            sort_order=i,
+                            is_primary=(i == 0),
+                        )
+                    )
         except Exception:
             pass
 
@@ -1157,10 +1266,13 @@ async def create_cmig_product_from_listing(
             for idx, var in enumerate(variations):
                 attrs = var.get("attributes", [])
 
-                var_sku = next(
-                    (a["value"] for a in attrs if a.get("id") == "SELLER_SKU"),
-                    None,
-                ) or f"{sku_cmig}_{idx + 1}"
+                var_sku = (
+                    next(
+                        (a["value"] for a in attrs if a.get("id") == "SELLER_SKU"),
+                        None,
+                    )
+                    or f"{sku_cmig}_{idx + 1}"
+                )
 
                 var_attrs = [
                     {"name": a["name"], "value": a["value"]}
@@ -1169,11 +1281,11 @@ async def create_cmig_product_from_listing(
                 ]
 
                 variant = CMIGProductVariant(
-                    cmig_product_id = product.id,
-                    sku             = var_sku,
-                    stock_quantity  = var.get("available_quantity", 0),
-                    sale_price      = var.get("price"),
-                    attributes_json = _json.dumps(var_attrs, ensure_ascii=False),
+                    cmig_product_id=product.id,
+                    sku=var_sku,
+                    stock_quantity=var.get("available_quantity", 0),
+                    sale_price=var.get("price"),
+                    attributes_json=_json.dumps(var_attrs, ensure_ascii=False),
                 )
                 db.add(variant)
                 variants_created += 1
@@ -1266,7 +1378,9 @@ async def publish_anuncio(
 
     if mode == "create":
         if not category_id:
-            raise HTTPException(status_code=400, detail="category_id é obrigatório para criar anúncio")
+            raise HTTPException(
+                status_code=400, detail="category_id é obrigatório para criar anúncio"
+            )
 
         ml_form = {
             "title_override": product_title,
@@ -1282,10 +1396,10 @@ async def publish_anuncio(
             "pictures": pictures,
             "attributes": body.get("attributes") or [],
             "height_cm": body.get("height_cm"),
-            "width_cm":  body.get("width_cm"),
+            "width_cm": body.get("width_cm"),
             "length_cm": body.get("length_cm"),
             "weight_kg": body.get("weight_kg"),
-            "model":     body.get("model"),
+            "model": body.get("model"),
         }
         ml_item = await _create_ml_item_with_retry(access_token, prod, ml_form)
         platform_item_id = ml_item.get("id")
@@ -1297,20 +1411,30 @@ async def publish_anuncio(
         # ML retorna thumbnail do item criado; fallback para primeira foto enviada
         thumbnail = ml_item.get("thumbnail") or (pictures[0] if pictures else None)
         status = "published"
-        published_at = datetime.now(timezone.utc)
+        published_at = datetime.now(UTC)
     else:
         if not platform_item_id:
-            raise HTTPException(status_code=400, detail="platform_item_id é obrigatório para vincular")
+            raise HTTPException(
+                status_code=400, detail="platform_item_id é obrigatório para vincular"
+            )
         ml_item_data = await ml_service.get_item(access_token, platform_item_id)
         thumbnail = ml_item_data.get("thumbnail") or (pictures[0] if pictures else None)
         status = "published"
-        published_at = datetime.now(timezone.utc)
+        published_at = datetime.now(UTC)
 
     # Dimensões: usa o que veio no body, senão cai no produto
-    dim_height = body.get("height_cm") or (float(prod.height_cm) if getattr(prod, "height_cm", None) else None)
-    dim_width  = body.get("width_cm")  or (float(prod.width_cm)  if getattr(prod, "width_cm",  None) else None)
-    dim_length = body.get("length_cm") or (float(prod.length_cm) if getattr(prod, "length_cm", None) else None)
-    dim_weight = body.get("weight_kg") or (float(prod.weight_kg) if getattr(prod, "weight_kg", None) else None)
+    dim_height = body.get("height_cm") or (
+        float(prod.height_cm) if getattr(prod, "height_cm", None) else None
+    )
+    dim_width = body.get("width_cm") or (
+        float(prod.width_cm) if getattr(prod, "width_cm", None) else None
+    )
+    dim_length = body.get("length_cm") or (
+        float(prod.length_cm) if getattr(prod, "length_cm", None) else None
+    )
+    dim_weight = body.get("weight_kg") or (
+        float(prod.weight_kg) if getattr(prod, "weight_kg", None) else None
+    )
 
     listing = ProductListing(
         account_id=account_id,
@@ -1340,7 +1464,7 @@ async def publish_anuncio(
         length_cm=dim_length,
         status=status,
         published_at=published_at,
-        last_sync_at=datetime.now(timezone.utc),
+        last_sync_at=datetime.now(UTC),
     )
     db.add(listing)
     await db.commit()
@@ -1360,12 +1484,27 @@ async def update_anuncio(
 
     # Salva campos simples no DB
     for field in (
-        "sale_price", "title_override", "category_id", "listing_type",
-        "description_override", "attributes_json",
-        "item_condition", "warranty_type", "warranty_time",
-        "shipping_mode", "free_shipping", "video_id",
-        "sku", "weight_kg", "height_cm", "width_cm", "length_cm",
-        "fiscal_json", "stock_mode", "fixed_quantity", "keep_stock_fixed",
+        "sale_price",
+        "title_override",
+        "category_id",
+        "listing_type",
+        "description_override",
+        "attributes_json",
+        "item_condition",
+        "warranty_type",
+        "warranty_time",
+        "shipping_mode",
+        "free_shipping",
+        "video_id",
+        "sku",
+        "weight_kg",
+        "height_cm",
+        "width_cm",
+        "length_cm",
+        "fiscal_json",
+        "stock_mode",
+        "fixed_quantity",
+        "keep_stock_fixed",
     ):
         if field in body:
             setattr(listing, field, body[field])
@@ -1379,12 +1518,16 @@ async def update_anuncio(
 
     # Converte pictures (array de URLs) → pictures_json no DB
     if "pictures" in body and isinstance(body["pictures"], list):
-        listing.pictures_json = _json.dumps(
-            [{"id": "", "url": u} for u in body["pictures"] if u],
-            ensure_ascii=False,
-        ) if body["pictures"] else listing.pictures_json
+        listing.pictures_json = (
+            _json.dumps(
+                [{"id": "", "url": u} for u in body["pictures"] if u],
+                ensure_ascii=False,
+            )
+            if body["pictures"]
+            else listing.pictures_json
+        )
 
-    listing.last_sync_at = datetime.now(timezone.utc)
+    listing.last_sync_at = datetime.now(UTC)
 
     ml_error: str | None = None
     ml_skipped: list[str] = []
@@ -1396,18 +1539,18 @@ async def update_anuncio(
 
             # Monta form consolidado com dados do body ou do DB como fallback
             form = {
-                "title_override":     listing.title_override,
-                "sale_price":         listing.sale_price,
-                "listing_type":       listing.listing_type or "gold_special",
+                "title_override": listing.title_override,
+                "sale_price": listing.sale_price,
+                "listing_type": listing.listing_type or "gold_special",
                 "available_quantity": listing.available_quantity or 1,
-                "item_condition":     listing.item_condition or "new",
-                "category_id":        listing.category_id,
-                "pictures":           body.get("pictures") or [],
-                "attributes":         body.get("attributes") or [],
-                "warranty_type":      listing.warranty_type,
-                "warranty_time":      listing.warranty_time,
-                "shipping_mode":      listing.shipping_mode or "me2",
-                "free_shipping":      listing.free_shipping or False,
+                "item_condition": listing.item_condition or "new",
+                "category_id": listing.category_id,
+                "pictures": body.get("pictures") or [],
+                "attributes": body.get("attributes") or [],
+                "warranty_type": listing.warranty_type,
+                "warranty_time": listing.warranty_time,
+                "shipping_mode": listing.shipping_mode or "me2",
+                "free_shipping": listing.free_shipping or False,
             }
             # Se fotos não vieram no body, tenta parsear pictures_json do DB
             if not form["pictures"] and listing.pictures_json:
@@ -1431,17 +1574,23 @@ async def update_anuncio(
             if listing.ml_catalog_id:
                 ml_payload.pop("available_quantity", None)
 
-            ml_resp = await ml_service.update_item(access_token, listing.platform_item_id, ml_payload)
+            ml_resp = await ml_service.update_item(
+                access_token, listing.platform_item_id, ml_payload
+            )
             ml_skipped = ml_resp.get("_skipped_fields") or []
 
             description = listing.description_override
             if description:
                 desc_ok = True
                 try:
-                    desc_ok = await ml_service.update_item_description(access_token, listing.platform_item_id, description)
+                    desc_ok = await ml_service.update_item_description(
+                        access_token, listing.platform_item_id, description
+                    )
                 except Exception:
                     try:
-                        desc_ok = await ml_service.post_item_description(access_token, listing.platform_item_id, description)
+                        desc_ok = await ml_service.post_item_description(
+                            access_token, listing.platform_item_id, description
+                        )
                     except Exception:
                         desc_ok = False
                 if desc_ok is False and "description" not in ml_skipped:
@@ -1488,10 +1637,14 @@ async def get_anuncio_stats(
     )
     counts = {row.status: row.cnt for row in rows}
 
-    total_sold = await db.scalar(
-        select(func.sum(ProductListing.sold_quantity))
-        .where(ProductListing.account_id == account_id)
-    ) or 0
+    total_sold = (
+        await db.scalar(
+            select(func.sum(ProductListing.sold_quantity)).where(
+                ProductListing.account_id == account_id
+            )
+        )
+        or 0
+    )
 
     visit_stats: dict = {"total_visits": 0}
     if account.platform == "mercadolivre":
@@ -1523,6 +1676,7 @@ async def get_category_info(
 ):
     """Retorna nome e path_from_root de uma categoria ML (endpoint público ML)."""
     import httpx
+
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(f"https://api.mercadolibre.com/categories/{category_id}")
     if resp.status_code != 200:
@@ -1547,22 +1701,24 @@ async def get_category_attributes(
         tags = attr.get("tags") or []
         if "read_only" in tags:
             continue
-        is_required    = "required" in tags
+        is_required = "required" in tags
         is_recommended = "recommended" in tags
-        is_optional    = not is_required and not is_recommended
-        result.append({
-            "id":             attr.get("id"),
-            "name":           attr.get("name"),
-            "value_type":     attr.get("value_type"),
-            "is_required":    is_required,
-            "is_recommended": is_recommended,
-            "is_optional":    is_optional,
-            "allowed_units":  attr.get("allowed_units"),
-            "values": [
-                {"id": v.get("id"), "name": v.get("name")}
-                for v in (attr.get("values") or [])[:50]
-            ],
-        })
+        is_optional = not is_required and not is_recommended
+        result.append(
+            {
+                "id": attr.get("id"),
+                "name": attr.get("name"),
+                "value_type": attr.get("value_type"),
+                "is_required": is_required,
+                "is_recommended": is_recommended,
+                "is_optional": is_optional,
+                "allowed_units": attr.get("allowed_units"),
+                "values": [
+                    {"id": v.get("id"), "name": v.get("name")}
+                    for v in (attr.get("values") or [])[:50]
+                ],
+            }
+        )
     return result
 
 
@@ -1582,7 +1738,9 @@ async def sync_listing_to_ml(
     # Resolve produto vinculado para preencher campos do payload
     product = listing.cmig_product or listing.catalog_product
     if not product:
-        raise HTTPException(status_code=400, detail="Anúncio sem produto vinculado para sincronizar")
+        raise HTTPException(
+            status_code=400, detail="Anúncio sem produto vinculado para sincronizar"
+        )
 
     form = {
         "title_override": listing.title_override,
@@ -1616,16 +1774,20 @@ async def sync_listing_to_ml(
     if listing.description_override:
         desc_ok = True
         try:
-            desc_ok = await ml_service.update_item_description(access_token, listing.platform_item_id, listing.description_override)
+            desc_ok = await ml_service.update_item_description(
+                access_token, listing.platform_item_id, listing.description_override
+            )
         except Exception:
             try:
-                desc_ok = await ml_service.post_item_description(access_token, listing.platform_item_id, listing.description_override)
+                desc_ok = await ml_service.post_item_description(
+                    access_token, listing.platform_item_id, listing.description_override
+                )
             except Exception:
                 desc_ok = False
         if desc_ok is False and "description" not in skipped:
             skipped.append("description")
 
-    listing.last_sync_at = datetime.now(timezone.utc)
+    listing.last_sync_at = datetime.now(UTC)
     await db.commit()
     result = _serialize_listing(listing)
     if skipped:
@@ -1649,7 +1811,7 @@ async def reactivate_anuncio(
     await ml_service.reactivate_item(access_token, listing.platform_item_id, quantity)
 
     listing.status = "published"
-    listing.last_sync_at = datetime.now(timezone.utc)
+    listing.last_sync_at = datetime.now(UTC)
     await db.commit()
     return _serialize_listing(listing)
 
@@ -1711,7 +1873,9 @@ async def get_anuncio_costs(
     listing = await _get_listing_or_404(listing_id, current_user, db)
 
     if listing.account.platform != "mercadolivre":
-        raise HTTPException(status_code=400, detail="Consulta de custos disponível apenas para Mercado Livre")
+        raise HTTPException(
+            status_code=400, detail="Consulta de custos disponível apenas para Mercado Livre"
+        )
     if not listing.sale_price:
         raise HTTPException(status_code=400, detail="Anúncio sem preço definido")
     if not listing.category_id:
@@ -1727,6 +1891,7 @@ async def get_anuncio_costs(
     if listing.platform_item_id:
         try:
             import asyncio as _aio
+
             promo_info, auto_info = await _aio.gather(
                 ml_service.get_sale_price_info(access_token, listing.platform_item_id),
                 ml_service.get_item_auto_pricing(access_token, listing.platform_item_id),
@@ -1734,14 +1899,16 @@ async def get_anuncio_costs(
             if promo_info.get("sale_price") and float(promo_info["sale_price"]) > 0:
                 real_price = float(promo_info["sale_price"])
                 listing.sale_price = real_price
-            promo_type_live = promo_info.get("promotion_type") if promo_info.get("has_promotion") else None
+            promo_type_live = (
+                promo_info.get("promotion_type") if promo_info.get("has_promotion") else None
+            )
             if promo_info.get("has_promotion"):
-                listing.regular_price      = promo_info.get("regular_price")
-                listing.promo_type         = promo_type_live
+                listing.regular_price = promo_info.get("regular_price")
+                listing.promo_type = promo_type_live
                 listing.promo_discount_pct = promo_info.get("discount_pct")
             else:
-                listing.regular_price      = None
-                listing.promo_type         = None
+                listing.regular_price = None
+                listing.promo_type = None
                 listing.promo_discount_pct = None
             # Detecção via /items/{id}/prices e tags — fonte correta para automação de preço
             auto_price_adj = auto_info["is_auto"]
@@ -1749,7 +1916,9 @@ async def get_anuncio_costs(
         except Exception:
             pass
 
-    logistic_type = (listing.logistic_type or "").strip().lower() or ("fulfillment" if listing.is_full else "cross_docking")
+    logistic_type = (listing.logistic_type or "").strip().lower() or (
+        "fulfillment" if listing.is_full else "cross_docking"
+    )
 
     costs = await ml_service.get_listing_costs(
         access_token=access_token,
@@ -1785,30 +1954,35 @@ async def get_anuncio_costs(
         )
         tier = ml_service.reputation_tier_for_account(listing.account)
         full_tariff = await ml_service.get_full_shipping_cost(
-            wb["billable_kg"], real_price, tier, db,
+            wb["billable_kg"],
+            real_price,
+            tier,
+            db,
             free_shipping=bool(listing.free_shipping),
         )
         if full_tariff > 0:
-            commission  = float(costs.get("commission_amount") or 0)
-            fixed_fee   = float(costs.get("fixed_fee") or 0)
-            financing   = float(costs.get("financing_fee") or 0)
-            total       = commission + full_tariff + fixed_fee + financing
+            commission = float(costs.get("commission_amount") or 0)
+            fixed_fee = float(costs.get("fixed_fee") or 0)
+            financing = float(costs.get("financing_fee") or 0)
+            total = commission + full_tariff + fixed_fee + financing
             costs = {
                 **costs,
                 "shipping_cost": round(full_tariff, 2),
-                "total_cost":    round(total, 2),
-                "net_revenue":   round(real_price - total, 2),
-                "margin_pct":    round(((real_price - total) / real_price) * 100, 2) if real_price > 0 else 0.0,
+                "total_cost": round(total, 2),
+                "net_revenue": round(real_price - total, 2),
+                "margin_pct": round(((real_price - total) / real_price) * 100, 2)
+                if real_price > 0
+                else 0.0,
                 "shipping_source": "local_table_fallback",
             }
 
     # Persiste os custos calculados para evitar recalculo e manter histórico
-    listing.commission_pct    = costs.get("commission_pct")
+    listing.commission_pct = costs.get("commission_pct")
     listing.commission_amount = costs.get("commission_amount")
-    listing.shipping_cost     = costs.get("shipping_cost")
-    listing.net_revenue       = costs.get("net_revenue")
-    listing.margin_pct        = costs.get("margin_pct")
-    listing.costs_cached_at   = datetime.now(timezone.utc)
+    listing.shipping_cost = costs.get("shipping_cost")
+    listing.net_revenue = costs.get("net_revenue")
+    listing.margin_pct = costs.get("margin_pct")
+    listing.costs_cached_at = datetime.now(UTC)
     await db.commit()
 
     # Devolve custos + dados de promoção + flag de ajuste automático
@@ -1829,10 +2003,10 @@ async def get_anuncio_prices_debug(
     result = await ml_service.get_item_auto_pricing(access_token, listing.platform_item_id)
     return {
         "platform_item_id": listing.platform_item_id,
-        "is_auto_detected":  result["is_auto"],
-        "auto_type":         result["auto_type"],
-        "prices_raw":        result["prices_raw"],
-        "tags_raw":          result["tags_raw"],
+        "is_auto_detected": result["is_auto"],
+        "auto_type": result["auto_type"],
+        "prices_raw": result["prices_raw"],
+        "tags_raw": result["tags_raw"],
     }
 
 
@@ -1846,7 +2020,9 @@ async def get_anuncio_promotion(
     listing = await _get_listing_or_404(listing_id, current_user, db)
 
     if listing.account.platform != "mercadolivre":
-        raise HTTPException(status_code=400, detail="Promoções disponíveis apenas para Mercado Livre")
+        raise HTTPException(
+            status_code=400, detail="Promoções disponíveis apenas para Mercado Livre"
+        )
     if not listing.platform_item_id:
         raise HTTPException(status_code=400, detail="Anúncio sem ID no marketplace")
 

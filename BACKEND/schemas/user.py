@@ -1,7 +1,7 @@
-from pydantic import BaseModel, EmailStr
 from datetime import date, datetime
-from typing import Optional
 from decimal import Decimal
+
+from pydantic import BaseModel
 
 
 class AddressSchema(BaseModel):
@@ -18,24 +18,24 @@ class ProfileOut(BaseModel):
     id: int
     email: str
     full_name: str
-    whatsapp: Optional[str]
-    cpf_cnpj: Optional[str]
+    whatsapp: str | None
+    cpf_cnpj: str | None
     role: str  # ugo | ac | admin | go
     dark_mode: bool
-    warehouse_id: Optional[int] = None
-    go_id: Optional[int] = None
+    warehouse_id: int | None = None
+    go_id: int | None = None
     created_at: datetime
-    address: Optional[AddressSchema] = None
-    subscription_status: Optional[str] = None
-    subscription_due_date: Optional[date] = None
-    balance: Optional[Decimal] = None
+    address: AddressSchema | None = None
+    subscription_status: str | None = None
+    subscription_due_date: date | None = None
+    balance: Decimal | None = None
 
     model_config = {"from_attributes": True}
 
 
 class ProfileUpdate(BaseModel):
-    full_name: Optional[str] = None
-    whatsapp: Optional[str] = None
+    full_name: str | None = None
+    whatsapp: str | None = None
 
 
 class PreferencesUpdate(BaseModel):
@@ -49,4 +49,4 @@ class ViaCEPResponse(BaseModel):
     bairro: str
     localidade: str
     uf: str
-    erro: Optional[bool] = None
+    erro: bool | None = None

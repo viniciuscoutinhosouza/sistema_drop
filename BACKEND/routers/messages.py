@@ -2,24 +2,25 @@
 Central de Atendimento — router de mensagens e perguntas multi-plataforma.
 Gerencia threads (pós-venda e pré-venda) e mensagens individuais.
 """
+
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, update
-from sqlalchemy.orm import selectinload
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+import services.ai_service as ai_svc
+import services.messages_service as msg_svc
 from database import get_db
 from dependencies import get_current_user
-from models.user import User
-from models.messages import ConversationThread, ConversationMessage, AIConfig, CMIGAIConfig
-from models.integration import MarketplaceAccount
 from models.cmig import CMIG, CMIGAdministrator
-import services.messages_service as msg_svc
-import services.ai_service as ai_svc
+from models.integration import MarketplaceAccount
+from models.messages import AIConfig, CMIGAIConfig, ConversationMessage, ConversationThread
+from models.user import User
 
 router = APIRouter(prefix="/api/v1/messages", tags=["messages"])
 logger = logging.getLogger(__name__)
@@ -29,10 +30,13 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 async def _get_accessible_account_ids(db: AsyncSession, user: User) -> list[int]:
     """Retorna IDs de contas que o usuário pode ver."""
     if user.role == "admin":
-        result = await db.execute(select(MarketplaceAccount.id).where(MarketplaceAccount.is_active == True))
+        result = await db.execute(
+            select(MarketplaceAccount.id).where(MarketplaceAccount.is_active == True)
+        )
         return [r[0] for r in result.all()]
     if user.role == "ac":
         result = await db.execute(
@@ -42,7 +46,9 @@ async def _get_accessible_account_ids(db: AsyncSession, user: User) -> list[int]
             .where(CMIGAdministrator.user_id == user.id)
         )
         return [r[0] for r in result.all()]
-    raise HTTPException(status_code=403, detail="Acesso à central de atendimento apenas para AC e admin.")
+    raise HTTPException(
+        status_code=403, detail="Acesso à central de atendimento apenas para AC e admin."
+    )
 
 
 def _serialize_thread(t: ConversationThread) -> dict:
@@ -83,6 +89,7 @@ def _serialize_message(m: ConversationMessage) -> dict:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get("/stats")
 async def get_unread_stats(
     db: AsyncSession = Depends(get_db),
@@ -108,7 +115,9 @@ async def get_unread_stats(
     total = sum(r.unread or 0 for r in rows)
     return {
         "total_unread": total,
-        "by_account": [{"account_id": r.marketplace_account_id, "unread": r.unread or 0} for r in rows],
+        "by_account": [
+            {"account_id": r.marketplace_account_id, "unread": r.unread or 0} for r in rows
+        ],
     }
 
 
@@ -132,7 +141,9 @@ async def list_threads(
 
     q = (
         select(ConversationThread)
-        .options(selectinload(ConversationThread.messages), selectinload(ConversationThread.account))
+        .options(
+            selectinload(ConversationThread.messages), selectinload(ConversationThread.account)
+        )
         .where(ConversationThread.marketplace_account_id.in_(account_ids))
         .where(ConversationThread.is_archived == False)
     )
@@ -161,7 +172,12 @@ async def list_threads(
     result = await db.execute(q)
     threads = result.scalars().all()
 
-    return {"items": [_serialize_thread(t) for t in threads], "total": total, "offset": offset, "limit": limit}
+    return {
+        "items": [_serialize_thread(t) for t in threads],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 @router.get("/{thread_id}")
@@ -175,7 +191,9 @@ async def get_thread(
 
     result = await db.execute(
         select(ConversationThread)
-        .options(selectinload(ConversationThread.messages), selectinload(ConversationThread.account))
+        .options(
+            selectinload(ConversationThread.messages), selectinload(ConversationThread.account)
+        )
         .where(ConversationThread.id == thread_id)
     )
     thread = result.scalar_one_or_none()
@@ -227,7 +245,9 @@ async def send_reply(
 
     account = thread.account
     if not account.access_token:
-        raise HTTPException(status_code=400, detail="Conta sem token de acesso. Reconecte o Mercado Livre.")
+        raise HTTPException(
+            status_code=400, detail="Conta sem token de acesso. Reconecte o Mercado Livre."
+        )
 
     # Envia para o marketplace
     if thread.platform == "mercadolivre":
@@ -247,7 +267,9 @@ async def send_reply(
                 text=text,
             )
     else:
-        raise HTTPException(status_code=400, detail=f"Plataforma '{thread.platform}' ainda não suporta envio.")
+        raise HTTPException(
+            status_code=400, detail=f"Plataforma '{thread.platform}' ainda não suporta envio."
+        )
 
     # Salva mensagem enviada no BD
     msg = ConversationMessage(
@@ -256,14 +278,14 @@ async def send_reply(
         from_platform_id=account.platform_user_id,
         text=text,
         is_read=True,
-        sent_at=datetime.now(timezone.utc),
+        sent_at=datetime.now(UTC),
         ai_suggested_text=ai_suggestion,
     )
     db.add(msg)
     await db.execute(
         update(ConversationThread)
         .where(ConversationThread.id == thread_id)
-        .values(status="open", last_message_at=datetime.now(timezone.utc))
+        .values(status="open", last_message_at=datetime.now(UTC))
     )
     await db.commit()
     await db.refresh(msg)
@@ -281,7 +303,9 @@ async def ai_suggest(
 
     result = await db.execute(
         select(ConversationThread)
-        .options(selectinload(ConversationThread.messages), selectinload(ConversationThread.account))
+        .options(
+            selectinload(ConversationThread.messages), selectinload(ConversationThread.account)
+        )
         .where(ConversationThread.id == thread_id)
     )
     thread = result.scalar_one_or_none()
@@ -292,7 +316,9 @@ async def ai_suggest(
     cfg_result = await db.execute(select(AIConfig).where(AIConfig.is_active == True))
     ai_cfg = cfg_result.scalar_one_or_none()
     if not ai_cfg:
-        raise HTTPException(status_code=400, detail="IA não configurada ou inativa. Configure em Configurações.")
+        raise HTTPException(
+            status_code=400, detail="IA não configurada ou inativa. Configure em Configurações."
+        )
 
     # Busca instruções específicas da CMIG
     custom_instructions = None
@@ -305,6 +331,7 @@ async def ai_suggest(
             custom_instructions = cmig_cfg.custom_instructions
 
     import base64
+
     api_key = base64.b64decode(ai_cfg.api_key.encode()).decode() if ai_cfg.api_key else ""
 
     suggested = await ai_svc.generate_reply(
@@ -335,6 +362,7 @@ async def sync_account(
         raise HTTPException(status_code=400, detail="Conta não encontrada ou sem token.")
 
     from tasks.messages_sync import sync_account_messages
+
     asyncio.create_task(sync_account_messages(account_id))
     return {"message": "Sincronização iniciada em background."}
 
@@ -357,6 +385,7 @@ async def sync_questions_history_endpoint(
         raise HTTPException(status_code=400, detail="Conta não encontrada ou sem token.")
 
     from tasks.messages_sync import sync_questions_history
+
     asyncio.create_task(sync_questions_history(account_id, days=days))
     return {"message": f"Importação dos últimos {days} dias iniciada em background."}
 
@@ -376,17 +405,21 @@ async def debug_inbox(
     if not account or not account.access_token:
         raise HTTPException(status_code=400, detail="Conta não encontrada ou sem token.")
 
-    from models.order import Order
     from datetime import timedelta
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=60)
+    from models.order import Order
+
+    cutoff = datetime.now(UTC) - timedelta(days=60)
     orders_result = await db.execute(
-        select(Order).where(
+        select(Order)
+        .where(
             Order.account_id == account_id,
             Order.platform == "mercadolivre",
             Order.platform_order_id.isnot(None),
             Order.created_at >= cutoff,
-        ).order_by(Order.created_at.desc()).limit(30)
+        )
+        .order_by(Order.created_at.desc())
+        .limit(30)
     )
     orders = orders_result.scalars().all()
 
@@ -400,11 +433,13 @@ async def debug_inbox(
                 seller_id=account.platform_user_id,
             )
             msgs = data.get("messages") or []
-            samples.append({
-                "pack_id": pack_id,
-                "mensagens": len(msgs),
-                "preview": (msgs[0].get("text") or "")[:60] if msgs else None,
-            })
+            samples.append(
+                {
+                    "pack_id": pack_id,
+                    "mensagens": len(msgs),
+                    "preview": (msgs[0].get("text") or "")[:60] if msgs else None,
+                }
+            )
         except Exception as e:
             samples.append({"pack_id": pack_id, "erro": str(e)})
 

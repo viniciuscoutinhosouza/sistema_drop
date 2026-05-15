@@ -1,21 +1,34 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
 from database import get_db
-from dependencies import require_role, get_current_user
-from models.user import User
+from dependencies import get_current_user, require_role
 from models.go import GO
+from models.user import User
 from models.warehouse import Warehouse
-from schemas.go import GOCreate, GOUpdate, GOOut
+from schemas.go import GOCreate, GOOut, GOUpdate
 from services.auth_service import hash_password
 
 router = APIRouter()
 
 _WAREHOUSE_FIELDS = [
-    "company_name", "trade_name", "phone", "email", "whatsapp",
-    "zip_code", "street", "number", "complement", "neighborhood",
-    "city", "state", "pix_key_type", "pix_key", "notes",
+    "company_name",
+    "trade_name",
+    "phone",
+    "email",
+    "whatsapp",
+    "zip_code",
+    "street",
+    "number",
+    "complement",
+    "neighborhood",
+    "city",
+    "state",
+    "pix_key_type",
+    "pix_key",
+    "notes",
 ]
 
 
@@ -32,9 +45,24 @@ def _go_to_out(go: GO) -> dict:
         "full_name": user.full_name if user else None,
     }
     if wh:
-        for f in ["company_name", "trade_name", "cnpj", "phone", "email", "whatsapp",
-                  "zip_code", "street", "number", "complement", "neighborhood",
-                  "city", "state", "pix_key_type", "pix_key", "notes"]:
+        for f in [
+            "company_name",
+            "trade_name",
+            "cnpj",
+            "phone",
+            "email",
+            "whatsapp",
+            "zip_code",
+            "street",
+            "number",
+            "complement",
+            "neighborhood",
+            "city",
+            "state",
+            "pix_key_type",
+            "pix_key",
+            "notes",
+        ]:
             out[f] = getattr(wh, f, None)
     return out
 
@@ -44,9 +72,7 @@ async def list_goes(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("admin")),
 ):
-    result = await db.execute(
-        select(GO).options(selectinload(GO.warehouse), selectinload(GO.user))
-    )
+    result = await db.execute(select(GO).options(selectinload(GO.warehouse), selectinload(GO.user)))
     goes = result.scalars().all()
     return [_go_to_out(g) for g in goes]
 
@@ -117,8 +143,7 @@ async def create_go(
 
     # Recarregar com relacionamentos
     result = await db.execute(
-        select(GO).where(GO.id == go.id)
-        .options(selectinload(GO.warehouse), selectinload(GO.user))
+        select(GO).where(GO.id == go.id).options(selectinload(GO.warehouse), selectinload(GO.user))
     )
     go = result.scalar_one()
     return _go_to_out(go)
@@ -134,8 +159,7 @@ async def get_go(
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     result = await db.execute(
-        select(GO).where(GO.id == go_id)
-        .options(selectinload(GO.warehouse), selectinload(GO.user))
+        select(GO).where(GO.id == go_id).options(selectinload(GO.warehouse), selectinload(GO.user))
     )
     go = result.scalar_one_or_none()
     if not go:
@@ -154,8 +178,7 @@ async def update_go(
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     result = await db.execute(
-        select(GO).where(GO.id == go_id)
-        .options(selectinload(GO.warehouse), selectinload(GO.user))
+        select(GO).where(GO.id == go_id).options(selectinload(GO.warehouse), selectinload(GO.user))
     )
     go = result.scalar_one_or_none()
     if not go:
@@ -178,8 +201,7 @@ async def update_go(
     await db.commit()
 
     result = await db.execute(
-        select(GO).where(GO.id == go_id)
-        .options(selectinload(GO.warehouse), selectinload(GO.user))
+        select(GO).where(GO.id == go_id).options(selectinload(GO.warehouse), selectinload(GO.user))
     )
     go = result.scalar_one()
     return _go_to_out(go)
@@ -196,4 +218,7 @@ async def list_go_warehouses(
 
     result = await db.execute(select(Warehouse).where(Warehouse.go_id == go_id))
     warehouses = result.scalars().all()
-    return [{"id": w.id, "name": w.name, "cnpj": w.cnpj, "city": w.city, "state": w.state} for w in warehouses]
+    return [
+        {"id": w.id, "name": w.name, "cnpj": w.cnpj, "city": w.city, "state": w.state}
+        for w in warehouses
+    ]

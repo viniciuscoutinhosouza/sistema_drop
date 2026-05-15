@@ -2,17 +2,19 @@
 Simulador de Custos — Mercado Livre
 Endpoints para calcular comissão, frete e margem líquida de anúncios ML.
 """
-from datetime import datetime, timezone, timedelta
+
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user
-from models.user import User
 from models.integration import MarketplaceAccount
+from models.user import User
 from services import ml_service
 
 router = APIRouter()
@@ -20,7 +22,10 @@ router = APIRouter()
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
-async def _get_account_with_token(account_id: int, user: User, db: AsyncSession) -> tuple[MarketplaceAccount, str]:
+
+async def _get_account_with_token(
+    account_id: int, user: User, db: AsyncSession
+) -> tuple[MarketplaceAccount, str]:
     result = await db.execute(
         select(MarketplaceAccount)
         .options(selectinload(MarketplaceAccount.administrators))
@@ -34,15 +39,19 @@ async def _get_account_with_token(account_id: int, user: User, db: AsyncSession)
         if user.id not in admin_ids:
             raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")
     if account.platform != "mercadolivre":
-        raise HTTPException(status_code=400, detail="Simulador disponível apenas para Mercado Livre")
+        raise HTTPException(
+            status_code=400, detail="Simulador disponível apenas para Mercado Livre"
+        )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires = account.token_expires_at
     if expires and expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
+        expires = expires.replace(tzinfo=UTC)
     if expires and expires <= now:
         if not account.refresh_token:
-            raise HTTPException(status_code=401, detail="Token expirado. Reconecte a conta em Integrações.")
+            raise HTTPException(
+                status_code=401, detail="Token expirado. Reconecte a conta em Integrações."
+            )
         token_data = await ml_service.refresh_ml_token(account.refresh_token)
         account.access_token = token_data["access_token"]
         account.refresh_token = token_data.get("refresh_token", account.refresh_token)
@@ -50,7 +59,9 @@ async def _get_account_with_token(account_id: int, user: User, db: AsyncSession)
         await db.commit()
 
     if not account.access_token:
-        raise HTTPException(status_code=401, detail="Conta sem token. Conecte a conta em Integrações.")
+        raise HTTPException(
+            status_code=401, detail="Conta sem token. Conecte a conta em Integrações."
+        )
 
     return account, account.access_token
 
@@ -59,8 +70,8 @@ async def _get_account_with_token(account_id: int, user: User, db: AsyncSession)
 
 _LISTING_TYPE_INFO: dict[str, dict] = {
     "free": {
-        "label":       "Grátis",
-        "fee_range":   "0%",
+        "label": "Grátis",
+        "fee_range": "0%",
         "description": "Sem comissão. Duração de 60 dias, baixa exposição nos resultados e sem parcelamento.",
         "restrictions": [
             "Limitado a 5 vendas/ano para produtos novos e 20 vendas/ano para usados",
@@ -70,16 +81,16 @@ _LISTING_TYPE_INFO: dict[str, dict] = {
         ],
     },
     "gold_special": {
-        "label":       "Clássico",
-        "fee_range":   "10%–14%",
+        "label": "Clássico",
+        "fee_range": "10%–14%",
         "description": "Tarifa entre 10% e 14% por categoria. Duração ilimitada, exposição média. Sem parcelamento.",
         "restrictions": [
             "Sem parcelamento em 12x sem juros para o comprador",
         ],
     },
     "gold_pro": {
-        "label":       "Premium",
-        "fee_range":   "15%–19%",
+        "label": "Premium",
+        "fee_range": "15%–19%",
         "description": "Tarifa entre 15% e 19%. Maior visibilidade e parcelamento em 12x sem juros — ideal para vendedores profissionais.",
         "restrictions": [],
     },
@@ -87,6 +98,7 @@ _LISTING_TYPE_INFO: dict[str, dict] = {
 
 
 # ── schemas ────────────────────────────────────────────────────────────────────
+
 
 class CommissionRequest(BaseModel):
     account_id: int
@@ -97,7 +109,10 @@ class CommissionRequest(BaseModel):
         description="Tipo de anúncio: free (Grátis) | gold_special (Clássico) | gold_pro (Premium)",
     )
     shipping_mode: str = Field("me2", description="Modalidade de envio: me2 | me1")
-    logistic_type: str = Field("drop_off", description="Tipo logístico: drop_off | fulfillment | xd_drop_off | cross_docking")
+    logistic_type: str = Field(
+        "drop_off",
+        description="Tipo logístico: drop_off | fulfillment | xd_drop_off | cross_docking",
+    )
 
 
 class ShippingRequest(BaseModel):
@@ -110,18 +125,24 @@ class ShippingRequest(BaseModel):
     height_cm: float = Field(..., gt=0, description="Altura em cm")
     width_cm: float = Field(..., gt=0, description="Largura em cm")
     length_cm: float = Field(..., gt=0, description="Comprimento em cm")
-    free_shipping: bool = Field(True, description="Anúncio com frete grátis (vendedor arca com o custo)")
+    free_shipping: bool = Field(
+        True, description="Anúncio com frete grátis (vendedor arca com o custo)"
+    )
 
 
 class SimulatorFullRequest(BaseModel):
     account_id: int
     price: float = Field(..., gt=0, description="Preço de venda do produto")
-    cost_price: float | None = Field(None, ge=0, description="Custo do produto (para margem sobre custo)")
+    cost_price: float | None = Field(
+        None, ge=0, description="Custo do produto (para margem sobre custo)"
+    )
     category_id: str = Field(..., description="ID da categoria ML")
     listing_type_id: str = Field("gold_special", description="Tipo de anúncio")
     shipping_mode: str = Field("me2", description="Modalidade de envio")
     logistic_type: str = Field("drop_off", description="Tipo logístico")
-    weight_kg: float | None = Field(None, gt=0, description="Peso em kg (necessário para calcular frete)")
+    weight_kg: float | None = Field(
+        None, gt=0, description="Peso em kg (necessário para calcular frete)"
+    )
     height_cm: float | None = Field(None, gt=0, description="Altura em cm")
     width_cm: float | None = Field(None, gt=0, description="Largura em cm")
     length_cm: float | None = Field(None, gt=0, description="Comprimento em cm")
@@ -129,6 +150,7 @@ class SimulatorFullRequest(BaseModel):
 
 
 # ── endpoints ──────────────────────────────────────────────────────────────────
+
 
 @router.get("/listing-types")
 async def list_listing_types():
@@ -166,12 +188,12 @@ async def simulate_commission(
     return {
         **commission,
         # Contexto de preço e receita (sem frete)
-        "price":                   round(body.price, 2),
+        "price": round(body.price, 2),
         "net_revenue_before_ship": round(body.price - commission["sale_fee_amount"], 2),
         # Metadados do tipo de anúncio
-        "listing_type_label":        info.get("label", body.listing_type_id),
-        "listing_type_fee_range":    info.get("fee_range", ""),
-        "listing_type_description":  info.get("description", ""),
+        "listing_type_label": info.get("label", body.listing_type_id),
+        "listing_type_fee_range": info.get("fee_range", ""),
+        "listing_type_description": info.get("description", ""),
         "listing_type_restrictions": info.get("restrictions", []),
     }
 
@@ -243,9 +265,9 @@ async def simulate_full(
 
     return {
         **costs,
-        "cost_price":          body.cost_price,
-        "gross_profit":        gross_profit,
-        "margin_on_cost_pct":  margin_on_cost_pct,
-        "listing_type_id":     body.listing_type_id,
-        "logistic_type":       body.logistic_type,
+        "cost_price": body.cost_price,
+        "gross_profit": gross_profit,
+        "margin_on_cost_pct": margin_on_cost_pct,
+        "listing_type_id": body.listing_type_id,
+        "logistic_type": body.logistic_type,
     }

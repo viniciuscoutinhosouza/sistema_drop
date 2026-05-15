@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_
+
 from database import get_db
 from dependencies import require_role
-from models.product import CatalogProduct, CatalogProductImage, Category
 from models.cmig import CMIGProduct
+from models.product import CatalogProduct, CatalogProductImage, Category
 
 router = APIRouter()
 
@@ -53,17 +54,19 @@ async def list_catalog(
             .limit(1)
         )
         img = img_result.scalar_one_or_none()
-        items.append({
-            "id": p.id,
-            "sku": p.sku,
-            "title": p.title,
-            "cost_price": float(p.cost_price),
-            "suggested_price": float(p.suggested_price) if p.suggested_price else None,
-            "stock_quantity": p.stock_quantity,
-            "brand": p.brand,
-            "category_id": p.category_id,
-            "image_url": img.url if img else "",
-        })
+        items.append(
+            {
+                "id": p.id,
+                "sku": p.sku,
+                "title": p.title,
+                "cost_price": float(p.cost_price),
+                "suggested_price": float(p.suggested_price) if p.suggested_price else None,
+                "stock_quantity": p.stock_quantity,
+                "brand": p.brand,
+                "category_id": p.category_id,
+                "image_url": img.url if img else "",
+            }
+        )
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
@@ -74,8 +77,9 @@ async def list_categories(db: AsyncSession = Depends(get_db)):
     return [{"id": c.id, "name": c.name, "parent_id": c.parent_id} for c in result.scalars().all()]
 
 
-@router.post("/categories", status_code=201,
-             dependencies=[Depends(require_role("ac", "ugo", "admin"))])
+@router.post(
+    "/categories", status_code=201, dependencies=[Depends(require_role("ac", "ugo", "admin"))]
+)
 async def create_category(body: dict, db: AsyncSession = Depends(get_db)):
     name = (body.get("name") or "").strip()
     if not name:
@@ -84,12 +88,18 @@ async def create_category(body: dict, db: AsyncSession = Depends(get_db)):
 
     dup = await db.execute(
         select(Category).where(
-            and_(func.lower(Category.name) == name.lower(),
-                 Category.parent_id.is_(parent_id) if parent_id is None else Category.parent_id == parent_id)
+            and_(
+                func.lower(Category.name) == name.lower(),
+                Category.parent_id.is_(parent_id)
+                if parent_id is None
+                else Category.parent_id == parent_id,
+            )
         )
     )
     if dup.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Já existe uma categoria com esse nome no mesmo nível")
+        raise HTTPException(
+            status_code=409, detail="Já existe uma categoria com esse nome no mesmo nível"
+        )
 
     cat = Category(name=name, parent_id=parent_id)
     db.add(cat)
@@ -98,10 +108,11 @@ async def create_category(body: dict, db: AsyncSession = Depends(get_db)):
     return {"id": cat.id, "name": cat.name, "parent_id": cat.parent_id}
 
 
-@router.put("/categories/{category_id}",
-            dependencies=[Depends(require_role("ac", "ugo", "admin"))])
+@router.put("/categories/{category_id}", dependencies=[Depends(require_role("ac", "ugo", "admin"))])
 async def update_category(category_id: int, body: dict, db: AsyncSession = Depends(get_db)):
-    cat = (await db.execute(select(Category).where(Category.id == category_id))).scalar_one_or_none()
+    cat = (
+        await db.execute(select(Category).where(Category.id == category_id))
+    ).scalar_one_or_none()
     if not cat:
         raise HTTPException(status_code=404, detail="Categoria não encontrada")
 
@@ -120,22 +131,35 @@ async def update_category(category_id: int, body: dict, db: AsyncSession = Depen
     return {"id": cat.id, "name": cat.name, "parent_id": cat.parent_id}
 
 
-@router.delete("/categories/{category_id}",
-               dependencies=[Depends(require_role("ac", "ugo", "admin"))])
+@router.delete(
+    "/categories/{category_id}", dependencies=[Depends(require_role("ac", "ugo", "admin"))]
+)
 async def delete_category(category_id: int, db: AsyncSession = Depends(get_db)):
-    cat = (await db.execute(select(Category).where(Category.id == category_id))).scalar_one_or_none()
+    cat = (
+        await db.execute(select(Category).where(Category.id == category_id))
+    ).scalar_one_or_none()
     if not cat:
         raise HTTPException(status_code=404, detail="Categoria não encontrada")
 
-    pg_count = (await db.execute(
-        select(func.count()).select_from(CatalogProduct).where(CatalogProduct.category_id == category_id)
-    )).scalar() or 0
-    cmig_count = (await db.execute(
-        select(func.count()).select_from(CMIGProduct).where(CMIGProduct.category_id == category_id)
-    )).scalar() or 0
-    children_count = (await db.execute(
-        select(func.count()).select_from(Category).where(Category.parent_id == category_id)
-    )).scalar() or 0
+    pg_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(CatalogProduct)
+            .where(CatalogProduct.category_id == category_id)
+        )
+    ).scalar() or 0
+    cmig_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(CMIGProduct)
+            .where(CMIGProduct.category_id == category_id)
+        )
+    ).scalar() or 0
+    children_count = (
+        await db.execute(
+            select(func.count()).select_from(Category).where(Category.parent_id == category_id)
+        )
+    ).scalar() or 0
 
     if pg_count or cmig_count or children_count:
         raise HTTPException(
@@ -151,11 +175,14 @@ async def delete_category(category_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/{product_id}")
 async def get_catalog_product(product_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(CatalogProduct).where(CatalogProduct.id == product_id, CatalogProduct.is_active == True)
+        select(CatalogProduct).where(
+            CatalogProduct.id == product_id, CatalogProduct.is_active == True
+        )
     )
     product = result.scalar_one_or_none()
     if not product:
         from fastapi import HTTPException
+
         raise HTTPException(status_code=404, detail="Produto não encontrado")
 
     images_result = await db.execute(

@@ -4,10 +4,11 @@ Gestão de CONTAs de Marketplace (antigo: integrations).
 Uma CONTA é identificada unicamente por (platform, email, phone).
 Pode ser co-administrada por múltiplos ACs via AccountAdministrator.
 """
-import secrets
+
 import random
+import secrets
 import string
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 
 def _trunc_bytes(s: str, max_bytes: int) -> str:
@@ -17,18 +18,19 @@ def _trunc_bytes(s: str, max_bytes: int) -> str:
         return s
     return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_db
-from dependencies import get_current_user, get_active_ac, require_role
-from models.user import User, AccountAdministrator
-from models.integration import MarketplaceAccount, AccountBalance, OTPVerification
-from models.product import DropshipperProduct, ProductListing
-from services import ml_service, shopee_service, bling_service
 from config import get_settings
+from database import get_db
+from dependencies import get_active_ac, get_current_user
+from models.integration import AccountBalance, MarketplaceAccount, OTPVerification
+from models.product import DropshipperProduct, ProductListing
+from models.user import AccountAdministrator, User
+from services import bling_service, ml_service, shopee_service
 
 settings = get_settings()
 router = APIRouter()
@@ -41,7 +43,9 @@ def _generate_otp() -> str:
     return "".join(random.choices(string.digits, k=6))
 
 
-async def _assert_ac_can_access(account_id: int, user_id: int, db: AsyncSession) -> MarketplaceAccount:
+async def _assert_ac_can_access(
+    account_id: int, user_id: int, db: AsyncSession
+) -> MarketplaceAccount:
     """Verifica se o usuário é co-administrador da CONTA."""
     result = await db.execute(
         select(MarketplaceAccount)
@@ -74,12 +78,15 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
         "last_sync_at": acc.last_sync_at.isoformat() if acc.last_sync_at else None,
         "power_seller_status": acc.power_seller_status,
         "level_id": acc.level_id,
-        "reputation_cached_at": acc.reputation_cached_at.isoformat() if acc.reputation_cached_at else None,
+        "reputation_cached_at": acc.reputation_cached_at.isoformat()
+        if acc.reputation_cached_at
+        else None,
         "created_at": acc.created_at.isoformat() if acc.created_at else None,
     }
 
 
 # ─── Listar CONTAs do AC ──────────────────────────────────────────────────────
+
 
 @router.get("")
 async def list_accounts(
@@ -97,6 +104,7 @@ async def list_accounts(
 
 
 # ─── Criar CONTA com verificação OTP ─────────────────────────────────────────
+
 
 @router.post("", status_code=201)
 async def create_account(
@@ -137,11 +145,13 @@ async def create_account(
         if admin_check.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Você já administra esta conta")
         # Adicionar este AC como co-admin (sem OTP duplicado)
-        db.add(AccountAdministrator(
-            user_id=current_user.id,
-            account_id=existing.id,
-            is_owner=False,
-        ))
+        db.add(
+            AccountAdministrator(
+                user_id=current_user.id,
+                account_id=existing.id,
+                is_owner=False,
+            )
+        )
         await db.commit()
         return {"id": existing.id, "message": "Conta vinculada como co-administrador"}
 
@@ -163,30 +173,34 @@ async def create_account(
     db.add(AccountBalance(account_id=account.id))
 
     # Registrar AC como owner e primeiro administrador
-    db.add(AccountAdministrator(
-        user_id=current_user.id,
-        account_id=account.id,
-        is_owner=True,
-    ))
+    db.add(
+        AccountAdministrator(
+            user_id=current_user.id,
+            account_id=account.id,
+            is_owner=True,
+        )
+    )
 
     # Gerar OTP de verificação
     otp_code = _generate_otp()
-    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
-    db.add(OTPVerification(
-        account_id=account.id,
-        code=otp_code,
-        channel="email",
-        destination=email,
-        expires_at=expires,
-    ))
+    expires = datetime.now(UTC) + timedelta(minutes=15)
+    db.add(
+        OTPVerification(
+            account_id=account.id,
+            code=otp_code,
+            channel="email",
+            destination=email,
+            expires_at=expires,
+        )
+    )
 
     await db.commit()
 
     # DEV: exibe o OTP no log do backend até SMTP estar configurado
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"  OTP para conta '{email}' [{platform}]: {otp_code}")
-    print(f"  Válido por 15 minutos.")
-    print(f"{'='*50}\n")
+    print("  Válido por 15 minutos.")
+    print(f"{'=' * 50}\n")
 
     return {
         "id": account.id,
@@ -231,8 +245,8 @@ async def verify_otp(
         else:
             print(f"\n[OTP DEBUG] Nenhum OTP ativo para account_id={account_id}\n")
         raise HTTPException(status_code=400, detail="Código OTP inválido")
-    expires = otp.expires_at if otp.expires_at.tzinfo else otp.expires_at.replace(tzinfo=timezone.utc)
-    if expires < datetime.now(timezone.utc):
+    expires = otp.expires_at if otp.expires_at.tzinfo else otp.expires_at.replace(tzinfo=UTC)
+    if expires < datetime.now(UTC):
         raise HTTPException(status_code=400, detail="Código OTP expirado")
 
     otp.is_used = True
@@ -263,27 +277,32 @@ async def resend_otp(
         old.is_used = True
 
     otp_code = _generate_otp()
-    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
-    db.add(OTPVerification(
-        account_id=account_id,
-        code=otp_code,
-        channel="email",
-        destination=account.email or "",
-        expires_at=expires,
-    ))
+    expires = datetime.now(UTC) + timedelta(minutes=15)
+    db.add(
+        OTPVerification(
+            account_id=account_id,
+            code=otp_code,
+            channel="email",
+            destination=account.email or "",
+            expires_at=expires,
+        )
+    )
     await db.commit()
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"  NOVO OTP para conta '{account.email}' [{account.platform}]: {otp_code}")
-    print(f"  Válido por 15 minutos.")
-    print(f"{'='*50}\n")
+    print("  Válido por 15 minutos.")
+    print(f"{'=' * 50}\n")
 
     return {"message": "Novo código OTP gerado. Verifique o log do backend."}
 
 
 # ─── Co-administração ─────────────────────────────────────────────────────────
 
-async def _assert_owner_or_admin(account_id: int, user: User, db: AsyncSession) -> MarketplaceAccount:
+
+async def _assert_owner_or_admin(
+    account_id: int, user: User, db: AsyncSession
+) -> MarketplaceAccount:
     """Garante que o usuário é o owner da conta OU admin da plataforma.
     Retorna a conta se autorizado; caso contrário 403/404."""
     acc_q = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
@@ -300,7 +319,9 @@ async def _assert_owner_or_admin(account_id: int, user: User, db: AsyncSession) 
         )
     )
     if not owner_q.scalar_one_or_none():
-        raise HTTPException(status_code=403, detail="Apenas o proprietário da conta pode realizar esta ação")
+        raise HTTPException(
+            status_code=403, detail="Apenas o proprietário da conta pode realizar esta ação"
+        )
     return account
 
 
@@ -361,11 +382,13 @@ async def add_co_admin(
     if dup.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Usuário já é administrador desta conta")
 
-    db.add(AccountAdministrator(
-        user_id=target_user_id,
-        account_id=account_id,
-        is_owner=False,
-    ))
+    db.add(
+        AccountAdministrator(
+            user_id=target_user_id,
+            account_id=account_id,
+            is_owner=False,
+        )
+    )
     await db.commit()
     return {"message": "Co-administrador adicionado com sucesso"}
 
@@ -389,12 +412,15 @@ async def remove_co_admin(
     )
     admin = result.scalar_one_or_none()
     if not admin:
-        raise HTTPException(status_code=404, detail="Co-administrador não encontrado ou é o proprietário")
+        raise HTTPException(
+            status_code=404, detail="Co-administrador não encontrado ou é o proprietário"
+        )
     db.delete(admin)
     await db.commit()
 
 
 # ─── Detalhes e desconexão ────────────────────────────────────────────────────
+
 
 @router.get("/{account_id}")
 async def get_account(
@@ -448,9 +474,7 @@ async def disconnect_account(
     if not owner_check.scalar_one_or_none():
         raise HTTPException(status_code=403, detail="Apenas o owner pode desativar a conta")
 
-    result = await db.execute(
-        select(MarketplaceAccount).where(MarketplaceAccount.id == account_id)
-    )
+    result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta não encontrada")
@@ -459,6 +483,7 @@ async def disconnect_account(
 
 
 # ─── OAuth – Mercado Livre ────────────────────────────────────────────────────
+
 
 @router.get("/{account_id}/ml/authorize")
 async def ml_authorize(
@@ -486,7 +511,7 @@ async def ml_callback(
     account_id = ctx["account_id"]
     token_data = await ml_service.exchange_code(code)
     user_info = await ml_service.get_user_info(token_data["access_token"])
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expires_in", 21600))
+    expires_at = datetime.now(UTC) + timedelta(seconds=token_data.get("expires_in", 21600))
 
     result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
     account = result.scalar_one_or_none()
@@ -507,6 +532,7 @@ async def ml_callback(
 
 
 # ─── OAuth – Shopee ───────────────────────────────────────────────────────────
+
 
 @router.get("/{account_id}/shopee/authorize")
 async def shopee_authorize(
@@ -540,7 +566,7 @@ async def shopee_callback(
 
     account_id = ctx["account_id"]
     token_data = await shopee_service.exchange_code(code, resolved_shop_id)
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=token_data.get("expire_in", 14400))
+    expires_at = datetime.now(UTC) + timedelta(seconds=token_data.get("expire_in", 14400))
 
     result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
     account = result.scalar_one_or_none()
@@ -561,6 +587,7 @@ async def shopee_callback(
 
 # ─── Sincronização manual ─────────────────────────────────────────────────────
 
+
 @router.post("/{account_id}/sync-orders")
 async def sync_orders_now(
     account_id: int,
@@ -570,15 +597,20 @@ async def sync_orders_now(
     """Dispara sincronização de pedidos imediatamente para esta conta."""
     account = await _assert_ac_can_access(account_id, current_user.id, db)
     if not account.access_token:
-        raise HTTPException(status_code=400, detail="Conta sem token de acesso. Faça o OAuth primeiro.")
+        raise HTTPException(
+            status_code=400, detail="Conta sem token de acesso. Faça o OAuth primeiro."
+        )
 
     from tasks.sync_orders import _sync_ml_integration, _sync_shopee_integration
+
     if account.platform == "mercadolivre":
         await _sync_ml_integration(db, account)
     elif account.platform == "shopee":
         await _sync_shopee_integration(db, account)
     else:
-        raise HTTPException(status_code=400, detail="Sincronização não disponível para esta plataforma.")
+        raise HTTPException(
+            status_code=400, detail="Sincronização não disponível para esta plataforma."
+        )
 
     return {"message": "Sincronização de pedidos concluída."}
 
@@ -592,27 +624,31 @@ async def import_listings(
     """Importa todos os anúncios ativos desta conta do Mercado Livre."""
     account = await _assert_ac_can_access(account_id, current_user.id, db)
     if account.platform != "mercadolivre":
-        raise HTTPException(status_code=400, detail="Importação de anúncios disponível apenas para Mercado Livre.")
+        raise HTTPException(
+            status_code=400, detail="Importação de anúncios disponível apenas para Mercado Livre."
+        )
     if not account.access_token or not account.platform_user_id:
         raise HTTPException(status_code=400, detail="Conta sem token ou ID. Faça o OAuth primeiro.")
 
     # 1. Buscar todos os IDs de anúncios ativos
     item_ids = await ml_service.get_seller_item_ids(account.access_token, account.platform_user_id)
     if not item_ids:
-        return {"imported": 0, "updated": 0, "message": "Nenhum anúncio ativo encontrado no Mercado Livre."}
+        return {
+            "imported": 0,
+            "updated": 0,
+            "message": "Nenhum anúncio ativo encontrado no Mercado Livre.",
+        }
 
     # 2. Buscar detalhes em lote
     items = await ml_service.get_items_bulk(account.access_token, item_ids)
 
     imported, updated = 0, 0
     for item in items:
-        ml_id       = str(item.get("id", ""))
-        title       = item.get("title", "")[:500]
-        price       = float(item.get("price") or 0)
-        category    = item.get("category_id", "")
+        ml_id = str(item.get("id", ""))
+        title = item.get("title", "")[:500]
+        price = float(item.get("price") or 0)
+        category = item.get("category_id", "")
         listing_type = item.get("listing_type_id", "")
-        thumbnail   = item.get("thumbnail", "")
-        pictures    = item.get("pictures", [])
 
         # 3. Verificar se produto já existe pelo ml_item_id
         res = await db.execute(
@@ -652,22 +688,24 @@ async def import_listings(
         )
         listing = res2.scalar_one_or_none()
         if not listing:
-            db.add(ProductListing(
-                product_id=product.id,
-                account_id=account_id,
-                platform_item_id=ml_id,
-                sale_price=price,
-                category_id=category,
-                listing_type=listing_type,
-                status="published",
-                published_at=datetime.now(timezone.utc),
-                last_sync_at=datetime.now(timezone.utc),
-            ))
+            db.add(
+                ProductListing(
+                    product_id=product.id,
+                    account_id=account_id,
+                    platform_item_id=ml_id,
+                    sale_price=price,
+                    category_id=category,
+                    listing_type=listing_type,
+                    status="published",
+                    published_at=datetime.now(UTC),
+                    last_sync_at=datetime.now(UTC),
+                )
+            )
         else:
             listing.sale_price = price
             listing.platform_item_id = ml_id
             listing.status = "published"
-            listing.last_sync_at = datetime.now(timezone.utc)
+            listing.last_sync_at = datetime.now(UTC)
 
     await db.commit()
     return {
@@ -679,6 +717,7 @@ async def import_listings(
 
 
 # ─── Bling ────────────────────────────────────────────────────────────────────
+
 
 @router.post("/{account_id}/bling/connect")
 async def bling_connect(

@@ -7,7 +7,9 @@ MVP: regras simples baseadas em CRT (regime tributário) e CFOP.
 Para casos complexos (ICMS-ST por UF/MVA, ICMS interestadual com partilha,
 diferimento etc.) será necessário evoluir para tabela `tax_rules`.
 """
+
 from __future__ import annotations
+
 from decimal import Decimal
 
 
@@ -61,7 +63,7 @@ def calculate_item_taxes(
     # PIS / COFINS
     if is_simples:
         # Simples Nacional não destaca PIS/COFINS na NFe
-        out["pis_cst"] = "07"     # Operação isenta da contribuição
+        out["pis_cst"] = "07"  # Operação isenta da contribuição
         out["cofins_cst"] = "07"
     else:
         # Lucro Real/Presumido — alíquota informada ou default não-cumulativo

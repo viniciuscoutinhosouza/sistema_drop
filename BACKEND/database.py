@@ -5,12 +5,14 @@ Uses a SQLAlchemy sync engine with a custom creator function that calls
 oracledb.connect() directly — same parameters that work in the sync test.
 DB operations run in asyncio.to_thread() so FastAPI async routes work as-is.
 """
+
 import asyncio
 
 import oracledb
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event
 from sqlalchemy.exc import DisconnectionError
-from sqlalchemy.orm import sessionmaker, Session, DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
 from config import get_settings
 
 settings = get_settings()
@@ -19,15 +21,15 @@ oracledb.defaults.fetch_lobs = False
 
 def _make_oracle_connection():
     """Create a synchronous Oracle connection using the wallet (thin mode)."""
-    kwargs = dict(
+    kwargs = dict(  # noqa: C408 — dict() used intentionally; modified conditionally below
         user=settings.ORACLE_USER,
         password=settings.ORACLE_PASSWORD,
         dsn=settings.ORACLE_DSN,
     )
     if settings.ORACLE_WALLET_DIR:
-        kwargs["config_dir"]       = settings.ORACLE_WALLET_DIR
-        kwargs["wallet_location"]  = settings.ORACLE_WALLET_DIR
-        kwargs["wallet_password"]  = settings.ORACLE_WALLET_PASSWORD
+        kwargs["config_dir"] = settings.ORACLE_WALLET_DIR
+        kwargs["wallet_location"] = settings.ORACLE_WALLET_DIR
+        kwargs["wallet_password"] = settings.ORACLE_WALLET_PASSWORD
     return oracledb.connect(**kwargs)
 
 
@@ -59,6 +61,7 @@ def _oracle_checkout_ping(dbapi_connection, connection_record, connection_proxy)
     except Exception:
         connection_record.invalidate()
         raise DisconnectionError("Oracle connection stale — DPY-4011 guard")
+
 
 _SyncSession = sessionmaker(_sync_engine, autocommit=False, autoflush=False)
 
@@ -116,6 +119,7 @@ AsyncSessionLocal = _SyncSession
 
 
 from contextlib import asynccontextmanager
+
 
 @asynccontextmanager
 async def task_db():

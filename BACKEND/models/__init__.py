@@ -1,16 +1,49 @@
 # Importar todos os modelos para garantir registro no SQLAlchemy ORM
-from models.user import User, ACProfile, RefreshToken, AccessPlan, ACSubscription, AccountAdministrator
-from models.go import GO
-from models.warehouse import Warehouse
-from models.product import Category, CatalogProduct, CatalogProductImage, CatalogProductVariant, CatalogProductComponent, DropshipperProduct, DropshipperProductImage, ProductListing, MLFullTariff
-from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductComponent
-from models.person import Person
-from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceItem, InvoiceEvent
-from models.nfe_config import NFeConfig
-from models.integration import MarketplaceAccount, AccountBalance, AccountTransaction, OTPVerification
-from models.order import Order, OrderItem
-from models.financial import FinancialTransaction
-from models.notification import Notification
-from models.return_ import Return
-from models.webhook import WebhookEvent
-from models.messages import ConversationThread, ConversationMessage, AIConfig, CMIGAIConfig
+from models.cmig import (  # noqa: F401
+    CMIG,
+    CMIGAdministrator,
+    CMIGProduct,
+    CMIGProductComponent,
+    CMIGProductImage,
+)
+from models.financial import FinancialTransaction  # noqa: F401
+from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem  # noqa: F401
+from models.go import GO  # noqa: F401
+from models.integration import (  # noqa: F401
+    AccountBalance,
+    AccountTransaction,
+    MarketplaceAccount,
+    OTPVerification,
+)
+from models.messages import (  # noqa: F401
+    AIConfig,
+    CMIGAIConfig,
+    ConversationMessage,
+    ConversationThread,
+)
+from models.nfe_config import NFeConfig  # noqa: F401
+from models.notification import Notification  # noqa: F401
+from models.order import Order, OrderItem  # noqa: F401
+from models.person import Person  # noqa: F401
+from models.product import (  # noqa: F401
+    CatalogProduct,
+    CatalogProductComponent,
+    CatalogProductImage,
+    CatalogProductVariant,
+    Category,
+    DropshipperProduct,
+    DropshipperProductImage,
+    MLFullTariff,
+    ProductListing,
+)
+from models.return_ import Return  # noqa: F401
+from models.user import (  # noqa: F401
+    AccessPlan,
+    AccountAdministrator,
+    ACProfile,
+    ACSubscription,
+    RefreshToken,
+    User,
+)
+from models.warehouse import Warehouse  # noqa: F401
+from models.webhook import WebhookEvent  # noqa: F401

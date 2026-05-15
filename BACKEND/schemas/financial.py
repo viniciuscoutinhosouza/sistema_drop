@@ -1,13 +1,13 @@
-from pydantic import BaseModel, field_validator
-from decimal import Decimal
-from typing import Optional
 from datetime import datetime
+from decimal import Decimal
+
+from pydantic import BaseModel, field_validator
 
 
 class PIXDepositRequest(BaseModel):
     amount: Decimal
     pix_txid: str
-    pix_key: Optional[str] = None
+    pix_key: str | None = None
 
     @field_validator("amount")
     @classmethod
@@ -21,12 +21,12 @@ class TransactionOut(BaseModel):
     id: int
     type: str
     amount: Decimal
-    description: Optional[str]
+    description: str | None
     status: str
     balance_before: Decimal
     balance_after: Decimal
-    pix_txid: Optional[str]
-    created_at: Optional[datetime]
+    pix_txid: str | None
+    created_at: datetime | None
 
     model_config = {"from_attributes": True}
 

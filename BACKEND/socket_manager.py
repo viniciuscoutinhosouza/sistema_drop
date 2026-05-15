@@ -1,4 +1,5 @@
 import socketio
+
 from services.auth_service import verify_token
 
 # Async Socket.io server – mounted in main.py via ASGI

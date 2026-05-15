@@ -1,19 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func
 import re
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user
-from models.user import User
 from models.cmig import CMIG, CMIGAdministrator
 from models.person import Person
+from models.user import User
 from services.fiscal.cnpj_lookup import lookup_cnpj
 
 router = APIRouter()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG:
     result = await db.execute(select(CMIG).where(CMIG.id == cmig_id))
@@ -91,6 +93,7 @@ def _serialize(p: Person) -> dict:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+
 @router.get("")
 async def list_people(
     cmig_id: int | None = Query(None),
@@ -119,7 +122,10 @@ async def list_people(
     if search:
         s = f"%{search.strip()}%"
         s_doc = f"%{_clean_doc(search)}%" if any(c.isdigit() for c in search) else None
-        conds = [func.lower(Person.name).like(s.lower()), func.lower(Person.trade_name).like(s.lower())]
+        conds = [
+            func.lower(Person.name).like(s.lower()),
+            func.lower(Person.trade_name).like(s.lower()),
+        ]
         if s_doc:
             conds.append(Person.document.like(s_doc))
         stmt = stmt.where(or_(*conds))
@@ -175,7 +181,9 @@ async def create_person(
     if not document:
         raise HTTPException(status_code=422, detail="document (CPF/CNPJ) é obrigatório")
     if len(document) not in (11, 14):
-        raise HTTPException(status_code=422, detail="document deve ter 11 (CPF) ou 14 (CNPJ) dígitos")
+        raise HTTPException(
+            status_code=422, detail="document deve ter 11 (CPF) ou 14 (CNPJ) dígitos"
+        )
 
     name = (body.get("name") or "").strip()
     if not name:
@@ -236,10 +244,27 @@ async def update_person(
     await _check_cmig_access(p.cmig_id, current_user, db)
 
     editable = {
-        "ie", "ie_isento", "im", "name", "trade_name", "email", "phone",
-        "zip_code", "street", "address_number", "complement", "neighborhood",
-        "city", "state", "ibge_code", "country_code",
-        "is_customer", "is_supplier", "is_carrier", "notes", "is_active",
+        "ie",
+        "ie_isento",
+        "im",
+        "name",
+        "trade_name",
+        "email",
+        "phone",
+        "zip_code",
+        "street",
+        "address_number",
+        "complement",
+        "neighborhood",
+        "city",
+        "state",
+        "ibge_code",
+        "country_code",
+        "is_customer",
+        "is_supplier",
+        "is_carrier",
+        "notes",
+        "is_active",
     }
     for k, v in body.items():
         if k in editable:

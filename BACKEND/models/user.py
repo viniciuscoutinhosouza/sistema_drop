@@ -1,8 +1,6 @@
-from sqlalchemy import (
-    Column, Integer, String, Boolean, Date, Numeric,
-    TIMESTAMP, ForeignKey, text
-)
+from sqlalchemy import TIMESTAMP, Boolean, Column, Date, ForeignKey, Integer, Numeric, String, text
 from sqlalchemy.orm import relationship
+
 from database import Base
 
 
@@ -18,22 +16,35 @@ class User(Base):
     cpf_cnpj = Column(String(18), unique=True)
     is_active = Column(Boolean, nullable=False, default=True)
     dark_mode = Column(Boolean, nullable=False, default=False)
-    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)  # UGO: galpão de trabalho
+    warehouse_id = Column(
+        Integer, ForeignKey("warehouses.id"), nullable=True
+    )  # UGO: galpão de trabalho
     go_id = Column(Integer, ForeignKey("goes.id"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
-    updated_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                        onupdate=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
 
     profile = relationship("ACProfile", back_populates="user", uselist=False)
-    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
-    administered_accounts = relationship("AccountAdministrator", back_populates="user", cascade="all, delete-orphan")
+    refresh_tokens = relationship(
+        "RefreshToken", back_populates="user", cascade="all, delete-orphan"
+    )
+    administered_accounts = relationship(
+        "AccountAdministrator", back_populates="user", cascade="all, delete-orphan"
+    )
     go_profile = relationship("GO", back_populates="user", foreign_keys="GO.user_id", uselist=False)
     owned_cmigs = relationship("CMIG", back_populates="owner_ac", foreign_keys="CMIG.owner_ac_id")
-    administered_cmigs = relationship("CMIGAdministrator", back_populates="user", foreign_keys="CMIGAdministrator.user_id", cascade="all, delete-orphan")
+    administered_cmigs = relationship(
+        "CMIGAdministrator",
+        back_populates="user",
+        foreign_keys="CMIGAdministrator.user_id",
+        cascade="all, delete-orphan",
+    )
 
 
 class ACProfile(Base):
     """Perfil do Administrador de Conta (AC). Contém endereço e vínculo com plano de acesso."""
+
     __tablename__ = "ac_profiles"
 
     id = Column(Integer, primary_key=True)
@@ -46,7 +57,9 @@ class ACProfile(Base):
     city = Column(String(100))
     state = Column(String(2))
     plan_id = Column(Integer, ForeignKey("access_plans.id"))
-    subscription_status = Column(String(20), nullable=False, default="active")  # active | overdue | suspended
+    subscription_status = Column(
+        String(20), nullable=False, default="active"
+    )  # active | overdue | suspended
     subscription_due_date = Column(Date)
     balance = Column(Numeric(15, 2), nullable=False, default=0)
     balance_reserved = Column(Numeric(15, 2), nullable=False, default=0)
@@ -71,6 +84,7 @@ class RefreshToken(Base):
 
 class AccessPlan(Base):
     """Planos de acesso para AC — cobrados por número de CONTAs ativas."""
+
     __tablename__ = "access_plans"
 
     id = Column(Integer, primary_key=True)
@@ -85,6 +99,7 @@ class AccessPlan(Base):
 
 class ACSubscription(Base):
     """Histórico de assinaturas do AC."""
+
     __tablename__ = "ac_subscriptions"
 
     id = Column(Integer, primary_key=True)
@@ -101,6 +116,7 @@ class ACSubscription(Base):
 
 class AccountAdministrator(Base):
     """Tabela many-to-many: AC <-> MarketplaceAccount (CONTA)."""
+
     __tablename__ = "account_administrators"
 
     id = Column(Integer, primary_key=True)

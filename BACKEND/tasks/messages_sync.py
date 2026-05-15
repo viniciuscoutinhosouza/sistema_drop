@@ -2,19 +2,18 @@
 Task de sincronização de mensagens e perguntas do Mercado Livre.
 Roda a cada 15 min pelo scheduler e pode ser chamada on-demand.
 """
-import asyncio
+
 import base64
-import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+import services.ai_service as ai_svc
+import services.messages_service as msg_svc
 from database import task_db
 from models.integration import MarketplaceAccount
-from models.messages import ConversationThread, ConversationMessage, AIConfig, CMIGAIConfig
-import services.messages_service as msg_svc
-import services.ai_service as ai_svc
+from models.messages import AIConfig, CMIGAIConfig, ConversationMessage, ConversationThread
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +82,9 @@ async def sync_question_by_id(account_id: int, question_id: str):
             await _upsert_question_thread(db, account, question_id, q)
             if q.get("status") == "ANSWERED":
                 await _upsert_answer_message(db, question_id, q.get("answer") or {})
-            logger.info("sync_question_by_id: pergunta %s importada (conta %s)", question_id, account_id)
+            logger.info(
+                "sync_question_by_id: pergunta %s importada (conta %s)", question_id, account_id
+            )
         except Exception as e:
             logger.error("sync_question_by_id: erro ao salvar pergunta %s: %s", question_id, e)
 
@@ -96,8 +97,13 @@ async def sync_questions_history(account_id: int, days: int = 30):
     """
     from datetime import timedelta
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    logger.info("sync_questions_history INICIANDO — conta %s, days=%s, cutoff=%s", account_id, days, cutoff.isoformat())
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    logger.info(
+        "sync_questions_history INICIANDO — conta %s, days=%s, cutoff=%s",
+        account_id,
+        days,
+        cutoff.isoformat(),
+    )
 
     async with task_db() as db:
         result = await db.execute(
@@ -105,7 +111,9 @@ async def sync_questions_history(account_id: int, days: int = 30):
         )
         account = result.scalar_one_or_none()
         if not account or not account.access_token:
-            logger.warning("sync_questions_history: conta %s não encontrada ou sem token", account_id)
+            logger.warning(
+                "sync_questions_history: conta %s não encontrada ou sem token", account_id
+            )
             return
 
         seller_id = account.platform_user_id
@@ -128,14 +136,19 @@ async def sync_questions_history(account_id: int, days: int = 30):
                         limit=50,
                     )
                 except Exception as e:
-                    logger.warning("Erro ao buscar perguntas %s conta %s: %s", status, account_id, e)
+                    logger.warning(
+                        "Erro ao buscar perguntas %s conta %s: %s", status, account_id, e
+                    )
                     break
 
                 total_api = data.get("total", 0)
                 questions = data.get("questions") or []
                 logger.info(
                     "sync_questions_history — status=%s offset=%s total_api=%s retornadas=%s",
-                    status, offset, total_api, len(questions),
+                    status,
+                    offset,
+                    total_api,
+                    len(questions),
                 )
 
                 if not questions:
@@ -173,7 +186,9 @@ async def sync_questions_history(account_id: int, days: int = 30):
                 if offset >= total_api:
                     break
 
-        logger.info("sync_questions_history CONCLUÍDO — conta %s, importadas=%s", account_id, total_imported)
+        logger.info(
+            "sync_questions_history CONCLUÍDO — conta %s, importadas=%s", account_id, total_imported
+        )
 
 
 async def _upsert_answer_message(db, question_id: str, answer: dict):
@@ -184,7 +199,9 @@ async def _upsert_answer_message(db, question_id: str, answer: dict):
 
     platform_msg_id = f"ans_{question_id}"
     exists = await db.execute(
-        select(ConversationMessage).where(ConversationMessage.platform_message_id == platform_msg_id)
+        select(ConversationMessage).where(
+            ConversationMessage.platform_message_id == platform_msg_id
+        )
     )
     if exists.scalar_one_or_none():
         return
@@ -209,14 +226,16 @@ async def _upsert_answer_message(db, question_id: str, answer: dict):
         except Exception:
             pass
 
-    db.add(ConversationMessage(
-        thread_id=thread.id,
-        platform_message_id=platform_msg_id,
-        from_role="seller",
-        text=answer_text,
-        is_read=True,
-        sent_at=sent_at,
-    ))
+    db.add(
+        ConversationMessage(
+            thread_id=thread.id,
+            platform_message_id=platform_msg_id,
+            from_role="seller",
+            text=answer_text,
+            is_read=True,
+            sent_at=sent_at,
+        )
+    )
     thread.status = "answered"
     thread.unread_count = 0
     await db.commit()
@@ -225,16 +244,19 @@ async def _upsert_answer_message(db, question_id: str, answer: dict):
 async def _sync_post_sale_messages(db, account: MarketplaceAccount, seller_id: str):
     """Busca mensagens pós-venda iterando pelos pedidos recentes do BD."""
     from datetime import timedelta
+
     from models.order import Order
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=60)
+    cutoff = datetime.now(UTC) - timedelta(days=60)
     result = await db.execute(
-        select(Order).where(
+        select(Order)
+        .where(
             Order.account_id == account.id,
             Order.platform == "mercadolivre",
             Order.platform_order_id.isnot(None),
             Order.created_at >= cutoff,
-        ).limit(100)
+        )
+        .limit(100)
     )
     orders = result.scalars().all()
 
@@ -246,7 +268,9 @@ async def _sync_post_sale_messages(db, account: MarketplaceAccount, seller_id: s
             logger.warning("Erro ao sync mensagens pedido %s: %s", pack_id, e)
 
 
-async def _upsert_post_sale_thread(db, account: MarketplaceAccount, seller_id: str, pack_id: str, conv: dict):
+async def _upsert_post_sale_thread(
+    db, account: MarketplaceAccount, seller_id: str, pack_id: str, conv: dict
+):
     """Cria ou atualiza uma thread pós-venda e suas mensagens."""
     # Busca ou cria a thread
     result = await db.execute(
@@ -293,7 +317,9 @@ async def _upsert_post_sale_thread(db, account: MarketplaceAccount, seller_id: s
                     last_msg_at = dt
             except Exception:
                 pass
-        if not m.get("from", {}).get("user_id") == int(seller_id or 0) and not m.get("message_read_by_seller", False):
+        if not m.get("from", {}).get("user_id") == int(seller_id or 0) and not m.get(
+            "message_read_by_seller", False
+        ):
             unread += 1
 
     if not thread:
@@ -332,7 +358,9 @@ async def _upsert_post_sale_thread(db, account: MarketplaceAccount, seller_id: s
         from_uid = str(m.get("from", {}).get("user_id", ""))
         from_role = "seller" if from_uid == str(seller_id) else "buyer"
         text = m.get("text") or ""
-        sent_at_str = (m.get("message_date") or {}).get("received") or (m.get("message_date") or {}).get("created")
+        sent_at_str = (m.get("message_date") or {}).get("received") or (
+            m.get("message_date") or {}
+        ).get("created")
         sent_at = None
         if sent_at_str:
             try:
@@ -412,7 +440,7 @@ async def _upsert_question_thread(db, account: MarketplaceAccount, question_id: 
             item_id=item_id,
             status="pending_reply",
             unread_count=1,
-            last_message_at=sent_at or datetime.now(timezone.utc),
+            last_message_at=sent_at or datetime.now(UTC),
         )
         db.add(thread)
         await db.flush()
@@ -526,7 +554,7 @@ async def _maybe_auto_respond(db, thread: ConversationThread, account: Marketpla
         text=suggested,
         ai_suggested_text=suggested,
         is_read=True,
-        sent_at=datetime.now(timezone.utc),
+        sent_at=datetime.now(UTC),
     )
     db.add(msg)
     thread.status = "answered" if thread.thread_type == "pre_sale_question" else "open"

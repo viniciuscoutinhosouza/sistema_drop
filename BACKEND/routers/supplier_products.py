@@ -1,14 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+import os as _os
+import shutil as _shutil
+import uuid as _uuid
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy import and_, func, select
+from sqlalchemy import delete as _sa_delete
+from sqlalchemy import update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, delete as _sa_delete, func, update as _sa_update
 from sqlalchemy.orm import selectinload
+
 from database import get_db
-from dependencies import require_role, get_current_user
-from models.user import User
-from models.product import CatalogProduct, CatalogProductImage, CatalogProductVariant, ProductListing, CatalogProductComponent
+from dependencies import require_role
 from models.cmig import CMIGProduct
 from models.order import OrderItem
-import os as _os, shutil as _shutil, uuid as _uuid
+from models.product import (
+    CatalogProduct,
+    CatalogProductComponent,
+    CatalogProductImage,
+    CatalogProductVariant,
+    ProductListing,
+)
+from models.user import User
 
 router = APIRouter()
 
@@ -55,22 +67,27 @@ def _serialize_product(p: CatalogProduct, include_components: bool = False) -> d
         "is_composite": p.is_composite,
         "is_active": p.is_active,
         "thumbnail": thumbnail,
-        "images": [{"id": i.id, "url": i.url, "sort_order": i.sort_order, "is_primary": i.is_primary} for i in sorted(p.images, key=lambda i: i.sort_order)],
+        "images": [
+            {"id": i.id, "url": i.url, "sort_order": i.sort_order, "is_primary": i.is_primary}
+            for i in sorted(p.images, key=lambda i: i.sort_order)
+        ],
         "components": [],
     }
     if include_components and p.is_composite:
         for comp in p.components:
             if comp.component:
                 qty = max(comp.quantity, 1)
-                result["components"].append({
-                    "id": comp.id,
-                    "product_id": comp.component_id,
-                    "title": comp.component.title,
-                    "sku": comp.component.sku,
-                    "stock_quantity": comp.component.stock_quantity,
-                    "quantity": comp.quantity,
-                    "contribution": comp.component.stock_quantity // qty,
-                })
+                result["components"].append(
+                    {
+                        "id": comp.id,
+                        "product_id": comp.component_id,
+                        "title": comp.component.title,
+                        "sku": comp.component.sku,
+                        "stock_quantity": comp.component.stock_quantity,
+                        "quantity": comp.quantity,
+                        "contribution": comp.component.stock_quantity // qty,
+                    }
+                )
     return result
 
 
@@ -96,15 +113,30 @@ async def list_supplier_products(
     current_user: User = Depends(require_role("ugo", "admin", "ac")),
 ):
     if current_user.role == "ugo" and current_user.warehouse_id:
-        stmt = select(CatalogProduct).options(selectinload(CatalogProduct.images)).where(
-            CatalogProduct.warehouse_id == current_user.warehouse_id
-        ).order_by(CatalogProduct.created_at.desc())
+        stmt = (
+            select(CatalogProduct)
+            .options(selectinload(CatalogProduct.images))
+            .where(CatalogProduct.warehouse_id == current_user.warehouse_id)
+            .order_by(CatalogProduct.created_at.desc())
+        )
     elif current_user.role == "ac" and current_user.warehouse_id:
-        stmt = select(CatalogProduct).options(selectinload(CatalogProduct.images)).where(
-            and_(CatalogProduct.warehouse_id == current_user.warehouse_id, CatalogProduct.is_active == True)
-        ).order_by(CatalogProduct.created_at.desc())
+        stmt = (
+            select(CatalogProduct)
+            .options(selectinload(CatalogProduct.images))
+            .where(
+                and_(
+                    CatalogProduct.warehouse_id == current_user.warehouse_id,
+                    CatalogProduct.is_active == True,
+                )
+            )
+            .order_by(CatalogProduct.created_at.desc())
+        )
     else:
-        stmt = select(CatalogProduct).options(selectinload(CatalogProduct.images)).order_by(CatalogProduct.created_at.desc())
+        stmt = (
+            select(CatalogProduct)
+            .options(selectinload(CatalogProduct.images))
+            .order_by(CatalogProduct.created_at.desc())
+        )
 
     result = await db.execute(stmt)
     return [_serialize_product(p) for p in result.scalars().all()]
@@ -165,18 +197,24 @@ async def create_product(
     for i, img in enumerate(body.get("images", [])):
         url = img.get("url") if isinstance(img, dict) else str(img)
         if url:
-            db.add(CatalogProductImage(product_id=product.id, url=url, sort_order=i, is_primary=(i == 0)))
+            db.add(
+                CatalogProductImage(
+                    product_id=product.id, url=url, sort_order=i, is_primary=(i == 0)
+                )
+            )
 
     if is_composite:
         for comp in body.get("components", []):
             comp_id = comp.get("component_id")
             if not comp_id:
                 continue
-            db.add(CatalogProductComponent(
-                composite_id=product.id,
-                component_id=comp_id,
-                quantity=max(int(comp.get("quantity", 1)), 1),
-            ))
+            db.add(
+                CatalogProductComponent(
+                    composite_id=product.id,
+                    component_id=comp_id,
+                    quantity=max(int(comp.get("quantity", 1)), 1),
+                )
+            )
 
     await db.commit()
     return {"id": product.id, "sku": product.sku}
@@ -195,33 +233,61 @@ async def update_product(
         raise HTTPException(status_code=404, detail="Produto não encontrado")
 
     # stock_quantity intencionalmente fora — atualizado por eventos de NF-e/pedido
-    for field in ["title", "description", "cost_price", "suggested_price", "model", "ean",
-                  "weight_kg", "height_cm", "width_cm", "length_cm",
-                  "ncm", "cest", "brand", "origin", "is_active",
-                  "category_id", "video_id", "attributes_json"]:
+    for field in [
+        "title",
+        "description",
+        "cost_price",
+        "suggested_price",
+        "model",
+        "ean",
+        "weight_kg",
+        "height_cm",
+        "width_cm",
+        "length_cm",
+        "ncm",
+        "cest",
+        "brand",
+        "origin",
+        "is_active",
+        "category_id",
+        "video_id",
+        "attributes_json",
+    ]:
         if field in body:
             setattr(product, field, body[field])
 
     # Sincronizar imagens se fornecidas
     if "images" in body:
-        await db.execute(_sa_delete(CatalogProductImage).where(CatalogProductImage.product_id == product_id))
+        await db.execute(
+            _sa_delete(CatalogProductImage).where(CatalogProductImage.product_id == product_id)
+        )
         for i, img in enumerate(body["images"]):
             url = img.get("url") if isinstance(img, dict) else str(img)
             if url:
-                db.add(CatalogProductImage(product_id=product_id, url=url, sort_order=i, is_primary=(i == 0)))
+                db.add(
+                    CatalogProductImage(
+                        product_id=product_id, url=url, sort_order=i, is_primary=(i == 0)
+                    )
+                )
 
     # Substituir componentes se produto composto e components fornecidos
     if product.is_composite and "components" in body:
-        await db.execute(_sa_delete(CatalogProductComponent).where(CatalogProductComponent.composite_id == product_id))
+        await db.execute(
+            _sa_delete(CatalogProductComponent).where(
+                CatalogProductComponent.composite_id == product_id
+            )
+        )
         for comp in body["components"]:
             comp_id = comp.get("component_id")
             if not comp_id:
                 continue
-            db.add(CatalogProductComponent(
-                composite_id=product_id,
-                component_id=comp_id,
-                quantity=max(int(comp.get("quantity", 1)), 1),
-            ))
+            db.add(
+                CatalogProductComponent(
+                    composite_id=product_id,
+                    component_id=comp_id,
+                    quantity=max(int(comp.get("quantity", 1)), 1),
+                )
+            )
 
     await db.commit()
     return {"ok": True}
@@ -251,7 +317,9 @@ async def duplicate_product(
     new_sku = (body.get("sku") or "").strip()
     if not new_sku:
         raise HTTPException(status_code=422, detail="SKU é obrigatório para duplicar o produto")
-    if (await db.execute(select(CatalogProduct).where(CatalogProduct.sku == new_sku))).scalar_one_or_none():
+    if (
+        await db.execute(select(CatalogProduct).where(CatalogProduct.sku == new_sku))
+    ).scalar_one_or_none():
         raise HTTPException(status_code=409, detail=f"SKU '{new_sku}' já está em uso")
 
     copy = CatalogProduct(
@@ -280,33 +348,43 @@ async def duplicate_product(
     await db.flush()
 
     for i, img in enumerate(sorted(src.images, key=lambda x: x.sort_order)):
-        db.add(CatalogProductImage(product_id=copy.id, url=img.url, sort_order=i, is_primary=(i == 0)))
+        db.add(
+            CatalogProductImage(product_id=copy.id, url=img.url, sort_order=i, is_primary=(i == 0))
+        )
 
     for v in src.variants:
         v_sku = f"{v.sku}-copia"
         v_suffix = 2
-        while (await db.execute(select(CatalogProductVariant).where(CatalogProductVariant.sku == v_sku))).scalar_one_or_none():
+        while (
+            await db.execute(
+                select(CatalogProductVariant).where(CatalogProductVariant.sku == v_sku)
+            )
+        ).scalar_one_or_none():
             v_sku = f"{v.sku}-copia-{v_suffix}"
             v_suffix += 1
-        db.add(CatalogProductVariant(
-            product_id=copy.id,
-            sku=v_sku,
-            variant_name=v.variant_name,
-            color=v.color,
-            size_label=v.size_label,
-            voltage=v.voltage,
-            price_modifier=v.price_modifier,
-            suggested_price=v.suggested_price,
-            attributes_json=v.attributes_json,
-        ))
+        db.add(
+            CatalogProductVariant(
+                product_id=copy.id,
+                sku=v_sku,
+                variant_name=v.variant_name,
+                color=v.color,
+                size_label=v.size_label,
+                voltage=v.voltage,
+                price_modifier=v.price_modifier,
+                suggested_price=v.suggested_price,
+                attributes_json=v.attributes_json,
+            )
+        )
 
     if src.is_composite:
         for comp in src.components:
-            db.add(CatalogProductComponent(
-                composite_id=copy.id,
-                component_id=comp.component_id,
-                quantity=comp.quantity,
-            ))
+            db.add(
+                CatalogProductComponent(
+                    composite_id=copy.id,
+                    component_id=comp.component_id,
+                    quantity=comp.quantity,
+                )
+            )
 
     await db.commit()
     return {"id": copy.id, "sku": copy.sku}
@@ -325,7 +403,9 @@ async def upload_product_photo(
 
     ext = _os.path.splitext(file.filename or "")[1].lower() or ".jpg"
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
-        raise HTTPException(status_code=400, detail="Tipo de arquivo não permitido. Use JPG, PNG, WEBP ou GIF.")
+        raise HTTPException(
+            status_code=400, detail="Tipo de arquivo não permitido. Use JPG, PNG, WEBP ou GIF."
+        )
 
     filename = f"{_uuid.uuid4().hex}{ext}"
     dest_dir = "static/uploads/pg-products"
@@ -365,7 +445,8 @@ async def delete_product(
 
     # Única fonte confiável de venda interna: order_items
     r = await db.execute(
-        select(func.count()).select_from(OrderItem)
+        select(func.count())
+        .select_from(OrderItem)
         .where(OrderItem.catalog_product_id == product_id)
     )
     has_sales = (r.scalar() or 0) > 0
@@ -373,7 +454,10 @@ async def delete_product(
     if has_sales:
         product.is_active = False
         await db.commit()
-        return {"action": "deactivated", "message": "Produto desativado pois possui pedidos registrados."}
+        return {
+            "action": "deactivated",
+            "message": "Produto desativado pois possui pedidos registrados.",
+        }
 
     # Sem vendas — limpar FKs que apontam para este produto antes de deletar
     await db.execute(
@@ -393,6 +477,7 @@ async def delete_product(
 
 
 # ── Variantes ──────────────────────────────────────────────────────────────────
+
 
 @router.get("/{product_id}/variants")
 async def list_variants(
@@ -457,7 +542,16 @@ async def update_variant(
     if not variant:
         raise HTTPException(status_code=404, detail="Variante não encontrada")
 
-    for field in ("variant_name", "color", "size_label", "voltage", "stock_quantity", "price_modifier", "suggested_price", "attributes_json"):
+    for field in (
+        "variant_name",
+        "color",
+        "size_label",
+        "voltage",
+        "stock_quantity",
+        "price_modifier",
+        "suggested_price",
+        "attributes_json",
+    ):
         if field in body:
             setattr(variant, field, body[field])
 

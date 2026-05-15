@@ -1,8 +1,9 @@
 """Consulta de CNPJ via BrasilAPI (gratuita, sem chave). Cache em memória 1h."""
-import time
+
 import re
+import time
+
 import httpx
-from typing import Optional
 
 _CACHE: dict[str, tuple[float, dict]] = {}
 _TTL_SECONDS = 3600
@@ -13,7 +14,7 @@ def _clean_cnpj(cnpj: str) -> str:
     return re.sub(r"\D", "", cnpj or "")
 
 
-async def lookup_cnpj(cnpj: str, timeout: float = 10.0) -> Optional[dict]:
+async def lookup_cnpj(cnpj: str, timeout: float = 10.0) -> dict | None:
     """Consulta CNPJ na BrasilAPI; retorna dict normalizado ou None se não encontrado."""
     digits = _clean_cnpj(cnpj)
     if len(digits) != 14:

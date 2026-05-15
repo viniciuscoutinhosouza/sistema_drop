@@ -2,8 +2,11 @@
 Background task: Check for overdue subscriptions.
 Runs daily at midnight.
 """
+
 from datetime import date, timedelta
+
 from sqlalchemy import select
+
 from database import task_db
 from models.user import ACProfile
 from services.notification_service import create_notification

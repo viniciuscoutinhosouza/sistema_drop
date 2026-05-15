@@ -4,10 +4,13 @@ App ID: 6712718703908494
 OAuth flow: Authorization Code (https://auth.mercadolivre.com.br/authorization)
 Token endpoint: https://api.mercadolibre.com/oauth/token
 """
-import httpx
+
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
-from datetime import datetime, timezone, timedelta
+
+import httpx
 from fastapi import HTTPException
+
 from config import get_settings
 
 settings = get_settings()
@@ -32,13 +35,16 @@ def get_authorization_url(state: str) -> str:
 async def exchange_code(code: str) -> dict:
     """Exchange authorization code for access + refresh tokens."""
     async with httpx.AsyncClient() as client:
-        resp = await client.post(ML_TOKEN_URL, data={
-            "grant_type": "authorization_code",
-            "client_id": settings.ML_APP_ID,
-            "client_secret": settings.ML_CLIENT_SECRET,
-            "code": code,
-            "redirect_uri": settings.ML_REDIRECT_URI,
-        })
+        resp = await client.post(
+            ML_TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "client_id": settings.ML_APP_ID,
+                "client_secret": settings.ML_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": settings.ML_REDIRECT_URI,
+            },
+        )
     if resp.status_code != 200:
         raise HTTPException(status_code=400, detail=f"Erro ao trocar código ML: {resp.text}")
     return resp.json()
@@ -47,12 +53,15 @@ async def exchange_code(code: str) -> dict:
 async def refresh_ml_token(refresh_token: str) -> dict:
     """Refresh an expired ML access token."""
     async with httpx.AsyncClient() as client:
-        resp = await client.post(ML_TOKEN_URL, data={
-            "grant_type": "refresh_token",
-            "client_id": settings.ML_APP_ID,
-            "client_secret": settings.ML_CLIENT_SECRET,
-            "refresh_token": refresh_token,
-        })
+        resp = await client.post(
+            ML_TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "client_id": settings.ML_APP_ID,
+                "client_secret": settings.ML_CLIENT_SECRET,
+                "refresh_token": refresh_token,
+            },
+        )
     if resp.status_code != 200:
         try:
             body = resp.json()
@@ -163,6 +172,7 @@ async def get_full_shipping_cost(
     if not billable_kg or billable_kg <= 0 or not price or price <= 0:
         return 0.0
     from sqlalchemy import select
+
     from models.product import MLFullTariff
 
     tier = (reputation_tier or "red").lower()
@@ -199,7 +209,9 @@ async def get_order(access_token: str, order_id: str) -> dict:
             headers={"Authorization": f"Bearer {access_token}"},
         )
     if resp.status_code != 200:
-        raise HTTPException(status_code=resp.status_code, detail=f"Erro ao buscar pedido ML: {resp.text}")
+        raise HTTPException(
+            status_code=resp.status_code, detail=f"Erro ao buscar pedido ML: {resp.text}"
+        )
     return resp.json()
 
 
@@ -319,7 +331,9 @@ async def get_shipment_carrier(access_token: str, shipment_id: str) -> dict:
     return resp.json()
 
 
-async def get_shipment_label(access_token: str, shipment_id: str, fmt: str = "pdf") -> tuple[bytes, str]:
+async def get_shipment_label(
+    access_token: str, shipment_id: str, fmt: str = "pdf"
+) -> tuple[bytes, str]:
     """Fetch the official ML shipping label PDF (or ZPL2).
 
     Returns (content_bytes, content_type). Raises HTTPException on error.
@@ -463,13 +477,17 @@ async def update_item_stock(access_token: str, item_id: str, quantity: int) -> N
             try:
                 body = resp.json()
                 cause = body.get("cause") or []
-                if any((c or {}).get("code") == "item.available_quantity.not_modifiable" for c in cause):
+                if any(
+                    (c or {}).get("code") == "item.available_quantity.not_modifiable" for c in cause
+                ):
                     is_not_modifiable = True
             except Exception:
                 pass
 
         if not is_not_modifiable:
-            raise HTTPException(status_code=400, detail=f"Erro ao atualizar estoque ML: {resp.text}")
+            raise HTTPException(
+                status_code=400, detail=f"Erro ao atualizar estoque ML: {resp.text}"
+            )
 
         # Fetch the item to determine its type
         item_resp = await client.get(f"{ML_API_BASE}/items/{item_id}", headers=headers)
@@ -524,7 +542,9 @@ async def get_item(access_token: str, item_id: str) -> dict:
             headers={"Authorization": f"Bearer {access_token}"},
         )
     if resp.status_code == 404:
-        raise HTTPException(status_code=404, detail=f"Anúncio {item_id} não encontrado no Mercado Livre")
+        raise HTTPException(
+            status_code=404, detail=f"Anúncio {item_id} não encontrado no Mercado Livre"
+        )
     if resp.status_code != 200:
         raise HTTPException(status_code=400, detail=f"Erro ao buscar anúncio ML: {resp.text}")
     return resp.json()
@@ -575,7 +595,7 @@ async def get_items_bulk(access_token: str, item_ids: list[str]) -> list[dict]:
     results = []
     async with httpx.AsyncClient() as client:
         for i in range(0, len(item_ids), 20):
-            chunk = item_ids[i:i + 20]
+            chunk = item_ids[i : i + 20]
             resp = await client.get(
                 f"{ML_API_BASE}/items",
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -661,13 +681,15 @@ async def search_categories(query: str, site_id: str = "MLB") -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        base.append({
-            "id":          cid,
-            "name":        entry.get("category_name", ""),
-            "domain_id":   did,
-            "domain_name": entry.get("domain_name", ""),
-            "path_from_root": [],
-        })
+        base.append(
+            {
+                "id": cid,
+                "name": entry.get("category_name", ""),
+                "domain_id": did,
+                "domain_name": entry.get("domain_name", ""),
+                "path_from_root": [],
+            }
+        )
 
     if not base:
         return []
@@ -767,18 +789,22 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
                 return result
 
             if resp.status_code != 400:
-                raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}")
+                raise HTTPException(
+                    status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}"
+                )
 
             try:
                 body = resp.json()
             except Exception:
-                raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}")
+                raise HTTPException(
+                    status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}"
+                )
 
             # Extrai campos imutáveis citados em causes[*].references
             to_drop: list[str] = []
-            for cause in (body.get("cause") or []):
+            for cause in body.get("cause") or []:
                 if (cause or {}).get("code") == "field_not_updatable":
-                    for ref in (cause.get("references") or []):
+                    for ref in cause.get("references") or []:
                         # references vêm como "pictures" ou "item.catalog_listing" — usamos a 1ª chave
                         key = ref.split(".", 1)[0] if isinstance(ref, str) else None
                         if key and key in payload:
@@ -787,7 +813,9 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
             to_drop = list(dict.fromkeys(to_drop))  # dedup preservando ordem
             if not to_drop:
                 # 400 não relacionado a field_not_updatable — propaga
-                raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}")
+                raise HTTPException(
+                    status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}"
+                )
 
             for k in to_drop:
                 payload.pop(k, None)
@@ -797,7 +825,10 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
                 # Nada sobrou para enviar — devolve sucesso "vazio" sinalizando o que foi pulado
                 return {"id": item_id, "_skipped_fields": skipped, "_no_op": True}
 
-    raise HTTPException(status_code=400, detail=f"Erro ao atualizar anúncio ML após retentativas: campos pulados={skipped}")
+    raise HTTPException(
+        status_code=400,
+        detail=f"Erro ao atualizar anúncio ML após retentativas: campos pulados={skipped}",
+    )
 
 
 async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) -> None:
@@ -870,8 +901,8 @@ async def get_items_visit_stats(access_token: str, item_ids: list) -> dict:
     """Busca visitas dos últimos 7 dias por item via /items/visits."""
     if not item_ids:
         return {}
-    date_to = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    date_from = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    date_to = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    date_from = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     per_item: dict[str, int] = {}
     batch_size = 50
     async with httpx.AsyncClient(timeout=30) as client:
@@ -879,7 +910,9 @@ async def get_items_visit_stats(access_token: str, item_ids: list) -> dict:
             batch = item_ids[i : i + batch_size]
             # Constrói URL manualmente para evitar encoding da vírgula pelo httpx
             ids_str = ",".join(str(iid) for iid in batch)
-            url = f"{ML_API_BASE}/items/visits?ids={ids_str}&date_from={date_from}&date_to={date_to}"
+            url = (
+                f"{ML_API_BASE}/items/visits?ids={ids_str}&date_from={date_from}&date_to={date_to}"
+            )
             resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
             if resp.status_code != 200:
                 continue
@@ -892,7 +925,9 @@ async def get_items_visit_stats(access_token: str, item_ids: list) -> dict:
     return per_item
 
 
-def _calc_billable_weight(weight_kg: float, height_cm: float, width_cm: float, length_cm: float) -> dict:
+def _calc_billable_weight(
+    weight_kg: float, height_cm: float, width_cm: float, length_cm: float
+) -> dict:
     """
     Calcula peso faturável conforme regra do ML:
     max(peso físico, peso cúbico) onde cúbico = (A × L × C) / 6.000 kg.
@@ -900,10 +935,10 @@ def _calc_billable_weight(weight_kg: float, height_cm: float, width_cm: float, l
     cubic_kg = (height_cm * width_cm * length_cm) / 6000
     billable_kg = max(weight_kg, cubic_kg)
     return {
-        "physical_kg":  round(weight_kg, 3),
-        "cubic_kg":     round(cubic_kg, 3),
-        "billable_kg":  round(billable_kg, 3),
-        "used":         "cúbico" if cubic_kg > weight_kg else "físico",
+        "physical_kg": round(weight_kg, 3),
+        "cubic_kg": round(cubic_kg, 3),
+        "billable_kg": round(billable_kg, 3),
+        "used": "cúbico" if cubic_kg > weight_kg else "físico",
     }
 
 
@@ -914,11 +949,11 @@ def _parse_shipping_response(data: dict) -> dict:
     """
     # Formato documentado: coverage.all_country
     all_country = _extract_nested(data, "coverage", "all_country") or {}
-    list_cost   = float(all_country.get("list_cost") or 0)
-    disc_info   = all_country.get("discount") or {}
-    discount    = float(disc_info.get("promoted_amount") or 0)
-    disc_rate   = float(disc_info.get("rate") or 0)
-    disc_type   = disc_info.get("type", "")
+    list_cost = float(all_country.get("list_cost") or 0)
+    disc_info = all_country.get("discount") or {}
+    discount = float(disc_info.get("promoted_amount") or 0)
+    disc_rate = float(disc_info.get("rate") or 0)
+    disc_type = disc_info.get("type", "")
 
     # Fallback de list_cost por outros caminhos de resposta
     if not list_cost:
@@ -950,11 +985,11 @@ def _parse_shipping_response(data: dict) -> dict:
 
     net_cost = max(0.0, list_cost - discount)
     return {
-        "list_cost":       round(list_cost, 2),
+        "list_cost": round(list_cost, 2),
         "discount_amount": round(discount, 2),
         "discount_rate_pct": round(disc_rate * 100, 1),
-        "discount_type":   disc_type,
-        "net_cost":        round(net_cost, 2),
+        "discount_type": disc_type,
+        "net_cost": round(net_cost, 2),
     }
 
 
@@ -996,20 +1031,20 @@ async def get_listing_costs(
             f"{ML_API_BASE}/sites/MLB/listing_prices",
             headers=headers,
             params={
-                "price":           price,
-                "category_id":     category_id,
+                "price": price,
+                "category_id": category_id,
                 "listing_type_id": listing_type,
-                "shipping_mode":   shipping_mode,
-                "logistic_type":   logistic_type,
+                "shipping_mode": shipping_mode,
+                "logistic_type": logistic_type,
             },
         )
         if resp.status_code != 200:
             return
         d = resp.json()
         commission_amount = float(d.get("sale_fee_amount") or 0)
-        commission_pct    = float(d.get("meli_percentage_fee") or 0)
-        financing_fee     = float(d.get("financing_add_on_fee") or 0)
-        fixed_fee         = float(d.get("fixed_fee") or 0)
+        commission_pct = float(d.get("meli_percentage_fee") or 0)
+        financing_fee = float(d.get("financing_add_on_fee") or 0)
+        fixed_fee = float(d.get("fixed_fee") or 0)
         # Fallback: deriva % quando a API não retorna meli_percentage_fee
         if commission_pct == 0 and commission_amount > 0 and price > 0:
             commission_pct = round(commission_amount / price * 100, 1)
@@ -1028,7 +1063,7 @@ async def get_listing_costs(
         # Peso físico em gramas — a API calcula o cúbico internamente a partir das dimensões
         physical_g = int(round(weight_kg * 1000))
         # Preservar decimais nas dimensões (ML API aceita float, ex: 9.5)
-        dims = f"{round(length_cm,1)}x{round(height_cm,1)}x{round(width_cm,1)},{physical_g}"
+        dims = f"{round(length_cm, 1)}x{round(height_cm, 1)}x{round(width_cm, 1)},{physical_g}"
         # Para Full, o vendedor sempre arca com o frete grátis perante o ML
         effective_free = free_shipping or (logistic_type.lower() == "fulfillment")
 
@@ -1036,14 +1071,14 @@ async def get_listing_costs(
             f"{ML_API_BASE}/users/{seller_id}/shipping_options/free",
             headers=headers,
             params={
-                "dimensions":      dims,
-                "item_price":      price,
+                "dimensions": dims,
+                "item_price": price,
                 "listing_type_id": listing_type,
-                "mode":            shipping_mode,
-                "logistic_type":   logistic_type,
-                "free_shipping":   str(effective_free).lower(),
-                "condition":       "new",
-                "verbose":         "true",
+                "mode": shipping_mode,
+                "logistic_type": logistic_type,
+                "free_shipping": str(effective_free).lower(),
+                "condition": "new",
+                "verbose": "true",
             },
         )
         if resp.status_code != 200:
@@ -1054,31 +1089,31 @@ async def get_listing_costs(
         shipping_net_cost = parsed["net_cost"]
         shipping_detail = {
             **parsed,
-            "dimensions":            dims,
-            "physical_weight_kg":    wb["physical_kg"],
-            "cubic_weight_kg":       wb["cubic_kg"],
-            "billable_weight_kg":    wb["billable_kg"],
-            "billable_weight_used":  wb["used"],
+            "dimensions": dims,
+            "physical_weight_kg": wb["physical_kg"],
+            "cubic_weight_kg": wb["cubic_kg"],
+            "billable_weight_kg": wb["billable_kg"],
+            "billable_weight_used": wb["used"],
             "api_billable_weight_g": raw.get("billable_weight"),
         }
 
     async with httpx.AsyncClient(timeout=15) as client:
         await asyncio.gather(_fetch_commission(client), _fetch_shipping(client))
 
-    total_cost  = commission_amount + shipping_net_cost + fixed_fee + financing_fee
+    total_cost = commission_amount + shipping_net_cost + fixed_fee + financing_fee
     net_revenue = price - total_cost
-    margin_pct  = round((net_revenue / price) * 100, 2) if price > 0 else 0.0
+    margin_pct = round((net_revenue / price) * 100, 2) if price > 0 else 0.0
 
     result: dict = {
-        "price":             round(price, 2),
+        "price": round(price, 2),
         "commission_amount": round(commission_amount, 2),
-        "commission_pct":    round(commission_pct, 2),
-        "financing_fee":     round(financing_fee, 2),
-        "fixed_fee":         round(fixed_fee, 2),
-        "shipping_cost":     round(shipping_net_cost, 2),
-        "total_cost":        round(total_cost, 2),
-        "net_revenue":       round(net_revenue, 2),
-        "margin_pct":        margin_pct,
+        "commission_pct": round(commission_pct, 2),
+        "financing_fee": round(financing_fee, 2),
+        "fixed_fee": round(fixed_fee, 2),
+        "shipping_cost": round(shipping_net_cost, 2),
+        "total_cost": round(total_cost, 2),
+        "net_revenue": round(net_revenue, 2),
+        "margin_pct": margin_pct,
     }
     if shipping_detail:
         result["shipping_detail"] = shipping_detail
@@ -1099,32 +1134,40 @@ async def get_sale_price_info(access_token: str, item_id: str) -> dict:
     if resp.status_code != 200:
         return {}
     d = resp.json()
-    sale_price    = d.get("amount")
+    sale_price = d.get("amount")
     regular_price = d.get("regular_amount")
-    promotion_id  = d.get("promotion_id")
-    promo_type    = d.get("promotion_type")
+    promotion_id = d.get("promotion_id")
+    promo_type = d.get("promotion_type")
     # Detecta promoção via promotion_id OU por comparação de preços (>1% de desconto)
     has_promo = bool(promotion_id) or (
-        sale_price is not None and regular_price is not None
+        sale_price is not None
+        and regular_price is not None
         and float(regular_price) > 0
         and float(sale_price) < float(regular_price) * 0.99
     )
     discount_pct: float | None = None
     if has_promo and regular_price and sale_price and float(regular_price) > 0:
-        discount_pct = round((float(regular_price) - float(sale_price)) / float(regular_price) * 100, 1)
+        discount_pct = round(
+            (float(regular_price) - float(sale_price)) / float(regular_price) * 100, 1
+        )
     return {
-        "has_promotion":  has_promo,
-        "sale_price":     sale_price,
-        "regular_price":  regular_price,
+        "has_promotion": has_promo,
+        "sale_price": sale_price,
+        "regular_price": regular_price,
         "promotion_type": promo_type,
-        "discount_pct":   discount_pct,
+        "discount_pct": discount_pct,
     }
 
 
 _AUTO_PRICE_TYPES = {"automated", "smart", "competitive"}
-_AUTO_PRICE_TAGS  = {"automated_pricing", "smart_pricing", "competitive_price", "price_automatic",
-                     "dynamic_standard_price"}
-_AUTO_META_TYPES  = {"price_matching", "smart", "automated_pricing", "automated"}
+_AUTO_PRICE_TAGS = {
+    "automated_pricing",
+    "smart_pricing",
+    "competitive_price",
+    "price_automatic",
+    "dynamic_standard_price",
+}
+_AUTO_META_TYPES = {"price_matching", "smart", "automated_pricing", "automated"}
 
 
 async def get_item_auto_pricing(access_token: str, item_id: str) -> dict:
@@ -1138,8 +1181,8 @@ async def get_item_auto_pricing(access_token: str, item_id: str) -> dict:
     """
     headers = {"Authorization": f"Bearer {access_token}"}
     prices_raw: list = []
-    tags_raw:   list = []
-    is_auto  = False
+    tags_raw: list = []
+    is_auto = False
     auto_type: str | None = None
     try:
         async with httpx.AsyncClient(timeout=8) as client:
@@ -1164,7 +1207,8 @@ async def get_item_auto_pricing(access_token: str, item_id: str) -> dict:
             if not is_auto:
                 try:
                     resp = await client.get(
-                        f"{ML_API_BASE}/items/{item_id}", headers=headers,
+                        f"{ML_API_BASE}/items/{item_id}",
+                        headers=headers,
                         params={"attributes": "tags,price"},
                     )
                     if resp.status_code == 200:
@@ -1178,7 +1222,12 @@ async def get_item_auto_pricing(access_token: str, item_id: str) -> dict:
     except BaseException:
         pass
 
-    return {"is_auto": is_auto, "auto_type": auto_type, "prices_raw": prices_raw, "tags_raw": tags_raw}
+    return {
+        "is_auto": is_auto,
+        "auto_type": auto_type,
+        "prices_raw": prices_raw,
+        "tags_raw": tags_raw,
+    }
 
 
 async def get_item_promotion(access_token: str, item_id: str) -> dict:
@@ -1212,8 +1261,8 @@ async def get_item_promotion(access_token: str, item_id: str) -> dict:
             if promo_resp.status_code == 200:
                 pd = promo_resp.json()
                 result["promotion_name"] = pd.get("name")
-                result["start_date"]     = pd.get("start_date")
-                result["finish_date"]    = pd.get("finish_date")
+                result["start_date"] = pd.get("start_date")
+                result["finish_date"] = pd.get("finish_date")
 
     return result
 
@@ -1265,11 +1314,11 @@ async def get_commission_details(
             f"{ML_API_BASE}/sites/MLB/listing_prices",
             headers=headers,
             params={
-                "price":           price,
-                "category_id":     category_id,
+                "price": price,
+                "category_id": category_id,
                 "listing_type_id": listing_type,
-                "shipping_mode":   shipping_mode,
-                "logistic_type":   logistic_type,
+                "shipping_mode": shipping_mode,
+                "logistic_type": logistic_type,
             },
         )
     if resp.status_code != 200:
@@ -1280,27 +1329,27 @@ async def get_commission_details(
     data = resp.json()
 
     # A API pode retornar os componentes em sale_fee_details (aninhado) ou no root
-    details   = data.get("sale_fee_details") or {}
-    sale_fee  = float(data.get("sale_fee_amount") or 0)
-    meli_pct  = float(details.get("meli_percentage_fee")  or data.get("meli_percentage_fee")  or 0)
+    details = data.get("sale_fee_details") or {}
+    sale_fee = float(data.get("sale_fee_amount") or 0)
+    meli_pct = float(details.get("meli_percentage_fee") or data.get("meli_percentage_fee") or 0)
     financing = float(details.get("financing_add_on_fee") or data.get("financing_add_on_fee") or 0)
-    fixed     = float(details.get("fixed_fee")            or data.get("fixed_fee")            or 0)
+    fixed = float(details.get("fixed_fee") or data.get("fixed_fee") or 0)
 
     # Percentual efetivo total sobre o preço de venda
     effective_pct = round((sale_fee / price) * 100, 2) if price > 0 else 0.0
 
     return {
-        "listing_type_id":      data.get("listing_type_id", listing_type),
+        "listing_type_id": data.get("listing_type_id", listing_type),
         # Total consolidado — valor real a deduzir do preço de venda
-        "sale_fee_amount":      round(sale_fee, 2),
-        "effective_fee_pct":    effective_pct,
+        "sale_fee_amount": round(sale_fee, 2),
+        "effective_fee_pct": effective_pct,
         # Breakdown dos 3 componentes
-        "meli_percentage_fee":  round(meli_pct, 2),
+        "meli_percentage_fee": round(meli_pct, 2),
         "financing_add_on_fee": round(financing, 2),
-        "fixed_fee":            round(fixed, 2),
+        "fixed_fee": round(fixed, 2),
         # Flags de contexto
-        "has_financing":        financing > 0,
-        "has_fixed_fee":        fixed > 0,
+        "has_financing": financing > 0,
+        "has_fixed_fee": fixed > 0,
     }
 
 
@@ -1329,7 +1378,7 @@ async def get_shipping_details(
     wb = _calc_billable_weight(weight_kg, height_cm, width_cm, length_cm)
     physical_g = int(round(weight_kg * 1000))
     # Preservar decimais nas dimensões (ML API aceita float, ex: 9.5)
-    dims = f"{round(length_cm,1)}x{round(height_cm,1)}x{round(width_cm,1)},{physical_g}"
+    dims = f"{round(length_cm, 1)}x{round(height_cm, 1)}x{round(width_cm, 1)},{physical_g}"
     # Para Full, o vendedor sempre arca com o frete grátis perante o ML
     effective_free = free_shipping or (logistic_type.lower() == "fulfillment")
 
@@ -1339,14 +1388,14 @@ async def get_shipping_details(
             f"{ML_API_BASE}/users/{seller_id}/shipping_options/free",
             headers=headers,
             params={
-                "dimensions":      dims,
-                "item_price":      price,
+                "dimensions": dims,
+                "item_price": price,
                 "listing_type_id": listing_type,
-                "mode":            shipping_mode,
-                "logistic_type":   logistic_type,
-                "free_shipping":   str(effective_free).lower(),
-                "condition":       "new",
-                "verbose":         "true",
+                "mode": shipping_mode,
+                "logistic_type": logistic_type,
+                "free_shipping": str(effective_free).lower(),
+                "condition": "new",
+                "verbose": "true",
             },
         )
     if resp.status_code != 200:
@@ -1359,22 +1408,23 @@ async def get_shipping_details(
     parsed = _parse_shipping_response(raw)
     return {
         # Pesos
-        "physical_weight_kg":    wb["physical_kg"],
-        "cubic_weight_kg":       wb["cubic_kg"],
-        "billable_weight_kg":    wb["billable_kg"],
-        "billable_weight_used":  wb["used"],
+        "physical_weight_kg": wb["physical_kg"],
+        "cubic_weight_kg": wb["cubic_kg"],
+        "billable_weight_kg": wb["billable_kg"],
+        "billable_weight_used": wb["used"],
         "api_billable_weight_g": raw.get("billable_weight"),
         # Frete
-        "dimensions":          dims,
-        "list_cost":           parsed["list_cost"],
-        "discount_amount":     parsed["discount_amount"],
-        "discount_rate_pct":   parsed["discount_rate_pct"],
-        "discount_type":       parsed["discount_type"],
-        "net_cost":            parsed["net_cost"],
+        "dimensions": dims,
+        "list_cost": parsed["list_cost"],
+        "discount_amount": parsed["discount_amount"],
+        "discount_rate_pct": parsed["discount_rate_pct"],
+        "discount_type": parsed["discount_type"],
+        "net_cost": parsed["net_cost"],
     }
 
 
 # ─── NF-e / Invoice endpoints ────────────────────────────────────────────────
+
 
 async def get_invoices_by_order(access_token: str, seller_id: str, order_id: str) -> dict:
     """Fetch invoice for an ML order via GET /users/{seller_id}/invoices/orders/{order_id}."""

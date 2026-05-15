@@ -2,6 +2,7 @@
 Configuração de IA para atendimento automático.
 Config global (singleton) e config por CMIG.
 """
+
 import base64
 import logging
 
@@ -9,12 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import services.ai_service as ai_svc
 from database import get_db
 from dependencies import get_current_user, require_role
-from models.user import User
-from models.messages import AIConfig, CMIGAIConfig
 from models.cmig import CMIG, CMIGAdministrator
-import services.ai_service as ai_svc
+from models.messages import AIConfig, CMIGAIConfig
+from models.user import User
 
 router = APIRouter(prefix="/api/v1/ai-config", tags=["ai-config"])
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ def _decode_key(encoded: str) -> str:
 # ---------------------------------------------------------------------------
 # Config Global
 # ---------------------------------------------------------------------------
+
 
 @router.get("/")
 async def get_ai_config(
@@ -129,12 +131,17 @@ async def test_ai_config(
 
     api_key = _decode_key(cfg.api_key)
     await ai_svc.test_connection(provider=cfg.provider, api_key=api_key, model=cfg.model_name)
-    return {"message": "Conexão com a IA testada com sucesso.", "provider": cfg.provider, "model": cfg.model_name}
+    return {
+        "message": "Conexão com a IA testada com sucesso.",
+        "provider": cfg.provider,
+        "model": cfg.model_name,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Config por CMIG
 # ---------------------------------------------------------------------------
+
 
 async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession):
     result = await db.execute(select(CMIG).where(CMIG.id == cmig_id))
@@ -190,7 +197,9 @@ async def update_cmig_ai_config(
     auto_respond = bool(body.get("auto_respond", False))
 
     if not cfg:
-        cfg = CMIGAIConfig(cmig_id=cmig_id, custom_instructions=custom_instructions, auto_respond=auto_respond)
+        cfg = CMIGAIConfig(
+            cmig_id=cmig_id, custom_instructions=custom_instructions, auto_respond=auto_respond
+        )
         db.add(cfg)
     else:
         cfg.custom_instructions = custom_instructions

@@ -8,7 +8,9 @@ Usa o access_token armazenado (refresh_expiring_tokens roda 1x por hora,
 antes deste job, então o token deve estar válido). Falhas individuais
 não interrompem o batch.
 """
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 
 from database import task_db
@@ -41,7 +43,7 @@ async def refresh_ml_reputation():
                     continue
                 acc.power_seller_status = rep.get("power_seller_status")
                 acc.level_id = rep.get("level_id")
-                acc.reputation_cached_at = datetime.now(timezone.utc)
+                acc.reputation_cached_at = datetime.now(UTC)
                 updated += 1
             except Exception as exc:
                 print(f"[REPUTATION] account {acc.id} ({acc.platform_username}) failed: {exc}")

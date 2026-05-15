@@ -6,18 +6,20 @@ Autenticação: HTTP Basic com o token como `username` e senha vazia.
 Multi-CNPJ: cada empresa emissora tem seu próprio token (`focus_company_token`),
 gerenciado em `cmig_fiscal_config`.
 """
+
 from __future__ import annotations
+
 import json
-import re
 import logging
+import re
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
+
 import httpx
 
 from config import get_settings
-from models.fiscal import Invoice, CMIGFiscalConfig
 from models.cmig import CMIG
+from models.fiscal import CMIGFiscalConfig, Invoice
 from models.person import Person
 
 log = logging.getLogger(__name__)
@@ -25,6 +27,7 @@ settings = get_settings()
 
 
 # ── Helpers internos ──────────────────────────────────────────────────────────
+
 
 def _base_url(env: str) -> str:
     return settings.FOCUS_NFE_BASE_PROD if env == "production" else settings.FOCUS_NFE_BASE_HOMOLOG
@@ -90,6 +93,7 @@ def _handle_response(resp: httpx.Response) -> dict:
 
 # ── Empresa (cadastro + certificado) ──────────────────────────────────────────
 
+
 async def register_company(cfg: CMIGFiscalConfig, cmig: CMIG, master_token: str) -> dict:
     """Registra a empresa (CNPJ) no Focus NFe usando o token mestre da conta.
 
@@ -124,8 +128,9 @@ async def register_company(cfg: CMIGFiscalConfig, cmig: CMIG, master_token: str)
     return _handle_response(resp)
 
 
-async def upload_certificate(cfg: CMIGFiscalConfig, cmig: CMIG, master_token: str,
-                              pfx_bytes: bytes, password: str) -> dict:
+async def upload_certificate(
+    cfg: CMIGFiscalConfig, cmig: CMIG, master_token: str, pfx_bytes: bytes, password: str
+) -> dict:
     """Faz upload do certificado A1 (.pfx) para o Focus.
 
     Focus armazena o certificado em cofre próprio; nada fica no servidor local.
@@ -144,18 +149,25 @@ async def upload_certificate(cfg: CMIGFiscalConfig, cmig: CMIG, master_token: st
 
 # ── NFe — emissão / consulta / cancelamento / CCe / email ────────────────────
 
-def _build_nfe_payload(inv: Invoice, cmig: CMIG, cfg: CMIGFiscalConfig,
-                       person: Person, items: list, carrier: Person | None = None) -> dict:
+
+def _build_nfe_payload(
+    inv: Invoice,
+    cmig: CMIG,
+    cfg: CMIGFiscalConfig,
+    person: Person,
+    items: list,
+    carrier: Person | None = None,
+) -> dict:
     """Monta o JSON de NFe no formato esperado pelo Focus NFe."""
     ide = {
         "natureza_operacao": inv.natureza_operacao or "Venda",
         "data_emissao": (inv.issue_date or datetime.utcnow()).isoformat(),
         "data_entrada_saida": (inv.exit_date or inv.issue_date or datetime.utcnow()).isoformat(),
-        "tipo_documento": 1,                    # 0=entrada, 1=saída
+        "tipo_documento": 1,  # 0=entrada, 1=saída
         "finalidade_emissao": _finalidade_focus(inv.purpose),
-        "presenca_comprador": 9,                # 9 = não se aplica
+        "presenca_comprador": 9,  # 9 = não se aplica
         "modalidade_frete": int(inv.freight_modality) if inv.freight_modality is not None else 9,
-        "local_destino": 1,                     # 1=interna 2=interestadual 3=exterior
+        "local_destino": 1,  # 1=interna 2=interestadual 3=exterior
     }
 
     emit_data = {
@@ -204,10 +216,12 @@ def _build_nfe_payload(inv: Invoice, cmig: CMIG, cfg: CMIGFiscalConfig,
 
     # Pagamento
     if inv.payment_method:
-        payload["formas_pagamento"] = [{
-            "forma_pagamento": inv.payment_method,
-            "valor_pagamento": _f(inv.total_invoice),
-        }]
+        payload["formas_pagamento"] = [
+            {
+                "forma_pagamento": inv.payment_method,
+                "valor_pagamento": _f(inv.total_invoice),
+            }
+        ]
 
     # Transporte
     if carrier:
@@ -233,8 +247,14 @@ def _finalidade_focus(purpose: str) -> int:
     """Mapeia purpose interno para finNFe do Focus.
     1=Normal 2=Complementar 3=Ajuste 4=Devolução"""
     return {
-        "venda": 1, "remessa": 1, "transferencia": 1, "outros": 1, "retorno": 1,
-        "complementar": 2, "ajuste": 3, "devolucao": 4,
+        "venda": 1,
+        "remessa": 1,
+        "transferencia": 1,
+        "outros": 1,
+        "retorno": 1,
+        "complementar": 2,
+        "ajuste": 3,
+        "devolucao": 4,
     }.get(purpose or "venda", 1)
 
 
@@ -358,8 +378,10 @@ def absolutize_focus_url(cfg: CMIGFiscalConfig, path_or_url: str) -> str:
 
 # ── DFe — NFes recebidas pelo CNPJ ────────────────────────────────────────────
 
-async def list_received(cfg: CMIGFiscalConfig, cnpj: str,
-                        per_page: int = 50, since_nsu: int | None = None) -> list[dict]:
+
+async def list_received(
+    cfg: CMIGFiscalConfig, cnpj: str, per_page: int = 50, since_nsu: int | None = None
+) -> list[dict]:
     """Lista NFes recebidas pelo CNPJ (paginado).
 
     Focus retorna até `per_page` registros por chamada. Quando há mais,
@@ -377,7 +399,11 @@ async def list_received(cfg: CMIGFiscalConfig, cnpj: str,
             resp = await client.get(url, params=params)
             data = _handle_response(resp)
             # Resposta: {ultimo_nsu, proximo_nsu, documentos: [{chave, ...}, ...]}
-            items = data.get("documentos") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            items = (
+                data.get("documentos")
+                if isinstance(data, dict)
+                else (data if isinstance(data, list) else [])
+            )
             if not items:
                 break
             all_items.extend(items)
@@ -414,8 +440,9 @@ async def download_received_xml(cfg: CMIGFiscalConfig, chave: str) -> bytes:
     return resp.content
 
 
-async def manifest(cfg: CMIGFiscalConfig, chave: str, tipo: str,
-                   justificativa: str | None = None) -> dict:
+async def manifest(
+    cfg: CMIGFiscalConfig, chave: str, tipo: str, justificativa: str | None = None
+) -> dict:
     """Manifesta uma NFe recebida.
 
     tipo: 'ciencia' | 'confirmacao' | 'desconhecimento' | 'nao_realizada'

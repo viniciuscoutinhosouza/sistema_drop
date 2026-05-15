@@ -4,12 +4,15 @@ Extrai dados estruturados do XML para criar um Invoice de entrada (direction='in
 Suporta tanto o XML "puro" (raiz <NFe>) quanto o XML do protocolo (<nfeProc>).
 Usa xmltodict para parsing tolerante.
 """
+
 from __future__ import annotations
+
 import re
-import xmltodict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+import xmltodict
 
 
 def _clean_doc(s: str | None) -> str:
@@ -248,14 +251,20 @@ def _parse_item(det: dict) -> dict:
 def _extract_icms(icms: dict) -> dict:
     """ICMS vem dentro de uma sub-tag variável (ICMS00, ICMS10, ICMSSN101, etc)."""
     out = {
-        "origin": 0, "cst": None, "csosn": None,
-        "base": Decimal("0"), "aliquota": Decimal("0"), "value": Decimal("0"),
-        "st_base": Decimal("0"), "st_aliquota": Decimal("0"), "st_value": Decimal("0"),
+        "origin": 0,
+        "cst": None,
+        "csosn": None,
+        "base": Decimal("0"),
+        "aliquota": Decimal("0"),
+        "value": Decimal("0"),
+        "st_base": Decimal("0"),
+        "st_aliquota": Decimal("0"),
+        "st_value": Decimal("0"),
     }
     if not icms:
         return out
     # Pega o primeiro filho (qualquer ICMS00/ICMS10/.../ICMSSN101/...)
-    for key, val in icms.items():
+    for _key, val in icms.items():
         if not isinstance(val, dict):
             continue
         out["origin"] = _to_int(val.get("orig"), 0) or 0

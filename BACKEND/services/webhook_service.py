@@ -5,19 +5,23 @@ Critical: All order creation from webhooks goes through here.
 The unique constraint on webhook_events(platform, event_id) is the safety net
 against duplicate processing when marketplaces retry webhooks.
 """
+
 import json
-from datetime import datetime, timezone, date as date_type
+from datetime import UTC, datetime
+from datetime import date as date_type
 from decimal import Decimal
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from models.webhook import WebhookEvent
-from models.order import Order, OrderItem
-from models.integration import MarketplaceAccount
-from models.product import DropshipperProduct
-from services.notification_service import create_notification
-from services.ml_service import get_shipment, get_shipment_costs
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from config import get_settings
+from models.integration import MarketplaceAccount
+from models.order import Order, OrderItem
+from models.product import DropshipperProduct
+from models.webhook import WebhookEvent
+from services.ml_service import get_shipment, get_shipment_costs
+from services.notification_service import create_notification
 
 settings = get_settings()
 
@@ -65,7 +69,9 @@ def _apply_shipment_costs_to_order(order: Order, costs_data: dict) -> bool:
     return applied
 
 
-def _apply_shipment_to_order(order: Order, shipment_data: dict, costs_data: dict | None = None) -> None:
+def _apply_shipment_to_order(
+    order: Order, shipment_data: dict, costs_data: dict | None = None
+) -> None:
     """Apply shipment fields from a fresh ML /shipments/{id} response to an Order.
 
     When costs_data (from /shipments/{id}/costs) is provided, prefers it for
@@ -109,13 +115,17 @@ def _apply_shipment_to_order(order: Order, shipment_data: dict, costs_data: dict
     h_limit = _parse_ship_date(ship_opt.get("estimated_handling_limit"))
     if h_limit:
         order.estimated_handling_limit = h_limit
-    d_final = _parse_ship_date(ship_opt.get("estimated_delivery_final")) or _parse_ship_date(ship_opt.get("estimated_delivery_extended"))
+    d_final = _parse_ship_date(ship_opt.get("estimated_delivery_final")) or _parse_ship_date(
+        ship_opt.get("estimated_delivery_extended")
+    )
     if d_final:
         order.estimated_delivery_final = d_final
     delivery_time = shipment_data.get("estimated_delivery_time") or {}
     d_date = (
         _parse_ship_date(ship_opt.get("estimated_delivery_time"))
-        or _parse_ship_date(delivery_time.get("date") if isinstance(delivery_time, dict) else delivery_time)
+        or _parse_ship_date(
+            delivery_time.get("date") if isinstance(delivery_time, dict) else delivery_time
+        )
         or _parse_ship_date(delivery_time)
     )
     if d_date:
@@ -166,7 +176,9 @@ def _apply_fees_to_order(order: Order, ml_order_data: dict) -> None:
         try:
             sale = order.sale_amount
             if sale and Decimal(str(sale)) > 0:
-                order.ml_fee_pct = (total_fee / Decimal(str(sale)) * Decimal("100")).quantize(Decimal("0.0001"))
+                order.ml_fee_pct = (total_fee / Decimal(str(sale)) * Decimal("100")).quantize(
+                    Decimal("0.0001")
+                )
         except Exception:
             pass
 
@@ -251,7 +263,7 @@ async def process_ml_order(
                 ml_date = datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
                 local_created = existing_order.created_at
                 if local_created is not None and local_created.tzinfo is None:
-                    local_created = local_created.replace(tzinfo=timezone.utc)
+                    local_created = local_created.replace(tzinfo=UTC)
                 if not local_created or abs((local_created - ml_date).total_seconds()) > 300:
                     existing_order.created_at = ml_date
             except Exception:
@@ -265,7 +277,9 @@ async def process_ml_order(
                 shipment_data = await get_shipment(integration.access_token, str(shipment_id))
                 costs_data = {}
                 try:
-                    costs_data = await get_shipment_costs(integration.access_token, str(shipment_id))
+                    costs_data = await get_shipment_costs(
+                        integration.access_token, str(shipment_id)
+                    )
                 except Exception:
                     pass
                 if shipment_data:
@@ -332,10 +346,9 @@ async def process_ml_order(
             # SLA dates from shipping_option
             ship_opt = shipment_data.get("shipping_option") or {}
             estimated_handling_limit = _parse_date(ship_opt.get("estimated_handling_limit"))
-            estimated_delivery_final = (
-                _parse_date(ship_opt.get("estimated_delivery_final"))
-                or _parse_date(ship_opt.get("estimated_delivery_extended"))
-            )
+            estimated_delivery_final = _parse_date(
+                ship_opt.get("estimated_delivery_final")
+            ) or _parse_date(ship_opt.get("estimated_delivery_extended"))
             # Estimated delivery from shipment
             delivery_time = shipment_data.get("estimated_delivery_time") or {}
             estimated_delivery_date = (
@@ -365,14 +378,18 @@ async def process_ml_order(
             if buyer_shipping_paid is None:
                 cost = ship_opt.get("cost")
                 if cost is not None:
-                    try: buyer_shipping_paid = Decimal(str(cost))
-                    except Exception: pass
+                    try:
+                        buyer_shipping_paid = Decimal(str(cost))
+                    except Exception:
+                        pass
             if seller_shipping_cost is None:
                 cost = ship_opt.get("cost")
                 list_cost = ship_opt.get("list_cost")
                 if list_cost is not None:
                     try:
-                        seller_shipping_cost = max(Decimal("0"), Decimal(str(list_cost)) - Decimal(str(cost or 0)))
+                        seller_shipping_cost = max(
+                            Decimal("0"), Decimal(str(list_cost)) - Decimal(str(cost or 0))
+                        )
                     except Exception:
                         pass
         except Exception:
@@ -382,7 +399,8 @@ async def process_ml_order(
     if not estimated_delivery_date:
         delivery_time = shipping.get("estimated_delivery_time", {}) or {}
         estimated_delivery_date = _parse_date(
-            delivery_time.get("date") or (shipping.get("estimated_delivery_final") or {}).get("date")
+            delivery_time.get("date")
+            or (shipping.get("estimated_delivery_final") or {}).get("date")
         )
 
     # created_at from ML order date_created (fallback chain: date_created → date_closed → last_updated → now)
@@ -396,7 +414,7 @@ async def process_ml_order(
             except Exception:
                 pass
     if ml_created_at is None:
-        ml_created_at = datetime.now(timezone.utc)
+        ml_created_at = datetime.now(UTC)
 
     # paid_at from payments array; fallback to date_closed
     paid_at = None
@@ -481,17 +499,19 @@ async def process_ml_order(
         raw_thumb = item_info.get("thumbnail", "") or ""
         thumbnail_url = raw_thumb.replace("http://", "https://") if raw_thumb else None
 
-        db.add(OrderItem(
-            order_id=order.id,
-            dropshipper_product_id=dp.id if dp else None,
-            catalog_product_id=dp.catalog_product_id if dp else None,
-            ml_item_id=ml_item_id,
-            sku=item_info.get("seller_sku", ""),
-            title=item_info.get("title", ""),
-            quantity=item_data.get("quantity", 1),
-            unit_price=Decimal(str(item_data.get("unit_price", 0))),
-            thumbnail_url=thumbnail_url,
-        ))
+        db.add(
+            OrderItem(
+                order_id=order.id,
+                dropshipper_product_id=dp.id if dp else None,
+                catalog_product_id=dp.catalog_product_id if dp else None,
+                ml_item_id=ml_item_id,
+                sku=item_info.get("seller_sku", ""),
+                title=item_info.get("title", ""),
+                quantity=item_data.get("quantity", 1),
+                unit_price=Decimal(str(item_data.get("unit_price", 0))),
+                thumbnail_url=thumbnail_url,
+            )
+        )
 
     await db.commit()
 
@@ -553,15 +573,17 @@ async def process_shopee_order(
         )
         dp = dp_result.scalar_one_or_none()
 
-        db.add(OrderItem(
-            order_id=order.id,
-            dropshipper_product_id=dp.id if dp else None,
-            catalog_product_id=dp.catalog_product_id if dp else None,
-            sku=item_data.get("item_sku", ""),
-            title=item_data.get("item_name", ""),
-            quantity=item_data.get("model_quantity_purchased", 1),
-            unit_price=Decimal(str(item_data.get("model_discounted_price", 0))),
-        ))
+        db.add(
+            OrderItem(
+                order_id=order.id,
+                dropshipper_product_id=dp.id if dp else None,
+                catalog_product_id=dp.catalog_product_id if dp else None,
+                sku=item_data.get("item_sku", ""),
+                title=item_data.get("item_name", ""),
+                quantity=item_data.get("model_quantity_purchased", 1),
+                unit_price=Decimal(str(item_data.get("model_discounted_price", 0))),
+            )
+        )
 
     await db.commit()
 

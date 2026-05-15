@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Numeric, Date, TIMESTAMP, ForeignKey, text
+from sqlalchemy import TIMESTAMP, Column, Date, ForeignKey, Integer, Numeric, String, text
+
 from database import Base
 
 
@@ -19,5 +20,6 @@ class Return(Base):
     supplier_notes = Column(String)
     credit_amount = Column(Numeric(15, 2))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
-    updated_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"),
-                        onupdate=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
