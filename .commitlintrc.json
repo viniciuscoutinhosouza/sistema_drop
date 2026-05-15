@@ -1,0 +1,14 @@
+{
+  "extends": ["./FRONTEND/node_modules/@commitlint/config-conventional"],
+  "rules": {
+    "type-enum": [
+      2,
+      "always",
+      ["feat", "fix", "refactor", "docs", "chore", "test", "style", "perf", "revert"]
+    ],
+    "scope-case": [2, "always", "lower-case"],
+    "subject-case": [2, "never", ["sentence-case", "start-case", "pascal-case", "upper-case"]],
+    "subject-max-length": [2, "always", 100],
+    "body-max-line-length": [1, "always", 200]
+  }
+}

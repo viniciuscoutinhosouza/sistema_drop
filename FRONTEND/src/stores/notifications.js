@@ -15,8 +15,8 @@ export const useNotificationsStore = defineStore('notifications', () => {
       const { data } = await api.get('/notifications', { params: { page, page_size: 10 } })
       notifications.value = data.items
       total.value = data.total
-    } catch {
-      // Silencia erros de rede ao carregar notificações
+    } catch (e) {
+      console.warn('[notifications] Erro ao buscar notificações:', e?.response?.status ?? e?.message)
     }
   }
 

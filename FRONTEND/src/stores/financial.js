@@ -11,8 +11,8 @@ export const useFinancialStore = defineStore('financial', () => {
       const { data } = await api.get('/financial/balance')
       balance.value = data.balance
       balanceReserved.value = data.balance_reserved
-    } catch {
-      // Silencia erros (ex: usuário sem perfil ainda cadastrado)
+    } catch (e) {
+      console.warn('[financial] Erro ao buscar saldo:', e?.response?.status ?? e?.message)
     }
   }
 

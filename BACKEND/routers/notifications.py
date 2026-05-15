@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
+
 from database import get_db
 from dependencies import get_current_user
-from models.user import User
 from models.notification import Notification
+from models.user import User
 
 router = APIRouter()
 
@@ -55,6 +56,14 @@ async def mark_read(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    result = await db.execute(
+        select(Notification).where(
+            Notification.id == notification_id,
+            Notification.dropshipper_id == current_user.id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Notificação não encontrada")
     await db.execute(
         update(Notification)
         .where(

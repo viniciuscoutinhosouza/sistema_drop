@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from database import get_db
-from dependencies import require_role, get_current_user
+from dependencies import get_current_user, require_role
 from models.user import User
 from models.warehouse import Warehouse
 
@@ -45,12 +46,32 @@ async def list_warehouses(
     if current_user.role == "go":
         result = await db.execute(select(Warehouse).where(Warehouse.go_id == current_user.go_id))
         return [_serialize(w) for w in result.scalars().all()]
-    # UGO ou AC — retorna apenas o galpão vinculado
+    # UGO ou AC — retorna apenas o galpão vinculado (lista com 0 ou 1 item)
     if current_user.warehouse_id:
-        result = await db.execute(select(Warehouse).where(Warehouse.id == current_user.warehouse_id))
+        result = await db.execute(
+            select(Warehouse).where(Warehouse.id == current_user.warehouse_id)
+        )
         w = result.scalar_one_or_none()
-        return _serialize(w) if w else None
-    return None
+        return [_serialize(w)] if w else []
+    return []
+
+
+@router.get("/{warehouse_id}")
+async def get_warehouse(
+    warehouse_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retorna os dados de um galpão específico."""
+    result = await db.execute(select(Warehouse).where(Warehouse.id == warehouse_id))
+    warehouse = result.scalar_one_or_none()
+    if not warehouse:
+        raise HTTPException(status_code=404, detail="Galpão não encontrado")
+    if current_user.role == "go" and warehouse.go_id != current_user.go_id:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    if current_user.role in ("ugo", "ac") and warehouse.id != current_user.warehouse_id:
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    return _serialize(warehouse)
 
 
 @router.post("", status_code=201)
@@ -90,6 +111,33 @@ async def create_warehouse(
     return _serialize(warehouse)
 
 
+@router.delete("/{warehouse_id}", status_code=204)
+async def delete_warehouse(
+    warehouse_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin", "go")),
+):
+    """Remove um galpão. Bloqueia se houver usuários ativos vinculados."""
+    result = await db.execute(select(Warehouse).where(Warehouse.id == warehouse_id))
+    warehouse = result.scalar_one_or_none()
+    if not warehouse:
+        raise HTTPException(status_code=404, detail="Galpão não encontrado")
+    if current_user.role == "go" and warehouse.go_id != current_user.go_id:
+        raise HTTPException(status_code=403, detail="Este Galpão não pertence ao seu GO")
+
+    users_result = await db.execute(
+        select(User).where(User.warehouse_id == warehouse_id, User.is_active == True)
+    )
+    if users_result.scalars().first():
+        raise HTTPException(
+            status_code=409,
+            detail="Galpão possui usuários ativos. Desvincule-os antes de remover.",
+        )
+
+    db.delete(warehouse)
+    await db.commit()
+
+
 @router.put("/{warehouse_id}")
 async def update_warehouse(
     warehouse_id: int,
@@ -107,9 +155,23 @@ async def update_warehouse(
         raise HTTPException(status_code=403, detail="Este Galpão não pertence ao seu GO")
 
     fields = [
-        "name", "cnpj", "company_name", "trade_name", "phone", "whatsapp", "email",
-        "zip_code", "street", "number", "complement", "neighborhood", "city", "state",
-        "pix_key_type", "pix_key", "notes",
+        "name",
+        "cnpj",
+        "company_name",
+        "trade_name",
+        "phone",
+        "whatsapp",
+        "email",
+        "zip_code",
+        "street",
+        "number",
+        "complement",
+        "neighborhood",
+        "city",
+        "state",
+        "pix_key_type",
+        "pix_key",
+        "notes",
     ]
     for field in fields:
         if field in body:

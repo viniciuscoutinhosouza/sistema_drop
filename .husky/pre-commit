@@ -1,0 +1,9 @@
+#!/bin/sh
+# Run ruff check on staged Python files before commit
+cd "$(git rev-parse --show-toplevel)"
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep "^BACKEND/.*\.py$" || true)
+if [ -n "$STAGED_PY" ]; then
+  echo "Running ruff on staged Python files..."
+  RELATIVE=$(echo "$STAGED_PY" | sed 's|^BACKEND/||')
+  cd BACKEND && python -m ruff check $RELATIVE
+fi

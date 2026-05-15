@@ -1,27 +1,30 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from database import get_db
-from dependencies import get_current_user, require_role, get_active_ugo
-from models.user import User, ACProfile, AccessPlan
-from schemas.user import ProfileOut, ProfileUpdate, AddressSchema, PreferencesUpdate
+from dependencies import get_current_user, require_role
+from models.user import AccessPlan, ACProfile, User
+from models.warehouse import Warehouse
+from schemas.user import AddressSchema, PreferencesUpdate, ProfileOut, ProfileUpdate
 from services.viacep_service import fetch_address
-from services.auth_service import hash_password, verify_password
-from schemas.auth import ChangePasswordRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
 # ─── Perfil do usuário autenticado ───────────────────────────────────────────
 
+
 @router.get("/me", response_model=ProfileOut)
 async def get_me(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(ACProfile).where(ACProfile.user_id == current_user.id)
-    )
+    result = await db.execute(select(ACProfile).where(ACProfile.user_id == current_user.id))
     profile = result.scalar_one_or_none()
 
     out = ProfileOut(
@@ -72,9 +75,7 @@ async def update_address(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(ACProfile).where(ACProfile.user_id == current_user.id)
-    )
+    result = await db.execute(select(ACProfile).where(ACProfile.user_id == current_user.id))
     profile = result.scalar_one_or_none()
 
     if not profile:
@@ -111,6 +112,7 @@ async def lookup_cep(cep: str):
 
 # ─── Listagem de usuários (UGO/Admin) ────────────────────────────────────────
 
+
 @router.get("")
 async def list_users(
     role: str | None = None,
@@ -128,8 +130,7 @@ async def list_users(
         query = query.where(User.role == "ac")
     elif current_user.role == "go":
         query = query.where(
-            User.warehouse_id == current_user.warehouse_id,
-            User.role.in_(["ugo", "ac"])
+            User.warehouse_id == current_user.warehouse_id, User.role.in_(["ugo", "ac"])
         )
     elif role:
         query = query.where(User.role == role)
@@ -185,9 +186,13 @@ async def get_user(
             "city": profile.city,
             "state": profile.state,
             "subscription_status": profile.subscription_status,
-            "subscription_due_date": profile.subscription_due_date.isoformat() if profile.subscription_due_date else None,
+            "subscription_due_date": profile.subscription_due_date.isoformat()
+            if profile.subscription_due_date
+            else None,
             "plan_id": profile.plan_id,
-        } if profile else None,
+        }
+        if profile
+        else None,
     }
 
 
@@ -206,13 +211,23 @@ async def update_user(
     if user.role == "admin":
         raise HTTPException(status_code=403, detail="Não é possível editar o administrador")
 
+    if "warehouse_id" in body and body["warehouse_id"] is not None:
+        wh_result = await db.execute(select(Warehouse).where(Warehouse.id == body["warehouse_id"]))
+        if not wh_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Galpão não encontrado")
+
     allowed = {"full_name", "whatsapp", "warehouse_id", "is_active"}
     for field, value in body.items():
         if field in allowed:
             setattr(user, field, value)
 
     await db.commit()
-    return {"id": user.id, "full_name": user.full_name, "warehouse_id": user.warehouse_id, "is_active": user.is_active}
+    return {
+        "id": user.id,
+        "full_name": user.full_name,
+        "warehouse_id": user.warehouse_id,
+        "is_active": user.is_active,
+    }
 
 
 @router.put("/{user_id}/deactivate", status_code=204)
@@ -246,7 +261,9 @@ async def update_ac_plan(
 
     plan_id = body.get("plan_id")
     if plan_id:
-        plan_result = await db.execute(select(AccessPlan).where(AccessPlan.id == plan_id, AccessPlan.is_active == True))
+        plan_result = await db.execute(
+            select(AccessPlan).where(AccessPlan.id == plan_id, AccessPlan.is_active == True)
+        )
         if not plan_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Plano não encontrado")
 
@@ -261,6 +278,7 @@ async def update_ac_plan(
 
 
 # ─── Gestão de Planos de Acesso (Admin) ──────────────────────────────────────
+
 
 @router.get("/plans/access")
 async def list_plans(

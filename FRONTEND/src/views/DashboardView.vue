@@ -169,12 +169,17 @@ const topProducts = ref([])
 const loadingProducts = ref(true)
 
 onMounted(async () => {
-  const [kpisRes, productsRes] = await Promise.all([
-    api.get('/dashboard/kpis'),
-    api.get('/dashboard/top-products'),
-  ])
-  Object.assign(kpis, kpisRes.data)
-  topProducts.value = productsRes.data
-  loadingProducts.value = false
+  try {
+    const [kpisRes, productsRes] = await Promise.all([
+      api.get('/dashboard/kpis'),
+      api.get('/dashboard/top-products'),
+    ])
+    Object.assign(kpis, kpisRes.data)
+    topProducts.value = productsRes.data
+  } catch (e) {
+    console.error('[dashboard] Erro ao carregar dados:', e?.response?.status ?? e?.message)
+  } finally {
+    loadingProducts.value = false
+  }
 })
 </script>

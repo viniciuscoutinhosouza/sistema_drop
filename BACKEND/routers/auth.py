@@ -1,30 +1,59 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from database import get_db
-from models.user import User, ACProfile, RefreshToken
+from dependencies import get_current_user, require_role
+from models.user import ACProfile, RefreshToken, User
 from schemas.auth import (
-    LoginRequest, RegisterUGORequest, RegisterACRequest,
-    TokenResponse, RefreshRequest, ChangePasswordRequest,
+    ChangePasswordRequest,
+    LoginRequest,
+    RefreshRequest,
+    RegisterACRequest,
+    RegisterUGORequest,
+    TokenResponse,
 )
 from services.auth_service import (
-    hash_password, verify_password,
-    create_access_token, create_refresh_token, verify_token
+    create_access_token,
+    create_refresh_token,
+    hash_password,
+    verify_password,
+    verify_token,
 )
-from dependencies import get_current_user, require_role
-from datetime import datetime, timezone
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# In-memory rate limiter: {ip: [datetime, ...]}
+_login_attempts: dict[str, list[datetime]] = defaultdict(list)
+_RATE_LIMIT_MAX = 10
+_RATE_LIMIT_WINDOW = 60  # seconds
+
+
+def _check_rate_limit(ip: str) -> None:
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=_RATE_LIMIT_WINDOW)
+    attempts = [t for t in _login_attempts[ip] if t > cutoff]
+    if len(attempts) >= _RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde 1 minuto.")
+    attempts.append(now)
+    _login_attempts[ip] = attempts
 
 
 @router.post("/token", include_in_schema=False)
 async def oauth2_token(
+    request: Request,
     form: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ):
     """OAuth2-compatible login usado pelo Swagger UI."""
+    _check_rate_limit(request.client.host if request.client else "unknown")
     result = await db.execute(select(User).where(User.email == form.username))
     user = result.scalar_one_or_none()
     if not user or not verify_password(form.password, user.password_hash):
@@ -36,7 +65,8 @@ async def oauth2_token(
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):
+    _check_rate_limit(request.client.host if request.client else "unknown")
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
@@ -106,11 +136,10 @@ async def register_ugo(
         if "unique" in err_str or "dup_val" in err_str:
             raise HTTPException(status_code=400, detail="E-mail já cadastrado")
         if "check constraint" in err_str or "ck_" in err_str or "chk_" in err_str:
-            raise HTTPException(
-                status_code=500,
-                detail="Erro de banco de dados: constraint de role inválida. Execute o script de migração 16_migration_v3_multi_go_cmig.sql."
-            )
-        raise HTTPException(status_code=500, detail=f"Erro de banco de dados: {str(e)}")
+            logger.exception("Constraint de role ao cadastrar UGO — execute migration 16")
+            raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
+        logger.exception("IntegrityError ao cadastrar UGO")
+        raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
 
     return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role}
 
@@ -149,7 +178,8 @@ async def register_ac(
         err_str = str(e).lower()
         if "unique" in err_str or "dup_val" in err_str:
             raise HTTPException(status_code=400, detail="E-mail ou CPF/CNPJ já cadastrado")
-        raise HTTPException(status_code=500, detail=f"Erro de banco de dados: {str(e)}")
+        logger.exception("IntegrityError no flush ao cadastrar AC")
+        raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
 
     profile = ACProfile(
         user_id=user.id,
@@ -166,9 +196,10 @@ async def register_ac(
     try:
         await db.commit()
         await db.refresh(user)
-    except IntegrityError as e:
+    except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Erro de banco de dados: {str(e)}")
+        logger.exception("IntegrityError no commit do perfil AC")
+        raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
 
     return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role}
 
@@ -191,8 +222,8 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
 
     expires_at = db_token.expires_at
     if expires_at and expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at and expires_at < datetime.now(timezone.utc):
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at and expires_at < datetime.now(UTC):
         raise HTTPException(status_code=401, detail="Refresh token expirado")
 
     result = await db.execute(select(User).where(User.id == db_token.user_id))
@@ -222,9 +253,7 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
 
 @router.post("/logout", status_code=204)
 async def logout(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(RefreshToken).where(RefreshToken.token == body.refresh_token)
-    )
+    result = await db.execute(select(RefreshToken).where(RefreshToken.token == body.refresh_token))
     db_token = result.scalar_one_or_none()
     if db_token:
         db_token.revoked = True

@@ -530,6 +530,16 @@
       </div>
     </div>
   </div>
+
+  <ConfirmModal
+    :show="confirmModal.show"
+    :title="confirmModal.title"
+    :message="confirmModal.message"
+    :confirm-label="confirmModal.confirmLabel"
+    :confirm-class="confirmModal.confirmClass"
+    @confirm="onConfirmOk"
+    @cancel="onConfirmCancel"
+  />
 </template>
 
 <script setup>
@@ -545,10 +555,33 @@ import OrderFinancialCard from '@/components/orders/OrderFinancialCard.vue'
 import DeliveryModal from '@/components/orders/DeliveryModal.vue'
 import InvoicesModal from '@/components/orders/InvoicesModal.vue'
 import ShipmentModal from '@/components/orders/ShipmentModal.vue'
+import ConfirmModal from '@/components/ConfirmModal.vue'
 
 const route = useRoute()
 const toast = useToast()
 const authStore = useAuthStore()
+
+// Modal de confirmação reutilizável
+const confirmModal = reactive({
+  show: false,
+  title: '',
+  message: '',
+  confirmLabel: 'Confirmar',
+  confirmClass: 'btn-danger',
+  _resolve: null,
+})
+function showConfirm(title, message, options = {}) {
+  return new Promise((resolve) => {
+    confirmModal.title = title
+    confirmModal.message = message
+    confirmModal.confirmLabel = options.confirmLabel || 'Confirmar'
+    confirmModal.confirmClass = options.confirmClass || 'btn-danger'
+    confirmModal.show = true
+    confirmModal._resolve = resolve
+  })
+}
+function onConfirmOk() { confirmModal.show = false; confirmModal._resolve?.(true) }
+function onConfirmCancel() { confirmModal.show = false; confirmModal._resolve?.(false) }
 
 const orders = ref([])
 const total = ref(0)
@@ -867,7 +900,8 @@ async function updateStatus(order, status) {
 }
 
 async function hideOrder(order) {
-  if (!confirm('Ocultar este pedido?')) return
+  const ok = await showConfirm('Ocultar pedido', 'Ocultar este pedido?', { confirmLabel: 'Ocultar', confirmClass: 'btn-warning' })
+  if (!ok) return
   try {
     await api.post(`/orders/${order.id}/hide`)
     orders.value = orders.value.filter(o => o.id !== order.id)
@@ -876,11 +910,11 @@ async function hideOrder(order) {
 }
 
 async function deleteOrder(order) {
-  if (!confirm(
-    `Excluir pedido #${order.platform_order_id || order.id}?\n\n` +
-    `O pedido será removido do sistema e poderá ser re-baixado na próxima sincronização.\n` +
-    `Esta ação não pode ser desfeita.`
-  )) return
+  const ok = await showConfirm(
+    'Excluir pedido',
+    `Excluir pedido #${order.platform_order_id || order.id}?\n\nO pedido será removido do sistema e poderá ser re-baixado na próxima sincronização.\nEsta ação não pode ser desfeita.`
+  )
+  if (!ok) return
   try {
     await api.delete(`/orders/${order.id}`)
     orders.value = orders.value.filter(o => o.id !== order.id)
@@ -891,10 +925,11 @@ async function deleteOrder(order) {
 
 async function bulkDelete() {
   if (!selectedOrders.value.length) return
-  if (!confirm(
-    `Excluir ${selectedOrders.value.length} pedido(s) selecionado(s)?\n\n` +
-    `Eles serão removidos do sistema e poderão ser re-baixados na próxima sincronização.`
-  )) return
+  const ok = await showConfirm(
+    'Excluir pedidos',
+    `Excluir ${selectedOrders.value.length} pedido(s) selecionado(s)?\n\nEles serão removidos do sistema e poderão ser re-baixados na próxima sincronização.`
+  )
+  if (!ok) return
   try {
     const { data } = await api.post('/orders/bulk-delete', { ids: selectedOrders.value })
     orders.value = orders.value.filter(o => !data.deleted.includes(o.id))

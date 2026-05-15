@@ -63,3 +63,9 @@ BACKEND/static/uploads/
 *.key
 *.pem
 DOCs/*.zip
+
+# Configurações locais de máquina (caminhos específicos por desktop)
+.claude/settings.local.json
+
+# Sandbox e experimentos locais
+sandbox/

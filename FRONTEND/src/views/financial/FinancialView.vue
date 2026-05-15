@@ -56,15 +56,16 @@
         </div>
       </div>
       <div class="card-body p-0">
+        <div class="table-responsive">
         <table class="table table-striped table-sm">
           <thead>
             <tr>
-              <th>#</th>
-              <th>Descrição</th>
-              <th>Valor</th>
-              <th>Saldo após</th>
-              <th>Status</th>
-              <th>Data/Hora</th>
+              <th scope="col">#</th>
+              <th scope="col">Descrição</th>
+              <th scope="col">Valor</th>
+              <th scope="col">Saldo após</th>
+              <th scope="col">Status</th>
+              <th scope="col">Data/Hora</th>
             </tr>
           </thead>
           <tbody>
@@ -92,6 +93,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
       <div class="card-footer">
         <!-- Pagination -->
@@ -193,6 +195,14 @@ async function submitDeposit() {
   depositError.value = ''
   if (!depositForm.amount || !depositForm.pix_txid) {
     depositError.value = 'Preencha todos os campos'
+    return
+  }
+  if (parseFloat(depositForm.amount) <= 0) {
+    depositError.value = 'O valor deve ser maior que zero'
+    return
+  }
+  if (depositForm.pix_txid.trim().length < 8) {
+    depositError.value = 'ID da transação PIX inválido'
     return
   }
   depositLoading.value = true

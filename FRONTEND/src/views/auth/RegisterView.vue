@@ -11,13 +11,17 @@
         <form @submit.prevent="handleRegister">
           <!-- Personal Info -->
           <div class="mb-2">
-            <input v-model="form.full_name" type="text" class="form-control" placeholder="Nome completo" required />
+            <label for="reg-full-name" class="sr-only">Nome completo</label>
+            <input id="reg-full-name" v-model="form.full_name" type="text" class="form-control" placeholder="Nome completo" required />
           </div>
           <div class="mb-2">
-            <input v-model="form.email" type="email" class="form-control" placeholder="E-mail" required />
+            <label for="reg-email" class="sr-only">E-mail</label>
+            <input id="reg-email" v-model="form.email" type="email" class="form-control" placeholder="E-mail" required />
           </div>
           <div class="mb-2">
+            <label for="reg-whatsapp" class="sr-only">WhatsApp</label>
             <input
+              id="reg-whatsapp"
               v-model="form.whatsapp"
               type="text"
               class="form-control"
@@ -29,14 +33,17 @@
 
           <!-- Person Type -->
           <div class="mb-2">
-            <select v-model="form.person_type" class="form-control" required>
+            <label for="reg-person-type" class="sr-only">Tipo de pessoa</label>
+            <select id="reg-person-type" v-model="form.person_type" class="form-control" required>
               <option value="">Tipo de pessoa</option>
               <option value="fisica">Pessoa Física (CPF)</option>
               <option value="juridica">Pessoa Jurídica (CNPJ)</option>
             </select>
           </div>
           <div class="mb-2">
+            <label for="reg-cpf-cnpj" class="sr-only">{{ form.person_type === 'juridica' ? 'CNPJ' : 'CPF' }}</label>
             <input
+              id="reg-cpf-cnpj"
               v-model="form.cpf_cnpj"
               type="text"
               class="form-control"

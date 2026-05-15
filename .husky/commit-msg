@@ -1,0 +1,5 @@
+#!/bin/sh
+# Validate commit message format (Conventional Commits)
+ROOT="$(git rev-parse --show-toplevel)"
+# Run commitlint from FRONTEND/ where node_modules resides
+cd "$ROOT/FRONTEND" && ./node_modules/.bin/commitlint --edit "$ROOT/$1" --config "$ROOT/.commitlintrc.json"

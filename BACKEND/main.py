@@ -1,17 +1,21 @@
 import sys
+
 if sys.platform == "win32":
     import asyncio
+
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-import socketio
 import os as _os
 from contextlib import asynccontextmanager
+
+import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+
+import models  # noqa: F401 — registra todos os ORM models no SQLAlchemy
 from config import get_settings
 from socket_manager import sio
-import models  # noqa: F401 — registra todos os ORM models no SQLAlchemy
 
 settings = get_settings()
 
@@ -21,10 +25,12 @@ async def lifespan(app: FastAPI):
     # Startup
     print("MIG ECOMMERCE API starting...")
     from tasks.scheduler import start_scheduler
+
     start_scheduler()
     yield
     # Shutdown
     from tasks.scheduler import stop_scheduler
+
     stop_scheduler()
     print("MIG ECOMMERCE API shutting down...")
 
@@ -41,62 +47,66 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS.split(","),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
 # Import and register routers
 from routers import (
+    ai_config,
+    anuncios,
     auth,
-    users,
+    catalog,
+    cmigs,
     dashboard,
     financial,
-    catalog,
-    supplier_products,
-    products,
-    orders,
-    manual_orders,
-    integrations,
-    listings,
-    returns,
-    notifications,
-    webhooks,
-    warehouse,
-    goes,
-    cmigs,
-    anuncios,
-    simulator,
-    people,
     fiscal_config,
+    goes,
+    integrations,
     invoices,
+    listings,
+    manual_orders,
     messages,
-    ai_config,
+    notifications,
+    orders,
+    people,
+    products,
+    returns,
+    simulator,
+    supplier_products,
+    users,
+    warehouse,
+    webhooks,
 )
 
 PREFIX = "/api/v1"
 
-app.include_router(auth.router,              prefix=f"{PREFIX}/auth",           tags=["Auth"])
-app.include_router(users.router,             prefix=f"{PREFIX}/users",          tags=["Users"])
-app.include_router(dashboard.router,         prefix=f"{PREFIX}/dashboard",      tags=["Dashboard"])
-app.include_router(financial.router,         prefix=f"{PREFIX}/financial",      tags=["Financial"])
-app.include_router(catalog.router,           prefix=f"{PREFIX}/catalog",        tags=["Catalog"])
-app.include_router(supplier_products.router, prefix=f"{PREFIX}/pg",            tags=["PG - Produto Geral"])
-app.include_router(products.router,          prefix=f"{PREFIX}/products",       tags=["Products"])
-app.include_router(orders.router,            prefix=f"{PREFIX}/orders",         tags=["Orders"])
-app.include_router(manual_orders.router,     prefix=f"{PREFIX}/manual-orders",  tags=["ManualOrders"])
-app.include_router(integrations.router,      prefix=f"{PREFIX}/accounts",       tags=["Accounts"])
-app.include_router(listings.router,          prefix=f"{PREFIX}/products/{{product_id}}/listings", tags=["Listings"])
-app.include_router(returns.router,           prefix=f"{PREFIX}/returns",        tags=["Returns"])
-app.include_router(notifications.router,     prefix=f"{PREFIX}/notifications",  tags=["Notifications"])
-app.include_router(webhooks.router,          prefix=f"{PREFIX}/webhooks",       tags=["Webhooks"])
-app.include_router(warehouse.router,         prefix=f"{PREFIX}/warehouse",      tags=["Warehouse"])
-app.include_router(goes.router,              prefix=f"{PREFIX}/goes",           tags=["GOs"])
-app.include_router(cmigs.router,             prefix=f"{PREFIX}/cmigs",          tags=["CMIGs"])
-app.include_router(anuncios.router,          prefix=f"{PREFIX}/anuncios",        tags=["Anuncios"])
-app.include_router(simulator.router,         prefix=f"{PREFIX}/simulator",       tags=["Simulator"])
-app.include_router(people.router,            prefix=f"{PREFIX}/people",         tags=["People"])
-app.include_router(fiscal_config.router,     prefix=f"{PREFIX}/cmigs/{{cmig_id}}/fiscal-config", tags=["FiscalConfig"])
-app.include_router(invoices.router,          prefix=f"{PREFIX}/invoices",        tags=["Invoices"])
+app.include_router(auth.router, prefix=f"{PREFIX}/auth", tags=["Auth"])
+app.include_router(users.router, prefix=f"{PREFIX}/users", tags=["Users"])
+app.include_router(dashboard.router, prefix=f"{PREFIX}/dashboard", tags=["Dashboard"])
+app.include_router(financial.router, prefix=f"{PREFIX}/financial", tags=["Financial"])
+app.include_router(catalog.router, prefix=f"{PREFIX}/catalog", tags=["Catalog"])
+app.include_router(supplier_products.router, prefix=f"{PREFIX}/pg", tags=["PG - Produto Geral"])
+app.include_router(products.router, prefix=f"{PREFIX}/products", tags=["Products"])
+app.include_router(orders.router, prefix=f"{PREFIX}/orders", tags=["Orders"])
+app.include_router(manual_orders.router, prefix=f"{PREFIX}/manual-orders", tags=["ManualOrders"])
+app.include_router(integrations.router, prefix=f"{PREFIX}/accounts", tags=["Accounts"])
+app.include_router(
+    listings.router, prefix=f"{PREFIX}/products/{{product_id}}/listings", tags=["Listings"]
+)
+app.include_router(returns.router, prefix=f"{PREFIX}/returns", tags=["Returns"])
+app.include_router(notifications.router, prefix=f"{PREFIX}/notifications", tags=["Notifications"])
+app.include_router(webhooks.router, prefix=f"{PREFIX}/webhooks", tags=["Webhooks"])
+app.include_router(warehouse.router, prefix=f"{PREFIX}/warehouse", tags=["Warehouse"])
+app.include_router(goes.router, prefix=f"{PREFIX}/goes", tags=["GOs"])
+app.include_router(cmigs.router, prefix=f"{PREFIX}/cmigs", tags=["CMIGs"])
+app.include_router(anuncios.router, prefix=f"{PREFIX}/anuncios", tags=["Anuncios"])
+app.include_router(simulator.router, prefix=f"{PREFIX}/simulator", tags=["Simulator"])
+app.include_router(people.router, prefix=f"{PREFIX}/people", tags=["People"])
+app.include_router(
+    fiscal_config.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/fiscal-config", tags=["FiscalConfig"]
+)
+app.include_router(invoices.router, prefix=f"{PREFIX}/invoices", tags=["Invoices"])
 app.include_router(messages.router)
 app.include_router(ai_config.router)
 

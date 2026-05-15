@@ -2,30 +2,68 @@
 Webhook endpoints for Mercado Livre, Shopee and Focus NFe.
 Critical: All processing is idempotent via webhook_events table (where applicable).
 """
-import hmac
+
 import hashlib
+import hmac
 import json
-from fastapi import APIRouter, Request, HTTPException, Depends, Header
-from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import UTC
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
-from database import get_db
-from models.integration import MarketplaceAccount
-from models.webhook import WebhookEvent
-from models.fiscal import Invoice, CMIGFiscalConfig
-from services import webhook_service, ml_service, shopee_service
-from services.fiscal import focus_service, dfe_service
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from config import get_settings
+from database import get_db
+from models.fiscal import CMIGFiscalConfig, Invoice
+from models.integration import MarketplaceAccount
+from services import ml_service, shopee_service, webhook_service
+from services.fiscal import dfe_service, focus_service
 
 settings = get_settings()
 router = APIRouter()
 
 
+def _verify_ml_signature(x_signature: str | None, data_id: str | None, client_secret: str) -> bool:
+    """Valida HMAC-SHA256 do header x-signature do ML.
+    Se ML_CLIENT_SECRET não estiver configurado ou header ausente, aceita (modo permissivo).
+    Formato: x-signature: ts=<epoch_ms>,v1=<hex_digest>
+    Mensagem assinada: ts=<ts>;data.id=<data_id> (ou só ts=<ts> se sem data.id)."""
+    if not client_secret or not x_signature:
+        return True
+    ts = v1 = None
+    for part in x_signature.split(","):
+        key, _, val = part.partition("=")
+        if key.strip() == "ts":
+            ts = val.strip()
+        elif key.strip() == "v1":
+            v1 = val.strip()
+    if not ts or not v1:
+        return False
+    manifest = f"ts={ts}"
+    if data_id:
+        manifest += f";data.id={data_id}"
+    expected = hmac.new(
+        client_secret.encode("utf-8"),
+        manifest.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, v1.lower())
+
+
 @router.post("/mercadolivre")
-async def ml_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+async def ml_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_signature: str | None = Header(None, alias="x-signature"),
+):
     """
     Mercado Livre sends: {"resource": "/orders/1234567890", "user_id": 123456789}
     We fetch the full order from ML API and process it.
     """
+    data_id = request.query_params.get("data.id")
+    if not _verify_ml_signature(x_signature, data_id, settings.ML_CLIENT_SECRET):
+        raise HTTPException(status_code=401, detail="Assinatura ML inválida")
+
     try:
         body = await request.json()
     except Exception:
@@ -79,8 +117,9 @@ async def ml_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         await webhook_service.process_ml_order(db, ml_order, integration)
 
         event.processed = True
-        from datetime import datetime, timezone
-        event.processed_at = datetime.now(timezone.utc)
+        from datetime import datetime
+
+        event.processed_at = datetime.now(UTC)
         await db.commit()
 
     except Exception as e:
@@ -94,6 +133,7 @@ async def ml_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 async def _handle_ml_messages(db, body: dict, ml_user_id: str):
     """Webhook messages: busca pack_id no resource e dispara sync."""
     import asyncio
+
     from tasks.messages_sync import sync_account_messages
 
     resource = body.get("resource", "")
@@ -128,6 +168,7 @@ async def _handle_ml_questions(db, body: dict, ml_user_id: str):
     """
     import asyncio
     import re
+
     from tasks.messages_sync import sync_question_by_id
 
     result = await db.execute(
@@ -150,6 +191,7 @@ async def _handle_ml_questions(db, body: dict, ml_user_id: str):
     else:
         # Fallback: sync geral se não conseguir extrair o ID
         from tasks.messages_sync import sync_account_messages
+
         asyncio.create_task(sync_account_messages(account.id))
 
     return {"status": "ok"}
@@ -211,8 +253,9 @@ async def shopee_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         await webhook_service.process_shopee_order(db, body, integration)
 
         event.processed = True
-        from datetime import datetime, timezone
-        event.processed_at = datetime.now(timezone.utc)
+        from datetime import datetime
+
+        event.processed_at = datetime.now(UTC)
         await db.commit()
 
     except Exception as e:
@@ -222,6 +265,7 @@ async def shopee_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 # ── Focus NFe — atualização de status de NFe emitida ─────────────────────────
+
 
 def _verify_focus_signature(raw_body: bytes, signature: str | None) -> bool:
     """Valida HMAC-SHA256 do payload Focus.
@@ -284,13 +328,19 @@ async def focus_nfe_webhook(
         inv.status = "authorized"
         inv.access_key = body.get("chave_nfe") or inv.access_key
         if body.get("numero"):
-            try: inv.nfe_number = int(body["numero"])
-            except (ValueError, TypeError): pass
+            try:
+                inv.nfe_number = int(body["numero"])
+            except (ValueError, TypeError):
+                pass
         if body.get("serie"):
-            try: inv.serie = int(body["serie"])
-            except (ValueError, TypeError): pass
+            try:
+                inv.serie = int(body["serie"])
+            except (ValueError, TypeError):
+                pass
         if cfg:
-            inv.xml_url = focus_service.absolutize_focus_url(cfg, body.get("caminho_xml_nota_fiscal") or "")
+            inv.xml_url = focus_service.absolutize_focus_url(
+                cfg, body.get("caminho_xml_nota_fiscal") or ""
+            )
             inv.danfe_url = focus_service.absolutize_focus_url(cfg, body.get("caminho_danfe") or "")
     elif focus_status == "cancelado":
         inv.status = "cancelled"
@@ -334,11 +384,16 @@ async def focus_nfe_recebida_webhook(
         return {"status": "ignored", "reason": "no_cnpj"}
 
     # Encontrar CMIG pelo CNPJ
-    from models.cmig import CMIG
     from sqlalchemy import func
+
+    from models.cmig import CMIG
+
     cmig = (
         await db.execute(
-            select(CMIG).where(func.replace(func.replace(func.replace(CMIG.cnpj, ".", ""), "/", ""), "-", "") == cnpj)
+            select(CMIG).where(
+                func.replace(func.replace(func.replace(CMIG.cnpj, ".", ""), "/", ""), "-", "")
+                == cnpj
+            )
         )
     ).scalar_one_or_none()
     if not cmig:
