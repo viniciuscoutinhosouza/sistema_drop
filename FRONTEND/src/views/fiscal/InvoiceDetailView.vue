@@ -105,6 +105,7 @@
                     <tr>
                       <th>#</th>
                       <th>Descrição</th>
+                      <th>Origem</th>
                       <th>NCM</th>
                       <th>CFOP</th>
                       <th class="text-right">Qtd</th>
@@ -114,13 +115,20 @@
                   </thead>
                   <tbody>
                     <tr v-if="(invoice.items || []).length === 0">
-                      <td colspan="7" class="text-center text-muted py-3">Nenhum item.</td>
+                      <td colspan="8" class="text-center text-muted py-3">Nenhum item.</td>
                     </tr>
                     <tr v-for="it in invoice.items" :key="it.id">
                       <td>{{ it.item_number }}</td>
                       <td>
                         <strong>{{ it.description }}</strong>
+                        <small v-if="it.sku" class="d-block text-muted">SKU: <code>{{ it.sku }}</code></small>
                         <small v-if="it.ean" class="d-block text-muted">EAN: {{ it.ean }}</small>
+                      </td>
+                      <td>
+                        <span v-if="it.source_type === 'cmig'" class="badge badge-secondary" title="Produto do estoque CMIG">CMIG</span>
+                        <span v-else-if="it.source_type === 'pg'" class="badge badge-info" title="Produto do estoque PG (Produto Geral)">PG</span>
+                        <span v-else-if="it.cmig_product_id" class="badge badge-secondary" title="Produto do estoque CMIG">CMIG</span>
+                        <span v-else class="badge badge-light text-muted" title="Item manual sem vínculo com estoque">Manual</span>
                       </td>
                       <td>{{ it.ncm || '—' }}</td>
                       <td>{{ it.cfop || '—' }}</td>

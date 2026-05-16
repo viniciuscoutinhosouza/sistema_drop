@@ -107,6 +107,9 @@
                     <button v-if="isUGO && p.pg_product_id" class="btn btn-sm btn-outline-info mr-1" @click="syncPg(p)" title="Sincronizar dados com PG">
                       <i class="fas fa-sync-alt"></i>
                     </button>
+                    <button class="btn btn-sm btn-outline-dark mr-1" @click="openMovements(p)" title="Histórico de movimentação de estoque">
+                      <i class="fas fa-history"></i>
+                    </button>
                     <button v-if="isAC" class="btn btn-sm btn-outline-danger" @click="deleteProduct(p)" title="Excluir produto">
                       <i class="fas fa-trash"></i>
                     </button>
@@ -151,6 +154,202 @@
       </div>
     </div>
 
+    <!-- Modal Histórico de Movimentações -->
+    <div v-if="movementsModal.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog modal-xl" style="max-width:95vw">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">
+              <i class="fas fa-history mr-2"></i>Movimentação de Estoque
+              <small class="text-muted ml-2" v-if="movementsModal.product">
+                · {{ movementsModal.product.sku_cmig }} — {{ movementsModal.product.title }}
+              </small>
+            </h5>
+            <button type="button" class="close" @click="closeMovements"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <!-- Filtros de período -->
+            <div class="row mb-3">
+              <div class="col-md-3">
+                <label class="font-weight-bold" style="font-size:13px">Data inicial</label>
+                <input type="date" v-model="movementsModal.startDate" class="form-control form-control-sm" @change="loadMovements" />
+              </div>
+              <div class="col-md-3">
+                <label class="font-weight-bold" style="font-size:13px">Data final</label>
+                <input type="date" v-model="movementsModal.endDate" class="form-control form-control-sm" @change="loadMovements" />
+              </div>
+              <div class="col-md-6 d-flex align-items-end" style="gap:.25rem">
+                <button class="btn btn-sm btn-outline-secondary" @click="setPeriodPreset(7)">7 dias</button>
+                <button class="btn btn-sm btn-outline-secondary" @click="setPeriodPreset(30)">30 dias</button>
+                <button class="btn btn-sm btn-outline-secondary" @click="setPeriodPreset(90)">90 dias</button>
+                <button class="btn btn-sm btn-outline-secondary" @click="setPeriodPreset(365)">1 ano</button>
+                <button class="btn btn-sm btn-outline-secondary" @click="setPeriodPreset(null)" title="Todo o histórico">Tudo</button>
+              </div>
+            </div>
+
+            <!-- Cards de saldo -->
+            <div v-if="!movementsModal.loading && movementsModal.data">
+              <div class="row mb-2">
+                <div class="col-md">
+                  <div class="card bg-light mb-0">
+                    <div class="card-body py-2 text-center">
+                      <small class="text-muted d-block">Saldo Inicial</small>
+                      <strong style="font-size:1.2rem">{{ movementsModal.data.initial_balance }}</strong>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-md">
+                  <div class="card bg-success text-white mb-0">
+                    <div class="card-body py-2 text-center">
+                      <small class="d-block">Entradas NFe</small>
+                      <strong style="font-size:1.2rem">+{{ movementsModal.data.period_in_nfe }}</strong>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-md">
+                  <div class="card bg-danger text-white mb-0">
+                    <div class="card-body py-2 text-center">
+                      <small class="d-block">Saídas NFe</small>
+                      <strong style="font-size:1.2rem">−{{ movementsModal.data.period_out_nfe }}</strong>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-md">
+                  <div class="card bg-info text-white mb-0"
+                       title="Saldo Físico = Saldo Inicial + Entradas NFe − Saídas NFe − Pedidos">
+                    <div class="card-body py-2 text-center">
+                      <small class="d-block">Saldo Físico</small>
+                      <strong style="font-size:1.2rem">{{ saldoFisico }}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="row mb-3">
+                <div class="col-md">
+                  <div class="card bg-warning text-dark mb-0" title="Pedidos com status handling ou ready_to_ship">
+                    <div class="card-body py-2 text-center">
+                      <small class="d-block">Reservado</small>
+                      <strong style="font-size:1.2rem">−{{ movementsModal.data.reserved_in_pending_orders }}</strong>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-md">
+                  <div class="card mb-0" style="background:#fd7e14;color:#fff" title="Pedidos shipped/delivered ainda sem NFe outbound emitida.">
+                    <div class="card-body py-2 text-center">
+                      <small class="d-block">Pedidos</small>
+                      <strong style="font-size:1.2rem">−{{ movementsModal.data.moved_in_orders_no_nfe }}</strong>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-md">
+                  <div class="card bg-primary text-white mb-0">
+                    <div class="card-body py-2 text-center">
+                      <small class="d-block">Disponível</small>
+                      <strong style="font-size:1.2rem">{{ movementsModal.data.current_balance_available }}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tabela -->
+            <div v-if="movementsModal.loading" class="text-center py-5">
+              <i class="fas fa-spinner fa-spin fa-2x text-muted"></i>
+            </div>
+            <div v-else-if="!movementsModal.data || movementsModal.data.movements.length === 0" class="text-center text-muted py-4">
+              <i class="fas fa-inbox fa-2x mb-2 d-block"></i>
+              Nenhuma movimentação no período.
+            </div>
+            <div v-else class="table-responsive" style="max-height:45vh">
+              <table class="table table-sm table-hover mb-0" style="white-space:nowrap;font-size:13px">
+                <thead class="thead-light sticky-top">
+                  <tr>
+                    <th>Data</th>
+                    <th>Origem</th>
+                    <th>Referência</th>
+                    <th>Pessoa / Anúncio</th>
+                    <th>Item</th>
+                    <th class="text-right">Qtd</th>
+                    <th class="text-right">Saldo Disponível</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(m, idx) in movementsModal.data.movements" :key="idx">
+                    <td style="font-size:12px">{{ formatDateTimeOneLine(m.date) }}</td>
+                    <td>
+                      <span v-if="m.source === 'nfe_in'" class="badge badge-success">
+                        <i class="fas fa-file-invoice mr-1"></i>NFe Entrada
+                      </span>
+                      <span v-else-if="m.source === 'nfe_out'" class="badge badge-danger">
+                        <i class="fas fa-file-invoice mr-1"></i>NFe Saída
+                      </span>
+                      <span v-else-if="m.order_platform === 'mercadolivre'"
+                            class="d-inline-flex align-items-center"
+                            title="Mercado Livre">
+                        <img v-if="!mlLogoError" :src="mlLogoUrl" alt="ML"
+                             style="height:22px;width:auto" @error="mlLogoError = true" />
+                        <span v-else class="badge" style="background:#FFE600;color:#3F3F3F;font-weight:bold">
+                          <i class="fas fa-shopping-bag mr-1"></i>ML
+                        </span>
+                      </span>
+                      <span v-else-if="m.order_platform === 'shopee'"
+                            class="badge" style="background:#EE4D2D;color:#fff;font-weight:bold"
+                            title="Shopee">
+                        <i class="fas fa-shopping-bag mr-1"></i>Shopee
+                      </span>
+                      <span v-else class="badge badge-secondary">
+                        <i class="fas fa-shopping-bag mr-1"></i>{{ m.order_platform || 'Pedido' }}
+                      </span>
+                    </td>
+                    <td style="font-size:12px">
+                      <RouterLink v-if="m.source !== 'order' && m.invoice_id" :to="`/fiscal/invoices/${m.invoice_id}`" class="text-primary">
+                        <span v-if="m.invoice_number">NF #{{ m.invoice_number }}<span v-if="m.invoice_serie">/{{ m.invoice_serie }}</span></span>
+                        <span v-else>Rascunho #{{ m.invoice_id }}</span>
+                      </RouterLink>
+                      <span v-else-if="m.source === 'order' && m.order_id">
+                        <RouterLink :to="`/orders/${m.order_id}`" class="text-primary">#{{ m.order_platform_id || m.order_id }}</RouterLink>
+                        <span class="text-muted ml-1">· {{ shipmentLabel(m.order_shipment_status) }}</span>
+                        <span v-if="m.is_reserved" class="badge badge-warning text-dark ml-1" title="Status handling ou ready_to_ship">reservado</span>
+                      </span>
+                      <span v-if="m.source !== 'order' && m.invoice_status" class="text-muted ml-1">· {{ statusLabel(m.invoice_status) }}</span>
+                    </td>
+                    <td style="font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis">
+                      <span v-if="m.source === 'order'" :title="m.item_ml_item_id || ''">
+                        <code v-if="m.item_ml_item_id">{{ m.item_ml_item_id }}</code>
+                        <span v-else class="text-muted">—</span>
+                      </span>
+                      <span v-else :title="m.person_name || ''">{{ m.person_name || '—' }}</span>
+                    </td>
+                    <td style="max-width:340px;overflow:hidden;text-overflow:ellipsis" :title="m.item_description || ''">
+                      <code v-if="m.item_sku">{{ m.item_sku }}</code>
+                      <span v-if="m.item_sku && m.item_description"> - </span>
+                      <span>{{ m.item_description || '' }}</span>
+                    </td>
+                    <td class="text-right" :class="m.direction === 'in' ? 'text-success' : 'text-danger'">
+                      {{ m.direction === 'in' ? '+' : '−' }}{{ m.qty }}<span v-if="m.source === 'order' && m.qty_to_pg > 0" class="text-secondary ml-1" :title="`${m.qty_to_pg} em overflow PG`">(+{{ m.qty_to_pg }} PG)</span>
+                    </td>
+                    <td class="text-right"><strong>{{ m.running_available }}</strong></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <small class="text-muted d-block mt-2">
+              <i class="fas fa-info-circle mr-1"></i>
+              <strong>NFes</strong> ajustam o saldo do banco (`stock_quantity`).
+              <strong>Pedidos</strong> com status <code>shipped</code>/<code>delivered</code> sem NFe ainda contam como <em>reservados</em> — `Disponível = NFe Atual − Reservado`.
+              <span v-if="movementsModal.data && movementsModal.data.has_pg_link">
+                Pedidos que excedem o estoque CMIG (overflow) são debitados do PG vinculado (#{{ movementsModal.data.pg_product_id }}).
+              </span>
+              <span v-else>Este produto não tem vínculo com PG — overflow não aplicável.</span>
+            </small>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="closeMovements">Fechar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal Vincular PG -->
     <div v-if="showLinkModal" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
       <div class="modal-dialog">
@@ -180,8 +379,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
@@ -192,6 +391,118 @@ const authStore = useAuthStore()
 const toast = useToast()
 
 const duplicateModal = ref({ show: false, srcId: null, srcSku: '', newSku: '', loading: false })
+
+const movementsModal = reactive({
+  show: false,
+  loading: false,
+  product: null,
+  startDate: '',
+  endDate: '',
+  data: null,
+})
+
+const mlLogoError = ref(false)
+const mlLogoUrl = '/marketplaces/mercadolivre-icon.png'
+
+const saldoFisico = computed(() => {
+  const d = movementsModal.data
+  if (!d) return 0
+  return (d.initial_balance || 0)
+       + (d.period_in_nfe || 0)
+       - (d.period_out_nfe || 0)
+       - (d.moved_in_orders_no_nfe || 0)
+})
+
+function todayIso() { return new Date().toISOString().slice(0, 10) }
+function isoDaysAgo(days) {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  return d.toISOString().slice(0, 10)
+}
+
+function setPeriodPreset(days) {
+  if (days === null) {
+    movementsModal.startDate = ''
+    movementsModal.endDate = ''
+  } else {
+    movementsModal.startDate = isoDaysAgo(days)
+    movementsModal.endDate = todayIso()
+  }
+  loadMovements()
+}
+
+function openMovements(product) {
+  movementsModal.product = product
+  movementsModal.startDate = isoDaysAgo(30)
+  movementsModal.endDate = todayIso()
+  movementsModal.data = null
+  movementsModal.show = true
+  loadMovements()
+}
+
+function closeMovements() {
+  movementsModal.show = false
+  movementsModal.product = null
+  movementsModal.data = null
+}
+
+async function loadMovements() {
+  if (!movementsModal.product) return
+  movementsModal.loading = true
+  try {
+    const params = {}
+    if (movementsModal.startDate) params.start_date = movementsModal.startDate
+    if (movementsModal.endDate) params.end_date = movementsModal.endDate
+    const { data } = await api.get(
+      `/cmigs/${cmigId.value}/products/${movementsModal.product.id}/stock-movements`,
+      { params },
+    )
+    movementsModal.data = data
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao carregar movimentações.')
+  } finally {
+    movementsModal.loading = false
+  }
+}
+
+function formatDate(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatDateTimeOneLine(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  // Formato curto: dd/MM HH:mm
+  const dt = d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' })
+  const tm = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  return `${dt} ${tm}`
+}
+
+const _statusLabels = {
+  draft: 'Rascunho',
+  processing: 'Processando',
+  authorized: 'Autorizada',
+  finalized: 'Finalizada',
+  cancelled: 'Cancelada',
+  denied: 'Denegada',
+  rejected: 'Rejeitada',
+}
+function statusLabel(s) { return _statusLabels[s] || s }
+
+const _shipmentLabels = {
+  pending: 'Pendente',
+  handling: 'Em preparação',
+  ready_to_ship: 'Pronto p/ envio',
+  shipped: 'A caminho',
+  delivered: 'Entregue',
+  not_delivered: 'Não entregue',
+  cancelled: 'Cancelado',
+}
+function shipmentLabel(s) { return _shipmentLabels[s] || s || '—' }
 
 const cmigId = computed(() => route.query.cmig_id || route.params.cmig_id)
 const cmig = ref(null)

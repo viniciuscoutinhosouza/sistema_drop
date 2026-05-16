@@ -1,18 +1,21 @@
 import os as _os
 import shutil as _shutil
 import uuid as _uuid
+from datetime import date as _date, datetime as _datetime, time as _time
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy import and_, func, select
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy import delete as _sa_delete
 from sqlalchemy import update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from dependencies import require_role
-from models.cmig import CMIGProduct
+from dependencies import get_current_user, require_role
+from models.cmig import CMIG, CMIGProduct
+from models.fiscal import Invoice, InvoiceItem
 from models.order import OrderItem
+from models.person import Person
 from models.product import (
     CatalogProduct,
     CatalogProductComponent,
@@ -21,6 +24,7 @@ from models.product import (
     ProductListing,
 )
 from models.user import User
+from services.stock_history import replay_stock_events_for_pg_product
 
 router = APIRouter()
 
@@ -430,6 +434,156 @@ async def update_stock(
     product.stock_quantity = body["stock_quantity"]
     await db.commit()
     return {"ok": True, "stock_quantity": product.stock_quantity}
+
+
+@router.get("/{product_id}/stock-movements")
+async def get_pg_product_stock_movements(
+    product_id: int,
+    start_date: _date | None = Query(None, description="Início do período (inclusivo)"),
+    end_date: _date | None = Query(None, description="Fim do período (inclusivo)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Histórico de movimentação de estoque do CatalogProduct (PG).
+
+    Agrega NFes dos CMIGProducts vinculados (via `CMIGProduct.pg_product_id`)
+    + pedidos overflow (quando o estoque CMIG projetado zerou e a saída foi
+    pra PG). O estoque PG (`CatalogProduct.stock_quantity`) é manual e
+    independente — exibido como saldo de referência.
+    """
+    product = (
+        await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
+    ).scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
+
+    current_balance_pg = int(product.stock_quantity or 0)
+
+    events, linked_cmigs = await replay_stock_events_for_pg_product(product, db)
+    linked_cmig_count = len(linked_cmigs)
+
+    if not events:
+        return {
+            "product_id": product.id,
+            "product_sku": product.sku,
+            "product_title": product.title,
+            "start_date": start_date.isoformat() if start_date else None,
+            "end_date": end_date.isoformat() if end_date else None,
+            "initial_balance": 0,
+            "final_balance": 0,
+            "current_balance_pg": current_balance_pg,
+            "reserved_in_pending_orders_pg": 0,
+            "current_balance_available": current_balance_pg,
+            "period_in_nfe": 0,
+            "period_out_nfe": 0,
+            "period_out_orders": 0,
+            "period_net_nfe": 0,
+            "linked_cmig_count": linked_cmig_count,
+            "movements": [],
+        }
+
+    end_dt = _datetime.combine(end_date, _time.max) if end_date is not None else None
+    start_dt = _datetime.combine(start_date, _time.min) if start_date is not None else None
+
+    def in_period(d) -> bool:
+        if start_dt is not None and d < start_dt:
+            return False
+        if end_dt is not None and d > end_dt:
+            return False
+        return True
+
+    # Para PG, "initial/final balance" representa o saldo agregado NFe-only
+    # dos CMIGs vinculados. Não é o saldo PG (que é manual e separado).
+    # Calculamos como sum cumulativo de NFe-in/out dos linked CMIGs.
+    initial_balance = 0
+    final_balance = 0
+    for e in events:
+        if start_dt is not None and e.date < start_dt:
+            if e.source == "nfe_in":
+                initial_balance += e.qty
+            elif e.source == "nfe_out":
+                initial_balance -= e.qty
+        if end_dt is None or e.date <= end_dt:
+            if e.source == "nfe_in":
+                final_balance += e.qty
+            elif e.source == "nfe_out":
+                final_balance -= e.qty
+
+    nfe_in_period = 0
+    nfe_out_period = 0
+    period_out_orders_reserved_pg = 0    # handling + ready_to_ship com overflow no período
+    period_out_orders_definitive_pg = 0  # shipped + delivered com overflow no período
+    # Reservado PG (estado atual): overflow de pedidos handling/ready_to_ship
+    reserved_in_pending_orders_pg = 0
+    # Movimentado em pedidos sem NFe (estado atual): overflow shipped/delivered sem NFe
+    moved_in_orders_no_nfe_pg = 0
+    for e in events:
+        if e.source == "order" and e.qty_to_pg > 0:
+            if e.is_reserved:
+                reserved_in_pending_orders_pg += e.qty_to_pg
+            elif e.is_definitive and not e.order_invoice_finalized:
+                moved_in_orders_no_nfe_pg += e.qty_to_pg
+        if not in_period(e.date):
+            continue
+        if e.source == "nfe_in":
+            nfe_in_period += e.qty
+        elif e.source == "nfe_out":
+            nfe_out_period += e.qty
+        elif e.source == "order" and e.qty_to_pg > 0:
+            if e.is_reserved:
+                period_out_orders_reserved_pg += e.qty_to_pg
+            elif e.is_definitive:
+                period_out_orders_definitive_pg += e.qty_to_pg
+
+    # Walk cronológico de TODOS eventos pra computar running_available agregado (overflow PG)
+    visible_events: list[dict] = []
+    running_nfe_agg = 0  # acumulado de NFe-in/out dos CMIGs vinculados
+    running_pending_pg = 0  # overflow PG de pedidos sem NFe finalizada
+    # Inicializar running_nfe_agg com saldo antes do primeiro evento (mesma referência usada em initial_balance)
+    for e in events:
+        if e.source == "nfe_in":
+            running_nfe_agg += e.qty
+        elif e.source == "nfe_out":
+            running_nfe_agg -= e.qty
+        elif e.source == "order" and e.qty_to_pg > 0 and not e.order_invoice_finalized:
+            running_pending_pg += e.qty_to_pg
+        if not in_period(e.date):
+            continue
+        if e.source == "order" and e.qty_to_pg <= 0:
+            continue
+        d = e.to_dict()
+        d["running_balance"] = running_nfe_agg
+        d["running_available"] = running_nfe_agg - running_pending_pg
+        visible_events.append(d)
+
+    current_balance_available = (
+        current_balance_pg - reserved_in_pending_orders_pg - moved_in_orders_no_nfe_pg
+    )
+
+    # Exibição em ordem descendente (mais recente primeiro)
+    visible_events.reverse()
+
+    return {
+        "product_id": product.id,
+        "product_sku": product.sku,
+        "product_title": product.title,
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
+        "initial_balance": initial_balance,
+        "final_balance": final_balance,
+        "current_balance_pg": current_balance_pg,
+        "reserved_in_pending_orders_pg": reserved_in_pending_orders_pg,
+        "moved_in_orders_no_nfe_pg": moved_in_orders_no_nfe_pg,
+        "current_balance_available": current_balance_available,
+        "period_in_nfe": nfe_in_period,
+        "period_out_nfe": nfe_out_period,
+        "period_out_orders_reserved": period_out_orders_reserved_pg,
+        "period_out_orders_definitive": period_out_orders_definitive_pg,
+        "period_out_orders": period_out_orders_reserved_pg + period_out_orders_definitive_pg,
+        "period_net_nfe": nfe_in_period - nfe_out_period,
+        "linked_cmig_count": linked_cmig_count,
+        "movements": visible_events,
+    }
 
 
 @router.delete("/{product_id}")

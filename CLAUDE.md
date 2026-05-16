@@ -273,6 +273,23 @@ Antes de fechar qualquer feature estrutural, invocar em **paralelo**:
 
 Só entrega se nenhum tiver CRITICAL/HIGH/BLOQUEADO.
 
+### Regra de Verificação — "entregue" exige prova de funcionamento
+
+Uma mudança de nível **Full** não pode ser declarada concluída com base em "feito conforme o plano". Concluído significa **verificado funcionando**:
+
+1. O código foi executado, não apenas escrito.
+2. Se há build (Docker, frontend), rodou sem erro.
+3. Se há serviço/rota, sobe e responde (health check, rota carrega).
+4. Logs sem erro crítico de import ou dependência.
+5. O caminho principal da feature foi percorrido ao menos uma vez.
+
+Comandos de verificação típicos:
+- Backend: `cd BACKEND && pytest tests/ -m "not integration"`
+- Frontend: `cd FRONTEND && npm run build`
+- Smoke: `curl http://localhost:8000/docs` (ou rota de saúde quando existir)
+
+Ao declarar conclusão, **explicitar quais checks foram executados**. Falhou? Corrige antes de declarar.
+
 ### Agentes Disponíveis
 
 | Agente | Quando invocar |
@@ -282,6 +299,7 @@ Só entrega se nenhum tiver CRITICAL/HIGH/BLOQUEADO.
 | `adr-consistency-checker` | Features estruturais / novos padrões |
 | `debug-specialist` | Bugs, erros, comportamento inesperado |
 | `deploy-operator` | Qualquer deploy em produção |
+| `migration-specialist` | Migrações de dados/legados, alterações de schema multi-tabela em `Scripts SQL/` |
 | `session-closer` | Ao final de sessão de trabalho significativa |
 
 ### ADRs (Architecture Decision Records)
@@ -324,18 +342,14 @@ Ver `docs/lessons-learned.md` para armadilhas conhecidas documentadas (L-001 a L
 
 ---
 
-## State Current
+## Estado atual
 
-> Atualizar esta seção ao fechar cada fase de trabalho.
+> Atualizar ao fechar cada fase de nível **Full**. Formato fixo — uma janela de contexto nova deve entender o projeto lendo só esta seção.
 
-**Objetivo atual:** Implementação de melhorias de maturidade do projeto (governança, testes, Docker, CI/CD).
-
-**Fase:** Configuração de infraestrutura de desenvolvimento — em andamento (2026-05-15).
-
-**Última validação:** Agentes, ADRs, lessons-learned e governança no CLAUDE.md criados.
-
-**Próximo passo:** Implementar pyproject.toml (ruff + mypy), testes pytest, Docker e GitHub Actions CI.
-
-**Bloqueadores:** Nenhum.
-
-**Decisões pendentes:** Definir se o deploy em produção usará Docker ou continuará com uvicorn direto.
+- **Objetivo final:** Sistema de gestão multi-conta (Mercado Livre + Shopee) para dropshippers e galpões, com fiscal NF-e integrado.
+- **Fase atual:** Maturidade de processo e infraestrutura (governança, ADRs, agentes, Docker, CI/CD, suite pytest).
+- **Último ponto validado:** `8e698d0` — pull do GitHub com agentes de processo, ADRs 0001-0003, tests/, Docker, GitHub Actions CI, migrations 58-60, `finalize-no-sefaz`. Adoção cirúrgica do setup Fernando feita em 2026-05-15.
+- **Próximo passo:** Copiar `Wallet_MIGECOMMERCE/` do desktop antigo, instalar deps (`pip install -r requirements.txt` + `npm install`), validar `pytest -m "not integration"` e smoke do backend.
+- **Bloqueios:** `BACKEND/Wallet_MIGECOMMERCE/` ausente — sem ela o backend não conecta no Oracle ATP.
+- **Riscos ativos:** Nenhum.
+- **Decisões pendentes:** Deploy em produção via Docker (caminho do `docker-compose.yml` novo) ou seguir com uvicorn + supervisor — definir antes do próximo deploy.

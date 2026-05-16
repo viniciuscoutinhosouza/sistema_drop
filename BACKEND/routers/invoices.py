@@ -78,11 +78,23 @@ def _f(v) -> float | None:
 
 
 def _serialize_item(it: InvoiceItem) -> dict:
+    # Fallback: itens antigos (criados antes da migration 61) podem ter sku NULL.
+    # Se o item está vinculado a um CMIGProduct, usa o sku_cmig do produto.
+    effective_sku = it.sku
+    if not effective_sku and it.cmig_product_id:
+        try:
+            cmig_prod = it.cmig_product  # relacionamento; eager-loaded em get_invoice
+        except Exception:
+            cmig_prod = None
+        if cmig_prod and getattr(cmig_prod, "sku_cmig", None):
+            effective_sku = cmig_prod.sku_cmig
     return {
         "id": it.id,
         "invoice_id": it.invoice_id,
         "item_number": it.item_number,
         "cmig_product_id": it.cmig_product_id,
+        "sku": effective_sku,
+        "source_type": it.source_type,
         "cfop": it.cfop,
         "ncm": it.ncm,
         "cest": it.cest,
@@ -828,7 +840,10 @@ async def get_invoice(
     inv = (
         await db.execute(
             select(Invoice)
-            .options(selectinload(Invoice.items), selectinload(Invoice.events))
+            .options(
+                selectinload(Invoice.items).selectinload(InvoiceItem.cmig_product),
+                selectinload(Invoice.events),
+            )
             .where(Invoice.id == invoice_id)
         )
     ).scalar_one_or_none()
@@ -1032,6 +1047,8 @@ async def add_item(
         invoice_id=invoice_id,
         item_number=next_seq,
         cmig_product_id=body.get("cmig_product_id"),
+        sku=body.get("sku"),
+        source_type=body.get("source_type"),
         cfop=body.get("cfop"),
         ncm=body.get("ncm"),
         cest=body.get("cest"),
@@ -1113,6 +1130,8 @@ async def update_item(
         "description",
         "ean",
         "unit",
+        "sku",
+        "source_type",
         "icms_cst",
         "icms_csosn",
         "ipi_cst",

@@ -133,6 +133,7 @@
                 <tr>
                   <th>#</th>
                   <th>Descrição</th>
+                  <th>Origem</th>
                   <th>NCM</th>
                   <th>CFOP</th>
                   <th class="text-right">Qtd</th>
@@ -143,13 +144,20 @@
               </thead>
               <tbody>
                 <tr v-if="(form.items || []).length === 0">
-                  <td :colspan="editable ? 8 : 7" class="text-center text-muted py-3">Nenhum item.</td>
+                  <td :colspan="editable ? 9 : 8" class="text-center text-muted py-3">Nenhum item.</td>
                 </tr>
                 <tr v-for="it in form.items" :key="it.id">
                   <td>{{ it.item_number }}</td>
                   <td>
                     <strong>{{ it.description }}</strong>
+                    <small v-if="it.sku" class="d-block text-muted">SKU: <code>{{ it.sku }}</code></small>
                     <small v-if="it.ean" class="d-block text-muted">EAN: {{ it.ean }}</small>
+                  </td>
+                  <td>
+                    <span v-if="it.source_type === 'cmig'" class="badge badge-secondary" title="Produto do estoque CMIG">CMIG</span>
+                    <span v-else-if="it.source_type === 'pg'" class="badge badge-info" title="Produto do estoque PG (Produto Geral)">PG</span>
+                    <span v-else-if="it.cmig_product_id" class="badge badge-secondary" title="Produto do estoque CMIG">CMIG</span>
+                    <span v-else class="badge badge-light text-muted" title="Item manual sem vínculo com estoque">Manual</span>
                   </td>
                   <td>{{ it.ncm || '—' }}</td>
                   <td>{{ it.cfop || '—' }}</td>
@@ -168,7 +176,7 @@
               </tbody>
               <tfoot v-if="(form.items || []).length > 0">
                 <tr>
-                  <td colspan="6" class="text-right"><strong>Total da NFe:</strong></td>
+                  <td colspan="7" class="text-right"><strong>Total da NFe:</strong></td>
                   <td class="text-right"><strong>{{ formatCurrency(form.total_invoice) }}</strong></td>
                   <td v-if="editable"></td>
                 </tr>
@@ -647,6 +655,8 @@ const form = reactive({
 const itemForm = reactive({
   id: null,
   cmig_product_id: null,
+  sku: '',
+  source_type: null,
   description: '',
   ncm: '',
   cest: '',
@@ -790,9 +800,12 @@ async function switchToPgTab() {
 
 function selectProduct(p, source) {
   const cfop = form.direction === 'in' ? '1102' : '5102'
+  const sku = source === 'cmig' ? (p.sku_cmig || '') : (p.sku || '')
   Object.assign(itemForm, {
     id: null,
     cmig_product_id: source === 'cmig' ? p.id : null,
+    sku,
+    source_type: source,
     description: p.title || '',
     ncm: p.ncm || '',
     cest: p.cest || '',
@@ -963,7 +976,7 @@ async function loadInvoice() {
   }
 }
 
-async function saveHeader() {
+async function saveHeader({ silent = false } = {}) {
   saving.value = true
   try {
     const payload = {
@@ -980,14 +993,17 @@ async function saveHeader() {
     }
     if (isNew.value) {
       const created = await fiscalStore.createInvoice(payload)
-      toast.success('Rascunho criado')
+      if (!silent) toast.success('Rascunho criado')
       router.replace(`/fiscal/invoices/${created.id}/edit`)
     } else {
       await fiscalStore.updateInvoice(invoiceId.value, payload)
-      toast.success('Cabeçalho salvo')
-      await loadInvoice()
+      if (!silent) {
+        toast.success('Cabeçalho salvo')
+        await loadInvoice()
+      }
     }
   } catch (e) {
+    if (silent) throw e
     toast.error(e.response?.data?.detail || 'Erro ao salvar')
   } finally {
     saving.value = false
@@ -999,6 +1015,8 @@ function openItemModal(it) {
     Object.assign(itemForm, {
       id: it.id,
       cmig_product_id: it.cmig_product_id || null,
+      sku: it.sku || '',
+      source_type: it.source_type || null,
       description: it.description,
       ncm: it.ncm || '',
       cest: it.cest || '',
@@ -1023,6 +1041,8 @@ async function saveItem() {
   try {
     const payload = {
       cmig_product_id: itemForm.cmig_product_id || null,
+      sku: itemForm.sku || null,
+      source_type: itemForm.source_type || null,
       description: itemForm.description,
       ncm: itemForm.ncm || null,
       cest: itemForm.cest || null,
@@ -1063,6 +1083,7 @@ async function deleteItem(it) {
 async function calculateTaxes() {
   calculating.value = true
   try {
+    await saveHeader({ silent: true })
     await fiscalStore.calculateTaxes(invoiceId.value)
     toast.success('Impostos recalculados')
     await loadInvoice()
@@ -1077,6 +1098,7 @@ async function transmit() {
   if (!confirm('Transmitir esta NFe para a SEFAZ via Focus NFe? Após a autorização, ela não poderá ser editada.')) return
   transmitting.value = true
   try {
+    await saveHeader({ silent: true })
     const result = await fiscalStore.transmit(invoiceId.value)
     if (result.status === 'authorized') {
       toast.success('NFe autorizada!')
@@ -1103,6 +1125,7 @@ async function finalizeNoSefaz() {
   )) return
   finalizing.value = true
   try {
+    await saveHeader({ silent: true })
     const result = await fiscalStore.finalizeNoSefaz(invoiceId.value)
     const sm = result.stock_movement || {}
     toast.success(
