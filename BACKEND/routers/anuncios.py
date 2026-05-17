@@ -154,6 +154,17 @@ def _build_ml_payload(
     # Package dimensions (obrigatórios em várias categorias ML)
     existing_ids = {a.get("id", "").upper() for a in attributes}
 
+    # SELLER_SKU — código de identificação interno do vendedor.
+    # Ordem de preferência: form.sku → product.sku_cmig → product.sku
+    sku_value = (
+        form.get("sku")
+        or getattr(product, "sku_cmig", None)
+        or getattr(product, "sku", None)
+    )
+    if sku_value and "SELLER_SKU" not in existing_ids:
+        attributes.append({"id": "SELLER_SKU", "value_name": str(sku_value)})
+        existing_ids.add("SELLER_SKU")
+
     # Modelo (obrigatório em várias categorias ML)
     model = form.get("model") or getattr(product, "model", None)
     if model and "MODEL" not in existing_ids:
@@ -1589,6 +1600,12 @@ async def update_anuncio(
                 "warranty_time": listing.warranty_time,
                 "shipping_mode": listing.shipping_mode or "me2",
                 "free_shipping": listing.free_shipping or False,
+                "sku": body.get("sku") or listing.sku,
+                "model": body.get("model"),
+                "height_cm": body.get("height_cm"),
+                "width_cm": body.get("width_cm"),
+                "length_cm": body.get("length_cm"),
+                "weight_kg": body.get("weight_kg"),
             }
             # Se fotos não vieram no body, tenta parsear pictures_json do DB
             if not form["pictures"] and listing.pictures_json:

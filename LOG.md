@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-05-17 — Fix: SKU não enviado pro ML como SELLER_SKU
+
+**Motivação:** Usuário reportou que o SKU não estava sendo enviado pro ML, mesmo configurado no produto/listing.
+
+**Causa raiz:** `_build_ml_payload` não incluía o atributo `SELLER_SKU` no payload. Além disso, o `form` montado no fluxo de update não passava o `sku` do listing/body para o builder.
+
+**Mudanças:** [BACKEND/routers/anuncios.py](BACKEND/routers/anuncios.py):
+- `_build_ml_payload`: lê SKU em cascata (`form.sku` → `product.sku_cmig` → `product.sku`) e adiciona como `{"id": "SELLER_SKU", "value_name": str(sku_value)}` aos attributes, se ainda não estiver presente.
+- Form do update_listing: passa `sku`, `model`, dimensões (`height_cm`/`width_cm`/`length_cm`/`weight_kg`) pro `_build_ml_payload`. Antes esses campos só funcionavam no fluxo de create.
+
+**Verificação:** import backend OK.
+
+---
+
 ## 2026-05-17 — Fix: ML rejeitando fotos com URL relativa (item.picture.invalid)
 
 **Motivação:** Update de anúncio ML retornava erro `item.picture.invalid` em `item.variations.picture_ids` porque enviávamos URLs relativas (`/static/uploads/...`) como `pictures[].source`. ML precisa de URLs HTTPS públicas pra baixar a imagem.
