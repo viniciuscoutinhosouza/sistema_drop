@@ -1180,7 +1180,7 @@ const filteredAnuncios = computed(() => {
 
 const wizardTabs = ['Produto', 'Anúncio', 'Categoria', 'Fotos', 'Descrição & Envio']
 const wizardStep = ref(1)
-const wizard = ref({ show: false, isEdit: false, listingId: null, saving: false, error: '' })
+const wizard = ref({ show: false, isEdit: false, listingId: null, saving: false, error: '', originalSku: '' })
 
 const wf = ref(defaultWizardForm())
 
@@ -1413,7 +1413,7 @@ function moveImage(i, dir) {
 
 async function openWizard(listing) {
   wizardStep.value = 1
-  wizard.value = { show: true, isEdit: !!listing, listingId: listing?.id || null, saving: false, error: '' }
+  wizard.value = { show: true, isEdit: !!listing, listingId: listing?.id || null, saving: false, error: '', originalSku: listing?.sku || '' }
   wf.value = defaultWizardForm()
   categorySearch.value = ''
   categoryResults.value = []
@@ -1577,8 +1577,20 @@ async function saveWizard() {
     }
 
     if (wizard.value.isEdit) {
+      // Se o SKU mudou em edição, perguntar sobre cascata pro CMIG/PG vinculado
+      const skuChanged = wizard.value.originalSku && payload.sku && payload.sku !== wizard.value.originalSku
+      if (skuChanged) {
+        const linkLabel = wf.value.product_type === 'cmig' ? 'produto CMIG' : 'produto PG'
+        payload.cascade_sku_to_linked = confirm(
+          `Você alterou o SKU de "${wizard.value.originalSku}" para "${payload.sku}".\n\n` +
+          `Deseja propagar também o novo SKU para o ${linkLabel} vinculado?`
+        )
+      }
       const { data } = await api.put(`/anuncios/${wizard.value.listingId}`, payload)
-      if (data?.ml_sync_warning) {
+      if (data?._cascade && (data._cascade.cmig_updated || data._cascade.pg_updated)) {
+        const where = data._cascade.cmig_updated ? 'CMIG vinculado' : 'PG vinculado'
+        toast.success(`Anúncio atualizado. SKU propagado para o ${where}.`)
+      } else if (data?.ml_sync_warning) {
         toast.success('Anúncio salvo no sistema.')
         toast.error(`Aviso ML: ${data.ml_sync_warning}`)
       } else if (data?.ml_skipped_fields?.length) {

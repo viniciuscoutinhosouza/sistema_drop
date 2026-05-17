@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-05-17 — Permitir editar SKU em CMIG/PG/Anúncio + cascata pra itens vinculados
+
+**Motivação:** Forms de Produto CMIG e PG bloqueavam o campo SKU em edição (`:disabled="isEdit"`). Usuário precisava poder alterar. Adicionalmente: quando um produto está vinculado entre CMIG ↔ PG ↔ Anúncios, alterar o SKU em um lugar deve perguntar se quer propagar para os outros.
+
+**Mudanças:**
+
+### Backend
+- [BACKEND/schemas/cmig.py](BACKEND/schemas/cmig.py) — `CMIGProductUpdate` ganha `sku_cmig` e `cascade_sku_to_linked`.
+- [BACKEND/routers/cmigs.py](BACKEND/routers/cmigs.py) — `update_cmig_product` valida unicidade do novo SKU (dentro da CMIG) e, se `cascade=True`, propaga para `CatalogProduct.sku` do PG vinculado + todos `ProductListing.sku` com `cmig_product_id` = X. Retorna `_cascade: {pg_updated, listings_updated}`.
+- [BACKEND/routers/supplier_products.py](BACKEND/routers/supplier_products.py) — `update_product` aceita mudança de SKU (não estava na lista de campos atualizáveis), valida unicidade global e, se cascata, propaga para todos os `CMIGProduct.sku_cmig` vinculados (com check de unicidade por CMIG) + todos `ProductListing.sku` com `catalog_product_id` = X.
+- [BACKEND/routers/anuncios.py](BACKEND/routers/anuncios.py) — `update_listing` ganha cascata: se `cascade_sku_to_linked` e o listing tem `cmig_product_id`/`catalog_product_id`, atualiza o produto vinculado (com check de unicidade). Em todos os casos: erro 409 se houver conflito.
+
+### Frontend
+- [CmigProductFormView.vue](FRONTEND/src/views/cmig-products/CmigProductFormView.vue), [CmigCompositeFormView.vue](FRONTEND/src/views/cmig-products/CmigCompositeFormView.vue), [PgProductFormView.vue](FRONTEND/src/views/supplier/PgProductFormView.vue), [PgCompositeFormView.vue](FRONTEND/src/views/supplier/PgCompositeFormView.vue): removido `:disabled="isEdit"` no input SKU.
+- CMIG e PG simple forms guardam `originalSku` no load; ao salvar com SKU alterado, `confirm()` pergunta sobre cascata. Toast indica o que foi propagado.
+- [AnunciosView.vue](FRONTEND/src/views/anuncios/AnunciosView.vue) — wizard salva `originalSku` ao abrir edição; pergunta sobre cascata pro produto vinculado (CMIG ou PG) ao salvar com SKU mudado.
+
+**Importante:**
+- Cascata é **opt-in** (usuário responde no prompt).
+- Backend aborta com 409 se a propagação criar duplicidade em qualquer destino. Mensagem informa qual conflito.
+
+**Verificação:** `python -c "from schemas.cmig import CMIGProductUpdate; ..."` → schema OK. `npm run build` → `✓ built in 16.98s`.
+
+---
+
 ## 2026-05-17 — Fix: SKU não enviado pro ML como SELLER_SKU
 
 **Motivação:** Usuário reportou que o SKU não estava sendo enviado pro ML, mesmo configurado no produto/listing.

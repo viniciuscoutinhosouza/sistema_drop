@@ -497,6 +497,68 @@ async def update_cmig_product(
     payload = body.model_dump(exclude_none=True)
     images = payload.pop("images", None)
     components = payload.pop("components", None)
+    new_sku = payload.pop("sku_cmig", None)
+    cascade_linked = payload.pop("cascade_sku_to_linked", False)
+
+    # Validação + propagação de SKU
+    cascade_summary = {"pg_updated": False, "listings_updated": 0}
+    if new_sku is not None:
+        new_sku = new_sku.strip()
+        if not new_sku:
+            raise HTTPException(status_code=422, detail="SKU não pode ser vazio")
+        if new_sku != product.sku_cmig:
+            # Checa unicidade dentro da CMIG
+            dup = (
+                await db.execute(
+                    select(CMIGProduct).where(
+                        and_(
+                            CMIGProduct.cmig_id == cmig_id,
+                            CMIGProduct.sku_cmig == new_sku,
+                            CMIGProduct.id != product_id,
+                        )
+                    )
+                )
+            ).scalar_one_or_none()
+            if dup:
+                raise HTTPException(
+                    status_code=409, detail=f"SKU '{new_sku}' já está em uso nesta CMIG"
+                )
+            product.sku_cmig = new_sku
+
+            if cascade_linked:
+                # Propaga para PG vinculado (se houver)
+                if product.pg_product_id:
+                    pg = (
+                        await db.execute(
+                            select(CatalogProduct).where(CatalogProduct.id == product.pg_product_id)
+                        )
+                    ).scalar_one_or_none()
+                    if pg and pg.sku != new_sku:
+                        pg_dup = (
+                            await db.execute(
+                                select(CatalogProduct).where(
+                                    and_(
+                                        CatalogProduct.sku == new_sku,
+                                        CatalogProduct.id != pg.id,
+                                    )
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if pg_dup:
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"Cascata abortada: SKU '{new_sku}' já em uso no PG #{pg_dup.id}",
+                            )
+                        pg.sku = new_sku
+                        cascade_summary["pg_updated"] = True
+
+                # Propaga para anúncios vinculados a este CMIGProduct
+                lst_result = await db.execute(
+                    _sa_update(ProductListing)
+                    .where(ProductListing.cmig_product_id == product_id)
+                    .values(sku=new_sku)
+                )
+                cascade_summary["listings_updated"] = lst_result.rowcount or 0
 
     for field, value in payload.items():
         setattr(product, field, value)
@@ -537,7 +599,10 @@ async def update_cmig_product(
 
     await db.commit()
     await db.refresh(product)
-    return _serialize_cmig_product(product)
+    result = _serialize_cmig_product(product)
+    if cascade_summary["pg_updated"] or cascade_summary["listings_updated"]:
+        result["_cascade"] = cascade_summary
+    return result
 
 
 @router.post("/{cmig_id}/products/{product_id}/duplicate", status_code=201)

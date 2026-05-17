@@ -1578,6 +1578,47 @@ async def update_anuncio(
 
     listing.last_sync_at = datetime.now(UTC)
 
+    # Cascata de SKU para CMIG/PG vinculado, se solicitada
+    cascade_summary = {"cmig_updated": False, "pg_updated": False}
+    if body.get("cascade_sku_to_linked") and "sku" in body and body["sku"]:
+        new_sku = str(body["sku"]).strip()
+        if listing.cmig_product_id and listing.cmig_product:
+            cp = listing.cmig_product
+            if cp.sku_cmig != new_sku:
+                dup = (
+                    await db.execute(
+                        select(CMIGProduct).where(
+                            CMIGProduct.cmig_id == cp.cmig_id,
+                            CMIGProduct.sku_cmig == new_sku,
+                            CMIGProduct.id != cp.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if dup:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Cascata abortada: SKU '{new_sku}' já em uso no CMIG (produto #{dup.id})",
+                    )
+                cp.sku_cmig = new_sku
+                cascade_summary["cmig_updated"] = True
+        if listing.catalog_product_id and listing.catalog_product:
+            pg = listing.catalog_product
+            if pg.sku != new_sku:
+                dup = (
+                    await db.execute(
+                        select(CatalogProduct).where(
+                            CatalogProduct.sku == new_sku, CatalogProduct.id != pg.id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if dup:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Cascata abortada: SKU '{new_sku}' já em uso no PG #{dup.id}",
+                    )
+                pg.sku = new_sku
+                cascade_summary["pg_updated"] = True
+
     ml_error: str | None = None
     ml_skipped: list[str] = []
 
@@ -1688,6 +1729,8 @@ async def update_anuncio(
         result["ml_sync_warning"] = ml_error
     if ml_skipped:
         result["ml_skipped_fields"] = ml_skipped
+    if cascade_summary["cmig_updated"] or cascade_summary["pg_updated"]:
+        result["_cascade"] = cascade_summary
     return result
 
 

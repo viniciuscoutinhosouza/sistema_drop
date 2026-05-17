@@ -118,6 +118,8 @@ class CMIGProductCreate(BaseModel):
 
 class CMIGProductUpdate(BaseModel):
     # stock_quantity intencionalmente fora — gerenciado por eventos de NF-e/pedido
+    sku_cmig: str | None = None
+    cascade_sku_to_linked: bool | None = False  # se True, propaga SKU pro PG e anúncios vinculados
     title: str | None = None
     description: str | None = None
     brand: str | None = None

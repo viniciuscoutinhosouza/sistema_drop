@@ -37,7 +37,10 @@
                   <div class="row">
                     <div class="col-md-3 form-group">
                       <label>SKU CMIG <span class="text-danger">*</span></label>
-                      <input v-model="form.sku_cmig" class="form-control" required :disabled="isEdit" />
+                      <input v-model="form.sku_cmig" class="form-control" required />
+                      <small v-if="isEdit && form.sku_cmig !== originalSku" class="text-warning">
+                        <i class="fas fa-exclamation-triangle mr-1"></i>SKU alterado — será perguntado sobre propagação aos itens vinculados ao salvar.
+                      </small>
                     </div>
                     <div class="col-md-6 form-group">
                       <label>Título <span class="text-danger">*</span></label>
@@ -164,11 +167,13 @@ const form = ref({
 })
 
 const pictures = ref([])
+const originalSku = ref('')
 
 onMounted(async () => {
   if (isEdit.value) {
     const { data } = await api.get(`/cmigs/${cmigId.value}/products/${route.params.id}`)
     Object.assign(form.value, data)
+    originalSku.value = data.sku_cmig || ''
 
     // Prefere a tabela; fallback para pictures_json (legado)
     if (data.images?.length) {
@@ -188,12 +193,34 @@ function generateEan() {
 
 async function submit() {
   error.value = ''
+  // Se o SKU mudou em edição, perguntar sobre cascata pra itens vinculados
+  let cascade = false
+  const skuChanged = isEdit.value && form.value.sku_cmig !== originalSku.value && originalSku.value
+  if (skuChanged) {
+    const hasLinks = !!form.value.pg_product_id
+    const msg = hasLinks
+      ? `Você alterou o SKU de "${originalSku.value}" para "${form.value.sku_cmig}".\n\nEste produto está vinculado ao PG #${form.value.pg_product_id} e possivelmente a anúncios.\n\nDeseja propagar o novo SKU para todos os itens vinculados (PG + anúncios)?`
+      : `Você alterou o SKU de "${originalSku.value}" para "${form.value.sku_cmig}".\n\nDeseja propagar o novo SKU para anúncios que possam estar vinculados a este produto?`
+    cascade = confirm(msg)
+  }
   saving.value = true
   try {
-    const payload = { ...form.value, images: pictures.value.map(p => ({ url: p.url })) }
+    const payload = {
+      ...form.value,
+      images: pictures.value.map(p => ({ url: p.url })),
+      cascade_sku_to_linked: cascade,
+    }
     if (isEdit.value) {
-      await api.put(`/cmigs/${cmigId.value}/products/${route.params.id}`, payload)
-      toast.success('Produto atualizado com sucesso!')
+      const { data } = await api.put(`/cmigs/${cmigId.value}/products/${route.params.id}`, payload)
+      const c = data?._cascade
+      if (c && (c.pg_updated || c.listings_updated)) {
+        const parts = []
+        if (c.pg_updated) parts.push('PG vinculado')
+        if (c.listings_updated) parts.push(`${c.listings_updated} anúncio(s)`)
+        toast.success(`Produto atualizado. SKU propagado para: ${parts.join(', ')}.`)
+      } else {
+        toast.success('Produto atualizado com sucesso!')
+      }
     } else {
       await api.post(`/cmigs/${cmigId.value}/products`, payload)
       toast.success('Produto cadastrado com sucesso!')

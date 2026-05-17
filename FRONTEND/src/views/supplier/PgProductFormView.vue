@@ -37,7 +37,10 @@
                   <div class="row">
                     <div class="col-md-3 form-group">
                       <label>SKU <span class="text-danger">*</span></label>
-                      <input v-model="form.sku" class="form-control" required :disabled="isEdit" />
+                      <input v-model="form.sku" class="form-control" required />
+                      <small v-if="isEdit && form.sku !== originalSku" class="text-warning">
+                        <i class="fas fa-exclamation-triangle mr-1"></i>SKU alterado — será perguntado sobre propagação aos itens vinculados ao salvar.
+                      </small>
                     </div>
                     <div class="col-md-6 form-group">
                       <label>Título <span class="text-danger">*</span></label>
@@ -163,12 +166,14 @@ const form = ref({
 })
 
 const pictures = ref([])
+const originalSku = ref('')
 
 onMounted(async () => {
   if (isEdit.value) {
     const { data } = await api.get(`/pg/${route.params.id}`)
     Object.assign(form.value, data)
     pictures.value = data.images || []
+    originalSku.value = data.sku || ''
   }
 })
 
@@ -179,12 +184,32 @@ function generateEan() {
 
 async function submit() {
   error.value = ''
+  let cascade = false
+  const skuChanged = isEdit.value && form.value.sku !== originalSku.value && originalSku.value
+  if (skuChanged) {
+    cascade = confirm(
+      `Você alterou o SKU de "${originalSku.value}" para "${form.value.sku}".\n\n` +
+      `Deseja propagar o novo SKU para todos os CMIGProducts vinculados e anúncios?`
+    )
+  }
   saving.value = true
   try {
-    const payload = { ...form.value, images: pictures.value.map(p => ({ url: p.url })) }
+    const payload = {
+      ...form.value,
+      images: pictures.value.map(p => ({ url: p.url })),
+      cascade_sku_to_linked: cascade,
+    }
     if (isEdit.value) {
-      await api.put(`/pg/${route.params.id}`, payload)
-      toast.success('Produto atualizado com sucesso!')
+      const { data } = await api.put(`/pg/${route.params.id}`, payload)
+      const c = data?._cascade
+      if (c && (c.cmigs_updated || c.listings_updated)) {
+        const parts = []
+        if (c.cmigs_updated) parts.push(`${c.cmigs_updated} CMIG(s)`)
+        if (c.listings_updated) parts.push(`${c.listings_updated} anúncio(s)`)
+        toast.success(`Produto atualizado. SKU propagado para: ${parts.join(', ')}.`)
+      } else {
+        toast.success('Produto atualizado com sucesso!')
+      }
     } else {
       await api.post('/pg', payload)
       toast.success('Produto cadastrado com sucesso!')

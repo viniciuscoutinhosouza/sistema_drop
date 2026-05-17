@@ -38,7 +38,7 @@
                   <div class="row">
                     <div class="col-md-3 form-group">
                       <label>SKU CMIG <span class="text-danger">*</span></label>
-                      <input v-model="form.sku_cmig" class="form-control" required :disabled="isEdit" />
+                      <input v-model="form.sku_cmig" class="form-control" required />
                     </div>
                     <div class="col-md-6 form-group">
                       <label>Título <span class="text-danger">*</span></label>
