@@ -609,14 +609,29 @@
               <div v-if="wizardStep === 4">
                 <p class="text-muted small mb-2">Selecione até 12 fotos. A primeira será a foto principal.</p>
 
-                <div v-if="productImages.length > 0">
-                  <h6 class="text-muted small text-uppercase mb-2">Fotos do produto vinculado</h6>
-                  <div class="d-flex flex-wrap mb-3">
+                <div v-if="wf.selectedProduct">
+                  <div class="d-flex align-items-center mb-2">
+                    <h6 class="text-muted small text-uppercase mb-0 flex-grow-1">
+                      Fotos do produto vinculado
+                      <span v-if="wf.product_type === 'cmig'" class="badge badge-secondary ml-1">CMIG</span>
+                      <span v-else-if="wf.product_type === 'pg'" class="badge badge-info ml-1">PG</span>
+                    </h6>
+                    <button class="btn btn-sm btn-outline-primary"
+                            type="button"
+                            :disabled="refreshingProductImages"
+                            :title="`Buscar fotos atualizadas do cadastro de ${wf.product_type === 'cmig' ? 'Produto CMIG' : 'Produto PG'}`"
+                            @click="refreshProductImages">
+                      <i :class="['fas', refreshingProductImages ? 'fa-spinner fa-spin' : 'fa-sync-alt']"></i>
+                      Atualizar fotos
+                    </button>
+                  </div>
+                  <div v-if="productImages.length > 0" class="d-flex flex-wrap mb-3">
                     <div v-for="(img, i) in productImages" :key="i" class="mr-2 mb-2 position-relative" style="cursor:pointer" @click="toggleImage(img)">
                       <img :src="img" :style="`width:80px;height:80px;object-fit:cover;border-radius:4px;border:3px solid ${isImageSelected(img) ? '#007bff' : '#dee2e6'}`" />
                       <span v-if="isImageSelected(img)" class="badge badge-primary position-absolute" style="top:-6px;right:-6px;font-size:10px">{{ wf.pictures.indexOf(img)+1 }}</span>
                     </div>
                   </div>
+                  <div v-else class="text-muted small mb-3">Produto sem fotos cadastradas.</div>
                 </div>
 
                 <div class="form-group">
@@ -1232,6 +1247,46 @@ function selectProduct(p) {
   // Auto-populate pictures from product images
   if (wf.value.pictures.length === 0 && p.images?.length) {
     wf.value.pictures = p.images.slice(0, 12).map(i => i.url || i).filter(Boolean)
+  }
+}
+
+const refreshingProductImages = ref(false)
+
+async function refreshProductImages() {
+  const p = wf.value.selectedProduct
+  if (!p || !p.id) return
+  refreshingProductImages.value = true
+  try {
+    let fresh = null
+    if (wf.value.product_type === 'cmig') {
+      const cmigId = p.cmig_id
+      if (!cmigId) throw new Error('Produto CMIG sem cmig_id — não foi possível atualizar.')
+      const { data } = await api.get(`/cmigs/${cmigId}/products/${p.id}`)
+      fresh = data
+      // atualiza também a lista do wizard
+      const idx = cmigProductList.value.findIndex(x => x.id === p.id)
+      if (idx >= 0) cmigProductList.value[idx] = data
+    } else if (wf.value.product_type === 'pg') {
+      const { data } = await api.get(`/pg/${p.id}`)
+      fresh = data
+      const idx = pgProductList.value.findIndex(x => x.id === p.id)
+      if (idx >= 0) pgProductList.value[idx] = data
+    }
+    if (fresh) {
+      const prevUrls = (p.images || []).map(i => i.url || i).filter(Boolean)
+      wf.value.selectedProduct = fresh
+      const newUrls = (fresh.images || []).map(i => i.url || i).filter(Boolean)
+      const added = newUrls.filter(u => !prevUrls.includes(u))
+      if (added.length === 0) {
+        toast.info('Nenhuma foto nova no produto vinculado.')
+      } else {
+        toast.success(`${added.length} foto${added.length === 1 ? '' : 's'} nova${added.length === 1 ? '' : 's'} disponível${added.length === 1 ? '' : 'is'} pra seleção.`)
+      }
+    }
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao atualizar fotos do produto.')
+  } finally {
+    refreshingProductImages.value = false
   }
 }
 

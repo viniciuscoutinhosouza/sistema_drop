@@ -33,6 +33,31 @@
               <button class="btn btn-outline-secondary" :class="{ active: filter === 'composite' }" @click="setFilter('composite')">KITs</button>
             </div>
           </div>
+          <div class="card-body p-2 border-bottom" style="background:#f8f9fa">
+            <div class="row no-gutters" style="gap:.5rem">
+              <div class="col-md flex-grow-1" style="min-width:200px">
+                <input v-model="searchQuery" class="form-control form-control-sm" placeholder="Buscar por nome ou SKU..." />
+              </div>
+              <div class="col-md" style="min-width:160px;max-width:240px">
+                <select v-model="categoryFilter" class="form-control form-control-sm">
+                  <option value="">Todas categorias</option>
+                  <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
+                </select>
+              </div>
+              <div class="col-md" style="min-width:140px;max-width:220px">
+                <select v-model="sortBy" class="form-control form-control-sm">
+                  <option value="title_asc">Nome (A-Z)</option>
+                  <option value="title_desc">Nome (Z-A)</option>
+                  <option value="sku_asc">SKU (A-Z)</option>
+                  <option value="sku_desc">SKU (Z-A)</option>
+                  <option value="category_asc">Categoria (A-Z)</option>
+                </select>
+              </div>
+              <div class="col-auto d-flex align-items-center">
+                <span class="text-muted small">{{ products.length }} resultado{{ products.length === 1 ? '' : 's' }}</span>
+              </div>
+            </div>
+          </div>
           <div class="card-body p-0">
             <div v-if="loading" class="text-center py-5">
               <i class="fas fa-spinner fa-spin fa-2x text-muted"></i>
@@ -507,11 +532,45 @@ function shipmentLabel(s) { return _shipmentLabels[s] || s || '—' }
 const cmigId = computed(() => route.query.cmig_id || route.params.cmig_id)
 const cmig = ref(null)
 const allProducts = ref([])
+const categories = ref([])
 const filter = ref('all')
+const searchQuery = ref('')
+const categoryFilter = ref('')
+const sortBy = ref('title_asc')
+
+const categoryMap = computed(() => {
+  const m = {}
+  for (const c of categories.value) m[c.id] = c.name
+  return m
+})
+
+function _norm(s) { return (s || '').toString().toLowerCase().trim() }
+
 const products = computed(() => {
-  if (filter.value === 'composite') return allProducts.value.filter(p => p.is_composite)
-  if (filter.value === 'simple') return allProducts.value.filter(p => !p.is_composite)
-  return allProducts.value
+  let list = allProducts.value
+  if (filter.value === 'composite') list = list.filter(p => p.is_composite)
+  else if (filter.value === 'simple') list = list.filter(p => !p.is_composite)
+  if (categoryFilter.value) list = list.filter(p => p.category_id == categoryFilter.value)
+  const q = _norm(searchQuery.value)
+  if (q) {
+    list = list.filter(p =>
+      _norm(p.title).includes(q) ||
+      _norm(p.sku_cmig).includes(q)
+    )
+  }
+  const arr = [...list]
+  switch (sortBy.value) {
+    case 'title_desc': arr.sort((a, b) => _norm(b.title).localeCompare(_norm(a.title))); break
+    case 'sku_asc':    arr.sort((a, b) => _norm(a.sku_cmig).localeCompare(_norm(b.sku_cmig))); break
+    case 'sku_desc':   arr.sort((a, b) => _norm(b.sku_cmig).localeCompare(_norm(a.sku_cmig))); break
+    case 'category_asc':
+      arr.sort((a, b) => _norm(categoryMap.value[a.category_id]).localeCompare(_norm(categoryMap.value[b.category_id])))
+      break
+    case 'title_asc':
+    default:
+      arr.sort((a, b) => _norm(a.title).localeCompare(_norm(b.title)))
+  }
+  return arr
 })
 const loading = ref(false)
 const showLinkModal = ref(false)
@@ -524,11 +583,20 @@ const isUGO = computed(() => ['ugo', 'admin'].includes(authStore.user?.role))
 
 function setFilter(val) { filter.value = val }
 
+async function loadCategories() {
+  try {
+    const { data } = await api.get('/catalog/categories')
+    categories.value = Array.isArray(data) ? data : []
+  } catch {
+    categories.value = []
+  }
+}
+
 onMounted(async () => {
   if (!cmigId.value) return
   const { data: c } = await api.get(`/cmigs/${cmigId.value}`)
   cmig.value = c
-  await loadProducts()
+  await Promise.all([loadProducts(), loadCategories()])
 })
 
 function getThumb(p) {

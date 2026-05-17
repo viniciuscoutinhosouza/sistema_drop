@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:5173"
     CORS_ORIGINS: str = "http://localhost:5173"
 
+    # URL pública do backend — usada para absolutizar URLs de imagens
+    # antes de enviar a integrações externas (ML, Shopee) que precisam
+    # baixar a imagem por HTTP. Em prod: "https://ecommerce.madeingroup.com.br".
+    PUBLIC_BASE_URL: str = ""
+
     # Mercado Livre
     ML_APP_ID: str = "6712718703908494"
     ML_CLIENT_SECRET: str = ""

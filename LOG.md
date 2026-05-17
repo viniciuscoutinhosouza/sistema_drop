@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-05-17 — Fix: ML rejeitando fotos com URL relativa (item.picture.invalid)
+
+**Motivação:** Update de anúncio ML retornava erro `item.picture.invalid` em `item.variations.picture_ids` porque enviávamos URLs relativas (`/static/uploads/...`) como `pictures[].source`. ML precisa de URLs HTTPS públicas pra baixar a imagem.
+
+**Causa raiz dupla:**
+1. **Serializer de listing (anuncios.py)** retornava `cmig_product` e `catalog_product` sem `images` nem `cmig_id` — o frontend não tinha como mostrar nem refazer fotos. Resolvido na rodada anterior.
+2. **`_build_ml_payload`** enviava `{"source": url}` direto, sem absolutizar. URLs relativas chegavam no ML como inválidas, e o estado de variações com `picture_ids` apontando pra essas URLs também não validava.
+
+**Mudanças:**
+- [BACKEND/config.py](BACKEND/config.py) — nova setting `PUBLIC_BASE_URL` (default `""`), documentada como "URL pública do backend pra absolutizar imagens em integrações externas (ex.: `https://ecommerce.madeingroup.com.br`)".
+- [BACKEND/routers/anuncios.py](BACKEND/routers/anuncios.py):
+  - Helper `_absolutize_image_url(url)`: se URL já tem `http(s)://`, retorna como está. Se relativa e `PUBLIC_BASE_URL` está setado, prefixa. Se sem base configurada, retorna original (dev).
+  - `_build_ml_payload`: agora usa o helper em `pictures[].source`.
+  - Fluxo de update no `update_listing`: quando há `pictures` no payload **e** o listing tem `variations_json`, adiciona `variations: [{id, picture_ids: []}]` pra limpar `picture_ids` inválidos das variations existentes no ML. As variations passam a herdar as fotos do top-level item.
+
+**Pendente em produção:** setar `PUBLIC_BASE_URL=https://ecommerce.madeingroup.com.br` no `.env` do servidor. Sem isso, o helper não tem como absolutizar e ML continua rejeitando.
+
+**Verificação:** import backend OK. Teste do helper: `/static/x.jpg` + base url → `https://...x.jpg`; URL absoluta passa direto; None não crasha.
+
+---
+
+## 2026-05-17 — Gerador EAN-13 + filtro/ordenação em listas + refresh de fotos no anúncio
+
+**Motivação:** 3 features pedidas pelo usuário: (1) gerar EAN-13 automaticamente nos forms de Produto CMIG/PG, (2) filtrar e ordenar listas de produtos por categoria/nome/SKU, (3) na edição de anúncio, botão pra buscar fotos atualizadas do produto vinculado.
+
+**Mudanças:**
+
+### 1) Gerador EAN-13
+- [FRONTEND/src/utils/ean.js](FRONTEND/src/utils/ean.js) — **NOVO** utilitário. Gera EAN-13 com prefixo **200** (faixa GS1 reservada pra uso interno do varejista — não conflita com produtos comerciais reais). Inclui `ean13Checksum`, `generateEan13` e `isValidEan13`.
+- [FRONTEND/src/views/cmig-products/CmigProductFormView.vue](FRONTEND/src/views/cmig-products/CmigProductFormView.vue) e [PgProductFormView.vue](FRONTEND/src/views/supplier/PgProductFormView.vue) — botão `fa-magic` ao lado do input EAN, com tooltip "Gerar código EAN-13 interno (prefixo 200)".
+- **Validação**: testes locais geraram 100/100 EANs válidos com prefixo correto.
+
+### 2) Filtro + ordenação nas listas
+- [CmigProductListView.vue](FRONTEND/src/views/cmig-products/CmigProductListView.vue) e [SupplierProductListView.vue](FRONTEND/src/views/supplier/SupplierProductListView.vue):
+  - Nova barra de filtros (background cinza-claro, abaixo do header do card):
+    - Campo de busca livre (matches `title` OR `sku`/`sku_cmig`).
+    - Dropdown de categoria (carregado de `GET /catalog/categories` ao montar).
+    - Dropdown de ordenação: Nome (A-Z, Z-A), SKU (A-Z, Z-A), Categoria (A-Z).
+    - Contador de resultados à direita.
+  - Reatividade: tudo via `computed`, sem chamadas extras à API ao mudar filtro.
+
+### 3) Refresh de fotos do produto no anúncio
+- [AnunciosView.vue](FRONTEND/src/views/anuncios/AnunciosView.vue):
+  - Botão "Atualizar fotos" (`fa-sync-alt`) na Aba 4 (Fotos) do wizard, ao lado do título "Fotos do produto vinculado".
+  - Re-fetch do produto via `GET /cmigs/{cmig_id}/products/{id}` (CMIG) ou `GET /pg/{id}` (PG) e atualiza `wf.selectedProduct.images` reativamente — `productImages` computed reflete imediatamente.
+  - Toast indica quantas fotos novas apareceram (diff por URL contra o estado anterior).
+  - Disabled durante fetch + spinner.
+
+**Backend**: nenhuma mudança — endpoints já existiam.
+
+**Verificação:** `npm run build` → `✓ built in 19.61s`. Teste de geração EAN: 100/100 válidos, prefixo `200`.
+
+---
+
 ## 2026-05-16 — Ordenação descendente (mais recente primeiro)
 
 **Motivação:** Tabela mostrava eventos em ordem cronológica ascendente (mais antigo no topo). Usuário prefere ordem descendente para ver primeiro o que aconteceu por último.

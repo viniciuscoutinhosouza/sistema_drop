@@ -45,7 +45,16 @@
                     </div>
                     <div class="col-md-3 form-group">
                       <label>EAN / GTIN</label>
-                      <input v-model="form.ean" class="form-control" maxlength="14" placeholder="7891234567890" />
+                      <div class="input-group">
+                        <input v-model="form.ean" class="form-control" maxlength="14" placeholder="7891234567890" />
+                        <div class="input-group-append">
+                          <button type="button" class="btn btn-outline-secondary"
+                                  title="Gerar código EAN-13 interno (prefixo 200)"
+                                  @click="generateEan">
+                            <i class="fas fa-magic"></i>
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -134,6 +143,7 @@ import ProductDimensionsFields from '@/components/products/ProductDimensionsFiel
 import ProductFiscalFields from '@/components/products/ProductFiscalFields.vue'
 import ProductVariantsCard from '@/components/products/ProductVariantsCard.vue'
 import CategoryPickerWithModal from '@/components/products/CategoryPickerWithModal.vue'
+import { generateEan13 } from '@/utils/ean'
 
 const route  = useRoute()
 const router = useRouter()
@@ -170,6 +180,11 @@ onMounted(async () => {
     }
   }
 })
+
+function generateEan() {
+  form.value.ean = generateEan13()
+  toast.success('EAN gerado (prefixo 200 — uso interno).')
+}
 
 async function submit() {
   error.value = ''

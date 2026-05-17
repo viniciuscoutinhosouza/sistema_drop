@@ -24,6 +24,31 @@
           <div class="card-header">
             <h3 class="card-title"><i class="fas fa-boxes mr-2"></i>Produtos cadastrados</h3>
           </div>
+          <div class="card-body p-2 border-bottom" style="background:#f8f9fa">
+            <div class="row no-gutters" style="gap:.5rem">
+              <div class="col-md flex-grow-1" style="min-width:200px">
+                <input v-model="searchQuery" class="form-control form-control-sm" placeholder="Buscar por nome ou SKU..." />
+              </div>
+              <div class="col-md" style="min-width:160px;max-width:240px">
+                <select v-model="categoryFilter" class="form-control form-control-sm">
+                  <option value="">Todas categorias</option>
+                  <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
+                </select>
+              </div>
+              <div class="col-md" style="min-width:140px;max-width:220px">
+                <select v-model="sortBy" class="form-control form-control-sm">
+                  <option value="title_asc">Nome (A-Z)</option>
+                  <option value="title_desc">Nome (Z-A)</option>
+                  <option value="sku_asc">SKU (A-Z)</option>
+                  <option value="sku_desc">SKU (Z-A)</option>
+                  <option value="category_asc">Categoria (A-Z)</option>
+                </select>
+              </div>
+              <div class="col-auto d-flex align-items-center">
+                <span class="text-muted small">{{ filteredProducts.length }} resultado{{ filteredProducts.length === 1 ? '' : 's' }}</span>
+              </div>
+            </div>
+          </div>
           <div class="card-body p-0">
             <div v-if="loading" class="text-center py-5">
               <i class="fas fa-spinner fa-spin fa-2x text-muted"></i>
@@ -42,10 +67,10 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="products.length === 0">
+                <tr v-if="filteredProducts.length === 0">
                   <td colspan="8" class="text-center text-muted py-4">Nenhum produto cadastrado.</td>
                 </tr>
-                <tr v-for="p in products" :key="p.id">
+                <tr v-for="p in filteredProducts" :key="p.id">
                   <td class="p-1 text-center">
                     <img v-if="p.thumbnail" :src="p.thumbnail"
                          style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />
@@ -339,13 +364,57 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 
 const products = ref([])
 const loading  = ref(true)
+const categories = ref([])
+
+const searchQuery = ref('')
+const categoryFilter = ref('')
+const sortBy = ref('title_asc')
+
+const categoryMap = computed(() => {
+  const m = {}
+  for (const c of categories.value) m[c.id] = c.name
+  return m
+})
+
+function _norm(s) { return (s || '').toString().toLowerCase().trim() }
+
+const filteredProducts = computed(() => {
+  let list = products.value
+  if (categoryFilter.value) list = list.filter(p => p.category_id == categoryFilter.value)
+  const q = _norm(searchQuery.value)
+  if (q) {
+    list = list.filter(p => _norm(p.title).includes(q) || _norm(p.sku).includes(q))
+  }
+  const arr = [...list]
+  switch (sortBy.value) {
+    case 'title_desc': arr.sort((a, b) => _norm(b.title).localeCompare(_norm(a.title))); break
+    case 'sku_asc':    arr.sort((a, b) => _norm(a.sku).localeCompare(_norm(b.sku))); break
+    case 'sku_desc':   arr.sort((a, b) => _norm(b.sku).localeCompare(_norm(a.sku))); break
+    case 'category_asc':
+      arr.sort((a, b) => _norm(categoryMap.value[a.category_id]).localeCompare(_norm(categoryMap.value[b.category_id])))
+      break
+    case 'title_asc':
+    default:
+      arr.sort((a, b) => _norm(a.title).localeCompare(_norm(b.title)))
+  }
+  return arr
+})
+
+async function loadCategories() {
+  try {
+    const { data } = await api.get('/catalog/categories')
+    categories.value = Array.isArray(data) ? data : []
+  } catch {
+    categories.value = []
+  }
+}
 const toast    = useToast()
 const router   = useRouter()
 
@@ -502,5 +571,8 @@ async function deactivate(p) {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadCategories()
+})
 </script>

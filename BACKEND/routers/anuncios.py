@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from config import get_settings
 from database import get_db
 from dependencies import get_current_user
 from models.cmig import CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
@@ -21,6 +22,24 @@ from models.integration import MarketplaceAccount
 from models.product import CatalogProduct, ProductListing
 from models.user import User
 from services import ml_service
+
+
+def _absolutize_image_url(url: str) -> str:
+    """Converte URL relativa de imagem (/static/...) em URL absoluta usando
+    PUBLIC_BASE_URL. Necessário para enviar pro ML/Shopee que precisam baixar a imagem.
+    Se já é absoluta (http/https) ou se PUBLIC_BASE_URL não está configurado,
+    retorna a URL original.
+    """
+    if not url or not isinstance(url, str):
+        return url
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    base = (get_settings().PUBLIC_BASE_URL or "").rstrip("/")
+    if not base:
+        return url  # dev sem PUBLIC_BASE_URL — ML rejeitará, mas é esperado em dev
+    if not url.startswith("/"):
+        url = "/" + url
+    return f"{base}{url}"
 
 router = APIRouter()
 
@@ -77,8 +96,8 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
         select(ProductListing)
         .options(
             selectinload(ProductListing.account).selectinload(MarketplaceAccount.administrators),
-            selectinload(ProductListing.cmig_product),
-            selectinload(ProductListing.catalog_product),
+            selectinload(ProductListing.cmig_product).selectinload(CMIGProduct.images),
+            selectinload(ProductListing.catalog_product).selectinload(CatalogProduct.images),
         )
         .where(ProductListing.id == listing_id)
     )
@@ -118,12 +137,14 @@ def _build_ml_payload(
     if form.get("category_id"):
         payload["category_id"] = form["category_id"]
 
-    # Pictures — use direct URLs; ML fetches them
+    # Pictures — ML precisa baixar pela URL, então absolutizamos qualquer caminho relativo.
     images = form.get("pictures") or []
     if not images and hasattr(product, "images"):
         images = [img.url for img in (product.images or [])]
     if images:
-        payload["pictures"] = [{"source": url} for url in images[:12]]
+        payload["pictures"] = [
+            {"source": _absolutize_image_url(url)} for url in images[:12]
+        ]
 
     # Attributes — list of {"id": "BRAND", "value_name": "Nike"}
     attributes = list(form.get("attributes") or [])
@@ -242,10 +263,20 @@ def _serialize_listing(listing: ProductListing) -> dict:
     if listing.cmig_product:
         cmig_product = {
             "id": listing.cmig_product.id,
-            "sku": listing.cmig_product.sku_cmig,
+            "cmig_id": listing.cmig_product.cmig_id,
+            "sku_cmig": listing.cmig_product.sku_cmig,
+            "sku": listing.cmig_product.sku_cmig,  # alias pra compatibilidade
             "title": listing.cmig_product.title,
             "brand": listing.cmig_product.brand,
             "model": listing.cmig_product.model,
+            "pg_product_id": listing.cmig_product.pg_product_id,
+            "images": [
+                {"url": img.url, "sort_order": img.sort_order}
+                for img in sorted(
+                    (listing.cmig_product.images or []),
+                    key=lambda i: (i.sort_order or 0),
+                )
+            ],
         }
     catalog_product = None
     if listing.catalog_product:
@@ -255,6 +286,13 @@ def _serialize_listing(listing: ProductListing) -> dict:
             "title": listing.catalog_product.title,
             "brand": listing.catalog_product.brand,
             "model": listing.catalog_product.model,
+            "images": [
+                {"url": img.url, "sort_order": img.sort_order}
+                for img in sorted(
+                    (listing.catalog_product.images or []),
+                    key=lambda i: (i.sort_order or 0),
+                )
+            ],
         }
     return {
         "id": listing.id,
@@ -528,8 +566,8 @@ async def list_anuncios(
     q = (
         select(ProductListing)
         .options(
-            selectinload(ProductListing.cmig_product),
-            selectinload(ProductListing.catalog_product),
+            selectinload(ProductListing.cmig_product).selectinload(CMIGProduct.images),
+            selectinload(ProductListing.catalog_product).selectinload(CatalogProduct.images),
         )
         .where(ProductListing.account_id == account_id)
     )
@@ -1573,6 +1611,21 @@ async def update_anuncio(
             # Itens de catálogo ML têm estoque gerenciado pelo ML — quantidade não editável
             if listing.ml_catalog_id:
                 ml_payload.pop("available_quantity", None)
+
+            # Se atualizamos pictures e o item tem variations registradas no ML, limpa
+            # variations[].picture_ids — caso contrário ML reclama dos picture_ids
+            # antigos (que podem referenciar URLs relativas inválidas). Após o update
+            # as variations herdam as fotos do top-level.
+            if "pictures" in ml_payload and listing.variations_json:
+                try:
+                    _vars = _json.loads(listing.variations_json)
+                    _vids = [v.get("id") for v in _vars if v.get("id")]
+                    if _vids:
+                        ml_payload["variations"] = [
+                            {"id": vid, "picture_ids": []} for vid in _vids
+                        ]
+                except Exception:
+                    pass
 
             ml_resp = await ml_service.update_item(
                 access_token, listing.platform_item_id, ml_payload
