@@ -329,6 +329,12 @@
                       <button v-if="a.status === 'published'" class="btn btn-outline-warning" title="Pausar anúncio" @click="pauseAnuncio(a)"><i class="fas fa-pause"></i></button>
                       <button v-if="a.status === 'paused'" class="btn btn-outline-success" title="Reativar anúncio" @click="reactivateAnuncio(a)"><i class="fas fa-play"></i></button>
                       <button v-if="a.platform_item_id && a.is_linked" class="btn btn-outline-info" title="Sincronizar com ML" @click="syncToMl(a)"><i class="fas fa-sync-alt"></i></button>
+                      <button v-if="a.is_full && a.qty_full === 0 && a.platform_item_id"
+                              class="btn btn-outline-danger"
+                              title="Deixar de oferecer Full — converter para cross-docking usando estoque do galpão do seller"
+                              @click="switchToCrossDocking(a)">
+                        <i class="fas fa-warehouse mr-1"></i><i class="fas fa-times" style="font-size:9px;vertical-align:1px"></i>
+                      </button>
                       <a v-if="a.permalink" :href="a.permalink" target="_blank" class="btn btn-outline-info" title="Ver no Marketplace"><i class="fas fa-external-link-alt"></i></a>
                     </div>
                     <!-- Linha 3: exclusão -->
@@ -1925,6 +1931,18 @@ async function pauseAnuncio(listing) {
     await loadAnuncios()
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao pausar anúncio')
+  }
+}
+
+async function switchToCrossDocking(listing) {
+  if (!confirm(`Converter "${listing.title_override}" de Full para cross-docking?\n\nO estoque do galpão do seller será usado como disponível.`)) return
+  try {
+    const { data } = await api.post(`/anuncios/${listing.id}/switch-to-cross-docking`)
+    const idx = anuncios.value.findIndex(a => a.id === listing.id)
+    if (idx !== -1) anuncios.value[idx] = data
+    toast.success('Anúncio convertido para cross-docking com sucesso.')
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao converter para cross-docking.')
   }
 }
 

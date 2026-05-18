@@ -1910,12 +1910,84 @@ async def sync_listing_to_ml(
         if desc_ok is False and "description" not in skipped:
             skipped.append("description")
 
+    # For Full listings: read back current qty_full from ML (stock is ML-managed)
+    is_full_listing = (listing.logistic_type == "fulfillment") or bool(listing.is_full)
+    if is_full_listing and listing.platform_item_id:
+        try:
+            ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
+            listing.qty_full = ml_item.get("available_quantity") or 0
+            listing.qty_local = 0
+        except Exception:
+            pass
+
     listing.last_sync_at = datetime.now(UTC)
     await db.commit()
     result = _serialize_listing(listing)
     if skipped:
         result["ml_skipped_fields"] = skipped
     return result
+
+
+@router.post("/{listing_id}/switch-to-cross-docking")
+async def switch_to_cross_docking(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Converte anúncio Full para cross-docking usando estoque do galpão do seller.
+
+    Disponível apenas quando qty_full = 0 (sem estoque no galpão do ML).
+    Envia ao ML: logistic_type=cross_docking + available_quantity do produto vinculado.
+    """
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma")
+
+    is_full = (listing.logistic_type == "fulfillment") or bool(listing.is_full)
+    if not is_full:
+        raise HTTPException(status_code=400, detail="Anúncio não está no modo Full")
+
+    if (listing.qty_full or 0) > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Anúncio possui {listing.qty_full} unidades no galpão do ML. "
+            "Remova o estoque do Full antes de converter.",
+        )
+
+    # Use seller warehouse stock from linked product; fall back to 1
+    product = listing.cmig_product or listing.catalog_product
+    seller_stock = max(int(getattr(product, "stock_quantity", None) or 0), 1) if product else 1
+
+    access_token = await _get_valid_token(listing.account, db)
+
+    import httpx as _httpx
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with _httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.put(
+            f"{ml_service.ML_API_BASE}/items/{listing.platform_item_id}",
+            headers=headers,
+            json={
+                "available_quantity": seller_stock,
+                "shipping": {"logistic_type": "cross_docking"},
+            },
+        )
+
+    if resp.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Erro ao converter para cross-docking: {resp.text}",
+        )
+
+    listing.is_full = False
+    listing.logistic_type = "cross_docking"
+    listing.qty_full = 0
+    listing.qty_local = seller_stock
+    listing.available_quantity = seller_stock
+    listing.last_sync_at = datetime.now(UTC)
+    await db.commit()
+    return _serialize_listing(listing)
 
 
 @router.post("/{listing_id}/reactivate")
