@@ -78,12 +78,28 @@ class StockEvent:
 async def _fetch_nfe_events_for_cmig_product(
     cmig_product: CMIGProduct, db: AsyncSession
 ) -> list[StockEvent]:
-    """NFes finalizadas/autorizadas tocando este CMIGProduct."""
+    """NFes finalizadas/autorizadas tocando este CMIGProduct.
+
+    Match em cascata:
+    - `cmig_product_id` direto (items explicitamente CMIG).
+    - Por EAN para items legacy SEM cmig_product_id, EXCLUINDO items que são
+      explicitamente PG (source_type='pg'). Sem esse filtro, items PG cujo EAN
+      coincide com um CMIG seriam puxados indevidamente pro histórico CMIG.
+    """
     product_ean = (cmig_product.ean or "").strip()
     item_match = [InvoiceItem.cmig_product_id == cmig_product.id]
     if product_ean:
         item_match.append(
-            and_(InvoiceItem.cmig_product_id.is_(None), InvoiceItem.ean == product_ean)
+            and_(
+                InvoiceItem.cmig_product_id.is_(None),
+                InvoiceItem.ean == product_ean,
+                # Items PG têm seu próprio caminho (_fetch_direct_pg_events).
+                # Aqui aceitamos apenas legacy (NULL) e source='cmig'.
+                or_(
+                    InvoiceItem.source_type.is_(None),
+                    InvoiceItem.source_type != "pg",
+                ),
+            )
         )
 
     stmt = (
