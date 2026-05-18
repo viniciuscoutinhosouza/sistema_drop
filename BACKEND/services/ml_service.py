@@ -450,14 +450,21 @@ async def create_item(access_token: str, item_data: dict) -> dict:
     return resp.json()
 
 
-async def update_item_stock(access_token: str, item_id: str, quantity: int) -> None:
+async def update_item_stock(access_token: str, item_id: str, quantity: int) -> str:
     """Update available quantity for an existing ML listing.
 
     Falls back to alternative endpoints when /items/{id} returns
     item.available_quantity.not_modifiable:
     - Items with variations: PUT /items/{id}/variations/{variation_id}
     - Catalog items (user_product_id set): PUT /user-products/{id}/stock
-    - Full (fulfillment) items: skip silently — stock managed by ML
+    - Full (fulfillment) items: stock managed by ML — returns "fulfillment"
+
+    Returns one of:
+    - "updated"          stock was successfully updated via some endpoint
+    - "fulfillment"      item is Full — stock managed by ML, cannot be changed here
+    - "multi_variation"  item has multiple variations — caller must sync per variation
+    - "catalog_fail"     user-products endpoint rejected the update
+    - "unknown"          could not determine item type after not_modifiable error
     """
     headers = {"Authorization": f"Bearer {access_token}"}
 
@@ -469,7 +476,7 @@ async def update_item_stock(access_token: str, item_id: str, quantity: int) -> N
         )
 
         if resp.status_code in (200, 201):
-            return
+            return "updated"
 
         # Detect the "not modifiable" error to try alternative endpoints
         is_not_modifiable = False
@@ -492,20 +499,18 @@ async def update_item_stock(access_token: str, item_id: str, quantity: int) -> N
         # Fetch the item to determine its type
         item_resp = await client.get(f"{ML_API_BASE}/items/{item_id}", headers=headers)
         if item_resp.status_code != 200:
-            # Can't determine type, skip silently — this is a non-modifiable item
-            return
+            return "unknown"
         item = item_resp.json()
 
-        # Full items: stock managed by ML, skip silently
+        # Full items: stock managed by ML
         if (item.get("shipping") or {}).get("logistic_type") == "fulfillment":
-            return
+            return "fulfillment"
 
         variations = item.get("variations") or []
         user_product_id = item.get("user_product_id")
 
         # Items with variations: distribute stock to first variation OR skip if multiple
         if variations:
-            # If there's only one variation, update it; otherwise skip (we can't decide)
             if len(variations) == 1:
                 var_id = variations[0].get("id")
                 if var_id:
@@ -515,8 +520,8 @@ async def update_item_stock(access_token: str, item_id: str, quantity: int) -> N
                         json={"available_quantity": quantity},
                     )
                     if var_resp.status_code in (200, 201):
-                        return
-            return  # multiple variations: caller should sync per variation
+                        return "updated"
+            return "multi_variation"
 
         # Catalog items: stock managed via user_product_id
         if user_product_id:
@@ -526,12 +531,10 @@ async def update_item_stock(access_token: str, item_id: str, quantity: int) -> N
                 json={"available_quantity": quantity},
             )
             if up_resp.status_code in (200, 201):
-                return
-            # silent fail — some catalog items are read-only at user-product level too
-            return
+                return "updated"
+            return "catalog_fail"
 
-        # Unknown reason — skip silently to not flood logs
-        return
+        return "unknown"
 
 
 async def get_item(access_token: str, item_id: str) -> dict:
@@ -841,8 +844,16 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
 
     Strategy:
     1. Try with status + quantity together (covers standard items).
-    2a. If not_modifiable → update stock via proper endpoint first, then activate.
-    2b. If any other error → raise.
+    2a. If not_modifiable → update stock via proper endpoint first.
+        - If stock update outcome is "updated" → try activate with quantity included as
+          a second attempt (ML sometimes accepts it after stock is set), fall back to
+          status-only if still rejected.
+        - If outcome is "fulfillment" → raise a clear user-facing error explaining that
+          Full items cannot be manually activated; stock is managed by ML.
+        - If outcome is "multi_variation" → raise asking user to sync per variation.
+        - If outcome is "catalog_fail" or "unknown" → try activate anyway and surface
+          the real ML error if it still fails.
+    2b. If any other error → raise with the original ML error text.
     """
     headers = {"Authorization": f"Bearer {access_token}"}
     qty = max(quantity, 1)
@@ -873,16 +884,63 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
         if not is_not_modifiable:
             raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp.text}")
 
-        # Update stock via the endpoint appropriate for this item type, then activate
-        await update_item_stock(access_token, item_id, qty)
+        # Update stock via the endpoint appropriate for this item type
+        stock_outcome = await update_item_stock(access_token, item_id, qty)
 
-        resp2 = await client.put(
+        if stock_outcome == "fulfillment":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"O anuncio {item_id} usa logistica Full (fulfillment). "
+                    "O estoque e gerenciado automaticamente pelo Mercado Livre — "
+                    "envie mercadoria ao centro de distribuicao para que o anuncio seja reativado."
+                ),
+            )
+
+        if stock_outcome == "multi_variation":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"O anuncio {item_id} possui multiplas variacoes. "
+                    "Sincronize o estoque por variacao antes de reativar."
+                ),
+            )
+
+        # For "updated", "catalog_fail" and "unknown": attempt activation.
+        # If stock was updated, try sending quantity again together with status —
+        # some item types accept it after stock is set via the proper endpoint.
+        if stock_outcome == "updated":
+            resp2 = await client.put(
+                f"{ML_API_BASE}/items/{item_id}",
+                headers=headers,
+                json={"status": "active", "available_quantity": qty},
+            )
+            if resp2.status_code in (200, 201):
+                return
+            # ML still rejects quantity alongside status — fall through to status-only attempt
+
+        resp3 = await client.put(
             f"{ML_API_BASE}/items/{item_id}",
             headers=headers,
             json={"status": "active"},
         )
-        if resp2.status_code not in (200, 201):
-            raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp2.text}")
+        if resp3.status_code in (200, 201):
+            return
+
+        # Build a meaningful error: include stock_outcome so the user understands what happened
+        outcome_msg = {
+            "updated": "O estoque foi atualizado mas",
+            "catalog_fail": "A atualizacao de estoque via catalogo falhou e",
+            "unknown": "Nao foi possivel determinar o tipo do anuncio e",
+        }.get(stock_outcome, "A atualizacao de estoque falhou e")
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{outcome_msg} o Mercado Livre recusou a reativacao do anuncio {item_id}. "
+                f"Resposta ML: {resp3.text}"
+            ),
+        )
 
 
 async def get_categories_bulk(category_ids: list[str]) -> dict[str, str]:
