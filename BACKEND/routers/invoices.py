@@ -1332,45 +1332,28 @@ async def _apply_authorized(inv: Invoice, cfg: CMIGFiscalConfig, focus_payload: 
 
 
 async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
-    """Movimenta estoque a partir dos itens da NFe.
+    """Recalcula estoque dos produtos afetados por esta NFe.
 
-    Roteia por `item.source_type`:
-    - `pg`     → CatalogProduct.stock_quantity (match por SKU/EAN)
-    - `cmig` / NULL / `manual` → CMIGProduct.stock_quantity (FK ou EAN)
+    No modelo canônico (event-sourced), `stock_quantity` é cache do resultado
+    do replay dos eventos. Esta função:
+    1) Identifica produtos CMIG/PG tocados pelos itens.
+    2) Chama `recompute_*_stock` pra cada um — recalcula a partir do zero.
 
-    Saída ('out') decrementa; entrada ('in') incrementa.
-    Idempotente: marca inv.stock_updated=True. Não reaplica se já marcado.
+    `stock_updated=True` é apenas marker histórico de que essa NFe já passou
+    por esse processamento (pra evitar reprocessar em loops).
     """
+    from services.fiscal.stock_calculator import recompute_after_invoice_change
+
     if inv.stock_updated:
         return {
-            "matched_cmig": 0,
-            "matched_pg": 0,
-            "unmatched": 0,
+            "cmig_recomputed": 0,
+            "pg_recomputed": 0,
             "already_updated": True,
         }
 
-    sign = -1 if inv.direction == "out" else 1
-    matched_cmig = 0
-    matched_pg = 0
-    unmatched = 0
-    for item in inv.items or []:
-        result = await apply_stock_for_item(item, sign, inv.cmig_id, db)
-        if result["matched"]:
-            if result["target"] == "cmig":
-                matched_cmig += 1
-            else:
-                matched_pg += 1
-        else:
-            unmatched += 1
-
+    result = await recompute_after_invoice_change(inv, db)
     inv.stock_updated = True
-    return {
-        "matched_cmig": matched_cmig,
-        "matched_pg": matched_pg,
-        "matched": matched_cmig + matched_pg,  # compat
-        "unmatched": unmatched,
-        "already_updated": False,
-    }
+    return {**result, "already_updated": False}
 
 
 @router.post("/{invoice_id}/finalize-no-sefaz")
@@ -1848,12 +1831,18 @@ async def _upsert_supplier(parsed_emit: dict, cmig_id: int, db: AsyncSession) ->
 
 
 async def _update_stock_from_items(items_data: list[dict], cmig_id: int, db: AsyncSession) -> dict:
-    """Para cada item (do XML), tenta achar produto CMIG (por EAN) ou PG (por SKU/EAN)
-    e incrementa estoque. Como XML não traz `source_type`, tenta CMIG primeiro e
-    PG como fallback.
-    Retorna {matched_cmig, matched_pg, unmatched}."""
-    matched_cmig = 0
-    matched_pg = 0
+    """Identifica produtos CMIG/PG via EAN/SKU dos itens do XML e dispara recompute
+    canônico (event-sourced) pra cada um. Items aqui não estão persistidos ainda;
+    quando os items forem salvos como InvoiceItem e a NFe finalizar, o recompute
+    via `_apply_stock_movement` cobre. Mantemos esta função pra import-XML legacy.
+    """
+    from services.fiscal.stock_calculator import (
+        recompute_cmig_product_stock,
+        recompute_pg_product_stock,
+    )
+
+    cmig_ids: set[int] = set()
+    pg_ids: set[int] = set()
     unmatched = 0
     for it in items_data:
         ean = (it.get("ean") or "").strip()
@@ -1863,38 +1852,41 @@ async def _update_stock_from_items(items_data: list[dict], cmig_id: int, db: Asy
             unmatched += 1
             continue
         # Tenta CMIG por EAN dentro da cmig_id
-        prod_cmig = None
+        prod_cmig_id = None
         if ean:
-            prod_cmig = (
+            prod_cmig_id = (
                 await db.execute(
-                    select(CMIGProduct).where(
+                    select(CMIGProduct.id).where(
                         and_(CMIGProduct.cmig_id == cmig_id, CMIGProduct.ean == ean)
                     )
                 )
             ).scalar_one_or_none()
-        if prod_cmig:
-            prod_cmig.stock_quantity = (prod_cmig.stock_quantity or 0) + qty
-            matched_cmig += 1
+        if prod_cmig_id:
+            cmig_ids.add(prod_cmig_id)
             continue
         # Fallback: PG por SKU → EAN
-        prod_pg = None
+        prod_pg_id = None
         if sku:
-            prod_pg = (
-                await db.execute(select(CatalogProduct).where(CatalogProduct.sku == sku))
+            prod_pg_id = (
+                await db.execute(select(CatalogProduct.id).where(CatalogProduct.sku == sku))
             ).scalar_one_or_none()
-        if not prod_pg and ean:
-            prod_pg = (
-                await db.execute(select(CatalogProduct).where(CatalogProduct.ean == ean))
+        if not prod_pg_id and ean:
+            prod_pg_id = (
+                await db.execute(select(CatalogProduct.id).where(CatalogProduct.ean == ean))
             ).scalar_one_or_none()
-        if prod_pg:
-            prod_pg.stock_quantity = (prod_pg.stock_quantity or 0) + qty
-            matched_pg += 1
+        if prod_pg_id:
+            pg_ids.add(prod_pg_id)
             continue
         unmatched += 1
+
+    for cp_id in cmig_ids:
+        await recompute_cmig_product_stock(cp_id, db)
+    for pg_id in pg_ids:
+        await recompute_pg_product_stock(pg_id, db)
+
     return {
-        "matched_cmig": matched_cmig,
-        "matched_pg": matched_pg,
-        "matched": matched_cmig + matched_pg,
+        "cmig_recomputed": len(cmig_ids),
+        "pg_recomputed": len(pg_ids),
         "unmatched": unmatched,
     }
 

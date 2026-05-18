@@ -280,10 +280,10 @@ async def _upsert_supplier_from_parsed(db, emit_data: dict, cmig_id: int) -> Per
 
 
 async def update_stock_from_invoice(invoice_id: int) -> dict:
-    """Aplica entrada de NFe ao estoque. Roteia por `item.source_type`
-    via helper compartilhado: CMIGProduct para CMIG, CatalogProduct para PG.
-    Idempotente: marca `stock_updated=True`."""
-    from services.fiscal.stock_apply import apply_stock_for_item
+    """Após manifestação/autorização de NFe (entrada), recalcula estoque dos
+    produtos afetados via modelo canônico (event-sourced). Marca
+    `stock_updated=True` pra rastrear que essa NFe já passou."""
+    from services.fiscal.stock_calculator import recompute_after_invoice_change
 
     async with task_db() as db:
         inv = (
@@ -297,31 +297,12 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
             raise ValueError("Apenas entradas podem mover estoque")
         if inv.stock_updated:
             return {
-                "matched_cmig": 0,
-                "matched_pg": 0,
-                "unmatched": 0,
+                "cmig_recomputed": 0,
+                "pg_recomputed": 0,
                 "already_updated": True,
             }
 
-        matched_cmig = 0
-        matched_pg = 0
-        unmatched = 0
-        for item in inv.items or []:
-            result = await apply_stock_for_item(item, +1, inv.cmig_id, db)
-            if result["matched"]:
-                if result["target"] == "cmig":
-                    matched_cmig += 1
-                else:
-                    matched_pg += 1
-            else:
-                unmatched += 1
-
+        result = await recompute_after_invoice_change(inv, db)
         inv.stock_updated = True
         await db.commit()
-        return {
-            "matched_cmig": matched_cmig,
-            "matched_pg": matched_pg,
-            "matched": matched_cmig + matched_pg,
-            "unmatched": unmatched,
-            "already_updated": False,
-        }
+        return {**result, "already_updated": False}

@@ -49,6 +49,10 @@ class StockEvent:
     invoice_number: Optional[int] = None
     invoice_serie: Optional[int] = None
     invoice_status: Optional[str] = None
+    # True se essa NFe-out tem Order.invoice_id apontando pra ela.
+    # No novo modelo, NFe-out vinculada a pedido NÃO debita estoque
+    # (o pedido já contou). Default False = NFe-out autônoma.
+    invoice_linked_to_order: bool = False
     order_id: Optional[int] = None
     order_platform: Optional[str] = None
     order_platform_id: Optional[str] = None
@@ -117,6 +121,22 @@ async def _fetch_nfe_events_for_cmig_product(
     )
 
     rows = (await db.execute(stmt)).all()
+    # Pré-computa quais invoices estão vinculadas a algum pedido (Order.invoice_id),
+    # para aplicar a regra "NFe-out vinculada a pedido NÃO debita" no replay.
+    invoice_ids_out = [
+        inv.id for _, inv, _ in rows if inv.direction == "out"
+    ]
+    linked_invoice_ids: set[int] = set()
+    if invoice_ids_out:
+        linked_rows = (
+            await db.execute(
+                select(Order.invoice_id)
+                .where(Order.invoice_id.in_(invoice_ids_out))
+                .distinct()
+            )
+        ).all()
+        linked_invoice_ids = {row[0] for row in linked_rows if row[0]}
+
     events: list[StockEvent] = []
     for item, inv, person_name in rows:
         m_date = inv.exit_date or inv.issue_date
@@ -139,6 +159,7 @@ async def _fetch_nfe_events_for_cmig_product(
                 invoice_number=inv.nfe_number,
                 invoice_serie=inv.serie,
                 invoice_status=inv.status,
+                invoice_linked_to_order=(not is_in) and (inv.id in linked_invoice_ids),
                 person_name=person_name,
                 item_description=item.description,
                 item_sku=item.sku,
@@ -277,15 +298,15 @@ def _apply_split_replay(
 
     Mutates `events` in place: para cada `source == 'order'` setamos qty_to_cmig/qty_to_pg.
     """
-    # Calcula o saldo NFe-only no início: parte de current e reverte todas as NFes.
-    # (Inverso do que se faria propagando do início para o atual.)
+    # Calcula o saldo NFe-only no início: parte de current e reverte todas as NFes
+    # que efetivamente moveram estoque (NFe-out linked_to_order não conta).
     nfe_only_initial = current_nfe_balance
     for e in events:
         if e.source == "nfe_in":
             nfe_only_initial -= e.qty
-        elif e.source == "nfe_out":
+        elif e.source == "nfe_out" and not e.invoice_linked_to_order:
             nfe_only_initial += e.qty
-    # Agora replay forward — incluindo orders pra ajustar projected_cmig.
+    # Replay forward.
     has_pg = cmig_product.pg_product_id is not None
     projected = nfe_only_initial
     for e in events:
@@ -294,6 +315,11 @@ def _apply_split_replay(
             e.qty_to_cmig = e.qty
             e.qty_to_pg = 0
         elif e.source == "nfe_out":
+            if e.invoice_linked_to_order:
+                # NFe-out vinculada a pedido NÃO debita (pedido é fonte canonical)
+                e.qty_to_cmig = 0
+                e.qty_to_pg = 0
+                continue
             projected -= e.qty
             e.qty_to_cmig = e.qty
             e.qty_to_pg = 0
@@ -361,6 +387,19 @@ async def _fetch_direct_pg_events(
     )
 
     rows = (await db.execute(stmt)).all()
+    # Pré-computa invoices vinculadas a pedido (mesma regra dos CMIG events)
+    invoice_ids_out = [inv.id for _, inv, _ in rows if inv.direction == "out"]
+    linked_invoice_ids: set[int] = set()
+    if invoice_ids_out:
+        linked_rows = (
+            await db.execute(
+                select(Order.invoice_id)
+                .where(Order.invoice_id.in_(invoice_ids_out))
+                .distinct()
+            )
+        ).all()
+        linked_invoice_ids = {row[0] for row in linked_rows if row[0]}
+
     events: list[StockEvent] = []
     for item, inv, person_name in rows:
         m_date = inv.exit_date or inv.issue_date
@@ -381,6 +420,7 @@ async def _fetch_direct_pg_events(
                 item_id=item.id,
                 invoice_id=inv.id,
                 invoice_number=inv.nfe_number,
+                invoice_linked_to_order=(not is_in) and (inv.id in linked_invoice_ids),
                 invoice_serie=inv.serie,
                 invoice_status=inv.status,
                 person_name=person_name,

@@ -7,6 +7,13 @@
             <h1 class="m-0">{{ isEdit ? 'Editar Produto PG' : 'Novo Produto PG' }}</h1>
           </div>
           <div class="col-sm-6 text-right">
+            <button v-if="isEdit" class="btn btn-outline-info mr-2"
+                    :disabled="recalculating"
+                    title="Recalcula estoque a partir dos eventos (NFes + Pedidos)."
+                    @click="recalculateStock">
+              <i :class="['fas', recalculating ? 'fa-spinner fa-spin' : 'fa-calculator']"></i>
+              Recalcular estoque
+            </button>
             <RouterLink to="/pg" class="btn btn-secondary">
               <i class="fas fa-arrow-left mr-1"></i> Voltar
             </RouterLink>
@@ -167,6 +174,7 @@ const form = ref({
 
 const pictures = ref([])
 const originalSku = ref('')
+const recalculating = ref(false)
 
 onMounted(async () => {
   if (isEdit.value) {
@@ -180,6 +188,23 @@ onMounted(async () => {
 function generateEan() {
   form.value.ean = generateEan13()
   toast.success('EAN gerado (prefixo 200 — uso interno).')
+}
+
+async function recalculateStock() {
+  recalculating.value = true
+  try {
+    const { data } = await api.post(`/pg/${route.params.id}/recalculate-stock`)
+    const delta = data.delta
+    const sign = delta > 0 ? '+' : ''
+    toast.success(
+      `Estoque recalculado: ${data.old_stock} → ${data.new_stock} (${sign}${delta}).`
+    )
+    form.value.stock_quantity = data.new_stock
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao recalcular estoque.')
+  } finally {
+    recalculating.value = false
+  }
 }
 
 async function submit() {

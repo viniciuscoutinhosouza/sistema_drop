@@ -71,18 +71,24 @@ def _apply_shipment_costs_to_order(order: Order, costs_data: dict) -> bool:
 
 def _apply_shipment_to_order(
     order: Order, shipment_data: dict, costs_data: dict | None = None
-) -> None:
+) -> bool:
     """Apply shipment fields from a fresh ML /shipments/{id} response to an Order.
 
     When costs_data (from /shipments/{id}/costs) is provided, prefers it for
     accurate buyer/seller shipping costs. Falls back to shipping_option list/cost diff.
+
+    Retorna True se o `shipment_status` mudou — sinaliza pro caller chamar
+    o recompute de estoque dos produtos do pedido.
     """
     if not shipment_data:
-        return
+        return False
 
+    prev_status = order.shipment_status
+    status_changed = False
     new_status = shipment_data.get("status")
     if new_status:
         order.shipment_status = new_status
+        status_changed = new_status != prev_status
 
     new_logistic = shipment_data.get("logistic_type")
     if new_logistic and new_logistic != order.shipping_method:
@@ -133,7 +139,7 @@ def _apply_shipment_to_order(
 
     # Shipping costs — prefer /costs endpoint (accurate); fallback to list_cost - cost
     if costs_data and _apply_shipment_costs_to_order(order, costs_data):
-        return  # accurate values applied; skip fallback
+        return status_changed  # accurate values applied; skip fallback
 
     buyer_paid = ship_opt.get("cost")
     list_cost = ship_opt.get("list_cost")
@@ -148,6 +154,8 @@ def _apply_shipment_to_order(
             order.seller_shipping_cost = seller_cost
         except Exception:
             pass
+
+    return status_changed
 
 
 def _apply_fees_to_order(order: Order, ml_order_data: dict) -> None:
@@ -283,9 +291,20 @@ async def process_ml_order(
                 except Exception:
                     pass
                 if shipment_data:
-                    _apply_shipment_to_order(existing_order, shipment_data, costs_data)
+                    status_changed = _apply_shipment_to_order(
+                        existing_order, shipment_data, costs_data
+                    )
                     if not existing_order.shipment_id:
                         existing_order.shipment_id = str(shipment_id)
+                    # Mudança de shipment_status → recalcular estoque dos produtos
+                    if status_changed:
+                        try:
+                            from services.fiscal.stock_calculator import (
+                                recompute_after_order_change,
+                            )
+                            await recompute_after_order_change(existing_order, db)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 

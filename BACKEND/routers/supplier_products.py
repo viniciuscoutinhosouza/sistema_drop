@@ -486,6 +486,10 @@ async def update_stock(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("ugo", "admin")),
 ):
+    """DEPRECATED: edição manual de `stock_quantity` é desencorajada no modelo
+    canônico (event-sourced). Para ajustes, crie uma NFe de entrada/saída.
+    Mantido pra compat. Quando chamado, sobrescreve o cache — próximo recompute
+    pode restaurar pro valor calculado dos eventos."""
     result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
     product = result.scalar_one_or_none()
     if not product:
@@ -493,6 +497,42 @@ async def update_stock(
     product.stock_quantity = body["stock_quantity"]
     await db.commit()
     return {"ok": True, "stock_quantity": product.stock_quantity}
+
+
+@router.post("/{product_id}/recalculate-stock")
+async def recalculate_pg_product_stock(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Recalcula `stock_quantity` do PG a partir dos eventos canônicos
+    (NFes diretas PG + overflow de pedidos dos CMIGs vinculados)."""
+    from services.fiscal.stock_calculator import recompute_pg_product_stock as _recompute
+
+    product = (
+        await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
+    ).scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produto PG não encontrado")
+    old = int(product.stock_quantity or 0)
+    new = await _recompute(product_id, db)
+    await db.commit()
+    return {"old_stock": old, "new_stock": new, "delta": (new or 0) - old}
+
+
+@router.post("/recalculate-all-stock")
+async def recalculate_all_stock(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """ADMIN: recalcula `stock_quantity` de TODOS os CMIGProducts e CatalogProducts.
+    Usar após deploy de mudanças que afetam a fórmula de cálculo, ou pra corrigir
+    drift do cache."""
+    from services.fiscal.stock_calculator import recompute_all_stock
+
+    result = await recompute_all_stock(db)
+    await db.commit()
+    return result
 
 
 @router.get("/{product_id}/stock-movements")

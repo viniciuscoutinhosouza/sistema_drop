@@ -428,6 +428,36 @@ async def get_cmig_product(
     return _serialize_cmig_product(product)
 
 
+@router.post("/{cmig_id}/products/{product_id}/recalculate-stock")
+async def recalculate_cmig_product_stock(
+    cmig_id: int,
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Recalcula `stock_quantity` deste produto a partir dos eventos canônicos
+    (NFes finalizadas/autorizadas + pedidos shipped/delivered).
+    `stock_quantity` é apenas cache — esta operação re-deriva do histórico.
+    """
+    from services.fiscal.stock_calculator import recompute_cmig_product_stock
+
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+    product = (
+        await db.execute(
+            select(CMIGProduct).where(
+                and_(CMIGProduct.id == product_id, CMIGProduct.cmig_id == cmig_id)
+            )
+        )
+    ).scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
+    old = int(product.stock_quantity or 0)
+    new = await recompute_cmig_product_stock(product_id, db)
+    await db.commit()
+    return {"old_stock": old, "new_stock": new, "delta": (new or 0) - old}
+
+
 @router.post("/{cmig_id}/products", status_code=201)
 async def create_cmig_product(
     cmig_id: int,

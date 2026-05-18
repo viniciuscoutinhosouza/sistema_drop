@@ -4,6 +4,57 @@
 
 ---
 
+## 2026-05-18 — Refactor: estoque como derivação de eventos (`stock_quantity` vira cache)
+
+**Motivação:** Conceito anterior tratava `stock_quantity` como fonte de verdade e mutava direto durante NFe finalize. Usuário pediu refactor: estoque deve ser **calculado** a partir de NFes + Pedidos; o campo passa a ser apenas cache do resultado.
+
+**Decisões confirmadas:**
+- Regra de double-count: **Pedido sempre conta; NFe-out vinculada a pedido NUNCA conta** (`Order.invoice_id == invoice.id` = vinculado).
+- Ajustes manuais via NFe de entrada/saída — sem tabela própria.
+- Cache atualizado por evento (não recálculo em cada leitura).
+- Reservados (handling/ready_to_ship) NÃO contam no cache físico (são compromissos).
+
+**Mudanças:**
+
+### Backend — novo helper canônico
+- [BACKEND/services/fiscal/stock_calculator.py](BACKEND/services/fiscal/stock_calculator.py) — **NOVO**:
+  - `calculate_cmig_product_stock(cp, db)` / `calculate_pg_product_stock(pg, db)`: replay determinístico a partir de zero. Não muta cache.
+  - `recompute_cmig_product_stock(id, db)` / `recompute_pg_product_stock(id, db)`: chamam calculate + atualizam o campo `stock_quantity`.
+  - `affected_products_from_invoice(inv, db)`, `affected_products_from_order(order, db)`: helpers pra identificar quais CMIG/PG são afetados por um evento (resolve via cmig_product_id, source_type+SKU/EAN, ProductListing).
+  - `recompute_after_invoice_change(inv, db)`, `recompute_after_order_change(order, db)`: orquestram detect + recompute.
+  - `recompute_all_stock(db)`: backfill global.
+
+### Backend — refator
+- [BACKEND/services/stock_history.py](BACKEND/services/stock_history.py): StockEvent ganha `invoice_linked_to_order`. `_fetch_nfe_events_for_cmig_product` e `_fetch_direct_pg_events` pré-computam quais invoices têm `Order.invoice_id` apontando. `_apply_split_replay` pula NFe-out linked no cálculo.
+- [BACKEND/routers/invoices.py](BACKEND/routers/invoices.py) `_apply_stock_movement` agora chama `recompute_after_invoice_change` (deixa de mutar direto). `_update_stock_from_items` (XML import) também redireciona ao recompute.
+- [BACKEND/services/fiscal/dfe_service.py](BACKEND/services/fiscal/dfe_service.py) `update_stock_from_invoice` (webhook de manifestação) idem.
+- [BACKEND/services/webhook_service.py](BACKEND/services/webhook_service.py) `_apply_shipment_to_order` retorna bool de status_changed. Quando muda, dispara `recompute_after_order_change` — pedidos shipped/delivered/cancelled atualizam estoque automaticamente.
+
+### Backend — endpoints novos
+- `POST /cmigs/{cmig_id}/products/{id}/recalculate-stock` (qualquer user autenticado).
+- `POST /pg/{id}/recalculate-stock`.
+- `POST /pg/recalculate-all-stock` (admin) — recalcula tudo. Útil pra backfill pós-deploy.
+
+### Frontend
+- [CmigProductFormView.vue](FRONTEND/src/views/cmig-products/CmigProductFormView.vue) e [PgProductFormView.vue](FRONTEND/src/views/supplier/PgProductFormView.vue): botão "Recalcular estoque" (azul, ícone `fa-calculator`) no header em modo edição. Toast informa `old → new (delta)`.
+
+**Comportamento esperado:**
+- Após NFe finalizada: estoque dos CMIGs/PGs afetados é recalculado a partir do zero usando todos os eventos. Resultado salvo em `stock_quantity`.
+- Após pedido marketplace mudar pra shipped/delivered/cancelled: webhook dispara recompute dos produtos afetados.
+- `stock_quantity` continua sendo lido nas listagens (rápido). Pra forçar reconciliação, usuário usa o botão.
+
+**Pendente em produção:**
+- Pull + restart backend.
+- **CRÍTICO**: rodar `POST /pg/recalculate-all-stock` (admin) após deploy pra resetar cache de todos os produtos com a nova fórmula.
+
+**Verificação:** import backend OK. `npm run build` → `✓ built in 16.90s`.
+
+**Limitações documentadas:**
+- Performance: recompute de 1 produto faz O(N) eventos. Ok pra N pequeno. Job futuro: índice em `invoice_items(cmig_product_id, source_type)` e `orders(cmig_id, shipment_status, shipped_at)`.
+- Ajuste de estoque "manual" (não via NFe) deixa de funcionar — passa a exigir NFe. `PUT /pg/{id}/stock` mantido como deprecated pra compat.
+
+---
+
 ## 2026-05-17 — Fix: estoque PG não atualizava ao finalizar NFe + endpoint reaplicar
 
 **Motivação:** Usuário criou NFe entrada #44 com mix de itens CMIG e PG. Só o CMIG teve estoque atualizado; os itens PG foram silenciosamente ignorados. Causa: 3 funções backend (`_apply_stock_movement`, `_update_stock_from_items`, `dfe_service.update_stock_from_invoice`) só buscavam `CMIGProduct` por `cmig_product_id` ou EAN. `CatalogProduct.stock_quantity` nunca era tocado por NFe.
