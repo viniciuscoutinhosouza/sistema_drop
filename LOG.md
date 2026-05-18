@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-05-18 — feat(anuncios): sync-stock envia estoque do produto para o marketplace
+
+**Commit:** `5102fc7`
+
+**Mudancas:**
+- `BACKEND/routers/anuncios.py` — novo endpoint `POST /anuncios/sync-stock`: percorre listings publicados com `stock_mode=product`, le `stock_quantity` do CMIG/PG vinculado e atualiza a quantidade no ML (via `ml_service.update_item_stock`) ou Shopee. Pula `fixed`, `fulfillment`, sem `platform_item_id` e sem produto vinculado. Retorna `{updated, skipped, errors, error_details}`. Idempotente.
+- `FRONTEND/src/views/anuncios/AnunciosView.vue` — botao "Sincronizar Estoque" (verde, `fa-sync-alt`) com spinner durante execucao, toast de resultado e recarga da lista.
+
+**Deploy:** git pull + pm2 restart + npm run build no servidor. Concluido sem erros as 14:19 (servidor).
+
+---
+
 ## 2026-05-18 — Refactor: estoque como derivação de eventos (`stock_quantity` vira cache)
 
 **Motivação:** Conceito anterior tratava `stock_quantity` como fonte de verdade e mutava direto durante NFe finalize. Usuário pediu refactor: estoque deve ser **calculado** a partir de NFes + Pedidos; o campo passa a ser apenas cache do resultado.
