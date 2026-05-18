@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from dependencies import get_current_user
+from dependencies import get_current_user, require_role
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
+from models.product import CatalogProduct
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem
 from models.integration import MarketplaceAccount
 from models.order import Order
@@ -25,6 +26,7 @@ from models.user import User
 from services import ml_service as _ml
 from services.fiscal import dfe_service, focus_service
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
+from services.fiscal.stock_apply import apply_stock_for_item
 from services.fiscal.tax_calculator import calculate_item_taxes, suggest_cfop
 
 router = APIRouter()
@@ -1331,43 +1333,44 @@ async def _apply_authorized(inv: Invoice, cfg: CMIGFiscalConfig, focus_payload: 
 
 async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
     """Movimenta estoque a partir dos itens da NFe.
-    - Saída ('out') decrementa CMIGProduct.stock_quantity por EAN ou cmig_product_id.
-    - Entrada ('in') incrementa.
-    Idempotente: marca inv.stock_updated=True e retorna sem efeito se já aplicado.
+
+    Roteia por `item.source_type`:
+    - `pg`     → CatalogProduct.stock_quantity (match por SKU/EAN)
+    - `cmig` / NULL / `manual` → CMIGProduct.stock_quantity (FK ou EAN)
+
+    Saída ('out') decrementa; entrada ('in') incrementa.
+    Idempotente: marca inv.stock_updated=True. Não reaplica se já marcado.
     """
     if inv.stock_updated:
-        return {"matched": 0, "unmatched": 0, "already_updated": True}
+        return {
+            "matched_cmig": 0,
+            "matched_pg": 0,
+            "unmatched": 0,
+            "already_updated": True,
+        }
 
     sign = -1 if inv.direction == "out" else 1
-    matched = 0
+    matched_cmig = 0
+    matched_pg = 0
     unmatched = 0
     for item in inv.items or []:
-        prod = None
-        if item.cmig_product_id:
-            prod = (
-                await db.execute(select(CMIGProduct).where(CMIGProduct.id == item.cmig_product_id))
-            ).scalar_one_or_none()
-        if not prod:
-            ean = (item.ean or "").strip()
-            if ean:
-                prod = (
-                    await db.execute(
-                        select(CMIGProduct).where(
-                            and_(CMIGProduct.cmig_id == inv.cmig_id, CMIGProduct.ean == ean)
-                        )
-                    )
-                ).scalar_one_or_none()
-        if not prod:
+        result = await apply_stock_for_item(item, sign, inv.cmig_id, db)
+        if result["matched"]:
+            if result["target"] == "cmig":
+                matched_cmig += 1
+            else:
+                matched_pg += 1
+        else:
             unmatched += 1
-            continue
-        qty = int(item.quantity or 0)
-        prod.stock_quantity = (prod.stock_quantity or 0) + (sign * qty)
-        if not item.cmig_product_id:
-            item.cmig_product_id = prod.id
-        matched += 1
 
     inv.stock_updated = True
-    return {"matched": matched, "unmatched": unmatched, "already_updated": False}
+    return {
+        "matched_cmig": matched_cmig,
+        "matched_pg": matched_pg,
+        "matched": matched_cmig + matched_pg,  # compat
+        "unmatched": unmatched,
+        "already_updated": False,
+    }
 
 
 @router.post("/{invoice_id}/finalize-no-sefaz")
@@ -1422,6 +1425,60 @@ async def finalize_invoice_no_sefaz(
     return {
         **_serialize(inv, with_items=True),
         "stock_movement": stock,
+    }
+
+
+@router.post("/{invoice_id}/reapply-stock")
+async def reapply_stock_for_pg_items(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin", "ugo")),
+):
+    """Reaplica movimentação de estoque APENAS para itens com `source_type='pg'`.
+
+    Útil para corrigir NFes finalizadas/autorizadas ANTES do fix do roteamento
+    CMIG/PG, onde os itens PG eram silenciosamente ignorados. Como CMIG já foi
+    contabilizado na 1ª vez, NÃO é reaplicado aqui (evita dupla contagem).
+    """
+    inv = (
+        await db.execute(
+            select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice_id)
+        )
+    ).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="NFe não encontrada")
+    await _check_cmig_access(inv.cmig_id, current_user, db)
+    if inv.status not in ("finalized", "authorized"):
+        raise HTTPException(
+            status_code=400,
+            detail="Apenas NFes finalizadas ou autorizadas podem ter o estoque reaplicado",
+        )
+
+    sign = -1 if inv.direction == "out" else 1
+    matched_pg = 0
+    unmatched = 0
+    for item in inv.items or []:
+        if (item.source_type or "").lower() != "pg":
+            continue
+        result = await apply_stock_for_item(item, sign, inv.cmig_id, db)
+        if result["matched"] and result["target"] == "pg":
+            matched_pg += 1
+        else:
+            unmatched += 1
+
+    db.add(
+        InvoiceEvent(
+            invoice_id=inv.id,
+            event_type="stock_reapplied",
+            reason=f"Reapply PG: matched={matched_pg}, unmatched={unmatched}",
+            created_by_user_id=current_user.id,
+        )
+    )
+    await db.commit()
+    return {
+        "matched_pg": matched_pg,
+        "unmatched": unmatched,
+        "total_pg_items": matched_pg + unmatched,
     }
 
 
@@ -1791,29 +1848,55 @@ async def _upsert_supplier(parsed_emit: dict, cmig_id: int, db: AsyncSession) ->
 
 
 async def _update_stock_from_items(items_data: list[dict], cmig_id: int, db: AsyncSession) -> dict:
-    """Para cada item, tenta achar produto CMIG por EAN e incrementar estoque.
-    Retorna {matched: int, unmatched: int}."""
-    matched = 0
+    """Para cada item (do XML), tenta achar produto CMIG (por EAN) ou PG (por SKU/EAN)
+    e incrementa estoque. Como XML não traz `source_type`, tenta CMIG primeiro e
+    PG como fallback.
+    Retorna {matched_cmig, matched_pg, unmatched}."""
+    matched_cmig = 0
+    matched_pg = 0
     unmatched = 0
     for it in items_data:
         ean = (it.get("ean") or "").strip()
-        if not ean:
-            unmatched += 1
-            continue
-        prod = (
-            await db.execute(
-                select(CMIGProduct).where(
-                    and_(CMIGProduct.cmig_id == cmig_id, CMIGProduct.ean == ean)
-                )
-            )
-        ).scalar_one_or_none()
-        if not prod:
-            unmatched += 1
-            continue
+        sku = (it.get("sku") or "").strip()
         qty = int(it.get("quantity") or 0)
-        prod.stock_quantity = (prod.stock_quantity or 0) + qty
-        matched += 1
-    return {"matched": matched, "unmatched": unmatched}
+        if qty == 0:
+            unmatched += 1
+            continue
+        # Tenta CMIG por EAN dentro da cmig_id
+        prod_cmig = None
+        if ean:
+            prod_cmig = (
+                await db.execute(
+                    select(CMIGProduct).where(
+                        and_(CMIGProduct.cmig_id == cmig_id, CMIGProduct.ean == ean)
+                    )
+                )
+            ).scalar_one_or_none()
+        if prod_cmig:
+            prod_cmig.stock_quantity = (prod_cmig.stock_quantity or 0) + qty
+            matched_cmig += 1
+            continue
+        # Fallback: PG por SKU → EAN
+        prod_pg = None
+        if sku:
+            prod_pg = (
+                await db.execute(select(CatalogProduct).where(CatalogProduct.sku == sku))
+            ).scalar_one_or_none()
+        if not prod_pg and ean:
+            prod_pg = (
+                await db.execute(select(CatalogProduct).where(CatalogProduct.ean == ean))
+            ).scalar_one_or_none()
+        if prod_pg:
+            prod_pg.stock_quantity = (prod_pg.stock_quantity or 0) + qty
+            matched_pg += 1
+            continue
+        unmatched += 1
+    return {
+        "matched_cmig": matched_cmig,
+        "matched_pg": matched_pg,
+        "matched": matched_cmig + matched_pg,
+        "unmatched": unmatched,
+    }
 
 
 @router.post("/import-xml", status_code=201)

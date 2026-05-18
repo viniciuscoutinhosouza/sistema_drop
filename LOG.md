@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-05-17 — Fix: estoque PG não atualizava ao finalizar NFe + endpoint reaplicar
+
+**Motivação:** Usuário criou NFe entrada #44 com mix de itens CMIG e PG. Só o CMIG teve estoque atualizado; os itens PG foram silenciosamente ignorados. Causa: 3 funções backend (`_apply_stock_movement`, `_update_stock_from_items`, `dfe_service.update_stock_from_invoice`) só buscavam `CMIGProduct` por `cmig_product_id` ou EAN. `CatalogProduct.stock_quantity` nunca era tocado por NFe.
+
+**Mudanças:**
+
+### Backend
+- [BACKEND/services/fiscal/stock_apply.py](BACKEND/services/fiscal/stock_apply.py) — **NOVO** helper compartilhado:
+  - `apply_stock_for_item(item, sign, cmig_id, db)` — roteia por `source_type`. PG: match SKU→EAN no `CatalogProduct`. CMIG: FK ou EAN no `CMIGProduct` (preserva comportamento legacy quando `source_type` é NULL).
+- [BACKEND/routers/invoices.py](BACKEND/routers/invoices.py):
+  - `_apply_stock_movement` (usado por `finalize-no-sefaz` e Focus webhook) e `_update_stock_from_items` (XML import) refatorados pra usar o helper. Retornam `matched_cmig + matched_pg`.
+  - **NOVO** endpoint `POST /invoices/{id}/reapply-stock` (admin/UGO). Reaplica **APENAS itens com `source_type='pg'`** — evita dupla contagem em itens CMIG que já contaram. Registra evento `stock_reapplied` no histórico.
+- [BACKEND/services/fiscal/dfe_service.py](BACKEND/services/fiscal/dfe_service.py) — `update_stock_from_invoice` (webhook de manifestação) também usa o helper.
+- [Scripts SQL/63_invevt_stock_reapplied.sql](Scripts SQL/63_invevt_stock_reapplied.sql) — **NOVO** migration idempotente que adiciona `stock_reapplied` à CHK do `invoice_events.event_type`.
+- [BACKEND/services/stock_history.py](BACKEND/services/stock_history.py):
+  - StockEvent ganha `item_id: Optional[int]` pra dedup confiável.
+  - **NOVO** `_fetch_direct_pg_events(pg_product, db)` — busca `InvoiceItem` com `source_type='pg'` que casam por SKU ou EAN com o PG.
+  - `replay_stock_events_for_pg_product` agrega: NFes dos CMIGs vinculados + NFes diretas em PG. Dedup por `item_id` evita duplicação quando um item match por ambos caminhos.
+
+### Frontend
+- [FRONTEND/src/views/fiscal/InvoiceDetailView.vue](FRONTEND/src/views/fiscal/InvoiceDetailView.vue) — novo botão "Reaplicar estoque PG" (amarelo, ícone `fa-sync-alt`):
+  - Aparece em notas `finalized`/`authorized` que têm pelo menos 1 item `source_type='pg'`.
+  - Confirm prompt explica que só PG é reaplicado.
+  - Chama `POST /invoices/{id}/reapply-stock`. Toast informa `N items PG atualizados` ou `nenhum item PG`.
+
+**Pendente em produção:**
+- Rodar `Scripts SQL/63_invevt_stock_reapplied.sql` no Oracle ATP.
+- Reiniciar PM2.
+- Rodar reapply na NFe #44 pra corrigir o estoque dos SKUs 5505 (+8) e 5508 (+26) no PG.
+
+**Verificação:**
+- `python -c "from services.fiscal.stock_apply import apply_stock_for_item"` → OK.
+- `python -c "import routers.invoices"` → OK. Endpoint `/{invoice_id}/reapply-stock` registrado.
+- `npm run build` → `✓ built in 8.16s`.
+
+**Limitação documentada:**
+- Reapply é narrow (só PG). Se um item CMIG falhou por outro motivo (EAN errado, produto deletado), reapply não corrige — usuário tem que reverter/recriar a NFe.
+- NFes futuras (após o fix) processam CMIG + PG na 1ª chamada; reapply só é necessário em NFes antigas.
+
+---
+
 ## 2026-05-17 — Anúncio: fallback de foto + recalcular frete quando dims presentes
 
 **Motivação:** Usuário reportou anúncio sem foto na listagem (embora o produto vinculado tenha foto) e mensagem "sem dims." mesmo com dimensões preenchidas no card (cache de custos antigo retornou 0 e ficou preso).

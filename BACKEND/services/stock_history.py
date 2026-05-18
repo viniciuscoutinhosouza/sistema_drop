@@ -44,6 +44,7 @@ class StockEvent:
     qty_to_pg: int = 0
 
     # metadados — populados conforme o tipo
+    item_id: Optional[int] = None  # InvoiceItem.id (pra dedup quando agregamos várias fontes)
     invoice_id: Optional[int] = None
     invoice_number: Optional[int] = None
     invoice_serie: Optional[int] = None
@@ -117,6 +118,7 @@ async def _fetch_nfe_events_for_cmig_product(
                 qty=qty,
                 qty_to_cmig=qty,
                 qty_to_pg=0,
+                item_id=item.id,
                 invoice_id=inv.id,
                 invoice_number=inv.nfe_number,
                 invoice_serie=inv.serie,
@@ -200,6 +202,7 @@ async def _fetch_order_events_for_cmig_product(
                 qty=qty,
                 qty_to_cmig=0,  # preenchido no replay
                 qty_to_pg=0,    # idem
+                item_id=item.id,
                 order_id=order.id,
                 order_platform=order.platform,
                 order_platform_id=order.platform_order_id,
@@ -308,12 +311,77 @@ async def replay_stock_events_for_cmig_product(
     return events, nfe_only_initial
 
 
+async def _fetch_direct_pg_events(
+    pg_product: CatalogProduct, db: AsyncSession
+) -> list[StockEvent]:
+    """NFe items com source_type='pg' que casam com este PG por SKU ou EAN.
+
+    Esses items NÃO vêm via nenhum CMIGProduct vinculado — são entradas/saídas
+    diretas em PG (vínculo via SKU/EAN, não via FK).
+    """
+    sku = (pg_product.sku or "").strip()
+    ean = (pg_product.ean or "").strip()
+
+    match_clauses = []
+    if sku:
+        match_clauses.append(InvoiceItem.sku == sku)
+    if ean:
+        match_clauses.append(InvoiceItem.ean == ean)
+    if not match_clauses:
+        return []
+
+    stmt = (
+        select(InvoiceItem, Invoice, Person.name.label("person_name"))
+        .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+        .outerjoin(Person, Person.id == Invoice.person_id)
+        .where(
+            and_(
+                InvoiceItem.source_type == "pg",
+                Invoice.stock_updated == True,  # noqa: E712
+                Invoice.status.in_(("authorized", "finalized")),
+                or_(*match_clauses),
+            )
+        )
+    )
+
+    rows = (await db.execute(stmt)).all()
+    events: list[StockEvent] = []
+    for item, inv, person_name in rows:
+        m_date = inv.exit_date or inv.issue_date
+        if m_date is None:
+            continue
+        qty = int(item.quantity or 0)
+        if qty <= 0:
+            continue
+        is_in = inv.direction == "in"
+        events.append(
+            StockEvent(
+                date=m_date,
+                source="nfe_in" if is_in else "nfe_out",
+                direction="in" if is_in else "out",
+                qty=qty,
+                qty_to_cmig=0,
+                qty_to_pg=qty,  # vai 100% pra PG (não passa por CMIG)
+                item_id=item.id,
+                invoice_id=inv.id,
+                invoice_number=inv.nfe_number,
+                invoice_serie=inv.serie,
+                invoice_status=inv.status,
+                person_name=person_name,
+                item_description=item.description,
+                item_sku=item.sku,
+                item_ean=item.ean,
+            )
+        )
+    return events
+
+
 async def replay_stock_events_for_pg_product(
     pg_product: CatalogProduct, db: AsyncSession
 ) -> tuple[list[StockEvent], list[CMIGProduct]]:
-    """Itera CMIGProducts vinculados ao PG, replaya cada um, concatena e ordena.
+    """Agrega eventos do PG: NFes dos CMIGProducts vinculados + NFes diretas em PG.
 
-    O frontend filtra `qty_to_pg > 0` pra mostrar só overflow.
+    O frontend filtra `qty_to_pg > 0` pra mostrar overflow e NFes diretas.
     """
     linked_cmigs = (
         await db.execute(
@@ -322,9 +390,24 @@ async def replay_stock_events_for_pg_product(
     ).scalars().all()
 
     all_events: list[StockEvent] = []
+    seen_item_ids: set[int] = set()  # dedup por InvoiceItem.id (não por invoice)
     for cp in linked_cmigs:
         events, _ = await replay_stock_events_for_cmig_product(cp, db)
-        all_events.extend(events)
+        for e in events:
+            if e.item_id is not None and e.item_id in seen_item_ids:
+                continue
+            all_events.append(e)
+            if e.item_id is not None:
+                seen_item_ids.add(e.item_id)
+
+    # NFes diretas em PG (source_type='pg' com match por SKU/EAN do PG, sem CMIG resolvido)
+    direct_pg = await _fetch_direct_pg_events(pg_product, db)
+    for e in direct_pg:
+        if e.item_id is not None and e.item_id in seen_item_ids:
+            continue
+        all_events.append(e)
+        if e.item_id is not None:
+            seen_item_ids.add(e.item_id)
 
     all_events.sort(key=lambda e: e.date)
     return all_events, list(linked_cmigs)

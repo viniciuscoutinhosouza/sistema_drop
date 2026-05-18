@@ -280,8 +280,11 @@ async def _upsert_supplier_from_parsed(db, emit_data: dict, cmig_id: int) -> Per
 
 
 async def update_stock_from_invoice(invoice_id: int) -> dict:
-    """Replica itens da entrada para `cmig_products.stock_quantity` por EAN.
+    """Aplica entrada de NFe ao estoque. Roteia por `item.source_type`
+    via helper compartilhado: CMIGProduct para CMIG, CatalogProduct para PG.
     Idempotente: marca `stock_updated=True`."""
+    from services.fiscal.stock_apply import apply_stock_for_item
+
     async with task_db() as db:
         inv = (
             await db.execute(
@@ -293,31 +296,32 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
         if inv.direction != "in":
             raise ValueError("Apenas entradas podem mover estoque")
         if inv.stock_updated:
-            return {"matched": 0, "unmatched": 0, "already_updated": True}
+            return {
+                "matched_cmig": 0,
+                "matched_pg": 0,
+                "unmatched": 0,
+                "already_updated": True,
+            }
 
-        matched = 0
+        matched_cmig = 0
+        matched_pg = 0
         unmatched = 0
         for item in inv.items or []:
-            ean = (item.ean or "").strip()
-            if not ean:
+            result = await apply_stock_for_item(item, +1, inv.cmig_id, db)
+            if result["matched"]:
+                if result["target"] == "cmig":
+                    matched_cmig += 1
+                else:
+                    matched_pg += 1
+            else:
                 unmatched += 1
-                continue
-            prod = (
-                await db.execute(
-                    select(CMIGProduct).where(
-                        and_(CMIGProduct.cmig_id == inv.cmig_id, CMIGProduct.ean == ean)
-                    )
-                )
-            ).scalar_one_or_none()
-            if not prod:
-                unmatched += 1
-                continue
-            qty = int(item.quantity or 0)
-            prod.stock_quantity = (prod.stock_quantity or 0) + qty
-            if not item.cmig_product_id:
-                item.cmig_product_id = prod.id
-            matched += 1
 
         inv.stock_updated = True
         await db.commit()
-        return {"matched": matched, "unmatched": unmatched, "already_updated": False}
+        return {
+            "matched_cmig": matched_cmig,
+            "matched_pg": matched_pg,
+            "matched": matched_cmig + matched_pg,
+            "unmatched": unmatched,
+            "already_updated": False,
+        }

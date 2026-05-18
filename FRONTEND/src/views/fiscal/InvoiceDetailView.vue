@@ -215,6 +215,14 @@
                       class="badge badge-success mr-2 mb-2 align-self-center">
                   <i class="fas fa-check mr-1"></i>Estoque atualizado
                 </span>
+                <button v-if="['finalized','authorized'].includes(invoice.status) && hasPgItems"
+                        class="btn btn-outline-warning mr-2 mb-2"
+                        :disabled="reapplyingStock"
+                        :title="'Reaplica estoque APENAS dos itens com origem PG. Útil para corrigir NFes finalizadas antes do fix de roteamento CMIG/PG. CMIG não é reaplicado (evita dupla contagem).'"
+                        @click="reapplyStockPg">
+                  <i :class="['fas', reapplyingStock ? 'fa-spinner fa-spin' : 'fa-sync-alt']"></i>
+                  Reaplicar estoque PG
+                </button>
                 <button v-if="canEdit" class="btn btn-outline-danger mb-2" @click="deleteInvoice">
                   <i class="fas fa-trash mr-1"></i> Excluir Rascunho
                 </button>
@@ -361,6 +369,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useFiscalStore } from '@/stores/fiscal'
 import { useToast } from '@/composables/useToast'
+import api from '@/composables/useApi'
 import { fmt } from '@/views/fiscal/_helpers'
 import ManifestationModal from '@/components/fiscal/ManifestationModal.vue'
 import StockUpdateModal from '@/components/fiscal/StockUpdateModal.vue'
@@ -383,11 +392,15 @@ const cceText = ref('')
 const emailList = ref('')
 const acting = ref(false)
 const refreshing = ref(false)
+const reapplyingStock = ref(false)
 
 const directionIcon = computed(() => invoice.value?.direction === 'in' ? 'fa-arrow-down text-warning' : 'fa-arrow-up text-success')
 const directionLabel = computed(() => invoice.value?.direction === 'in' ? 'Entrada' : 'Saída')
 const backUrl = computed(() => invoice.value?.direction === 'in' ? '/fiscal/entradas' : '/fiscal/saidas')
 const canEdit = computed(() => invoice.value?.status === 'draft')
+const hasPgItems = computed(() =>
+  (invoice.value?.items || []).some(it => (it.source_type || '').toLowerCase() === 'pg')
+)
 
 const formatDate = fmt.date
 const formatDateTime = fmt.datetime
@@ -501,6 +514,29 @@ async function refreshStatus() {
     toast.error(e.response?.data?.detail || 'Erro ao reconsultar')
   } finally {
     refreshing.value = false
+  }
+}
+
+async function reapplyStockPg() {
+  const msg = (
+    'Reaplica APENAS os itens com origem PG (que foram ignorados antes do fix).\n\n' +
+    'Itens CMIG NÃO serão reaplicados (já contaram na 1ª vez — evita dupla contagem).\n\n' +
+    'Continuar?'
+  )
+  if (!confirm(msg)) return
+  reapplyingStock.value = true
+  try {
+    const { data } = await api.post(`/invoices/${invoice.value.id}/reapply-stock`)
+    const parts = []
+    if (data.matched_pg) parts.push(`${data.matched_pg} item(ns) PG atualizados`)
+    if (data.unmatched) parts.push(`${data.unmatched} sem match`)
+    if (parts.length === 0) parts.push('nenhum item PG nesta nota')
+    toast.success(`Reaplicado: ${parts.join(', ')}.`)
+    await load()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao reaplicar estoque.')
+  } finally {
+    reapplyingStock.value = false
   }
 }
 
