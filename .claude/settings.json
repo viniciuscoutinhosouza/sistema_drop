@@ -18,7 +18,11 @@
       "Bash(ls *)",
       "Bash(mkdir *)",
       "Bash(cat *)",
-      "Bash(echo *)"
+      "Bash(echo *)",
+      "Bash(pm2 *)",
+      "PowerShell(cd * python *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Set-Location *)"
     ]
   }
 }
