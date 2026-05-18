@@ -204,7 +204,10 @@
                       <span class="text-info"><i class="fas fa-eye mr-1"></i>{{ a.visits_7d || 0 }} vis./7d</span>
                       <span class="text-success"><i class="fas fa-shopping-cart mr-1"></i>{{ a.sold_quantity || 0 }} vendidos</span>
                       <span class="text-primary"><i class="fas fa-box mr-1"></i>{{ a.available_quantity || 0 }} disp.</span>
-                      <span v-if="a.is_full" style="color:#00a650;font-weight:600"><i class="fas fa-warehouse mr-1"></i>Full: {{ a.qty_full }} un.</span>
+                      <template v-if="a.is_full">
+                        <span style="color:#00a650;font-weight:600" title="Estoque no galpão do Mercado Livre (Full)"><i class="fas fa-warehouse mr-1"></i>Full ML: {{ a.qty_full }} un.</span>
+                        <span v-if="a.product_stock !== null && a.product_stock !== undefined" class="text-secondary" title="Estoque disponível no galpão do seller"><i class="fas fa-store mr-1"></i>Galpão: {{ a.product_stock }} un.</span>
+                      </template>
                       <span v-else-if="a.qty_local !== undefined" class="text-secondary"><i class="fas fa-store mr-1"></i>Local: {{ a.qty_local }} un.</span>
                       <a v-if="pictureCount(a)" href="#" class="text-secondary" @click.prevent="openPhotosModal(a)">
                         <i class="fas fa-camera mr-1"></i>{{ pictureCount(a) }}

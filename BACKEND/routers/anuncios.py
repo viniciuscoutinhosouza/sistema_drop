@@ -367,6 +367,16 @@ def _serialize_listing(listing: ProductListing) -> dict:
         # Stock by type
         "qty_full": listing.qty_full or 0,
         "qty_local": listing.qty_local or 0,
+        # Seller warehouse stock (from linked product — independent of qty_full for Full items)
+        "product_stock": (
+            int(listing.cmig_product.stock_quantity or 0)
+            if listing.cmig_product
+            else (
+                int(listing.catalog_product.stock_quantity or 0)
+                if listing.catalog_product
+                else None
+            )
+        ),
         # Promotion fields
         "regular_price": float(listing.regular_price)
         if listing.regular_price is not None

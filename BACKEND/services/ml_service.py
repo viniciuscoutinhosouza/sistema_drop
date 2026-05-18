@@ -888,13 +888,18 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
         stock_outcome = await update_item_stock(access_token, item_id, qty)
 
         if stock_outcome == "fulfillment":
+            # Full items: qty_full is read-only (managed by ML warehouse).
+            # Just send status change — ML will accept if there is stock in its warehouse.
+            resp_full = await client.put(
+                f"{ML_API_BASE}/items/{item_id}",
+                headers=headers,
+                json={"status": "active"},
+            )
+            if resp_full.status_code in (200, 201):
+                return
             raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"O anuncio {item_id} usa logistica Full (fulfillment). "
-                    "O estoque e gerenciado automaticamente pelo Mercado Livre — "
-                    "envie mercadoria ao centro de distribuicao para que o anuncio seja reativado."
-                ),
+                status_code=400,
+                detail=f"Erro ao reativar anúncio Full: {resp_full.text}",
             )
 
         if stock_outcome == "multi_variation":
