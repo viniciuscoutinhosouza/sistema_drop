@@ -1942,7 +1942,17 @@ async function switchToCrossDocking(listing) {
     if (idx !== -1) anuncios.value[idx] = data
     toast.success('Anúncio convertido para cross-docking com sucesso.')
   } catch (e) {
-    toast.error(e.response?.data?.detail || 'Erro ao converter para cross-docking.')
+    const detail = e.response?.data?.detail || 'Erro ao converter para cross-docking.'
+    // Se contém URL do Seller Center, abre em nova aba além do toast
+    const urlMatch = detail.match(/https?:\/\/\S+/)
+    if (urlMatch) {
+      toast.warning(detail.replace(urlMatch[0], '').trim())
+      if (confirm(`Este anúncio é do catálogo do ML e não pode ser alterado via API.\n\nDeseja abrir o Seller Center para fazer a conversão manualmente?`)) {
+        window.open(urlMatch[0], '_blank')
+      }
+    } else {
+      toast.error(detail)
+    }
   }
 }
 

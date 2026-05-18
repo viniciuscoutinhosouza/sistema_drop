@@ -1963,6 +1963,9 @@ async def switch_to_cross_docking(
 
     import httpx as _httpx
 
+    def _has_cause_code(body: dict, code: str) -> bool:
+        return any((c or {}).get("code") == code for c in (body.get("cause") or []))
+
     headers = {"Authorization": f"Bearer {access_token}"}
     async with _httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.put(
@@ -1975,6 +1978,25 @@ async def switch_to_cross_docking(
         )
 
     if resp.status_code not in (200, 201):
+        # Detect catalog items where logistic_type is ML-controlled
+        is_not_modifiable = False
+        if resp.status_code == 400:
+            try:
+                body = resp.json()
+                is_not_modifiable = _has_cause_code(body, "item.shipping.logistic_type.not_modifiable")
+            except Exception:
+                pass
+
+        if is_not_modifiable:
+            seller_center_url = listing.permalink or f"https://www.mercadolivre.com.br/anuncios/{listing.platform_item_id}/modificar"
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Este anúncio é do catálogo do ML — a logística Full não pode ser alterada via API. "
+                    f"Acesse o Seller Center para fazer a conversão manualmente: {seller_center_url}"
+                ),
+            )
+
         raise HTTPException(
             status_code=400,
             detail=f"Erro ao converter para cross-docking: {resp.text}",
