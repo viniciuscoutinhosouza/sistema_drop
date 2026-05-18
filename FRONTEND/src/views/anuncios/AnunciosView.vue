@@ -42,6 +42,10 @@
                 <button class="btn btn-sm btn-info mr-2" @click="openWizard(null)" :disabled="!selectedAccountId">
                   <i class="fas fa-plus mr-1"></i>Novo Anúncio
                 </button>
+                <button class="btn btn-sm btn-success mr-2" @click="syncStock" :disabled="!selectedAccountId || syncingStock"
+                        title="Envia o estoque atual de cada produto vinculado para o marketplace">
+                  <i :class="['fas', syncingStock ? 'fa-spinner fa-spin' : 'fa-sync-alt', 'mr-1']"></i>Sincronizar Estoque
+                </button>
                 <button class="btn btn-sm btn-secondary" @click="importAnuncios" :disabled="!selectedAccountId || importing">
                   <i :class="['fas', importing ? 'fa-spinner fa-spin' : 'fa-download', 'mr-1']"></i>Importar
                 </button>
@@ -1153,6 +1157,7 @@ const selectedAccountId = ref('')
 const anuncios = ref([])
 const loading = ref(false)
 const importing = ref(false)
+const syncingStock = ref(false)
 const filterVinculo = ref('all')
 const filterStatus = ref('published')
 const statsBar = ref(null)
@@ -1728,6 +1733,25 @@ async function importAnuncios() {
     }
   } finally {
     importing.value = false
+  }
+}
+
+async function syncStock() {
+  if (!selectedAccountId.value) return
+  syncingStock.value = true
+  try {
+    const { data } = await api.post('/anuncios/sync-stock', { account_id: selectedAccountId.value })
+    const { updated, skipped, errors } = data
+    if (errors > 0) {
+      toast.warning(`Estoque sincronizado: ${updated} atualizados, ${skipped} ignorados, ${errors} com erro.`)
+    } else {
+      toast.success(`Estoque sincronizado: ${updated} anúncio(s) atualizado(s), ${skipped} ignorado(s).`)
+    }
+    await loadAnuncios()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao sincronizar estoque.')
+  } finally {
+    syncingStock.value = false
   }
 }
 

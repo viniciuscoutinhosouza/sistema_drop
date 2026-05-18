@@ -2102,6 +2102,137 @@ async def get_anuncio_costs(
     return {**costs, **promo_info, "has_auto_price_adj": auto_price_adj}
 
 
+@router.post("/sync-stock")
+async def sync_stock_to_marketplace(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Envia o estoque disponível de cada produto vinculado para o marketplace.
+
+    Percorre todos os anúncios publicados da conta com `stock_mode='product'`
+    que tenham um produto CMIG ou PG vinculado, lê o `stock_quantity` atual
+    desse produto e atualiza a quantidade disponível no ML ou Shopee.
+
+    Anúncios com `stock_mode='fixed'`, sem produto vinculado, sem
+    `platform_item_id`, ou do tipo fulfillment (Full) são ignorados.
+    """
+    from services import shopee_service
+
+    account_id = body.get("account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id é obrigatório")
+
+    account = (
+        await db.execute(
+            select(MarketplaceAccount).where(MarketplaceAccount.id == account_id)
+        )
+    ).scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=404, detail="Conta não encontrada")
+
+    # Verifica acesso do usuário à conta
+    if current_user.role not in ("admin", "ugo"):
+        from models.user import AccountAdministrator
+        admin = (
+            await db.execute(
+                select(AccountAdministrator).where(
+                    AccountAdministrator.user_id == current_user.id,
+                    AccountAdministrator.account_id == account_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not admin:
+            raise HTTPException(status_code=403, detail="Acesso negado a esta conta")
+
+    # Busca token válido para ML; Shopee usa token raw
+    access_token = None
+    if account.platform == "mercadolivre":
+        access_token = await _get_valid_token(account, db)
+    elif account.platform == "shopee":
+        if not account.access_token:
+            raise HTTPException(status_code=401, detail="Conta Shopee sem token de acesso.")
+        access_token = account.access_token
+    else:
+        raise HTTPException(status_code=400, detail=f"Plataforma '{account.platform}' não suportada para sync de estoque")
+
+    # Carrega listings publicados com produto vinculado e mode=product
+    listings = (
+        await db.execute(
+            select(ProductListing)
+            .options(
+                selectinload(ProductListing.cmig_product),
+                selectinload(ProductListing.catalog_product),
+            )
+            .where(
+                ProductListing.account_id == account_id,
+                ProductListing.status == "published",
+                ProductListing.stock_mode != "fixed",
+            )
+        )
+    ).scalars().all()
+
+    updated = 0
+    skipped = 0
+    errors = 0
+    error_details = []
+
+    now = datetime.now(UTC)
+
+    for lst in listings:
+        # Sem ID no marketplace — não dá pra atualizar
+        if not lst.platform_item_id:
+            skipped += 1
+            continue
+
+        # Full: estoque gerenciado pelo ML
+        if lst.logistic_type == "fulfillment":
+            skipped += 1
+            continue
+
+        # Determina estoque do produto vinculado
+        stock = None
+        if lst.cmig_product_id and lst.cmig_product:
+            stock = int(lst.cmig_product.stock_quantity or 0)
+        elif lst.catalog_product_id and lst.catalog_product:
+            stock = int(lst.catalog_product.stock_quantity or 0)
+
+        if stock is None:
+            skipped += 1
+            continue
+
+        # Garante estoque não-negativo
+        stock = max(0, stock)
+
+        try:
+            if account.platform == "mercadolivre":
+                await ml_service.update_item_stock(access_token, lst.platform_item_id, stock)
+            elif account.platform == "shopee":
+                await shopee_service.update_item_stock(
+                    access_token, account.shop_id, int(lst.platform_item_id), stock
+                )
+
+            lst.available_quantity = stock
+            lst.last_sync_at = now
+            updated += 1
+        except Exception as exc:
+            errors += 1
+            error_details.append({
+                "listing_id": lst.id,
+                "platform_item_id": lst.platform_item_id,
+                "error": str(exc),
+            })
+
+    await db.commit()
+
+    return {
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "error_details": error_details,
+    }
+
+
 @router.get("/{listing_id}/prices-debug")
 async def get_anuncio_prices_debug(
     listing_id: int,
