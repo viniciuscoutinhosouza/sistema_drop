@@ -17,16 +17,15 @@ from sqlalchemy.orm import selectinload
 from database import get_db
 from dependencies import get_current_user, require_role
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
-from models.product import CatalogProduct
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem
 from models.integration import MarketplaceAccount
 from models.order import Order
 from models.person import Person
+from models.product import CatalogProduct
 from models.user import User
 from services import ml_service as _ml
 from services.fiscal import dfe_service, focus_service
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
-from services.fiscal.stock_apply import apply_stock_for_item
 from services.fiscal.tax_calculator import calculate_item_taxes, suggest_cfop
 
 router = APIRouter()
@@ -1415,14 +1414,15 @@ async def finalize_invoice_no_sefaz(
 async def reapply_stock_for_pg_items(
     invoice_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "ac")),
 ):
-    """Reaplica movimentação de estoque APENAS para itens com `source_type='pg'`.
+    """Recalcula estoque de todos os produtos afetados por esta NFe a partir dos eventos.
 
-    Útil para corrigir NFes finalizadas/autorizadas ANTES do fix do roteamento
-    CMIG/PG, onde os itens PG eram silenciosamente ignorados. Como CMIG já foi
-    contabilizado na 1ª vez, NÃO é reaplicado aqui (evita dupla contagem).
+    Operação idempotente — pode ser chamada N vezes sem acumular. Usa o mesmo
+    replay determinístico do fluxo normal de finalização.
     """
+    from services.fiscal.stock_calculator import recompute_after_invoice_change
+
     inv = (
         await db.execute(
             select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice_id)
@@ -1437,32 +1437,18 @@ async def reapply_stock_for_pg_items(
             detail="Apenas NFes finalizadas ou autorizadas podem ter o estoque reaplicado",
         )
 
-    sign = -1 if inv.direction == "out" else 1
-    matched_pg = 0
-    unmatched = 0
-    for item in inv.items or []:
-        if (item.source_type or "").lower() != "pg":
-            continue
-        result = await apply_stock_for_item(item, sign, inv.cmig_id, db)
-        if result["matched"] and result["target"] == "pg":
-            matched_pg += 1
-        else:
-            unmatched += 1
+    result = await recompute_after_invoice_change(inv, db)
 
     db.add(
         InvoiceEvent(
             invoice_id=inv.id,
             event_type="stock_reapplied",
-            reason=f"Reapply PG: matched={matched_pg}, unmatched={unmatched}",
+            reason=f"Recalculo: cmig={result['cmig_recomputed']}, pg={result['pg_recomputed']}",
             created_by_user_id=current_user.id,
         )
     )
     await db.commit()
-    return {
-        "matched_pg": matched_pg,
-        "unmatched": unmatched,
-        "total_pg_items": matched_pg + unmatched,
-    }
+    return result
 
 
 @router.post("/{invoice_id}/refresh-status")

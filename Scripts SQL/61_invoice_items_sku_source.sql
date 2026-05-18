@@ -40,9 +40,10 @@ END;
 /
 
 -- Backfill: itens com cmig_product_id setado mas source_type NULL = origem CMIG.
-UPDATE invoice_items
-   SET source_type = 'cmig'
- WHERE cmig_product_id IS NOT NULL
-   AND source_type IS NULL;
-
-COMMIT;
+BEGIN
+  UPDATE invoice_items
+     SET source_type = 'cmig'
+   WHERE cmig_product_id IS NOT NULL
+     AND source_type IS NULL;
+  COMMIT;
+END;
