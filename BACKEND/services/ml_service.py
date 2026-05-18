@@ -834,30 +834,55 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
 async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) -> None:
     """Reactivate a paused or closed ML listing.
 
-    Sends status and quantity as separate requests because some item types
-    (catalog, variations, fulfillment) reject available_quantity in the same
-    PUT that changes status.
+    ML has two conflicting constraints depending on item type:
+    - Standard items: require available_quantity > 0 to activate (send both together).
+    - Catalog/variation/fulfillment items: reject available_quantity in the same
+      PUT that changes status (not_modifiable).
+
+    Strategy:
+    1. Try with status + quantity together (covers standard items).
+    2a. If not_modifiable → update stock via proper endpoint first, then activate.
+    2b. If any other error → raise.
     """
     headers = {"Authorization": f"Bearer {access_token}"}
     qty = max(quantity, 1)
 
+    def _has_cause(body: dict, code: str) -> bool:
+        return any(
+            (c or {}).get("code") == code for c in (body.get("cause") or [])
+        )
+
     async with httpx.AsyncClient(timeout=15.0) as client:
-        # Step 1: reactivate (status only)
         resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers=headers,
+            json={"status": "active", "available_quantity": qty},
+        )
+
+        if resp.status_code in (200, 201):
+            return
+
+        # For not_modifiable: update stock via the proper endpoint first, then activate
+        is_not_modifiable = False
+        if resp.status_code == 400:
+            try:
+                is_not_modifiable = _has_cause(resp.json(), "item.available_quantity.not_modifiable")
+            except Exception:
+                pass
+
+        if not is_not_modifiable:
+            raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp.text}")
+
+        # Update stock via the endpoint appropriate for this item type, then activate
+        await update_item_stock(access_token, item_id, qty)
+
+        resp2 = await client.put(
             f"{ML_API_BASE}/items/{item_id}",
             headers=headers,
             json={"status": "active"},
         )
-        if resp.status_code not in (200, 201):
-            raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp.text}")
-
-    # Step 2: update quantity using the function that already handles all fallbacks
-    # (variations, catalog/user-products, fulfillment). Errors here are soft —
-    # the item was already reactivated, so we don't raise.
-    try:
-        await update_item_stock(access_token, item_id, qty)
-    except Exception:
-        pass
+        if resp2.status_code not in (200, 201):
+            raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp2.text}")
 
 
 async def get_categories_bulk(category_ids: list[str]) -> dict[str, str]:
