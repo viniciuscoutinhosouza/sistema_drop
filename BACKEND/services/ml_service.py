@@ -832,15 +832,32 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
 
 
 async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) -> None:
-    """Reactivate a paused or closed ML listing."""
-    async with httpx.AsyncClient() as client:
+    """Reactivate a paused or closed ML listing.
+
+    Sends status and quantity as separate requests because some item types
+    (catalog, variations, fulfillment) reject available_quantity in the same
+    PUT that changes status.
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    qty = max(quantity, 1)
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        # Step 1: reactivate (status only)
         resp = await client.put(
             f"{ML_API_BASE}/items/{item_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            json={"status": "active", "available_quantity": max(quantity, 1)},
+            headers=headers,
+            json={"status": "active"},
         )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp.text}")
+        if resp.status_code not in (200, 201):
+            raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp.text}")
+
+    # Step 2: update quantity using the function that already handles all fallbacks
+    # (variations, catalog/user-products, fulfillment). Errors here are soft —
+    # the item was already reactivated, so we don't raise.
+    try:
+        await update_item_stock(access_token, item_id, qty)
+    except Exception:
+        pass
 
 
 async def get_categories_bulk(category_ids: list[str]) -> dict[str, str]:
