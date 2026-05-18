@@ -113,8 +113,8 @@
                 <!-- ── Linha única: thumb | info | financeiro | ações ── -->
                 <div class="d-flex align-items-start p-2" style="gap:10px">
 
-                  <!-- Thumbnail -->
-                  <img v-if="a.thumbnail" :src="a.thumbnail"
+                  <!-- Thumbnail (fallback pra imagem do produto vinculado se listing.thumbnail vazio) -->
+                  <img v-if="listingThumb(a)" :src="listingThumb(a)"
                        style="width:64px;height:64px;object-fit:cover;border-radius:4px;flex-shrink:0" />
                   <div v-else class="d-flex align-items-center justify-content-center bg-light"
                        style="width:64px;height:64px;border-radius:4px;flex-shrink:0">
@@ -284,7 +284,12 @@
                            class="d-flex justify-content-between" style="color:#d97706">
                         <span>Frete (vendedor):</span>
                         <span v-if="pricingCalc(a).shipping_cost > 0">−{{ formatCurrency(pricingCalc(a).shipping_cost) }}</span>
-                        <span v-else class="text-muted small">sem dims.</span>
+                        <span v-else-if="!hasDimensions(a)" class="text-muted small">sem dims.</span>
+                        <span v-else class="text-warning small" style="cursor:pointer"
+                              :title="'Dimensões presentes mas ML não retornou custo de frete. Clique para forçar refresh.'"
+                              @click="forceRefreshCosts(a)">
+                          recalcular <i class="fas fa-sync-alt"></i>
+                        </span>
                       </div>
                       <!-- Frete pago pelo comprador (ME2 sem frete grátis) — informativo -->
                       <div v-else-if="a.shipping_mode === 'me2' || (!a.free_shipping && !a.is_full)"
@@ -1985,6 +1990,43 @@ const loadingCosts  = ref({})
 const categoryPaths = ref({})
 const listingPromos = ref({})
 const loadingPromos = ref({})
+
+function listingThumb(a) {
+  if (a.thumbnail) return a.thumbnail
+  const imgs = a.cmig_product?.images || a.catalog_product?.images || []
+  const first = imgs[0]
+  if (!first) return null
+  return first.url || first
+}
+
+function hasDimensions(a) {
+  return !!(a.weight_kg && a.height_cm && a.width_cm && a.length_cm)
+}
+
+async function forceRefreshCosts(listing) {
+  const id = listing.id
+  loadingCosts.value = { ...loadingCosts.value, [id]: true }
+  try {
+    // Limpa o cache local primeiro pra forçar nova chamada à API
+    const novo = { ...listingCosts.value }
+    delete novo[id]
+    listingCosts.value = novo
+    // Reseta cache do backend
+    await api.post(`/anuncios/${id}/refresh-costs`).catch(() => {})
+    // Refetcha
+    const { data } = await api.get(`/anuncios/${id}/costs`)
+    listingCosts.value = { ...listingCosts.value, [id]: data }
+    if (data.shipping_cost > 0) {
+      toast.success(`Frete recalculado: R$ ${data.shipping_cost.toFixed(2)}`)
+    } else {
+      toast.warning('ML ainda retornou frete = 0. Pode ser política do ML para este modo de envio ou peso.')
+    }
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao recalcular custos.')
+  } finally {
+    loadingCosts.value = { ...loadingCosts.value, [id]: false }
+  }
+}
 
 async function fetchCost(listing) {
   const id = listing.id

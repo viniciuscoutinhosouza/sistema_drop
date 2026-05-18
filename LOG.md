@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-05-17 — Anúncio: fallback de foto + recalcular frete quando dims presentes
+
+**Motivação:** Usuário reportou anúncio sem foto na listagem (embora o produto vinculado tenha foto) e mensagem "sem dims." mesmo com dimensões preenchidas no card (cache de custos antigo retornou 0 e ficou preso).
+
+**Mudanças:** [FRONTEND/src/views/anuncios/AnunciosView.vue](FRONTEND/src/views/anuncios/AnunciosView.vue):
+- `listingThumb(a)`: helper que retorna `a.thumbnail` OU primeira imagem de `cmig_product.images` OU `catalog_product.images`. Funciona porque o serializer já retorna esses campos (mudança da rodada anterior).
+- `hasDimensions(a)`: helper boolean.
+- Bloco de frete vendedor agora tem 3 estados:
+  - `shipping_cost > 0` → mostra valor
+  - `!hasDimensions(a)` → "sem dims."
+  - `hasDimensions(a) && shipping_cost == 0` → "recalcular" (clicável, ícone sync) com tooltip explicando que ML retornou 0
+- `forceRefreshCosts(listing)`: limpa cache local, chama `POST /anuncios/{id}/refresh-costs` e refetcha `/costs`. Toast informa o resultado (valor recalculado ou aviso se ML continuou retornando 0).
+
+**Backend não precisou de mudança** — `_serialize_listing` (rodada anterior) já retornava `cmig_product.images`/`catalog_product.images`, e o endpoint `/refresh-costs` já existia.
+
+**Verificação:** `npm run build` → `✓ built in 16.06s`.
+
+---
+
 ## 2026-05-17 — Permitir editar SKU em CMIG/PG/Anúncio + cascata pra itens vinculados
 
 **Motivação:** Forms de Produto CMIG e PG bloqueavam o campo SKU em edição (`:disabled="isEdit"`). Usuário precisava poder alterar. Adicionalmente: quando um produto está vinculado entre CMIG ↔ PG ↔ Anúncios, alterar o SKU em um lugar deve perguntar se quer propagar para os outros.
