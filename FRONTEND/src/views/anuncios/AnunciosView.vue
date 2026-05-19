@@ -1140,6 +1140,92 @@
       </div>
     </div>
 
+    <!-- Modal: Conflito de User Product (anúncios duplicados no ML) -->
+    <div v-if="conflictModal.show" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header bg-warning">
+            <h5 class="modal-title"><i class="fas fa-exclamation-triangle mr-2"></i>Anúncios duplicados detectados</h5>
+            <button type="button" class="close" :disabled="conflictModal.deleting" @click="conflictModal.show = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <div class="alert alert-warning py-2 small mb-3">
+              <p class="mb-1"><strong>O Mercado Livre rejeitou a sincronização</strong> porque o anúncio que você está atualizando ficaria idêntico a outro(s) anúncio(s) desta conta — mesmo título + catálogo + atributos + foto principal.</p>
+              <p class="mb-0">Escolha qual anúncio remover do Marketplace para concluir a sincronização. A linha em <span class="badge badge-danger">vermelho</span> é a sugestão (menos relevante).</p>
+            </div>
+            <p v-if="conflictModal.userProductId" class="small text-muted mb-2">
+              User Product em conflito: <code>{{ conflictModal.userProductId }}</code>
+            </p>
+            <div v-if="conflictModal.attemptedItemIds.length" class="alert alert-info py-1 px-2 small mb-2">
+              <i class="fas fa-history mr-1"></i>Já fechados nesta sessão:
+              <code v-for="id in conflictModal.attemptedItemIds" :key="id" class="mr-1">{{ id }}</code>
+            </div>
+            <div class="table-responsive">
+              <table class="table table-sm table-bordered align-middle">
+                <thead class="thead-light small">
+                  <tr>
+                    <th></th>
+                    <th></th>
+                    <th>MLB</th>
+                    <th>Anúncio</th>
+                    <th>Status</th>
+                    <th>Tipo</th>
+                    <th>Logística</th>
+                    <th>Vendas</th>
+                    <th>Visualizar</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="c in conflictModal.candidates" :key="c.item_id"
+                      :class="c.item_id === conflictModal.suggestedDeleteItemId ? 'table-danger' : ''">
+                    <td class="text-center">
+                      <input type="radio" :value="c.item_id"
+                             :disabled="c.is_current || conflictModal.deleting"
+                             v-model="conflictModal.selectedDeleteItemId" />
+                    </td>
+                    <td><img v-if="c.thumbnail" :src="c.thumbnail" style="width:48px;height:48px;object-fit:cover" class="rounded border" /></td>
+                    <td>
+                      <code class="small">{{ c.item_id }}</code>
+                      <span v-if="c.is_current" class="badge badge-info ml-1">este</span>
+                      <span v-if="c.item_id === conflictModal.suggestedDeleteItemId" class="badge badge-danger ml-1">menos relevante</span>
+                    </td>
+                    <td class="small" style="max-width:240px">{{ c.title }}</td>
+                    <td><span class="badge" :class="mlStatusBadgeClass(c.status)">{{ c.status }}</span></td>
+                    <td class="small">
+                      <span v-if="c.catalog_listing" class="badge badge-primary">Catálogo</span>
+                      <span v-else class="badge badge-secondary">Próprio</span>
+                    </td>
+                    <td class="small">{{ c.logistic_type || '-' }}</td>
+                    <td class="text-center small">{{ c.sold_quantity }}</td>
+                    <td>
+                      <a v-if="c.permalink" :href="c.permalink" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary" title="Abrir no ML">
+                        <i class="fas fa-external-link-alt"></i>
+                      </a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="conflictModal.candidates.length === 0" class="text-muted small text-center py-3">
+              Nenhum anúncio candidato encontrado. Verifique manualmente no painel do ML.
+            </div>
+          </div>
+          <div class="modal-footer justify-content-between">
+            <small class="text-muted">O anúncio escolhido será <strong>fechado no ML</strong> e removido do sistema.</small>
+            <div>
+              <button class="btn btn-secondary mr-2" :disabled="conflictModal.deleting" @click="conflictModal.show = false">Cancelar</button>
+              <button class="btn btn-danger"
+                      :disabled="!conflictModal.selectedDeleteItemId || conflictModal.deleting"
+                      @click="resolveConflict">
+                <i :class="['fas', conflictModal.deleting ? 'fa-spinner fa-spin' : 'fa-trash', 'mr-1']"></i>
+                Excluir selecionado e sincronizar
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- Preview hover wizard photos -->
@@ -1643,6 +1729,17 @@ async function saveWizard() {
 
 const linkModal = ref({ show: false, listing: null, loading: false, cmig_suggestions: [], pg_suggestions: [] })
 const linkSearch = ref('')
+const conflictModal = ref({
+  show: false,
+  listing: null,
+  userProductId: null,
+  currentItemId: null,
+  candidates: [],
+  suggestedDeleteItemId: null,
+  selectedDeleteItemId: null,
+  attemptedItemIds: [],
+  deleting: false,
+})
 const createCmigModal = ref({ show: false, listing: null, saving: false, error: '', pictures: [], variants: [] })
 const photosModal = ref({ show: false, listing: null, photos: [], zoomed: null })
 const createCmigForm = ref({
@@ -1974,7 +2071,71 @@ async function syncToMl(listing) {
     toast.success('Anúncio sincronizado com o ML!')
     await loadAnuncios()
   } catch (e) {
-    toast.error(e.response?.data?.detail || 'Erro ao sincronizar com ML')
+    const detail = e.response?.data?.detail
+    if (e.response?.status === 409 && detail && detail.error === 'user_product_repeated_conflict') {
+      openConflictModal(listing, detail)
+      return
+    }
+    toast.error(typeof detail === 'string' ? detail : 'Erro ao sincronizar com ML')
+  }
+}
+
+function openConflictModal(listing, detail, attempted = []) {
+  conflictModal.value = {
+    show: true,
+    listing,
+    userProductId: detail.user_product_id,
+    currentItemId: detail.current_item_id,
+    candidates: detail.candidates || [],
+    suggestedDeleteItemId: detail.suggested_delete_item_id || null,
+    selectedDeleteItemId: detail.suggested_delete_item_id || null,
+    attemptedItemIds: attempted,
+    deleting: false,
+  }
+  if (!detail.candidates || detail.candidates.length === 0) {
+    toast.warning(detail.message || 'Conflito detectado, mas sem candidatos para excluir.')
+  }
+}
+
+async function resolveConflict() {
+  const m = conflictModal.value
+  if (!m.selectedDeleteItemId || !m.listing) return
+  m.deleting = true
+  try {
+    const { data } = await api.post(
+      `/anuncios/${m.listing.id}/resolve-user-product-conflict`,
+      {
+        delete_item_id: m.selectedDeleteItemId,
+        retry_sync: true,
+        attempted_item_ids: m.attemptedItemIds || [],
+      },
+    )
+    toast.success(`Anúncio ${data.deleted_item_id} fechado no ML. Sincronização concluída.`)
+    conflictModal.value.show = false
+    await loadAnuncios()
+  } catch (e) {
+    const detail = e.response?.data?.detail
+    if (e.response?.status === 409 && detail && detail.error === 'user_product_repeated_conflict') {
+      // Ainda há outro conflito — reabre o modal com os candidatos atualizados
+      // e a lista cumulativa de MLBs já fechados para o backend respeitar o cap.
+      const attempted = detail.previous_deleted_item_ids || m.attemptedItemIds || []
+      openConflictModal(m.listing, detail, attempted)
+      toast.warning('Ainda há anúncios duplicados. Escolha o próximo a excluir.')
+      return
+    }
+    toast.error(typeof detail === 'string' ? detail : 'Erro ao resolver conflito')
+  } finally {
+    if (conflictModal.value) conflictModal.value.deleting = false
+  }
+}
+
+function mlStatusBadgeClass(status) {
+  switch ((status || '').toLowerCase()) {
+    case 'active': return 'badge-success'
+    case 'paused': return 'badge-warning'
+    case 'closed': return 'badge-secondary'
+    case 'under_review': return 'badge-info'
+    default: return 'badge-light'
   }
 }
 

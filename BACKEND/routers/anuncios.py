@@ -1845,6 +1845,130 @@ async def get_category_attributes(
     return result
 
 
+def _score_listing_relevance(item: dict, current_platform_item_id: str | None) -> int:
+    """Score de "relevância" de um anúncio ML para sugerir qual excluir num conflito.
+
+    Quanto **menor** o score, **menos relevante** (melhor candidato a excluir).
+    Pesos refletem o que normalmente importa pro seller:
+      +1000 se for o próprio anúncio sendo sincronizado (nunca sugerir excluir)
+      +400 se status != closed/paused (anúncio ativo é mais valioso)
+      +300 se logistic_type == fulfillment (Full é mais raro/valioso)
+      +200 se catalog_listing == true (catálogo costuma vender mais via buy box)
+      +sold_quantity (vendas históricas)
+      +visits/10 (visitas se disponíveis)
+    """
+    score = 0
+    if current_platform_item_id and item.get("id") == current_platform_item_id:
+        score += 1000
+    status = (item.get("status") or "").lower()
+    if status not in ("closed", "paused", "inactive", "under_review"):
+        score += 400
+    shipping = item.get("shipping") or {}
+    logistic = (shipping.get("logistic_type") or "").lower()
+    if logistic == "fulfillment":
+        score += 300
+    if item.get("catalog_listing"):
+        score += 200
+    score += int(item.get("sold_quantity") or 0)
+    score += int(item.get("visits") or 0) // 10
+    return score
+
+
+async def _build_user_product_conflict_payload(
+    *,
+    access_token: str,
+    listing: ProductListing,
+    user_product_id: str,
+) -> dict:
+    """Monta payload de resposta 409 para o frontend resolver o conflito.
+
+    Retorna o User Product em conflito + lista de MLB ligados a ele com dados de
+    título, status, fotos, vendas e logística; também marca o **menos relevante**
+    como sugestão de exclusão.
+    """
+    seller_id = listing.account.platform_user_id or ""
+    if not user_product_id and not seller_id:
+        return {
+            "error": "user_product_repeated_conflict",
+            "user_product_id": None,
+            "current_item_id": listing.platform_item_id,
+            "candidates": [],
+            "suggested_delete_item_id": None,
+            "message": (
+                "O Mercado Livre rejeitou a sincronização por User Product duplicado, "
+                "mas não foi possível identificar o anúncio conflitante. "
+                "Verifique manualmente no painel do ML."
+            ),
+        }
+
+    payload: dict = {
+        "error": "user_product_repeated_conflict",
+        "user_product_id": user_product_id or None,
+        "current_item_id": listing.platform_item_id,
+        "current_listing_id": listing.id,
+        "candidates": [],
+        "suggested_delete_item_id": None,
+        "message": (
+            "Existem anúncios duplicados nesta conta. Escolha qual remover para "
+            "concluir a sincronização."
+        ),
+    }
+
+    item_ids: list[str] = []
+    if user_product_id:
+        try:
+            item_ids = await ml_service.get_items_for_user_product(
+                access_token, seller_id, user_product_id
+            )
+        except Exception:
+            item_ids = []
+
+    # Inclui o item atual se ainda não estiver na lista (cenário do "terceiro MLB"
+    # que está sendo sincronizado mas ainda não pertence ao UP conflitante).
+    if listing.platform_item_id and listing.platform_item_id not in item_ids:
+        item_ids.append(listing.platform_item_id)
+
+    items: list[dict] = []
+    if item_ids:
+        try:
+            items = await ml_service.get_items_bulk(access_token, item_ids)
+        except Exception:
+            items = []
+
+    candidates: list[dict] = []
+    for it in items:
+        shipping = it.get("shipping") or {}
+        candidate = {
+            "item_id": it.get("id"),
+            "title": it.get("title"),
+            "status": it.get("status"),
+            "permalink": it.get("permalink"),
+            "thumbnail": it.get("thumbnail") or it.get("secure_thumbnail"),
+            "price": it.get("price"),
+            "sold_quantity": it.get("sold_quantity") or 0,
+            "available_quantity": it.get("available_quantity") or 0,
+            "catalog_listing": bool(it.get("catalog_listing")),
+            "catalog_product_id": it.get("catalog_product_id"),
+            "logistic_type": shipping.get("logistic_type"),
+            "listing_type_id": it.get("listing_type_id"),
+            "is_current": it.get("id") == listing.platform_item_id,
+            "relevance_score": _score_listing_relevance(it, listing.platform_item_id),
+        }
+        candidates.append(candidate)
+
+    candidates.sort(key=lambda c: c["relevance_score"], reverse=True)
+    payload["candidates"] = candidates
+
+    # Sugestão de exclusão: o de menor score que não seja o anúncio atual.
+    deletable = [c for c in candidates if not c["is_current"]]
+    if deletable:
+        payload["suggested_delete_item_id"] = min(
+            deletable, key=lambda c: c["relevance_score"]
+        )["item_id"]
+
+    return payload
+
+
 @router.post("/{listing_id}/sync-to-ml")
 async def sync_listing_to_ml(
     listing_id: int,
@@ -1891,7 +2015,20 @@ async def sync_listing_to_ml(
     if listing.ml_catalog_id:
         ml_payload.pop("available_quantity", None)
 
-    ml_resp = await ml_service.update_item(access_token, listing.platform_item_id, ml_payload)
+    try:
+        ml_resp = await ml_service.update_item(
+            access_token, listing.platform_item_id, ml_payload
+        )
+    except ml_service.UserProductRepeatedError as exc:
+        # ML rejeitou: o sync deixaria este anúncio idêntico a outro User Product
+        # já existente na conta. Devolve 409 com os candidatos para o usuário decidir
+        # qual MLB excluir antes de re-tentar.
+        conflict = await _build_user_product_conflict_payload(
+            access_token=access_token,
+            listing=listing,
+            user_product_id=exc.user_product_id,
+        )
+        raise HTTPException(status_code=409, detail=conflict) from exc
     skipped = ml_resp.get("_skipped_fields") or []
 
     if listing.description_override:
@@ -1926,6 +2063,158 @@ async def sync_listing_to_ml(
     if skipped:
         result["ml_skipped_fields"] = skipped
     return result
+
+
+_CONFLICT_RESOLVE_MAX_ATTEMPTS = 5
+
+
+@router.post("/{listing_id}/resolve-user-product-conflict")
+async def resolve_user_product_conflict(
+    listing_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Resolve um conflito de User Product duplicado fechando o MLB escolhido.
+
+    Body: {
+        "delete_item_id": "MLB...",
+        "retry_sync": true,
+        "attempted_item_ids": ["MLB...", ...]   # ids já fechados em tentativas anteriores
+    }
+
+    Fluxo:
+      1. Valida que delete_item_id pertence ao mesmo seller (bloqueia por padrão).
+      2. Fecha o anúncio no ML via close_item (não tem DELETE direto).
+      3. Re-tenta o sync do anúncio original.
+      4. Apenas se o sync for bem-sucedido (ou falhar com outro erro que não 409),
+         remove o ProductListing local correspondente. Em caso de novo 409, anexa
+         `previous_deleted_item_ids` ao detail para o frontend continuar o ciclo
+         sem reapresentar o item já fechado e respeitando o cap de tentativas.
+    """
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    delete_item_id = (body.get("delete_item_id") or "").strip()
+    retry_sync = bool(body.get("retry_sync", True))
+    attempted = list(body.get("attempted_item_ids") or [])
+
+    if not delete_item_id:
+        raise HTTPException(status_code=400, detail="delete_item_id é obrigatório")
+    if delete_item_id == listing.platform_item_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Não é possível excluir o próprio anúncio que está sendo sincronizado",
+        )
+    if len(attempted) >= _CONFLICT_RESOLVE_MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Limite de {_CONFLICT_RESOLVE_MAX_ATTEMPTS} tentativas de resolução de "
+                "conflito atingido. Investigue manualmente os anúncios no painel do ML."
+            ),
+        )
+    if delete_item_id in attempted:
+        raise HTTPException(
+            status_code=400,
+            detail=f"O anúncio {delete_item_id} já foi processado nesta sessão.",
+        )
+
+    access_token = await _get_valid_token(listing.account, db)
+
+    # Confirma que o MLB a excluir pertence à mesma conta — bloqueia por padrão
+    # se não der pra confirmar o seller (defesa contra excluir item de outro seller).
+    try:
+        target = await ml_service.get_item(access_token, delete_item_id)
+    except HTTPException as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Não foi possível verificar o anúncio {delete_item_id} no ML: {e.detail}",
+        ) from e
+    target_seller_id = str(target.get("seller_id") or "")
+    account_seller_id = str(listing.account.platform_user_id or "")
+    if not target_seller_id or not account_seller_id or target_seller_id != account_seller_id:
+        raise HTTPException(
+            status_code=403,
+            detail="O anúncio a excluir não pertence a esta conta ou não pôde ser confirmado.",
+        )
+
+    # Fecha no ML (estado terminal — funcionalmente equivalente ao "excluir")
+    try:
+        await ml_service.close_item(access_token, delete_item_id)
+    except HTTPException as e:
+        # ML 4xx/5xx ao fechar — reporta erro mas não toca em estado local
+        raise HTTPException(
+            status_code=502,
+            detail=f"Falha ao fechar o anúncio {delete_item_id} no Mercado Livre: {e.detail}",
+        ) from e
+
+    attempted_now = [*attempted, delete_item_id]
+    result: dict = {
+        "deleted_item_id": delete_item_id,
+        "attempted_item_ids": attempted_now,
+        "deleted_locally": False,
+    }
+
+    if not retry_sync:
+        await _apurge_local_listing(db, listing.account_id, delete_item_id, result)
+        await db.commit()
+        return result
+
+    # Re-tenta o sync do anúncio original. Só deleta o listing local depois do retry
+    # para não deixar estado inconsistente caso o ML/rede falhe no meio.
+    try:
+        sync_result = await sync_listing_to_ml(
+            listing_id=listing_id, db=db, current_user=current_user
+        )
+    except HTTPException as exc:
+        if exc.status_code == 409 and isinstance(exc.detail, dict):
+            # Outro conflito: anexa contexto e re-propaga sem deletar local agora.
+            new_detail = dict(exc.detail)
+            new_detail["previous_deleted_item_ids"] = attempted_now
+            # Remove dos candidatos os MLBs já fechados (defesa caso ML ainda
+            # esteja propagando o estado e retorne o item recém-fechado).
+            new_detail["candidates"] = [
+                c for c in (new_detail.get("candidates") or [])
+                if c.get("item_id") not in attempted_now
+            ]
+            if new_detail.get("suggested_delete_item_id") in attempted_now:
+                deletable = [
+                    c for c in new_detail["candidates"]
+                    if not c.get("is_current")
+                ]
+                new_detail["suggested_delete_item_id"] = (
+                    min(deletable, key=lambda c: c.get("relevance_score", 0))["item_id"]
+                    if deletable else None
+                )
+            # Limpa o local do MLB já fechado mesmo nesse caminho, para refletir realidade
+            await _apurge_local_listing(db, listing.account_id, delete_item_id, result)
+            await db.commit()
+            raise HTTPException(status_code=409, detail=new_detail) from exc
+        # Erro não-409 no retry: NÃO deleta listing local — usuário pode tentar de novo.
+        raise
+
+    # Sync OK → seguro deletar listing local do MLB fechado.
+    await _apurge_local_listing(db, listing.account_id, delete_item_id, result)
+    await db.commit()
+    result["sync"] = sync_result
+    return result
+
+
+async def _apurge_local_listing(
+    db: AsyncSession, account_id: int, platform_item_id: str, result: dict
+) -> None:
+    """Localiza e deleta o ProductListing local equivalente a um MLB fechado.
+
+    Não chama commit — o caller controla a transação. Atualiza `result["deleted_locally"]`.
+    """
+    local = await db.scalar(
+        select(ProductListing).where(
+            ProductListing.platform_item_id == platform_item_id,
+            ProductListing.account_id == account_id,
+        )
+    )
+    if local:
+        db.delete(local)
+        result["deleted_locally"] = True
 
 
 @router.post("/{listing_id}/switch-to-cross-docking")

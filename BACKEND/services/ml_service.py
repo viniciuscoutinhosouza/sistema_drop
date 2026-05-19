@@ -20,6 +20,20 @@ ML_AUTH_URL = "https://auth.mercadolivre.com.br/authorization"
 ML_TOKEN_URL = f"{ML_API_BASE}/oauth/token"
 
 
+class UserProductRepeatedError(Exception):
+    """ML rejeitou o PUT porque o item resultante duplicaria outro User Product
+    (mesmo name + catalog_product_id + attributes + thumbnail) na conta do seller.
+
+    Permite ao router detectar especificamente esse caso e oferecer ao usuário
+    a resolução do conflito (escolher qual MLB excluir).
+    """
+
+    def __init__(self, user_product_id: str, raw: str = "") -> None:
+        self.user_product_id = user_product_id
+        self.raw = raw
+        super().__init__(f"User Product duplicado: {user_product_id}")
+
+
 def get_authorization_url(state: str) -> str:
     redirect = quote(settings.ML_REDIRECT_URI, safe="")
     return (
@@ -735,6 +749,55 @@ def _is_catalog_description_lock(resp) -> bool:
     return "not modifiable on catalog listing" in msg
 
 
+def _extract_user_product_conflict(body: dict) -> str | None:
+    """Detecta o erro 'item.user_product.repeated.conflict' (User Product duplicado).
+
+    Retorna o ID do User Product em conflito (ex: 'MLBU3539243744') ou None se o
+    body não corresponde a esse tipo de erro.
+    """
+    if not isinstance(body, dict):
+        return None
+    for cause in body.get("cause") or []:
+        if (cause or {}).get("code") == "item.user_product.repeated.conflict":
+            msg = cause.get("message") or body.get("message") or ""
+            for token in str(msg).split():
+                token = token.strip(".,;:")
+                if token.startswith("MLBU"):
+                    return token
+            return ""  # conflict detectado mas sem ID — devolve string vazia (não None)
+    return None
+
+
+async def get_user_product(access_token: str, user_product_id: str) -> dict:
+    """GET /user-products/{id} — detalhes do User Product (atributos, fotos, family)."""
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/user-products/{user_product_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Erro ao buscar User Product {user_product_id}: {resp.text}",
+        )
+    return resp.json()
+
+
+async def get_items_for_user_product(
+    access_token: str, seller_id: str, user_product_id: str
+) -> list[str]:
+    """Lista todos os MLB ids vinculados a um User Product na conta do seller."""
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/users/{seller_id}/items/search",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"user_product_id": user_product_id, "limit": 50},
+        )
+    if resp.status_code != 200:
+        return []
+    return list(resp.json().get("results") or [])
+
+
 async def post_item_description(access_token: str, item_id: str, plain_text: str) -> bool:
     """Create item description (call once, right after item creation).
     Returns True em sucesso; False quando o ML rejeita por ser anúncio de catálogo
@@ -802,6 +865,12 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
                 raise HTTPException(
                     status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}"
                 )
+
+            # Conflito de User Product duplicado — não é resolvível removendo campo;
+            # propaga exceção tipada para o router oferecer resolução interativa.
+            up_id = _extract_user_product_conflict(body)
+            if up_id is not None:
+                raise UserProductRepeatedError(up_id, raw=resp.text)
 
             # Extrai campos imutáveis citados em causes[*].references
             to_drop: list[str] = []
