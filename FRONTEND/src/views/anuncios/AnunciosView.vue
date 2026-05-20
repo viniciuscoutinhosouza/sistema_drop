@@ -44,21 +44,27 @@
                 </button>
                 <div class="dropdown d-inline-block mr-2">
                   <button class="btn btn-sm btn-primary dropdown-toggle" type="button"
-                          data-toggle="dropdown" aria-haspopup="true" aria-expanded="false"
+                          data-bs-toggle="dropdown" aria-expanded="false"
                           :disabled="selectedIds.length === 0 || batchAction.running">
                     <i class="fas fa-bolt mr-1"></i>Ações <span v-if="selectedIds.length">({{ selectedIds.length }})</span>
                   </button>
-                  <div class="dropdown-menu dropdown-menu-right">
-                    <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('sync_to_ml')">
-                      <i class="fas fa-upload mr-2 text-info"></i>Enviar Anúncio ao Marketplace
-                    </a>
-                    <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('sync_stock')">
-                      <i class="fas fa-warehouse mr-2 text-success"></i>Sincronizar Estoque
-                    </a>
-                    <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('reimport')">
-                      <i class="fas fa-download mr-2 text-secondary"></i>Ler Anúncio do Marketplace
-                    </a>
-                  </div>
+                  <ul class="dropdown-menu dropdown-menu-end">
+                    <li>
+                      <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('sync_to_ml')">
+                        <i class="fas fa-upload mr-2 text-info"></i>Enviar Anúncio ao Marketplace
+                      </a>
+                    </li>
+                    <li>
+                      <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('sync_stock')">
+                        <i class="fas fa-warehouse mr-2 text-success"></i>Sincronizar Estoque
+                      </a>
+                    </li>
+                    <li>
+                      <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('reimport')">
+                        <i class="fas fa-download mr-2 text-secondary"></i>Ler Anúncio do Marketplace
+                      </a>
+                    </li>
+                  </ul>
                 </div>
                 <button class="btn btn-sm btn-secondary" @click="importAnuncios" :disabled="!selectedAccountId || importing">
                   <i :class="['fas', importing ? 'fa-spinner fa-spin' : 'fa-download', 'mr-1']"></i>Importar
