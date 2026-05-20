@@ -42,10 +42,24 @@
                 <button class="btn btn-sm btn-info mr-2" @click="openWizard(null)" :disabled="!selectedAccountId">
                   <i class="fas fa-plus mr-1"></i>Novo Anúncio
                 </button>
-                <button class="btn btn-sm btn-success mr-2" @click="syncStock" :disabled="!selectedAccountId || syncingStock"
-                        title="Envia o estoque atual de cada produto vinculado para o marketplace">
-                  <i :class="['fas', syncingStock ? 'fa-spinner fa-spin' : 'fa-sync-alt', 'mr-1']"></i>Sincronizar Estoque
-                </button>
+                <div class="dropdown d-inline-block mr-2">
+                  <button class="btn btn-sm btn-primary dropdown-toggle" type="button"
+                          data-toggle="dropdown" aria-haspopup="true" aria-expanded="false"
+                          :disabled="selectedIds.length === 0 || batchAction.running">
+                    <i class="fas fa-bolt mr-1"></i>Ações <span v-if="selectedIds.length">({{ selectedIds.length }})</span>
+                  </button>
+                  <div class="dropdown-menu dropdown-menu-right">
+                    <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('sync_to_ml')">
+                      <i class="fas fa-upload mr-2 text-info"></i>Enviar Anúncio ao Marketplace
+                    </a>
+                    <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('sync_stock')">
+                      <i class="fas fa-warehouse mr-2 text-success"></i>Sincronizar Estoque
+                    </a>
+                    <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('reimport')">
+                      <i class="fas fa-download mr-2 text-secondary"></i>Ler Anúncio do Marketplace
+                    </a>
+                  </div>
+                </div>
                 <button class="btn btn-sm btn-secondary" @click="importAnuncios" :disabled="!selectedAccountId || importing">
                   <i :class="['fas', importing ? 'fa-spinner fa-spin' : 'fa-download', 'mr-1']"></i>Importar
                 </button>
@@ -110,12 +124,36 @@
               </div>
             </div>
             <div v-else>
+              <!-- Cabeçalho de seleção em lote -->
+              <div class="d-flex align-items-center px-3 py-2 border-bottom bg-light" style="font-size:12px">
+                <input type="checkbox" class="form-check-input m-0 mr-2"
+                       style="width:18px;height:18px;cursor:pointer"
+                       :checked="allFilteredSelected"
+                       :indeterminate.prop="someFilteredSelected && !allFilteredSelected"
+                       @change="toggleSelectAll"
+                       title="Selecionar/desmarcar todos os anúncios visíveis" />
+                <span class="text-muted">
+                  <strong v-if="selectedIds.length">{{ selectedIds.length }}</strong>
+                  <template v-if="selectedIds.length"> selecionado(s)</template>
+                  <template v-else>Selecione anúncios para usar o botão Ações</template>
+                </span>
+                <button v-if="selectedIds.length" class="btn btn-link btn-sm py-0 ml-2" @click="selectedIds = []">
+                  limpar seleção
+                </button>
+              </div>
               <div v-for="a in filteredAnuncios" :key="a.id"
                    class="border-bottom"
                    :style="!a.is_linked ? 'background:#fffbea' : ''">
 
-                <!-- ── Linha única: thumb | info | financeiro | ações ── -->
+                <!-- ── Linha única: checkbox | thumb | info | financeiro | ações ── -->
                 <div class="d-flex align-items-start p-2" style="gap:10px">
+
+                  <!-- Checkbox de seleção em lote -->
+                  <div class="d-flex align-items-center" style="height:64px;flex-shrink:0">
+                    <input type="checkbox" v-model="selectedIds" :value="a.id"
+                           class="form-check-input m-0" style="width:18px;height:18px;cursor:pointer"
+                           :title="'Selecionar anúncio ' + a.platform_item_id" />
+                  </div>
 
                   <!-- Thumbnail (fallback pra imagem do produto vinculado se listing.thumbnail vazio) -->
                   <img v-if="listingThumb(a)" :src="listingThumb(a)"
@@ -328,7 +366,6 @@
                     <div class="btn-group btn-group-sm">
                       <button v-if="a.status === 'published'" class="btn btn-outline-warning" title="Pausar anúncio" @click="pauseAnuncio(a)"><i class="fas fa-pause"></i></button>
                       <button v-if="a.status === 'paused'" class="btn btn-outline-success" title="Reativar anúncio" @click="reactivateAnuncio(a)"><i class="fas fa-play"></i></button>
-                      <button v-if="a.platform_item_id && a.is_linked" class="btn btn-outline-info" title="Sincronizar com ML" @click="syncToMl(a)"><i class="fas fa-sync-alt"></i></button>
                       <button v-if="a.is_full && a.qty_full === 0 && a.platform_item_id"
                               class="btn btn-outline-danger"
                               title="Deixar de oferecer Full — converter para cross-docking usando estoque do galpão do seller"
@@ -1140,6 +1177,129 @@
       </div>
     </div>
 
+    <!-- Modal: Confirmação de ação em lote -->
+    <div v-if="batchAction.confirming" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header bg-primary text-white">
+            <h5 class="modal-title"><i class="fas fa-bolt mr-2"></i>Confirmar Ação em Lote</h5>
+            <button type="button" class="close text-white" @click="batchAction.confirming = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <p>Executar <strong>{{ batchActionLabel(batchAction.action) }}</strong> em <strong>{{ batchAction.ids.length }}</strong> anúncio(s) selecionado(s)?</p>
+            <p v-if="batchAction.action === 'reimport'" class="text-warning small mb-0">
+              <i class="fas fa-info-circle mr-1"></i>
+              Isso vai sobrescrever título, fotos, atributos e preço com o que está no Marketplace. Vínculo de produto e estoque local serão preservados.
+            </p>
+            <p v-else-if="batchAction.action === 'sync_to_ml'" class="text-warning small mb-0">
+              <i class="fas fa-info-circle mr-1"></i>
+              Vai enviar todos os campos editáveis (título, preço, atributos, fotos, descrição, estoque) ao Marketplace. Pode disparar resolução de conflito se houver anúncios duplicados.
+            </p>
+            <p v-else-if="batchAction.action === 'sync_stock'" class="text-info small mb-0">
+              <i class="fas fa-info-circle mr-1"></i>
+              Vai enviar o estoque dos anúncios não-Full e ler o estoque Full dos anúncios Full.
+            </p>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="batchAction.confirming = false">Cancelar</button>
+            <button class="btn btn-primary" @click="runBatchAction"><i class="fas fa-check mr-1"></i>Confirmar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Progresso de ação em lote -->
+    <div v-if="batchAction.running" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header bg-info text-white">
+            <h5 class="modal-title"><i class="fas fa-cog fa-spin mr-2"></i>{{ batchActionLabel(batchAction.action) }}</h5>
+          </div>
+          <div class="modal-body">
+            <p v-if="batchAction.action === 'sync_to_ml'" class="mb-2">
+              Processando <strong>{{ batchAction.done }}</strong> de <strong>{{ batchAction.ids.length }}</strong>...
+            </p>
+            <p v-else class="mb-2">
+              Processando <strong>{{ batchAction.ids.length }}</strong> anúncio(s) em uma única requisição...
+            </p>
+            <div class="progress" style="height:20px">
+              <!-- sync_to_ml: barra com progresso real por chunk; demais: indeterminada -->
+              <div v-if="batchAction.action === 'sync_to_ml'"
+                   class="progress-bar progress-bar-striped progress-bar-animated"
+                   :style="{width: ((batchAction.done / Math.max(1, batchAction.ids.length)) * 100) + '%'}">
+                {{ Math.round((batchAction.done / Math.max(1, batchAction.ids.length)) * 100) }}%
+              </div>
+              <div v-else class="progress-bar progress-bar-striped progress-bar-animated bg-info"
+                   style="width:100%">
+                Aguarde...
+              </div>
+            </div>
+            <div class="mt-2 small">
+              <span class="text-success mr-3"><i class="fas fa-check mr-1"></i>Sucesso: {{ batchAction.success }}</span>
+              <span class="text-danger"><i class="fas fa-times mr-1"></i>Erros: {{ batchAction.errors.length }}</span>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <!-- Cancelar só funciona em sync_to_ml (que roda em chunks). Os outros
+                 são chamada única e não dá pra interromper. -->
+            <button v-if="batchAction.action === 'sync_to_ml'"
+                    class="btn btn-warning"
+                    @click="batchAction.cancelled = true"
+                    :disabled="batchAction.cancelled">
+              <i class="fas fa-stop mr-1"></i>{{ batchAction.cancelled ? 'Cancelando...' : 'Cancelar' }}
+            </button>
+            <span v-else class="text-muted small">
+              <i class="fas fa-info-circle mr-1"></i>Esta ação não pode ser cancelada.
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Resultado de ação em lote -->
+    <div v-if="batchAction.resultOpen" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header" :class="batchAction.errors.length ? 'bg-warning' : 'bg-success text-white'">
+            <h5 class="modal-title">
+              <i :class="['fas mr-2', batchAction.errors.length ? 'fa-exclamation-triangle' : 'fa-check']"></i>
+              Resultado: {{ batchActionLabel(batchAction.action) }}
+            </h5>
+            <button type="button" class="close" @click="batchAction.resultOpen = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <ul class="list-group list-group-flush">
+              <li class="list-group-item d-flex justify-content-between">
+                <span>Sucessos</span><span class="badge badge-success badge-pill">{{ batchAction.success }}</span>
+              </li>
+              <li class="list-group-item d-flex justify-content-between">
+                <span>Erros</span><span class="badge badge-danger badge-pill">{{ batchAction.errors.length }}</span>
+              </li>
+              <li v-if="batchAction.cancelled" class="list-group-item">
+                <i class="fas fa-stop text-warning mr-1"></i>Operação cancelada pelo usuário.
+              </li>
+            </ul>
+            <div v-if="batchAction.errors.length" class="mt-3">
+              <h6 class="small text-muted">Detalhes dos erros:</h6>
+              <div style="max-height:300px;overflow-y:auto">
+                <div v-for="(err, idx) in batchAction.errors" :key="`${idx}-${err.listing_id}`"
+                     class="alert alert-danger py-1 px-2 mb-1 small">
+                  <strong>#{{ err.listing_id }}:</strong>
+                  <template v-if="err.detail?.error === 'user_product_repeated_conflict'">
+                    Conflito de User Product duplicado — abra o anúncio individualmente para resolver.
+                  </template>
+                  <template v-else>{{ typeof err.detail === 'string' ? err.detail : (err.detail?.message || err.error || JSON.stringify(err.detail || err.error)) }}</template>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" @click="batchAction.resultOpen = false">Fechar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal: Conflito de User Product (anúncios duplicados no ML) -->
     <div v-if="conflictModal.show" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
       <div class="modal-dialog modal-lg">
@@ -1252,7 +1412,6 @@ const selectedAccountId = ref('')
 const anuncios = ref([])
 const loading = ref(false)
 const importing = ref(false)
-const syncingStock = ref(false)
 const filterVinculo = ref('all')
 const filterStatus = ref('published')
 const statsBar = ref(null)
@@ -1740,6 +1899,142 @@ const conflictModal = ref({
   attemptedItemIds: [],
   deleting: false,
 })
+
+// Seleção em lote
+const selectedIds = ref([])
+const allFilteredSelected = computed(() =>
+  filteredAnuncios.value.length > 0
+  && filteredAnuncios.value.every(a => selectedIds.value.includes(a.id))
+)
+const someFilteredSelected = computed(() =>
+  filteredAnuncios.value.some(a => selectedIds.value.includes(a.id))
+)
+function toggleSelectAll() {
+  if (allFilteredSelected.value) {
+    const visibleIds = new Set(filteredAnuncios.value.map(a => a.id))
+    selectedIds.value = selectedIds.value.filter(id => !visibleIds.has(id))
+  } else {
+    const set = new Set(selectedIds.value)
+    for (const a of filteredAnuncios.value) set.add(a.id)
+    selectedIds.value = Array.from(set)
+  }
+}
+
+// Ações em lote
+const BATCH_CHUNK_SIZE = 5
+const batchAction = ref({
+  action: null,                  // 'sync_to_ml' | 'sync_stock' | 'reimport'
+  ids: [],                       // listing ids
+  confirming: false,
+  running: false,
+  cancelled: false,
+  done: 0,
+  success: 0,
+  errors: [],                    // [{listing_id, code?, detail?, error?}]
+  resultOpen: false,
+})
+
+function batchActionLabel(action) {
+  return {
+    sync_to_ml: 'Enviar Anúncio ao Marketplace',
+    sync_stock: 'Sincronizar Estoque',
+    reimport:   'Ler Anúncio do Marketplace',
+  }[action] || action
+}
+
+function confirmBatchAction(action) {
+  if (selectedIds.value.length === 0) {
+    toast.warning('Selecione pelo menos um anúncio.')
+    return
+  }
+  batchAction.value = {
+    action,
+    ids: [...selectedIds.value],
+    confirming: true,
+    running: false,
+    cancelled: false,
+    done: 0,
+    success: 0,
+    errors: [],
+    resultOpen: false,
+  }
+}
+
+async function runBatchAction() {
+  const b = batchAction.value
+  b.confirming = false
+  b.running = true
+
+  try {
+    if (b.action === 'sync_stock') {
+      // Endpoint /sync-stock já aceita listing_ids — chamada única.
+      try {
+        const { data } = await api.post('/anuncios/sync-stock', {
+          account_id: selectedAccountId.value,
+          listing_ids: b.ids,
+        })
+        b.done = b.ids.length
+        b.success = (data.updated || 0) + (data.full_read || 0)
+        // error_details vem do backend — mapeia pro formato esperado
+        for (const ed of data.error_details || []) {
+          b.errors.push({ listing_id: ed.listing_id, error: ed.error, detail: ed })
+        }
+      } catch (e) {
+        b.errors.push({ listing_id: 0, error: e.response?.data?.detail || 'Falha na requisição' })
+      }
+    } else if (b.action === 'reimport') {
+      // reimport-batch também é chamada única
+      try {
+        const { data } = await api.post('/anuncios/reimport-batch', {
+          account_id: selectedAccountId.value,
+          listing_ids: b.ids,
+        })
+        b.done = b.ids.length
+        b.success = data.updated || 0
+        for (const err of data.errors || []) {
+          b.errors.push({ listing_id: err.listing_id, error: err.error })
+        }
+      } catch (e) {
+        b.errors.push({ listing_id: 0, error: e.response?.data?.detail || 'Falha na requisição' })
+      }
+    } else if (b.action === 'sync_to_ml') {
+      // sync-to-ml-batch — particiona em chunks para barra de progresso
+      for (let i = 0; i < b.ids.length; i += BATCH_CHUNK_SIZE) {
+        if (b.cancelled) break
+        const chunk = b.ids.slice(i, i + BATCH_CHUNK_SIZE)
+        try {
+          const { data } = await api.post('/anuncios/sync-to-ml-batch', {
+            account_id: selectedAccountId.value,
+            listing_ids: chunk,
+          })
+          b.success += data.processed || 0
+          for (const err of data.errors || []) {
+            b.errors.push({ listing_id: err.listing_id, code: err.code, detail: err.detail })
+          }
+        } catch (e) {
+          for (const lid of chunk) {
+            b.errors.push({ listing_id: lid, error: e.response?.data?.detail || 'Falha no chunk' })
+          }
+        }
+        b.done = Math.min(i + chunk.length, b.ids.length)
+      }
+    }
+
+    // Resumo final
+    b.running = false
+    b.resultOpen = true
+    if (b.errors.length === 0 && b.success > 0) {
+      toast.success(`${batchActionLabel(b.action)}: ${b.success} concluído(s).`)
+    } else if (b.success > 0 && b.errors.length > 0) {
+      toast.warning(`${batchActionLabel(b.action)}: ${b.success} OK, ${b.errors.length} erro(s).`)
+    } else {
+      toast.error(`${batchActionLabel(b.action)}: ${b.errors.length} erro(s).`)
+    }
+    await loadAnuncios()
+  } finally {
+    b.running = false
+  }
+}
 const createCmigModal = ref({ show: false, listing: null, saving: false, error: '', pictures: [], variants: [] })
 const photosModal = ref({ show: false, listing: null, photos: [], zoomed: null })
 const createCmigForm = ref({
@@ -1770,6 +2065,9 @@ async function loadCmigs() {
 }
 
 async function loadAnuncios() {
+  // Sempre limpa seleção em lote ao recarregar (incluindo troca de conta) pra
+  // evitar agir sobre IDs de uma conta diferente.
+  selectedIds.value = []
   if (!selectedAccountId.value) { anuncios.value = []; statsBar.value = null; listingCosts.value = {}; categoryPaths.value = {}; listingPromos.value = {}; return }
   loading.value = true
   listingCosts.value = {}
@@ -1839,25 +2137,6 @@ async function importAnuncios() {
     }
   } finally {
     importing.value = false
-  }
-}
-
-async function syncStock() {
-  if (!selectedAccountId.value) return
-  syncingStock.value = true
-  try {
-    const { data } = await api.post('/anuncios/sync-stock', { account_id: selectedAccountId.value })
-    const { updated, skipped, errors } = data
-    if (errors > 0) {
-      toast.warning(`Estoque sincronizado: ${updated} atualizados, ${skipped} ignorados, ${errors} com erro.`)
-    } else {
-      toast.success(`Estoque sincronizado: ${updated} anúncio(s) atualizado(s), ${skipped} ignorado(s).`)
-    }
-    await loadAnuncios()
-  } catch (e) {
-    toast.error(e.response?.data?.detail || 'Erro ao sincronizar estoque.')
-  } finally {
-    syncingStock.value = false
   }
 }
 
@@ -2061,22 +2340,6 @@ async function reactivateAnuncio(listing) {
     await loadAnuncios()
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao reativar anúncio')
-  }
-}
-
-async function syncToMl(listing) {
-  try {
-    await api.post(`/anuncios/${listing.id}/sync-to-ml`)
-    await api.post(`/anuncios/${listing.id}/refresh-costs`).catch(() => {})
-    toast.success('Anúncio sincronizado com o ML!')
-    await loadAnuncios()
-  } catch (e) {
-    const detail = e.response?.data?.detail
-    if (e.response?.status === 409 && detail && detail.error === 'user_product_repeated_conflict') {
-      openConflictModal(listing, detail)
-      return
-    }
-    toast.error(typeof detail === 'string' ? detail : 'Erro ao sincronizar com ML')
   }
 }
 

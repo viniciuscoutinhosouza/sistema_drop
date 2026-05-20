@@ -5,6 +5,7 @@ OAuth flow: Authorization Code (https://auth.mercadolivre.com.br/authorization)
 Token endpoint: https://api.mercadolibre.com/oauth/token
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
@@ -14,6 +15,7 @@ from fastapi import HTTPException
 from config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 ML_API_BASE = "https://api.mercadolibre.com"
 ML_AUTH_URL = "https://auth.mercadolivre.com.br/authorization"
@@ -1229,7 +1231,18 @@ async def get_listing_costs(
         # Só faz sentido quando o VENDEDOR paga o frete (frete grátis ou Full).
         # Para ME2 sem frete grátis o comprador paga — não chamar este endpoint.
         seller_pays = free_shipping or logistic_type.lower() == "fulfillment"
-        if not (seller_pays and weight_kg and height_cm and width_cm and length_cm):
+        if not seller_pays:
+            logger.debug(
+                "shipping_skipped: buyer pays (free_shipping=%s, logistic_type=%s)",
+                free_shipping, logistic_type,
+            )
+            return
+        if not (weight_kg and height_cm and width_cm and length_cm):
+            logger.info(
+                "shipping_skipped: missing dimensions/weight (seller_id=%s "
+                "weight=%s, l=%s, h=%s, w=%s) — anuncio sem dimensoes cadastradas",
+                seller_id, weight_kg, length_cm, height_cm, width_cm,
+            )
             return
 
         wb = _calc_billable_weight(weight_kg, height_cm, width_cm, length_cm)
@@ -1256,11 +1269,24 @@ async def get_listing_costs(
             },
         )
         if resp.status_code != 200:
+            logger.warning(
+                "shipping_zero: ML returned status=%s for seller_id=%s dims=%s "
+                "price=%s mode=%s logistic_type=%s — body=%s",
+                resp.status_code, seller_id, dims, price, shipping_mode,
+                logistic_type, resp.text[:300],
+            )
             return
 
         raw = resp.json()
         parsed = _parse_shipping_response(raw)
         shipping_net_cost = parsed["net_cost"]
+        if shipping_net_cost == 0:
+            logger.warning(
+                "shipping_zero: ML returned net_cost=0 for seller_id=%s dims=%s "
+                "price=%s mode=%s logistic_type=%s — options=%s",
+                seller_id, dims, price, shipping_mode, logistic_type,
+                str(raw.get("options"))[:300],
+            )
         shipping_detail = {
             **parsed,
             "dimensions": dims,

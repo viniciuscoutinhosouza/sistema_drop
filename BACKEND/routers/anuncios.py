@@ -4,6 +4,7 @@ Cada anúncio (ProductListing) pode estar vinculado a CMIGProduct OU CatalogProd
 """
 
 import json as _json
+import logging
 import os as _os
 import shutil as _shutil
 import uuid as _uuid_mod
@@ -42,6 +43,7 @@ def _absolutize_image_url(url: str) -> str:
     return f"{base}{url}"
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/upload-image")
@@ -1845,6 +1847,294 @@ async def get_category_attributes(
     return result
 
 
+_DIMENSIONAL_ATTR_IDS = {
+    "WEIGHT", "NET_WEIGHT", "GROSS_WEIGHT", "PACKAGE_WEIGHT", "PACKAGE_NET_WEIGHT",
+    "HEIGHT", "WIDTH", "LENGTH", "DEPTH",
+    "PACKAGE_HEIGHT", "PACKAGE_WIDTH", "PACKAGE_LENGTH", "PACKAGE_DEPTH",
+}
+_FISCAL_ATTR_IDS = {"GTIN", "EAN", "NCM", "CEST", "FISCAL_CLASSIFICATION"}
+
+
+def _parse_ml_item_dimensions(item: dict) -> dict:
+    """Extrai weight_kg / height_cm / width_cm / length_cm dos atributos do item ML.
+
+    Faz fallback para shipping.dimensions ("HxWxL,weight_g") quando os atributos
+    não trazem valor. Espelha a lógica usada em import_anuncios.
+    """
+    import re as _re
+
+    dim_map: dict = {}
+    for attr in item.get("attributes") or []:
+        attr_id = (attr.get("id") or "").upper()
+        if attr_id not in _DIMENSIONAL_ATTR_IDS:
+            continue
+        val_name = attr.get("value_name")
+        val_struct = attr.get("value_struct") or {}
+        val_num = val_struct.get("number")
+        unit = val_struct.get("unit") or ""
+        if val_num is None and val_name:
+            m = _re.match(r"([\d.,]+)\s*(.*)", val_name.strip())
+            if m:
+                try:
+                    val_num = float(m.group(1).replace(",", "."))
+                    if not unit:
+                        unit = m.group(2).strip()
+                except ValueError:
+                    pass
+        dim_map[attr_id] = {"value": val_num, "unit": unit}
+
+    def _to_kg(key):
+        d = dim_map.get(key, {})
+        v = d.get("value")
+        if v is None:
+            return None
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        u = (d.get("unit") or "").lower()
+        if u in ("g", "gr", "grams", "gramas"):
+            return round(v / 1000, 3)
+        if u in ("mg", "milligrams"):
+            return round(v / 1_000_000, 3)
+        return round(v, 3)
+
+    def _to_cm(key):
+        d = dim_map.get(key, {})
+        v = d.get("value")
+        if v is None:
+            return None
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        u = (d.get("unit") or "").lower()
+        if u in ("mm", "millimeters", "milímetros"):
+            return round(v / 10, 2)
+        if u in ("m", "meters", "metros"):
+            return round(v * 100, 2)
+        return round(v, 2)
+
+    weight_kg = (
+        _to_kg("WEIGHT") or _to_kg("NET_WEIGHT") or _to_kg("GROSS_WEIGHT")
+        or _to_kg("PACKAGE_WEIGHT") or _to_kg("PACKAGE_NET_WEIGHT")
+    )
+    height_cm = _to_cm("HEIGHT") or _to_cm("PACKAGE_HEIGHT")
+    width_cm = _to_cm("WIDTH") or _to_cm("PACKAGE_WIDTH")
+    length_cm = (
+        _to_cm("LENGTH") or _to_cm("DEPTH")
+        or _to_cm("PACKAGE_LENGTH") or _to_cm("PACKAGE_DEPTH")
+    )
+
+    # Fallback: shipping.dimensions
+    shipping = item.get("shipping") or {}
+    dims_str = (shipping.get("dimensions") or "").strip()
+    if dims_str:
+        try:
+            parts = dims_str.split(",")
+            size_parts = parts[0].strip().lower().split("x")
+            if len(size_parts) == 3:
+                h, w, l = [float(s.strip()) for s in size_parts]
+                if height_cm is None:
+                    height_cm = h
+                if width_cm is None:
+                    width_cm = w
+                if length_cm is None:
+                    length_cm = l
+            if len(parts) >= 2 and weight_kg is None:
+                weight_kg = round(float(parts[1].strip()) / 1000, 3)
+        except (ValueError, IndexError):
+            pass
+
+    return {
+        "weight_kg": weight_kg,
+        "height_cm": height_cm,
+        "width_cm": width_cm,
+        "length_cm": length_cm,
+    }
+
+
+def _apply_ml_item_to_listing(
+    listing: ProductListing,
+    item: dict,
+    description_text: str | None,
+    *,
+    preserve_local_stock: bool = True,
+) -> None:
+    """Aplica os campos de um item ML (resp. de GET /items/{id}) num ProductListing.
+
+    Espelha o caminho de UPDATE do import_anuncios. Sempre preserva o vínculo
+    de produto (cmig_product_id / catalog_product_id) — o caller manipula isso
+    manualmente se precisar.
+
+    - `preserve_local_stock=True`: NÃO sobrescreve available_quantity em anúncios
+      não-Full (preserva o estoque local de cross-docking). Para Full, atualiza
+      qty_full lendo do ML.
+    """
+    title = item.get("title", "") or ""
+    permalink = item.get("permalink", "") or ""
+    sku = item.get("seller_custom_field") or ""
+    price = float(item.get("price") or 0)
+    original_price = float(item.get("original_price") or 0)
+
+    if original_price > 0 and price > 0 and original_price > price * 1.01:
+        regular_price = original_price
+        promo_disc_pct = round((original_price - price) / original_price * 100, 1)
+    else:
+        regular_price = None
+        promo_disc_pct = None
+
+    ml_status = item.get("status", "active")
+    status_map = {
+        "active": "published", "paused": "paused", "closed": "paused",
+        "under_review": "draft", "inactive": "paused",
+    }
+    item_status = status_map.get(ml_status, "published")
+
+    available_qty = int(item.get("available_quantity") or item.get("initial_quantity") or 1)
+    sold_qty = int(item.get("sold_quantity") or 0)
+    item_condition = item.get("condition") or "new"
+    listing_type = item.get("listing_type_id") or ""
+    category_id = item.get("category_id") or ""
+
+    shipping = item.get("shipping") or {}
+    shipping_mode = shipping.get("mode") or "me2"
+    free_shipping = bool(shipping.get("free_shipping", False))
+    logistic_type_raw = (shipping.get("logistic_type") or "cross_docking").lower()
+    is_full = logistic_type_raw == "fulfillment"
+    ml_catalog_id = item.get("catalog_product_id") or ""
+    catalog_listing = bool(item.get("catalog_listing", False))
+
+    # Fotos
+    pics_list = []
+    for pic in item.get("pictures", []):
+        url = pic.get("secure_url") or pic.get("url", "")
+        if url:
+            pics_list.append(
+                {"id": pic.get("id", ""), "url": url.replace("http://", "https://")}
+            )
+    thumbnail = item.get("thumbnail", "") or ""
+    if not thumbnail and pics_list:
+        thumbnail = pics_list[0]["url"]
+    if thumbnail:
+        thumbnail = thumbnail.replace("http://", "https://")
+
+    # Atributos: dimensional, fiscal, ficha técnica
+    fiscal: dict = {}
+    tech: list = []
+    for attr in item.get("attributes", []):
+        attr_id = (attr.get("id") or "").upper()
+        if attr_id in _DIMENSIONAL_ATTR_IDS:
+            continue
+        val_name = attr.get("value_name")
+        if attr_id in _FISCAL_ATTR_IDS:
+            fiscal_val = val_name or attr.get("value_id")
+            if fiscal_val is not None:
+                fiscal[attr_id.lower()] = str(fiscal_val)
+        elif val_name is not None:
+            tech.append({"id": attr_id, "name": attr.get("name"), "value": val_name})
+
+    for term in item.get("sale_terms", []):
+        term_id = (term.get("id") or "").upper()
+        if term_id in _FISCAL_ATTR_IDS:
+            term_val = term.get("value_name") or term.get("value_id")
+            if term_val and not fiscal.get(term_id.lower()):
+                fiscal[term_id.lower()] = str(term_val)
+
+    # Variações
+    variations_list = []
+    for var in item.get("variations", []):
+        variations_list.append({
+            "id": var.get("id"),
+            "price": var.get("price"),
+            "available_quantity": var.get("available_quantity"),
+            "sold_quantity": var.get("sold_quantity"),
+            "attributes": [
+                {"id": a.get("id"), "name": a.get("name"), "value": a.get("value_name")}
+                for a in var.get("attribute_combinations", [])
+            ],
+            "picture_ids": var.get("picture_ids", []),
+        })
+
+    # SKU fallback
+    if not sku:
+        sku_attr = next(
+            (a for a in item.get("attributes", [])
+             if (a.get("id") or "").upper() == "SELLER_SKU"),
+            None,
+        )
+        if sku_attr:
+            sku = sku_attr.get("value_name") or ""
+
+    dims = _parse_ml_item_dimensions(item)
+
+    pictures_json = _json.dumps(pics_list, ensure_ascii=False) if pics_list else None
+    fiscal_json = _json.dumps(fiscal, ensure_ascii=False) if fiscal else None
+    variations_json = _json.dumps(variations_list, ensure_ascii=False) if variations_list else None
+    attributes_json = _json.dumps(tech, ensure_ascii=False) if tech else None
+
+    # Aplicar no listing (campos sempre sobrescritos)
+    listing.title_override = title
+    listing.sale_price = price
+    listing.status = item_status
+    listing.category_id = category_id or listing.category_id
+    listing.listing_type = listing_type or listing.listing_type
+    listing.is_full = is_full
+    listing.logistic_type = logistic_type_raw
+    listing.ml_catalog_id = ml_catalog_id or listing.ml_catalog_id
+    listing.catalog_listing = catalog_listing
+    listing.sold_quantity = sold_qty
+    listing.item_condition = item_condition
+    listing.shipping_mode = shipping_mode
+    listing.free_shipping = free_shipping
+    if thumbnail:
+        listing.thumbnail = thumbnail
+    if permalink:
+        listing.permalink = permalink
+    if sku:
+        listing.sku = sku
+    if description_text:
+        listing.description_override = description_text
+    listing.weight_kg = dims["weight_kg"]
+    listing.height_cm = dims["height_cm"]
+    listing.width_cm = dims["width_cm"]
+    listing.length_cm = dims["length_cm"]
+    if pictures_json:
+        listing.pictures_json = pictures_json
+    if fiscal_json:
+        listing.fiscal_json = fiscal_json
+    if variations_json:
+        listing.variations_json = variations_json
+    if attributes_json:
+        listing.attributes_json = attributes_json
+
+    # Estoque: Full sempre lê do ML; não-Full preserva local se preserve_local_stock=True
+    if is_full:
+        listing.qty_full = available_qty
+        listing.qty_local = 0
+        listing.available_quantity = available_qty
+    elif not preserve_local_stock:
+        listing.available_quantity = available_qty
+        listing.qty_local = available_qty
+        listing.qty_full = 0
+    # else: preserva available_quantity/qty_local locais
+
+    # Promoção
+    if regular_price is not None:
+        listing.regular_price = regular_price
+        listing.promo_discount_pct = promo_disc_pct
+    elif (
+        listing.regular_price is not None
+        and price >= float(listing.regular_price or 0) * 0.99
+    ):
+        listing.regular_price = None
+        listing.promo_type = None
+        listing.promo_discount_pct = None
+
+    listing.last_sync_at = datetime.now(UTC)
+    # Vínculo de produto (cmig/catalog) e overrides locais nunca são tocados aqui.
+
+
 def _score_listing_relevance(item: dict, current_platform_item_id: str | None) -> int:
     """Score de "relevância" de um anúncio ML para sugerir qual excluir num conflito.
 
@@ -2047,16 +2337,8 @@ async def sync_listing_to_ml(
         if desc_ok is False and "description" not in skipped:
             skipped.append("description")
 
-    # For Full listings: read back current qty_full from ML (stock is ML-managed)
-    is_full_listing = (listing.logistic_type == "fulfillment") or bool(listing.is_full)
-    if is_full_listing and listing.platform_item_id:
-        try:
-            ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
-            listing.qty_full = ml_item.get("available_quantity") or 0
-            listing.qty_local = 0
-        except Exception:
-            pass
-
+    # Nota: a leitura de qty_full (Full) NÃO acontece aqui — foi movida para
+    # sync_stock_to_marketplace, que agora trata Full lendo o estoque do ML.
     listing.last_sync_at = datetime.now(UTC)
     await db.commit()
     result = _serialize_listing(listing)
@@ -2501,18 +2783,22 @@ async def sync_stock_to_marketplace(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Envia o estoque disponível de cada produto vinculado para o marketplace.
+    """Sincroniza estoque entre Sistema Drop e Marketplace.
 
-    Percorre todos os anúncios publicados da conta com `stock_mode='product'`
-    que tenham um produto CMIG ou PG vinculado, lê o `stock_quantity` atual
-    desse produto e atualiza a quantidade disponível no ML ou Shopee.
+    Dois ramos numa única passada:
+    - **Anúncios não-Full**: envia `stock_quantity` do produto vinculado ao ML/Shopee.
+    - **Anúncios Full** (`logistic_type='fulfillment'`): lê `available_quantity` do ML
+      e atualiza `listing.qty_full` localmente (estoque do Full é gerenciado pelo ML).
 
-    Anúncios com `stock_mode='fixed'`, sem produto vinculado, sem
-    `platform_item_id`, ou do tipo fulfillment (Full) são ignorados.
+    Body:
+      - `account_id` (obrigatório)
+      - `listing_ids` (opcional): se presente, filtra apenas esses listings da conta.
+        Se omitido/vazio, processa todos os publicados da conta.
     """
     from services import shopee_service
 
     account_id = body.get("account_id")
+    listing_ids: list[int] = list(body.get("listing_ids") or [])
     if not account_id:
         raise HTTPException(status_code=400, detail="account_id é obrigatório")
 
@@ -2549,41 +2835,93 @@ async def sync_stock_to_marketplace(
     else:
         raise HTTPException(status_code=400, detail=f"Plataforma '{account.platform}' não suportada para sync de estoque")
 
-    # Carrega listings publicados com produto vinculado e mode=product
-    listings = (
-        await db.execute(
-            select(ProductListing)
-            .options(
-                selectinload(ProductListing.cmig_product),
-                selectinload(ProductListing.catalog_product),
-            )
-            .where(
-                ProductListing.account_id == account_id,
-                ProductListing.status == "published",
-                ProductListing.stock_mode != "fixed",
-            )
+    # Carrega listings com produto vinculado.
+    # - Sem listing_ids: apenas published (chamada automática do scheduler).
+    # - Com listing_ids: respeita seleção do usuário e reporta status != published
+    #   como skipped explícito em error_details.
+    q = (
+        select(ProductListing)
+        .options(
+            selectinload(ProductListing.cmig_product),
+            selectinload(ProductListing.catalog_product),
         )
-    ).scalars().all()
+        .where(ProductListing.account_id == account_id)
+    )
+    if listing_ids:
+        q = q.where(ProductListing.id.in_(listing_ids))
+    else:
+        q = q.where(ProductListing.status == "published")
+    listings = (await db.execute(q)).scalars().all()
 
     updated = 0
     skipped = 0
     errors = 0
+    full_read = 0
+    full_read_errors = 0
     error_details = []
+
+    # Quando listing_ids é fornecido, registra IDs não encontrados
+    if listing_ids:
+        found_ids = {lst.id for lst in listings}
+        for lid in listing_ids:
+            if lid not in found_ids:
+                skipped += 1
+                error_details.append({
+                    "listing_id": lid,
+                    "stage": "not_found",
+                    "error": "Anúncio não pertence à conta ou não existe.",
+                })
 
     now = datetime.now(UTC)
 
     for lst in listings:
-        # Sem ID no marketplace — não dá pra atualizar
+        # status != published quando explicitamente selecionado pelo user:
+        # reporta como skipped pra ele entender o que aconteceu
+        if listing_ids and lst.status != "published":
+            skipped += 1
+            error_details.append({
+                "listing_id": lst.id,
+                "platform_item_id": lst.platform_item_id,
+                "stage": "not_published",
+                "error": f"Status do anúncio é '{lst.status}' — só anúncios publicados podem sincronizar estoque.",
+            })
+            continue
+
+        # Sem ID no marketplace — não dá pra atualizar nem ler
         if not lst.platform_item_id:
             skipped += 1
             continue
 
-        # Full: estoque gerenciado pelo ML
-        if lst.logistic_type == "fulfillment":
+        is_full = (lst.logistic_type == "fulfillment") or bool(lst.is_full)
+
+        # Ramo Full: ler qty_full do ML
+        if is_full:
+            if account.platform != "mercadolivre":
+                # Shopee não tem conceito de Full do ML — pula
+                skipped += 1
+                continue
+            try:
+                ml_item = await ml_service.get_item(access_token, lst.platform_item_id)
+                lst.qty_full = int(ml_item.get("available_quantity") or 0)
+                lst.qty_local = 0
+                lst.available_quantity = lst.qty_full
+                lst.last_sync_at = now
+                full_read += 1
+            except Exception as exc:
+                full_read_errors += 1
+                error_details.append({
+                    "listing_id": lst.id,
+                    "platform_item_id": lst.platform_item_id,
+                    "stage": "full_read",
+                    "error": str(exc),
+                })
+            continue
+
+        # Ramo não-Full: enviar stock_quantity do produto vinculado ao marketplace
+        if lst.stock_mode == "fixed":
             skipped += 1
             continue
 
-        # Determina estoque do produto vinculado
         stock = None
         if lst.cmig_product_id and lst.cmig_product:
             stock = int(lst.cmig_product.stock_quantity or 0)
@@ -2613,6 +2951,7 @@ async def sync_stock_to_marketplace(
             error_details.append({
                 "listing_id": lst.id,
                 "platform_item_id": lst.platform_item_id,
+                "stage": "stock_push",
                 "error": str(exc),
             })
 
@@ -2622,8 +2961,303 @@ async def sync_stock_to_marketplace(
         "updated": updated,
         "skipped": skipped,
         "errors": errors,
+        "full_read": full_read,
+        "full_read_errors": full_read_errors,
         "error_details": error_details,
     }
+
+
+@router.post("/sync-to-ml-batch")
+async def sync_to_ml_batch(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Envia em lote o anúncio inteiro (título, preço, atributos, fotos, descrição)
+    para o Marketplace, reusando a lógica do `sync_listing_to_ml` por listing.
+
+    Cada listing é commitado individualmente (via sync_listing_to_ml) — falhas
+    não revertem itens já sincronizados.
+
+    Body: { "account_id": int, "listing_ids": [int, ...] }
+    Retorno: { "processed": int, "errors": [{listing_id, code, detail}] }
+    """
+    account_id = body.get("account_id")
+    listing_ids: list[int] = list(body.get("listing_ids") or [])
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id é obrigatório")
+    if not listing_ids:
+        raise HTTPException(status_code=400, detail="listing_ids é obrigatório (lista não vazia)")
+
+    # Valida ownership da conta e filtra listings ao escopo dela
+    await _get_account_or_403(account_id, current_user, db)
+
+    valid_ids_result = await db.execute(
+        select(ProductListing.id).where(
+            ProductListing.account_id == account_id,
+            ProductListing.id.in_(listing_ids),
+        )
+    )
+    valid_ids = set(valid_ids_result.scalars().all())
+    out_of_scope = [lid for lid in listing_ids if lid not in valid_ids]
+
+    processed = 0
+    errors: list[dict] = []
+    for lid in out_of_scope:
+        errors.append({
+            "listing_id": lid,
+            "code": 403,
+            "detail": "Anúncio não pertence à conta informada.",
+        })
+
+    for lid in listing_ids:
+        if lid not in valid_ids:
+            continue
+        try:
+            await sync_listing_to_ml(listing_id=lid, db=db, current_user=current_user)
+            processed += 1
+        except HTTPException as exc:
+            # 409 user_product_repeated_conflict: detalha pra UI decidir
+            errors.append({
+                "listing_id": lid,
+                "code": exc.status_code,
+                "detail": exc.detail,
+            })
+        except Exception as exc:  # noqa: BLE001 — captura genérica intencional
+            logger.exception("sync_to_ml_batch: erro inesperado em listing %s", lid)
+            errors.append({
+                "listing_id": lid,
+                "code": 500,
+                "detail": f"Erro interno ({exc.__class__.__name__})",
+            })
+
+    return {"processed": processed, "errors": errors}
+
+
+@router.post("/reimport-batch")
+async def reimport_batch(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-importa em lote a info do Marketplace para os listings selecionados.
+
+    Para cada listing, busca `/items/{id}` + descrição no ML e aplica em
+    ProductListing PRESERVANDO:
+      - vínculo de produto (cmig_product_id / catalog_product_id)
+      - available_quantity local (apenas em anúncios não-Full)
+
+    Sobrescreve tudo o mais que vem do ML: title, atributos, fotos, status,
+    preço, garantia, modo de envio, listing_type. Para Full, atualiza qty_full.
+
+    Body: { "account_id": int, "listing_ids": [int, ...] }
+    Retorno: { "updated": int, "errors": [{listing_id, error}] }
+    """
+    account_id = body.get("account_id")
+    listing_ids: list[int] = list(body.get("listing_ids") or [])
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id é obrigatório")
+    if not listing_ids:
+        raise HTTPException(status_code=400, detail="listing_ids é obrigatório (lista não vazia)")
+
+    account = await _get_account_or_403(account_id, current_user, db)
+    if account.platform != "mercadolivre":
+        raise HTTPException(
+            status_code=400, detail="Re-importação suporta apenas Mercado Livre"
+        )
+    access_token = await _get_valid_token(account, db)
+
+    updated = 0
+    errors: list[dict] = []
+
+    # Carrega os listings em uma query só
+    result = await db.execute(
+        select(ProductListing)
+        .options(
+            selectinload(ProductListing.cmig_product),
+            selectinload(ProductListing.catalog_product),
+        )
+        .where(
+            ProductListing.account_id == account_id,
+            ProductListing.id.in_(listing_ids),
+        )
+    )
+    listings = result.scalars().all()
+
+    # Validação rápida: IDs solicitados mas não pertencentes à conta
+    found_ids = {lst.id for lst in listings}
+    missing = set(listing_ids) - found_ids
+    for mid in missing:
+        errors.append({"listing_id": mid, "error": "Anúncio não encontrado ou sem acesso"})
+
+    # Busca itens + descrições do ML em paralelo (por chunks de 20 do bulk endpoint)
+    platform_ids = [lst.platform_item_id for lst in listings if lst.platform_item_id]
+    ml_items: list[dict] = []
+    descriptions: dict[str, str] = {}
+    if platform_ids:
+        try:
+            ml_items = await ml_service.get_items_bulk(access_token, platform_ids)
+            descriptions = await ml_service.get_items_descriptions(access_token, platform_ids)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Falha ao consultar ML: {exc}"
+            ) from exc
+
+    items_by_id = {it.get("id"): it for it in ml_items}
+
+    for lst in listings:
+        if not lst.platform_item_id:
+            errors.append({"listing_id": lst.id, "error": "Anúncio sem platform_item_id"})
+            continue
+        item = items_by_id.get(lst.platform_item_id)
+        if not item:
+            errors.append({
+                "listing_id": lst.id, "error": f"ML não retornou dados para {lst.platform_item_id}"
+            })
+            continue
+        try:
+            _apply_ml_item_to_listing(
+                lst,
+                item,
+                descriptions.get(lst.platform_item_id) or "",
+                preserve_local_stock=True,
+            )
+            updated += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("reimport_batch: erro inesperado em listing %s", lst.id)
+            errors.append({
+                "listing_id": lst.id,
+                "error": f"Erro interno ({exc.__class__.__name__})",
+            })
+
+    await db.commit()
+    return {"updated": updated, "errors": errors}
+
+
+@router.get("/{listing_id}/costs-debug")
+async def get_anuncio_costs_debug(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Diagnóstico do cálculo de frete — retorna raw do ML + motivo de skip.
+
+    Usado pra investigar casos onde o frete vem 0 mesmo com seller pagando.
+    """
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if listing.account.platform != "mercadolivre":
+        raise HTTPException(
+            status_code=400, detail="Diagnóstico disponível apenas para Mercado Livre"
+        )
+    access_token = await _get_valid_token(listing.account, db)
+    seller_id = listing.account.platform_user_id or ""
+
+    logistic_type = (listing.logistic_type or "").strip().lower() or (
+        "fulfillment" if listing.is_full else "cross_docking"
+    )
+    weight_kg = float(listing.weight_kg) if listing.weight_kg else None
+    height_cm = float(listing.height_cm) if listing.height_cm else None
+    width_cm = float(listing.width_cm) if listing.width_cm else None
+    length_cm = float(listing.length_cm) if listing.length_cm else None
+    price = float(listing.sale_price) if listing.sale_price else 0.0
+    free_shipping = bool(listing.free_shipping)
+    seller_pays = free_shipping or logistic_type == "fulfillment"
+
+    debug: dict = {
+        "listing_id": listing.id,
+        "platform_item_id": listing.platform_item_id,
+        "inputs": {
+            "price": price,
+            "category_id": listing.category_id,
+            "listing_type": listing.listing_type,
+            "shipping_mode": listing.shipping_mode,
+            "logistic_type": logistic_type,
+            "free_shipping": free_shipping,
+            "weight_kg": weight_kg,
+            "height_cm": height_cm,
+            "width_cm": width_cm,
+            "length_cm": length_cm,
+        },
+        "seller_pays": seller_pays,
+        "skip_reason": None,
+        "raw_listing_prices": None,
+        "raw_shipping_options": None,
+        "parsed_net_cost": None,
+    }
+
+    if not seller_pays:
+        debug["skip_reason"] = "buyer_pays_me2_non_free"
+    elif not (weight_kg and height_cm and width_cm and length_cm):
+        debug["skip_reason"] = (
+            f"missing_dimensions (weight={weight_kg}, h={height_cm}, "
+            f"w={width_cm}, l={length_cm})"
+        )
+
+    import httpx as _httpx
+
+    async with _httpx.AsyncClient(timeout=15) as client:
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        # listing_prices (comissão)
+        if listing.category_id and price > 0:
+            try:
+                resp = await client.get(
+                    f"{ml_service.ML_API_BASE}/sites/MLB/listing_prices",
+                    headers=headers,
+                    params={
+                        "price": price,
+                        "category_id": listing.category_id,
+                        "listing_type_id": listing.listing_type or "gold_special",
+                        "shipping_mode": listing.shipping_mode or "me2",
+                        "logistic_type": logistic_type,
+                    },
+                )
+                debug["raw_listing_prices"] = {
+                    "status": resp.status_code,
+                    "body": resp.json() if resp.status_code == 200 else resp.text[:500],
+                }
+            except Exception as exc:
+                debug["raw_listing_prices"] = {"error": str(exc)}
+
+        # shipping_options/free (frete)
+        if seller_pays and weight_kg and height_cm and width_cm and length_cm and seller_id:
+            physical_g = int(round(weight_kg * 1000))
+            dims = (
+                f"{round(length_cm, 1)}x{round(height_cm, 1)}x{round(width_cm, 1)},{physical_g}"
+            )
+            try:
+                resp = await client.get(
+                    f"{ml_service.ML_API_BASE}/users/{seller_id}/shipping_options/free",
+                    headers=headers,
+                    params={
+                        "dimensions": dims,
+                        "item_price": price,
+                        "listing_type_id": listing.listing_type or "gold_special",
+                        "mode": listing.shipping_mode or "me2",
+                        "logistic_type": logistic_type,
+                        "free_shipping": str(free_shipping or logistic_type == "fulfillment").lower(),
+                        "condition": "new",
+                        "verbose": "true",
+                    },
+                )
+                debug["raw_shipping_options"] = {
+                    "status": resp.status_code,
+                    "dimensions_sent": dims,
+                    "body": resp.json() if resp.status_code == 200 else resp.text[:500],
+                }
+                if resp.status_code == 200:
+                    parsed = ml_service._parse_shipping_response(resp.json())
+                    debug["parsed_net_cost"] = parsed.get("net_cost")
+                    if parsed.get("net_cost") == 0 and not debug["skip_reason"]:
+                        debug["skip_reason"] = "ml_returned_zero_cost"
+                elif not debug["skip_reason"]:
+                    debug["skip_reason"] = f"ml_returned_status_{resp.status_code}"
+            except Exception as exc:
+                debug["raw_shipping_options"] = {"error": str(exc)}
+                if not debug["skip_reason"]:
+                    debug["skip_reason"] = f"exception: {exc}"
+
+    return debug
 
 
 @router.get("/{listing_id}/prices-debug")
