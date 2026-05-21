@@ -3134,6 +3134,70 @@ async def reimport_batch(
     return {"updated": updated, "errors": errors}
 
 
+@router.post("/reactivate-batch")
+async def reactivate_batch(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reativa em lote anúncios pausados.
+
+    Reusa a lógica de `reactivate_anuncio` por listing — cada chamada faz commit
+    independente, então falhas parciais não revertem itens já reativados.
+
+    Body: { "account_id": int, "listing_ids": [int, ...] }
+    Retorno: { "processed": int, "errors": [{listing_id, code, detail}] }
+    """
+    account_id = body.get("account_id")
+    listing_ids: list[int] = list(body.get("listing_ids") or [])
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id é obrigatório")
+    if not listing_ids:
+        raise HTTPException(status_code=400, detail="listing_ids é obrigatório (lista não vazia)")
+
+    await _get_account_or_403(account_id, current_user, db)
+
+    valid_ids_result = await db.execute(
+        select(ProductListing.id).where(
+            ProductListing.account_id == account_id,
+            ProductListing.id.in_(listing_ids),
+        )
+    )
+    valid_ids = set(valid_ids_result.scalars().all())
+    out_of_scope = [lid for lid in listing_ids if lid not in valid_ids]
+
+    processed = 0
+    errors: list[dict] = []
+    for lid in out_of_scope:
+        errors.append({
+            "listing_id": lid,
+            "code": 403,
+            "detail": "Anúncio não pertence à conta informada.",
+        })
+
+    for lid in listing_ids:
+        if lid not in valid_ids:
+            continue
+        try:
+            await reactivate_anuncio(listing_id=lid, db=db, current_user=current_user)
+            processed += 1
+        except HTTPException as exc:
+            errors.append({
+                "listing_id": lid,
+                "code": exc.status_code,
+                "detail": exc.detail,
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("reactivate_batch: erro inesperado em listing %s", lid)
+            errors.append({
+                "listing_id": lid,
+                "code": 500,
+                "detail": f"Erro interno ({exc.__class__.__name__})",
+            })
+
+    return {"processed": processed, "errors": errors}
+
+
 @router.get("/{listing_id}/costs-debug")
 async def get_anuncio_costs_debug(
     listing_id: int,

@@ -64,6 +64,12 @@
                         <i class="fas fa-download mr-2 text-secondary"></i>Ler Anúncio do Marketplace
                       </a>
                     </li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li>
+                      <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('reactivate')">
+                        <i class="fas fa-play mr-2 text-success"></i>Reativar Anúncio
+                      </a>
+                    </li>
                   </ul>
                 </div>
                 <button class="btn btn-sm btn-secondary" @click="importAnuncios" :disabled="!selectedAccountId || importing">
@@ -1205,6 +1211,10 @@
               <i class="fas fa-info-circle mr-1"></i>
               Vai enviar o estoque dos anúncios não-Full e ler o estoque Full dos anúncios Full.
             </p>
+            <p v-else-if="batchAction.action === 'reactivate'" class="text-success small mb-0">
+              <i class="fas fa-info-circle mr-1"></i>
+              Vai reativar anúncios pausados ou fechados no Marketplace. Anúncios já publicados serão ignorados pelo ML.
+            </p>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="batchAction.confirming = false">Cancelar</button>
@@ -1222,15 +1232,15 @@
             <h5 class="modal-title"><i class="fas fa-cog fa-spin mr-2"></i>{{ batchActionLabel(batchAction.action) }}</h5>
           </div>
           <div class="modal-body">
-            <p v-if="batchAction.action === 'sync_to_ml'" class="mb-2">
+            <p v-if="isChunkedAction(batchAction.action)" class="mb-2">
               Processando <strong>{{ batchAction.done }}</strong> de <strong>{{ batchAction.ids.length }}</strong>...
             </p>
             <p v-else class="mb-2">
               Processando <strong>{{ batchAction.ids.length }}</strong> anúncio(s) em uma única requisição...
             </p>
             <div class="progress" style="height:20px">
-              <!-- sync_to_ml: barra com progresso real por chunk; demais: indeterminada -->
-              <div v-if="batchAction.action === 'sync_to_ml'"
+              <!-- Ações em chunks: barra com progresso real; demais: indeterminada -->
+              <div v-if="isChunkedAction(batchAction.action)"
                    class="progress-bar progress-bar-striped progress-bar-animated"
                    :style="{width: ((batchAction.done / Math.max(1, batchAction.ids.length)) * 100) + '%'}">
                 {{ Math.round((batchAction.done / Math.max(1, batchAction.ids.length)) * 100) }}%
@@ -1246,9 +1256,9 @@
             </div>
           </div>
           <div class="modal-footer">
-            <!-- Cancelar só funciona em sync_to_ml (que roda em chunks). Os outros
-                 são chamada única e não dá pra interromper. -->
-            <button v-if="batchAction.action === 'sync_to_ml'"
+            <!-- Cancelar só funciona em ações que rodam em chunks; chamadas únicas
+                 não podem ser interrompidas. -->
+            <button v-if="isChunkedAction(batchAction.action)"
                     class="btn btn-warning"
                     @click="batchAction.cancelled = true"
                     :disabled="batchAction.cancelled">
@@ -1945,7 +1955,13 @@ function batchActionLabel(action) {
     sync_to_ml: 'Enviar Anúncio ao Marketplace',
     sync_stock: 'Sincronizar Estoque',
     reimport:   'Ler Anúncio do Marketplace',
+    reactivate: 'Reativar Anúncio',
   }[action] || action
+}
+
+// Ações que o frontend particiona em chunks (com progresso real + cancelável)
+function isChunkedAction(action) {
+  return action === 'sync_to_ml' || action === 'reactivate'
 }
 
 function confirmBatchAction(action) {
@@ -2003,13 +2019,16 @@ async function runBatchAction() {
       } catch (e) {
         b.errors.push({ listing_id: 0, error: e.response?.data?.detail || 'Falha na requisição' })
       }
-    } else if (b.action === 'sync_to_ml') {
-      // sync-to-ml-batch — particiona em chunks para barra de progresso
+    } else if (b.action === 'sync_to_ml' || b.action === 'reactivate') {
+      // Endpoints batch que processam por listing — particiona em chunks para barra
+      const endpoint = b.action === 'sync_to_ml'
+        ? '/anuncios/sync-to-ml-batch'
+        : '/anuncios/reactivate-batch'
       for (let i = 0; i < b.ids.length; i += BATCH_CHUNK_SIZE) {
         if (b.cancelled) break
         const chunk = b.ids.slice(i, i + BATCH_CHUNK_SIZE)
         try {
-          const { data } = await api.post('/anuncios/sync-to-ml-batch', {
+          const { data } = await api.post(endpoint, {
             account_id: selectedAccountId.value,
             listing_ids: chunk,
           })
