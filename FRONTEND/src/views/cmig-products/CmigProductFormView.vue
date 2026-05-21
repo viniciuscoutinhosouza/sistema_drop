@@ -131,11 +131,6 @@
               </form>
             </div>
 
-            <ProductVariantsCard
-              v-if="isEdit"
-              :base-url="`/cmigs/${cmigId}/products/${route.params.id}/variants`"
-            />
-
           </div>
         </div>
       </div>
@@ -151,7 +146,6 @@ import api from '@/composables/useApi'
 import ProductPhotosCard from '@/components/products/ProductPhotosCard.vue'
 import ProductDimensionsFields from '@/components/products/ProductDimensionsFields.vue'
 import ProductFiscalFields from '@/components/products/ProductFiscalFields.vue'
-import ProductVariantsCard from '@/components/products/ProductVariantsCard.vue'
 import CategoryPickerWithModal from '@/components/products/CategoryPickerWithModal.vue'
 import { generateEan13 } from '@/utils/ean'
 
