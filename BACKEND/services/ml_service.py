@@ -1249,8 +1249,9 @@ async def get_listing_costs(
         weight_detail = wb
         # Peso físico em gramas — a API calcula o cúbico internamente a partir das dimensões
         physical_g = int(round(weight_kg * 1000))
-        # Preservar decimais nas dimensões (ML API aceita float, ex: 9.5)
-        dims = f"{round(length_cm, 1)}x{round(height_cm, 1)}x{round(width_cm, 1)},{physical_g}"
+        # ML exige formato "HeightxWidthxLength,Weight" — ordem fixa. Trocar ordem
+        # faz o endpoint devolver 400 "Invalid format to dimensions field".
+        dims = f"{round(height_cm, 1)}x{round(width_cm, 1)}x{round(length_cm, 1)},{physical_g}"
         # Para Full, o vendedor sempre arca com o frete grátis perante o ML
         effective_free = free_shipping or (logistic_type.lower() == "fulfillment")
 
