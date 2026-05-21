@@ -3222,9 +3222,10 @@ async def get_anuncio_costs_debug(
         # shipping_options/free (frete)
         if seller_pays and weight_kg and height_cm and width_cm and length_cm and seller_id:
             physical_g = int(round(weight_kg * 1000))
-            # ML exige formato "HeightxWidthxLength,Weight"
+            # ML exige formato "HeightxWidthxLength,Weight" com INTEIROS
             dims = (
-                f"{round(height_cm, 1)}x{round(width_cm, 1)}x{round(length_cm, 1)},{physical_g}"
+                f"{int(round(height_cm))}x{int(round(width_cm))}x"
+                f"{int(round(length_cm))},{physical_g}"
             )
             try:
                 resp = await client.get(
