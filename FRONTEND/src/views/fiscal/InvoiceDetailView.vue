@@ -430,7 +430,7 @@ async function load() {
     invoice.value = await fiscalStore.fetchInvoice(Number(route.params.id))
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao carregar NFe')
-    router.push('/fiscal/saidas')
+    router.back()
   } finally {
     loading.value = false
   }

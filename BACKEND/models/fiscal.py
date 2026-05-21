@@ -163,6 +163,7 @@ class InvoiceItem(Base):
     invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False)
     item_number = Column(Integer, nullable=False)
     cmig_product_id = Column(Integer, ForeignKey("cmig_products.id"))
+    catalog_product_id = Column(Integer, ForeignKey("catalog_products.id"))
     sku = Column(String(50))
     source_type = Column(String(10))  # 'cmig' | 'pg' | 'manual'
     cfop = Column(String(4))

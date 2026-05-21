@@ -124,7 +124,7 @@
               </RouterLink>
             </li>
             <li class="nav-item">
-              <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') || route.path.startsWith('/fiscal/invoices') }">
+              <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') }">
                 <i class="nav-icon fas fa-arrow-up"></i>
                 <p>Saídas</p>
               </RouterLink>
@@ -171,7 +171,7 @@
               </RouterLink>
             </li>
             <li class="nav-item">
-              <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') || route.path.startsWith('/fiscal/invoices') }">
+              <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') }">
                 <i class="nav-icon fas fa-arrow-up"></i>
                 <p>Saídas</p>
               </RouterLink>
