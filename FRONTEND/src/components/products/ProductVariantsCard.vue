@@ -34,7 +34,11 @@
               <td>{{ v.color || '—' }}</td>
               <td>{{ v.size_label || '—' }}</td>
               <td>{{ v.voltage || '—' }}</td>
-              <td>{{ v.stock_quantity }}</td>
+              <td>
+                <span :class="['badge', stockBadgeClass(v.stock_quantity)]">
+                  {{ v.stock_quantity }}
+                </span>
+              </td>
               <td>{{ v.price_modifier > 0 ? '+' : '' }}{{ formatCurrency(v.price_modifier) }}</td>
               <td class="text-right pr-2">
                 <div class="btn-group btn-group-sm">
@@ -132,6 +136,12 @@ const form      = ref({})
 
 function formatCurrency(v) {
   return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function stockBadgeClass(qty) {
+  if (qty <= 0) return 'badge-danger'
+  if (qty <= 4) return 'badge-warning'
+  return 'badge-success'
 }
 
 async function load() {

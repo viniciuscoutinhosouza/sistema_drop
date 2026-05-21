@@ -17,16 +17,15 @@ e `_fetch_direct_pg_events` que já consideram a flag `invoice_linked_to_order`.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from models.cmig import CMIGProduct
 from models.fiscal import Invoice, InvoiceItem
 from models.order import Order, OrderItem
-from models.product import CatalogProduct, ProductListing
+from models.product import CatalogProduct, CatalogProductComponent, ProductListing
 from services import stock_history
-
 
 # ── Cálculo CMIG ──────────────────────────────────────────────────────────────
 
@@ -118,6 +117,23 @@ async def calculate_pg_product_stock(
                 if overflow > 0:
                     balance -= overflow
                 cmig_balance -= taken
+
+    # 3) Consumo de kit: se este PG é componente de algum produto composto,
+    # subtrair a quantidade usada em pedidos shipped/delivered dos kits.
+    kit_usage = (
+        await db.execute(
+            select(func.sum(OrderItem.quantity * CatalogProductComponent.quantity))
+            .join(CatalogProductComponent, CatalogProductComponent.composite_id == OrderItem.catalog_product_id)
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(
+                and_(
+                    CatalogProductComponent.component_id == pg_product.id,
+                    Order.shipment_status.in_(("shipped", "delivered")),
+                )
+            )
+        )
+    ).scalar() or 0
+    balance -= int(kit_usage)
 
     return balance
 
@@ -296,6 +312,15 @@ async def affected_products_from_order(
                 )
             ).scalars().all()
             cmig_ids.update(cmig_via_pg)
+            # Kit: propagar componentes para que seus estoques sejam recomputados
+            component_ids = (
+                await db.execute(
+                    select(CatalogProductComponent.component_id).where(
+                        CatalogProductComponent.composite_id == item.catalog_product_id
+                    )
+                )
+            ).scalars().all()
+            pg_ids.update(component_ids)
             continue
 
         # 3) SKU dentro da CMIG do pedido
@@ -347,6 +372,35 @@ async def recompute_after_order_change(
         await recompute_cmig_product_stock(cp_id, db)
     for pg_id in pg_ids:
         await recompute_pg_product_stock(pg_id, db)
+
+    # Atualiza estoque virtual de kits cujos componentes foram recomputados
+    kit_ids = (
+        await db.execute(
+            select(CatalogProductComponent.composite_id)
+            .where(CatalogProductComponent.component_id.in_(pg_ids))
+            .distinct()
+        )
+    ).scalars().all()
+    for kit_id in kit_ids:
+        kit = (
+            await db.execute(
+                select(CatalogProduct)
+                .options(
+                    selectinload(CatalogProduct.components).selectinload(
+                        CatalogProductComponent.component
+                    )
+                )
+                .where(CatalogProduct.id == kit_id)
+            )
+        ).scalar_one_or_none()
+        if kit and kit.components:
+            stocks = [
+                (comp.component.stock_quantity or 0) // comp.quantity
+                for comp in kit.components
+                if comp.quantity
+            ]
+            kit.stock_quantity = min(stocks) if stocks else 0
+
     return {"cmig_recomputed": len(cmig_ids), "pg_recomputed": len(pg_ids)}
 
 

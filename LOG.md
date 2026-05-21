@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-05-21 — feat(products): suporte completo a produto Simples, Kit e Variante
+
+**Mudanças:**
+
+**Etapa 1 — Banco + Modelos:**
+- `Scripts SQL/64_product_type.sql` — coluna `product_type` em `catalog_products`; backfill `kit` onde `is_composite=1`.
+- `Scripts SQL/65_product_listing_variants.sql` — nova tabela `product_listing_variants` (mapeamento `listing_id` + `ml_variation_id` ↔ `catalog_variant_id`).
+- `Scripts SQL/66_order_items_ml_variation.sql` — coluna `ml_variation_id` em `order_items`.
+- `BACKEND/models/product.py` — `product_type` em `CatalogProduct`, nova classe `ProductListingVariant`, relationship `listing_variants` em `ProductListing`.
+- `BACKEND/models/order.py` — `ml_variation_id` em `OrderItem`.
+
+**Etapa 2 — Kit: dedução de estoque idempotente:**
+- `BACKEND/services/fiscal/stock_calculator.py` — `calculate_pg_product_stock()` soma consumo de kits por componente via SQL; `affected_products_from_order()` inclui componentes de kits; `recompute_after_order_change()` recalcula estoque virtual do kit (min de componentes); nova função `recompute_variant_stocks_for_order()`.
+
+**Etapa 3 — Variante: publicação no ML:**
+- `BACKEND/services/ml_service.py` — `build_variations_payload()`, `sync_kit_stock_to_ml()`, `sync_variant_stocks_to_ml()`.
+- `BACKEND/routers/anuncios.py` — suporte a `variations` no payload de publicação; salva `ProductListingVariant` pós-publicação via `_save_listing_variants()`; reconcilia variantes na importação; endpoint `POST /{listing_id}/sync-variant-stocks`.
+
+**Etapa 4 — Variante: webhook + scheduler:**
+- `BACKEND/services/webhook_service.py` — popula `catalog_variant_id` e `ml_variation_id` em `OrderItem` ao processar pedido ML com `variation_id`.
+- `BACKEND/tasks/sync_stock.py` — roteia listings com `listing_variants` para `sync_variant_stocks_to_ml`.
+
+**Etapa 5 — Frontend:**
+- `SupplierProductListView.vue` — badge `VARIANTE` (badge-info).
+- `PgProductFormView.vue` — seletor de tipo (Simples / Kit / Variante) ao criar; redireciona para edição após criar variante.
+- `ProductVariantsCard.vue` — coluna estoque com badge colorido (verde/amarelo/vermelho); coluna ML ID.
+- `AnunciosView.vue` — tabela inline de variantes locais (SKU, cor, tam., volt., estoque, ML Var. ID); botão "Sincronizar estoque por variação" (`fa-swatchbook`).
+
+**Serialização:** `_serialize_listing` inclui `listing_variants[]` com `catalog_variant` aninhado.
+
+**Verificação:** `pytest tests/ -m "not integration" --ignore=tests/test_orders.py` — 9/9 passando. `npm run build` — sem erros.
+
+---
+
 ## 2026-05-18 — feat(anuncios): sync-stock envia estoque do produto para o marketplace
 
 **Commit:** `5102fc7`

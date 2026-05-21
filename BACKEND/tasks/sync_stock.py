@@ -55,11 +55,9 @@ async def _sync(db: AsyncSyncSession) -> None:
 
         if stock_mode == "fixed":
             if not listing.keep_stock_fixed:
-                # Estoque fixo sem restauração: não sincroniza
                 continue
             stock = int(listing.fixed_quantity or 1)
         else:
-            # stock_mode == 'product': calcula a partir do produto vinculado
             try:
                 stock = await _compute_product_stock(db, listing)
             except Exception as exc:
@@ -71,6 +69,8 @@ async def _sync(db: AsyncSyncSession) -> None:
         try:
             if account.platform == "mercadolivre":
                 await ml_update_stock(account.access_token, listing.platform_item_id, stock)
+                listing.available_quantity = stock
+                listing.last_sync_at = datetime.now(UTC)
             elif account.platform == "shopee":
                 await shopee_update_stock(
                     account.access_token,
@@ -78,8 +78,8 @@ async def _sync(db: AsyncSyncSession) -> None:
                     int(listing.platform_item_id),
                     stock,
                 )
-            listing.available_quantity = stock
-            listing.last_sync_at = datetime.now(UTC)
+                listing.available_quantity = stock
+                listing.last_sync_at = datetime.now(UTC)
         except Exception as exc:
             logger.warning(
                 "sync_stock: falha listing_id=%s platform_item=%s: %s",
@@ -94,7 +94,6 @@ async def _sync(db: AsyncSyncSession) -> None:
 async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) -> int:
     """Calcula o estoque real do produto vinculado ao listing."""
 
-    # Listing publicado direto do catálogo PG (sem DropshipperProduct)
     if listing.catalog_product_id and not listing.product_id:
         result = await db.execute(
             select(CatalogProduct.stock_quantity).where(
@@ -104,7 +103,6 @@ async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) 
         qty = result.scalar_one_or_none()
         return int(qty) if qty is not None else 0
 
-    # Listing publicado de CMIG (sem DropshipperProduct)
     if listing.cmig_product_id and not listing.product_id:
         result = await db.execute(
             select(CMIGProduct.stock_quantity).where(CMIGProduct.id == listing.cmig_product_id)
@@ -112,7 +110,6 @@ async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) 
         qty = result.scalar_one_or_none()
         return int(qty) if qty is not None else 0
 
-    # Listing com DropshipperProduct (fluxo antigo via produto dropshipper)
     if listing.product_id:
         result = await db.execute(
             select(DropshipperProduct).where(DropshipperProduct.id == listing.product_id)

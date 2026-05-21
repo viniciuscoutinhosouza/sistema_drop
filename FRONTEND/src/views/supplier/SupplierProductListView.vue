@@ -81,6 +81,7 @@
                   <td><code>{{ p.sku }}</code></td>
                   <td>
                     <span v-if="p.is_composite" class="badge badge-warning mr-1" style="font-size:0.7em">COMPOSTO</span>
+                    <span v-else-if="p.product_type === 'variant'" class="badge badge-info mr-1" style="font-size:0.7em">VARIANTE</span>
                     {{ p.title }}
                   </td>
                   <td>{{ p.cost_price ? `R$ ${Number(p.cost_price).toFixed(2)}` : '—' }}</td>

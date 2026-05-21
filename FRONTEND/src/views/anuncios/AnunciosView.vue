@@ -266,6 +266,7 @@
                         <i class="fas fa-sitemap mr-1"></i>Variações
                       </a>
                     </div>
+
                   </div>
 
                   <!-- Grid financeiro -->
@@ -2788,6 +2789,7 @@ function hasVariations(listing) {
   if (!listing.variations_json) return false
   try { return JSON.parse(listing.variations_json).length > 0 } catch { return false }
 }
+
 
 function showVariationsModal(listing) {
   if (!listing.variations_json) return

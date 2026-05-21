@@ -504,7 +504,6 @@ async def process_ml_order(
     for item_data in ml_order_data.get("order_items", []):
         item_info = item_data.get("item", {})
         ml_item_id = str(item_info.get("id", ""))
-
         # Try to find matching dropshipper product by ML item ID
         dp_result = await db.execute(
             select(DropshipperProduct).where(

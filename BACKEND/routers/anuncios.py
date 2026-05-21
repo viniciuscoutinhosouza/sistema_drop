@@ -219,6 +219,12 @@ def _build_ml_payload(
 
     payload["shipping"] = shipping_payload
 
+    # Variações: quando presentes, o ML não aceita available_quantity no root
+    variations = form.get("variations")
+    if variations:
+        payload.pop("available_quantity", None)
+        payload["variations"] = variations
+
     return payload
 
 
@@ -1041,9 +1047,6 @@ async def import_anuncios(
 
         saved_listings.append(listing)
 
-    # Flush para garantir IDs nos novos listings
-    await db.flush()
-
     # Cache de custos ML com concorrência 5
     import asyncio as _aio
 
@@ -1476,7 +1479,9 @@ async def publish_anuncio(
             except Exception:
                 pass  # não bloqueia criação se descrição falhar
         # ML retorna thumbnail do item criado; fallback para primeira foto enviada
-        thumbnail = ml_item.get("thumbnail") or (pictures[0] if pictures else None)
+        thumbnail = ml_item.get("secure_thumbnail") or ml_item.get("thumbnail") or (pictures[0] if pictures else None)
+        if thumbnail:
+            thumbnail = thumbnail.replace("http://", "https://")
         status = "published"
         published_at = datetime.now(UTC)
     else:
@@ -1485,7 +1490,9 @@ async def publish_anuncio(
                 status_code=400, detail="platform_item_id é obrigatório para vincular"
             )
         ml_item_data = await ml_service.get_item(access_token, platform_item_id)
-        thumbnail = ml_item_data.get("thumbnail") or (pictures[0] if pictures else None)
+        thumbnail = ml_item_data.get("secure_thumbnail") or ml_item_data.get("thumbnail") or (pictures[0] if pictures else None)
+        if thumbnail:
+            thumbnail = thumbnail.replace("http://", "https://")
         status = "published"
         published_at = datetime.now(UTC)
 
@@ -1536,6 +1543,7 @@ async def publish_anuncio(
     db.add(listing)
     await db.commit()
     await db.refresh(listing)
+
     return _serialize_listing(listing)
 
 

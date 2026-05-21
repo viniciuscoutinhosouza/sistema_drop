@@ -221,6 +221,7 @@ async function submit() {
   try {
     const payload = {
       ...form.value,
+      product_type: 'simple',
       images: pictures.value.map(p => ({ url: p.url })),
       cascade_sku_to_linked: cascade,
     }
