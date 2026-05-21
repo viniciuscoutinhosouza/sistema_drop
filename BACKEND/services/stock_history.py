@@ -14,11 +14,11 @@ alterados — esta camada é puramente reporting.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.cmig import CMIG, CMIGProduct
@@ -44,34 +44,34 @@ class StockEvent:
     qty_to_pg: int = 0
 
     # metadados — populados conforme o tipo
-    item_id: Optional[int] = None  # InvoiceItem.id (pra dedup quando agregamos várias fontes)
-    invoice_id: Optional[int] = None
-    invoice_number: Optional[int] = None
-    invoice_serie: Optional[int] = None
-    invoice_status: Optional[str] = None
+    item_id: int | None = None  # InvoiceItem.id (pra dedup quando agregamos várias fontes)
+    invoice_id: int | None = None
+    invoice_number: int | None = None
+    invoice_serie: int | None = None
+    invoice_status: str | None = None
     # True se essa NFe-out tem Order.invoice_id apontando pra ela.
     # No novo modelo, NFe-out vinculada a pedido NÃO debita estoque
     # (o pedido já contou). Default False = NFe-out autônoma.
     invoice_linked_to_order: bool = False
-    order_id: Optional[int] = None
-    order_platform: Optional[str] = None
-    order_platform_id: Optional[str] = None
-    order_shipment_status: Optional[str] = None
+    order_id: int | None = None
+    order_platform: str | None = None
+    order_platform_id: str | None = None
+    order_shipment_status: str | None = None
     order_has_invoice: bool = False
     order_invoice_finalized: bool = False
     # Classificação semântica (apenas para source='order')
     is_reserved: bool = False     # handling | ready_to_ship
     is_definitive: bool = False   # shipped  | delivered
-    person_name: Optional[str] = None
-    item_description: Optional[str] = None
-    item_sku: Optional[str] = None
-    item_ean: Optional[str] = None
-    item_ml_item_id: Optional[str] = None  # ID do anúncio no marketplace (MLB...)
-    cmig_product_id: Optional[int] = None
-    cmig_product_sku: Optional[str] = None
-    cmig_product_title: Optional[str] = None
-    cmig_id: Optional[int] = None
-    cmig_name: Optional[str] = None
+    person_name: str | None = None
+    item_description: str | None = None
+    item_sku: str | None = None
+    item_ean: str | None = None
+    item_ml_item_id: str | None = None  # ID do anúncio no marketplace (MLB...)
+    cmig_product_id: int | None = None
+    cmig_product_sku: str | None = None
+    cmig_product_title: str | None = None
+    cmig_id: int | None = None
+    cmig_name: str | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -280,7 +280,7 @@ async def _resolve_order_invoice_status(
             .where(Order.id.in_(order_ids))
         )
     ).all()
-    status_by_order: dict[int, str] = {oid: status for oid, status in rows}
+    status_by_order: dict[int, str] = dict(rows)
     for e in events:
         if e.source == "order" and e.order_id in status_by_order:
             inv_status = status_by_order[e.order_id]
@@ -364,12 +364,13 @@ async def _fetch_direct_pg_events(
     sku = (pg_product.sku or "").strip()
     ean = (pg_product.ean or "").strip()
 
-    match_clauses = []
+    # FK direta tem prioridade; SKU/EAN como fallback para itens legados
+    match_clauses = [InvoiceItem.catalog_product_id == pg_product.id]
     if sku:
-        match_clauses.append(InvoiceItem.sku == sku)
+        match_clauses.append(and_(InvoiceItem.catalog_product_id.is_(None), InvoiceItem.sku == sku))
     if ean:
-        match_clauses.append(InvoiceItem.ean == ean)
-    if not match_clauses:
+        match_clauses.append(and_(InvoiceItem.catalog_product_id.is_(None), InvoiceItem.ean == ean))
+    if len(match_clauses) == 1 and not sku and not ean:
         return []
 
     stmt = (

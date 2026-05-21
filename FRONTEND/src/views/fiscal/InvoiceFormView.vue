@@ -804,6 +804,7 @@ function selectProduct(p, source) {
   Object.assign(itemForm, {
     id: null,
     cmig_product_id: source === 'cmig' ? p.id : null,
+    catalog_product_id: source === 'pg' ? p.id : null,
     sku,
     source_type: source,
     description: p.title || '',

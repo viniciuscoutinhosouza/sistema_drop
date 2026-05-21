@@ -197,7 +197,10 @@ async def affected_products_from_invoice(
     for item in items:
         source = (item.source_type or "").lower()
         if source == "pg":
-            # PG: match SKU primeiro, EAN fallback
+            # FK direta tem prioridade; SKU/EAN como fallback para itens legados
+            if item.catalog_product_id:
+                pg_ids.add(item.catalog_product_id)
+                continue
             sku = (item.sku or "").strip()
             ean = (item.ean or "").strip()
             pg = None

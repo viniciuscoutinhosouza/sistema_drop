@@ -94,6 +94,7 @@ def _serialize_item(it: InvoiceItem) -> dict:
         "invoice_id": it.invoice_id,
         "item_number": it.item_number,
         "cmig_product_id": it.cmig_product_id,
+        "catalog_product_id": it.catalog_product_id,
         "sku": effective_sku,
         "source_type": it.source_type,
         "cfop": it.cfop,
@@ -1048,6 +1049,7 @@ async def add_item(
         invoice_id=invoice_id,
         item_number=next_seq,
         cmig_product_id=body.get("cmig_product_id"),
+        catalog_product_id=body.get("catalog_product_id"),
         sku=body.get("sku"),
         source_type=body.get("source_type"),
         cfop=body.get("cfop"),
@@ -1140,7 +1142,7 @@ async def update_item(
         "cofins_cst",
         "additional_info",
     }
-    int_fields = {"origin", "cmig_product_id"}
+    int_fields = {"origin", "cmig_product_id", "catalog_product_id"}
 
     for k, v in body.items():
         if k in decimal_fields and v is not None:
