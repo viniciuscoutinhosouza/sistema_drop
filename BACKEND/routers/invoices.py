@@ -1350,8 +1350,13 @@ async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
             "already_updated": True,
         }
 
-    result = await recompute_after_invoice_change(inv, db)
+    # Seta True e flush ANTES do recompute: _fetch_direct_pg_events e
+    # _fetch_nfe_events_for_cmig_product filtram stock_updated==True,
+    # então a própria NFe só entra nos eventos se a flag já estiver ativa.
     inv.stock_updated = True
+    await db.flush()
+
+    result = await recompute_after_invoice_change(inv, db)
     return {**result, "already_updated": False}
 
 
