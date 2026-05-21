@@ -946,10 +946,16 @@ async def import_anuncios(
                 existing.sku = sku
             if description_text:
                 existing.description_override = description_text
-            existing.weight_kg = weight_kg
-            existing.height_cm = height_cm
-            existing.width_cm = width_cm
-            existing.length_cm = length_cm
+            # Só sobrescreve dimensões quando o ML retornou valor — evita
+            # zerar cadastro local quando o anúncio no ML não tem essas infos.
+            if weight_kg is not None:
+                existing.weight_kg = weight_kg
+            if height_cm is not None:
+                existing.height_cm = height_cm
+            if width_cm is not None:
+                existing.width_cm = width_cm
+            if length_cm is not None:
+                existing.length_cm = length_cm
             if pictures_json:
                 existing.pictures_json = pictures_json
             if fiscal_json:
@@ -2095,10 +2101,16 @@ def _apply_ml_item_to_listing(
         listing.sku = sku
     if description_text:
         listing.description_override = description_text
-    listing.weight_kg = dims["weight_kg"]
-    listing.height_cm = dims["height_cm"]
-    listing.width_cm = dims["width_cm"]
-    listing.length_cm = dims["length_cm"]
+    # Só sobrescreve dimensões quando o ML retornou valor — evita zerar
+    # cadastro local quando o anúncio no ML não tem essas infos.
+    if dims["weight_kg"] is not None:
+        listing.weight_kg = dims["weight_kg"]
+    if dims["height_cm"] is not None:
+        listing.height_cm = dims["height_cm"]
+    if dims["width_cm"] is not None:
+        listing.width_cm = dims["width_cm"]
+    if dims["length_cm"] is not None:
+        listing.length_cm = dims["length_cm"]
     if pictures_json:
         listing.pictures_json = pictures_json
     if fiscal_json:
