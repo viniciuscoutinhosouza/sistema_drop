@@ -1121,13 +1121,22 @@ def _calc_billable_weight(
 def _parse_shipping_response(data: dict) -> dict:
     """
     Extrai custo bruto, desconto e custo líquido da resposta de shipping_options/free.
-    Suporta os dois formatos conhecidos da API ML.
+
+    Interpretação do payload ML (formato atual `coverage.all_country`):
+    - `list_cost`        — valor JÁ líquido cobrado do vendedor (com o desconto
+      obrigatório por reputação aplicado).
+    - `discount.promoted_amount` — valor "cheio" antes do desconto (informativo).
+    - `discount.rate`    — proporção do desconto (ex: 0.5 = 50%).
+
+    Confirmação numérica em produção: `promoted_amount * (1 - rate) == list_cost`.
+    Por isso `net_cost = list_cost` direto. Antes o código fazia `list_cost
+    - promoted_amount`, o que zerava o frete sempre que havia desconto.
     """
     # Formato documentado: coverage.all_country
     all_country = _extract_nested(data, "coverage", "all_country") or {}
     list_cost = float(all_country.get("list_cost") or 0)
     disc_info = all_country.get("discount") or {}
-    discount = float(disc_info.get("promoted_amount") or 0)
+    promoted_amount = float(disc_info.get("promoted_amount") or 0)
     disc_rate = float(disc_info.get("rate") or 0)
     disc_type = disc_info.get("type", "")
 
@@ -1139,30 +1148,28 @@ def _parse_shipping_response(data: dict) -> dict:
             or data.get("cost")
             or 0
         )
+        # Fallback equivalente para o desconto
+        if not promoted_amount:
+            disc_info_fb = (
+                _extract_nested(data, "discount")
+                or _extract_nested(data, "options", 0, "discount")
+                or {}
+            )
+            promoted_amount = float(disc_info_fb.get("promoted_amount") or 0)
+            if not disc_rate:
+                disc_rate = float(disc_info_fb.get("rate") or 0)
 
-    # Fallback de desconto: tenta promoted_amount, depois calcula via rate
-    if not discount:
-        disc_info_fb = (
-            _extract_nested(data, "discount")
-            or _extract_nested(data, "options", 0, "discount")
-            or {}
-        )
-        discount = float(disc_info_fb.get("promoted_amount") or 0)
-        if not discount:
-            rate_fb = float(disc_info_fb.get("rate") or disc_info.get("rate") or 0)
-            if rate_fb > 0 and list_cost > 0:
-                discount = round(list_cost * rate_fb, 2)
+    # `list_cost` já vem líquido — o desconto absoluto é informativo
+    # (diferença entre o valor cheio e o líquido)
+    if promoted_amount > list_cost > 0:
+        discount_amount = promoted_amount - list_cost
+    else:
+        discount_amount = 0.0
 
-    # Desconto via rate dentro do all_country (caso promoted_amount não estivesse presente)
-    if not discount and list_cost > 0:
-        rate_val = float(disc_info.get("rate") or 0)
-        if rate_val > 0:
-            discount = round(list_cost * rate_val, 2)
-
-    net_cost = max(0.0, list_cost - discount)
+    net_cost = list_cost
     return {
-        "list_cost": round(list_cost, 2),
-        "discount_amount": round(discount, 2),
+        "list_cost": round(promoted_amount or list_cost, 2),
+        "discount_amount": round(discount_amount, 2),
         "discount_rate_pct": round(disc_rate * 100, 1),
         "discount_type": disc_type,
         "net_cost": round(net_cost, 2),
