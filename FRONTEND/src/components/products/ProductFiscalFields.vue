@@ -5,7 +5,7 @@
     <div class="row">
       <div class="col-md-4 form-group">
         <label>NCM</label>
-        <input v-model="form.ncm" class="form-control" maxlength="8" placeholder="00000000" />
+        <input v-model="form.ncm" class="form-control" maxlength="10" placeholder="0000.00.00" />
       </div>
       <div class="col-md-4 form-group">
         <label>CEST</label>

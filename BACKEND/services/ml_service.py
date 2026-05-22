@@ -970,6 +970,19 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
             )
             if resp_full.status_code in (200, 201):
                 return
+            # ML rejects Full items with no stock in its fulfillment warehouse
+            try:
+                full_body = resp_full.json()
+            except Exception:
+                full_body = {}
+            if _has_cause(full_body, "item.status.invalid"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Não é possível reativar um anúncio Full sem estoque no galpão do "
+                        "Mercado Livre. Envie mercadoria para o fulfillment do ML antes de reativar."
+                    ),
+                )
             raise HTTPException(
                 status_code=400,
                 detail=f"Erro ao reativar anúncio Full: {resp_full.text}",

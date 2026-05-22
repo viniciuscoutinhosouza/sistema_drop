@@ -1,6 +1,18 @@
 from datetime import datetime
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
+
+
+def _norm_ncm(v: str | None) -> str | None:
+    if not v:
+        return v
+    return v.replace(".", "").replace("-", "")[:8] or None
+
+
+def _norm_cest(v: str | None) -> str | None:
+    if not v:
+        return v
+    return v.replace(".", "").replace("-", "")[:7] or None
 
 # ── CMIG ──────────────────────────────────────────────────────────────────────
 
@@ -115,6 +127,16 @@ class CMIGProductCreate(BaseModel):
     is_composite: bool | None = False
     components: list[CMIGProductComponentIn] | None = None
 
+    @field_validator("ncm", mode="before")
+    @classmethod
+    def normalize_ncm(cls, v):
+        return _norm_ncm(v)
+
+    @field_validator("cest", mode="before")
+    @classmethod
+    def normalize_cest(cls, v):
+        return _norm_cest(v)
+
 
 class CMIGProductUpdate(BaseModel):
     # stock_quantity intencionalmente fora — gerenciado por eventos de NF-e/pedido
@@ -133,6 +155,16 @@ class CMIGProductUpdate(BaseModel):
     length_cm: float | None = None
     ncm: str | None = None
     cest: str | None = None
+
+    @field_validator("ncm", mode="before")
+    @classmethod
+    def normalize_ncm(cls, v):
+        return _norm_ncm(v)
+
+    @field_validator("cest", mode="before")
+    @classmethod
+    def normalize_cest(cls, v):
+        return _norm_cest(v)
     origin: int | None = None
     is_active: bool | None = None
     category_id: int | None = None

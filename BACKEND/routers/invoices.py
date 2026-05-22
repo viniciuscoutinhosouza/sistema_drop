@@ -34,6 +34,18 @@ router = APIRouter()
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def _norm_ncm(v):
+    if not v:
+        return v
+    return v.replace(".", "").replace("-", "")[:8] or None
+
+
+def _norm_cest(v):
+    if not v:
+        return v
+    return v.replace(".", "").replace("-", "")[:7] or None
+
+
 async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG:
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
@@ -1053,8 +1065,8 @@ async def add_item(
         sku=body.get("sku"),
         source_type=body.get("source_type"),
         cfop=body.get("cfop"),
-        ncm=body.get("ncm"),
-        cest=body.get("cest"),
+        ncm=_norm_ncm(body.get("ncm")),
+        cest=_norm_cest(body.get("cest")),
         description=description,
         ean=body.get("ean"),
         unit=body.get("unit") or "UN",
@@ -1148,6 +1160,10 @@ async def update_item(
         if k in decimal_fields and v is not None:
             setattr(item, k, Decimal(str(v)))
         elif k in str_fields:
+            if k == "ncm":
+                v = _norm_ncm(v)
+            elif k == "cest":
+                v = _norm_cest(v)
             setattr(item, k, v)
         elif k in int_fields:
             setattr(item, k, v)

@@ -1,10 +1,12 @@
 import os as _os
 import shutil as _shutil
 import uuid as _uuid
-from datetime import date as _date, datetime as _datetime, time as _time
+from datetime import date as _date
+from datetime import datetime as _datetime
+from datetime import time as _time
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy import delete as _sa_delete
 from sqlalchemy import update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,10 +14,8 @@ from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_role
-from models.cmig import CMIG, CMIGProduct
-from models.fiscal import Invoice, InvoiceItem
+from models.cmig import CMIGProduct
 from models.order import OrderItem
-from models.person import Person
 from models.product import (
     CatalogProduct,
     CatalogProductComponent,
@@ -27,6 +27,18 @@ from models.user import User
 from services.stock_history import replay_stock_events_for_pg_product
 
 router = APIRouter()
+
+
+def _norm_ncm(v):
+    if not v:
+        return v
+    return v.replace(".", "").replace("-", "")[:8] or None
+
+
+def _norm_cest(v):
+    if not v:
+        return v
+    return v.replace(".", "").replace("-", "")[:7] or None
 
 
 def _calculate_pg_composite_stock(components) -> int:
@@ -185,8 +197,8 @@ async def create_product(
         height_cm=body.get("height_cm"),
         width_cm=body.get("width_cm"),
         length_cm=body.get("length_cm"),
-        ncm=body.get("ncm"),
-        cest=body.get("cest"),
+        ncm=_norm_ncm(body.get("ncm")),
+        cest=_norm_cest(body.get("cest")),
         brand=body.get("brand"),
         origin=body.get("origin", 0),
         category_id=body.get("category_id"),
@@ -314,7 +326,12 @@ async def update_product(
         "attributes_json",
     ]:
         if field in body:
-            setattr(product, field, body[field])
+            val = body[field]
+            if field == "ncm":
+                val = _norm_ncm(val)
+            elif field == "cest":
+                val = _norm_cest(val)
+            setattr(product, field, val)
 
     # Sincronizar imagens se fornecidas
     if "images" in body:

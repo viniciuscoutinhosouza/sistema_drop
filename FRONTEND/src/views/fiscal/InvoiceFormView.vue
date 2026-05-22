@@ -512,7 +512,7 @@
             <div class="row mt-2">
               <div class="col-md-3">
                 <label class="small mb-1">NCM</label>
-                <input v-model="itemForm.ncm" class="form-control" maxlength="8">
+                <input v-model="itemForm.ncm" class="form-control" maxlength="10" placeholder="0000.00.00">
               </div>
               <div class="col-md-3">
                 <label class="small mb-1">CEST</label>
