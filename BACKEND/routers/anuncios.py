@@ -3218,6 +3218,79 @@ async def reactivate_batch(
     return {"processed": processed, "errors": errors}
 
 
+@router.post("/switch-to-cross-docking-batch")
+async def switch_to_cross_docking_batch(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Converte em lote anúncios Full (qty_full=0) para cross-docking.
+
+    Anúncios que não são Full ou que possuem estoque no galpão do ML são ignorados
+    (não contam como erro).
+
+    Body: { "account_id": int, "listing_ids": [int, ...] }
+    Retorno: { "processed": int, "skipped": int, "errors": [{listing_id, code, detail}] }
+    """
+    account_id = body.get("account_id")
+    listing_ids: list[int] = list(body.get("listing_ids") or [])
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id é obrigatório")
+    if not listing_ids:
+        raise HTTPException(status_code=400, detail="listing_ids é obrigatório (lista não vazia)")
+
+    await _get_account_or_403(account_id, current_user, db)
+
+    valid_ids_result = await db.execute(
+        select(ProductListing.id).where(
+            ProductListing.account_id == account_id,
+            ProductListing.id.in_(listing_ids),
+        )
+    )
+    valid_ids = set(valid_ids_result.scalars().all())
+
+    processed = 0
+    skipped = 0
+    errors: list[dict] = []
+
+    for lid in listing_ids:
+        if lid not in valid_ids:
+            errors.append({
+                "listing_id": lid,
+                "code": 403,
+                "detail": "Anúncio não pertence à conta informada.",
+            })
+            continue
+        try:
+            await switch_to_cross_docking(listing_id=lid, db=db, current_user=current_user)
+            processed += 1
+        except HTTPException as exc:
+            # Anúncio não é Full, sem ID de plataforma, ou tem estoque no galpão → ignora
+            _detail = exc.detail or ""
+            _skip = exc.status_code == 400 and (
+                _detail == "Anúncio não está no modo Full"
+                or _detail == "Anúncio sem ID de plataforma"
+                or "unidades no galpão" in _detail
+            )
+            if _skip:
+                skipped += 1
+            else:
+                errors.append({
+                    "listing_id": lid,
+                    "code": exc.status_code,
+                    "detail": exc.detail,
+                })
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("switch_to_cross_docking_batch: erro inesperado em listing %s", lid)
+            errors.append({
+                "listing_id": lid,
+                "code": 500,
+                "detail": f"Erro interno ({exc.__class__.__name__})",
+            })
+
+    return {"processed": processed, "skipped": skipped, "errors": errors}
+
+
 @router.get("/{listing_id}/costs-debug")
 async def get_anuncio_costs_debug(
     listing_id: int,

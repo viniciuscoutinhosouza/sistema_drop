@@ -70,6 +70,11 @@
                         <i class="fas fa-play mr-2 text-success"></i>Reativar Anúncio
                       </a>
                     </li>
+                    <li>
+                      <a class="dropdown-item" href="#" @click.prevent="confirmBatchAction('drop_full')">
+                        <i class="fas fa-warehouse mr-2 text-danger"></i>Deixar de Oferecer Full no ML
+                      </a>
+                    </li>
                   </ul>
                 </div>
                 <button class="btn btn-sm btn-secondary" @click="importAnuncios" :disabled="!selectedAccountId || importing">
@@ -1216,6 +1221,10 @@
               <i class="fas fa-info-circle mr-1"></i>
               Vai reativar anúncios pausados ou fechados no Marketplace. Anúncios já publicados serão ignorados pelo ML.
             </p>
+            <p v-else-if="batchAction.action === 'drop_full'" class="text-danger small mb-0">
+              <i class="fas fa-info-circle mr-1"></i>
+              Vai converter para cross-docking os anúncios Full com estoque zerado no galpão do ML. Anúncios que não são Full ou que ainda têm estoque no galpão serão ignorados.
+            </p>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="batchAction.confirming = false">Cancelar</button>
@@ -1957,12 +1966,13 @@ function batchActionLabel(action) {
     sync_stock: 'Sincronizar Estoque',
     reimport:   'Ler Anúncio do Marketplace',
     reactivate: 'Reativar Anúncio',
+    drop_full:  'Deixar de Oferecer Full no ML',
   }[action] || action
 }
 
 // Ações que o frontend particiona em chunks (com progresso real + cancelável)
 function isChunkedAction(action) {
-  return action === 'sync_to_ml' || action === 'reactivate'
+  return action === 'sync_to_ml' || action === 'reactivate' || action === 'drop_full'
 }
 
 function confirmBatchAction(action) {
@@ -2020,11 +2030,13 @@ async function runBatchAction() {
       } catch (e) {
         b.errors.push({ listing_id: 0, error: e.response?.data?.detail || 'Falha na requisição' })
       }
-    } else if (b.action === 'sync_to_ml' || b.action === 'reactivate') {
+    } else if (b.action === 'sync_to_ml' || b.action === 'reactivate' || b.action === 'drop_full') {
       // Endpoints batch que processam por listing — particiona em chunks para barra
       const endpoint = b.action === 'sync_to_ml'
         ? '/anuncios/sync-to-ml-batch'
-        : '/anuncios/reactivate-batch'
+        : b.action === 'reactivate'
+        ? '/anuncios/reactivate-batch'
+        : '/anuncios/switch-to-cross-docking-batch'
       for (let i = 0; i < b.ids.length; i += BATCH_CHUNK_SIZE) {
         if (b.cancelled) break
         const chunk = b.ids.slice(i, i + BATCH_CHUNK_SIZE)
