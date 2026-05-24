@@ -1,10 +1,11 @@
 // Utilitários de EAN-13.
 //
-// Prefixo 200-299 = "uso interno do varejista" no padrão GS1 — não conflita
-// com produtos comerciais reais (que usam 789/790 para Brasil, etc.).
-// É a escolha correta para produtos sem GTIN do fabricante.
+// Prefixo 789 = código de país atribuído pela GS1 ao Brasil. Gera EANs no
+// formato "público" usado em produtos comerciais reais (ex.: 7896585254999).
+// Atenção: prefixos 789/790 oficialmente pertencem à GS1 Brasil e só devem
+// ser usados por empresas associadas — manter ciente do risco regulatório.
 
-const INTERNAL_PREFIX = '200'
+const INTERNAL_PREFIX = '789'
 
 /** Calcula o dígito verificador do EAN-13 (mod 10 ponderado 1/3). */
 export function ean13Checksum(first12) {
