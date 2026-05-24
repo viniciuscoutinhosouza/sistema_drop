@@ -222,9 +222,10 @@ def _build_ml_payload(
         "mode": form.get("shipping_mode") or "me2",
         "free_shipping": bool(form.get("free_shipping", False)),
     }
-    # Flex: o ML representa via shipping.tags=['self_service_in']. shipping.mode continua 'me2'.
-    if form.get("use_flex"):
-        shipping_payload["tags"] = ["self_service_in"]
+    # Note: Flex (logistic_type=self_service) NÃO é controlado por anúncio. O ML resolve
+    # automaticamente a partir de (a) conta tem Flex habilitado, (b) categoria aceita,
+    # (c) produto tem atributos exigidos. Não enviamos shipping.tags — o ML rejeita
+    # field_not_updatable em itens existentes e ignora silenciosamente em criação.
 
     # Dimensões do pacote para cálculo de frete ME2 — somente na criação (imutável após)
     if not for_update:
@@ -1486,7 +1487,6 @@ async def publish_anuncio(
             "warranty_time": warranty_time,
             "shipping_mode": shipping_mode,
             "free_shipping": free_shipping,
-            "use_flex": bool(body.get("use_flex", False)),
             "pictures": pictures,
             "attributes": attributes_list,
             "height_cm": body.get("height_cm"),
@@ -2708,52 +2708,6 @@ async def pause_anuncio(
         )
 
     listing.status = _ml_status_to_local(ml_status) if ml_status else "paused"
-    listing.last_sync_at = datetime.now(UTC)
-    await db.commit()
-    return _serialize_listing(listing)
-
-
-@router.post("/{listing_id}/toggle-flex")
-async def toggle_flex_anuncio(
-    listing_id: int,
-    body: dict,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Ativa ou desativa Flex (self_service) num anúncio.
-
-    Body: {"enable": true|false}
-    Pré-condições:
-    - listing.platform_item_id existe
-    - account é ML
-    - account.effective_has_flex é True (se vai ativar)
-    - listing não é Full (Flex não combina com fulfillment)
-    """
-    enable = bool(body.get("enable", True))
-    listing = await _get_listing_or_404(listing_id, current_user, db)
-
-    if not listing.platform_item_id:
-        raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma")
-    if listing.account.platform != "mercadolivre":
-        raise HTTPException(status_code=400, detail="Flex disponível apenas no Mercado Livre")
-    if (listing.logistic_type or "").lower() == "fulfillment":
-        raise HTTPException(
-            status_code=400,
-            detail="Não é possível ativar Flex em anúncio Full. Converta para cross-docking primeiro.",
-        )
-    if enable and not listing.account.effective_has_flex:
-        raise HTTPException(
-            status_code=400,
-            detail="Esta conta não tem Mercado Envios Flex habilitado.",
-        )
-
-    access_token = await _get_valid_token(listing.account, db)
-    ml_item = await ml_service.toggle_item_flex(access_token, listing.platform_item_id, enable)
-
-    # Atualiza logistic_type local a partir da resposta do ML
-    new_logistic = ((ml_item.get("shipping") or {}).get("logistic_type") or "").lower()
-    if new_logistic:
-        listing.logistic_type = new_logistic
     listing.last_sync_at = datetime.now(UTC)
     await db.commit()
     return _serialize_listing(listing)

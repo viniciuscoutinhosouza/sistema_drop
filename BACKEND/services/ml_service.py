@@ -683,12 +683,13 @@ async def close_item(access_token: str, item_id: str) -> None:
 
 
 async def detect_shipping_capabilities(access_token: str, seller_id: str) -> dict:
-    """Detecta quais modalidades de envio a conta tem habilitadas, baseado em itens já publicados.
+    """Detecta modalidades de envio habilitadas via /users/{id}/shipping_preferences (oficial).
 
-    Why: o ML não expõe endpoint oficial 'esta conta tem Flex?'. A heurística robusta é
-    contar itens com logistic_type específico — se a conta já publicou pelo menos 1 item
-    Flex, ela tem Flex habilitado. Limitação: contas novas que ainda não publicaram
-    nada serão detectadas como sem Flex/Full (use override manual nesses casos).
+    Why: este é o endpoint canônico do ML — funciona inclusive em contas novas que
+    ainda não publicaram nada. O endpoint retorna `logistics` com a lista de modos
+    (me1, me2) e os tipos suportados em cada (drop_off, cross_docking, self_service
+    [=Flex], fulfillment [=Full]). Procuramos `mode=me2` e checamos se contém
+    `self_service` (Flex) e `fulfillment` (Full).
 
     Returns dict: {"has_flex": bool, "has_full": bool}
     """
@@ -696,43 +697,43 @@ async def detect_shipping_capabilities(access_token: str, seller_id: str) -> dic
     result = {"has_flex": False, "has_full": False}
 
     async with httpx.AsyncClient(timeout=15) as client:
-        for key, logistic in (("has_flex", "self_service"), ("has_full", "fulfillment")):
-            try:
-                resp = await client.get(
-                    f"{ML_API_BASE}/users/{seller_id}/items/search",
-                    headers=headers,
-                    params={"logistic_type": logistic, "limit": 1},
-                )
-                if resp.status_code == 200:
-                    body = resp.json()
-                    total = (body.get("paging") or {}).get("total", 0)
-                    result[key] = total > 0
-            except Exception as exc:
-                logger.warning("detect_shipping_capabilities %s falhou para seller %s: %s",
-                               logistic, seller_id, exc)
+        try:
+            resp = await client.get(
+                f"{ML_API_BASE}/users/{seller_id}/shipping_preferences",
+                headers=headers,
+            )
+            if resp.status_code != 200:
+                logger.warning("shipping_preferences %s retornou %s", seller_id, resp.status_code)
+                return result
+            body = resp.json()
+        except Exception as exc:
+            logger.warning("shipping_preferences falhou para seller %s: %s", seller_id, exc)
+            return result
+
+    # Estrutura: {"logistics": [{"mode": "me2", "types": [{"id": "self_service"}, ...]}, ...]}
+    for logistic in (body.get("logistics") or []):
+        if logistic.get("mode") != "me2":
+            continue
+        type_ids = {(t or {}).get("id") for t in (logistic.get("types") or [])}
+        # Alguns retornos usam estrutura diferente — tenta variações
+        if not type_ids:
+            type_ids = {(t or {}).get("type") for t in (logistic.get("types") or [])}
+        if "self_service" in type_ids:
+            result["has_flex"] = True
+        if "fulfillment" in type_ids:
+            result["has_full"] = True
     return result
 
 
-async def toggle_item_flex(access_token: str, item_id: str, enable: bool) -> dict:
-    """Ativa ou desativa Flex (self_service) num item já publicado.
+async def get_category_shipping_preferences(category_id: str) -> dict:
+    """Retorna preferências de envio de uma categoria ML (endpoint público, sem token).
 
-    ML representa Flex via shipping.tags: ativar = ['self_service_in'], desativar = [].
-    Retorna o JSON do item atualizado. Levanta HTTPException 400 se ML rejeitar
-    (ex.: item Full não aceita Flex; categoria sem suporte; conta sem Flex habilitado).
+    Útil para validar se a categoria do anúncio aceita Flex/Full antes de publicar.
+    Retorna o JSON cru — caller decide o que extrair.
     """
-    payload = {"shipping": {"tags": ["self_service_in"] if enable else []}}
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.put(
-            f"{ML_API_BASE}/items/{item_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            json=payload,
-        )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Erro ao {'habilitar' if enable else 'desabilitar'} Flex no ML: {resp.text}",
-        )
-    return resp.json()
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{ML_API_BASE}/categories/{category_id}/shipping_preferences")
+    return resp.json() if resp.status_code == 200 else {}
 
 
 async def search_categories(query: str, site_id: str = "MLB") -> list[dict]:

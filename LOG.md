@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-05-24 — refactor(anuncios): Flex é resolvido pelo ML (não por item) + badge informativo
+
+**Erro reportado:** `field_not_updatable` ao tentar habilitar Flex via `PUT /items/{id}` com `shipping.tags=['self_service_in']`.
+
+**Causa raiz (pesquisa do usuário):** Flex (`self_service`) é um **sub-tipo de me2**, não modalidade separada. O Mercado Livre decide automaticamente se um anúncio aparece como Flex baseado em 3 camadas:
+1. Conta tem Flex habilitado? → `GET /users/{id}/shipping_preferences` (procurar `mode:me2` com `type:self_service`)
+2. Categoria aceita Flex? → `GET /categories/{id}/shipping_preferences`
+3. Produto tem atributos exigidos (peso/dimensões)? → `GET /catalog_domains/{dom}/shipping_attributes`
+
+Não há flag booleana por anúncio. A tentativa de `PUT /items` com `shipping.tags` é rejeitada.
+
+**Refatoração:**
+- `BACKEND/services/ml_service.py`:
+  - `detect_shipping_capabilities()` trocada da heurística items/search para `/users/{id}/shipping_preferences` (oficial). Funciona em contas novas.
+  - **Removida** `toggle_item_flex()` (não suportado pela API).
+  - **Nova** `get_category_shipping_preferences(category_id)` para uso futuro de validação de elegibilidade.
+- `BACKEND/routers/anuncios.py`:
+  - **Removido** endpoint `POST /{listing_id}/toggle-flex`.
+  - `_build_ml_payload` não envia mais `shipping.tags` (ML rejeita no update e ignora no create).
+  - `publish_anuncio` não propaga mais `use_flex`.
+- `FRONTEND/src/views/anuncios/AnunciosView.vue`:
+  - Botão ⚡ clicável da linha do anúncio → **badge informativo não-clicável** (`Flex`, `ME2`, `Full`) baseado em `listing.logistic_type` real.
+  - Função `toggleFlex`/`isFlexActive` → **substituídas** por `logisticBadge(listing)`.
+  - Wizard aba 5 (Envio): toggle Flex **removido**. Substituído por: (a) badge read-only do logistic_type atual (no edit); (b) info-box explicando que ML resolve automaticamente, citando se a conta tem Flex/Full disponível.
+
+**Decisões:**
+- Endpoints `/accounts/{id}/shipping-capabilities` (GET/PUT/POST refresh) **mantidos** — agora consomem o endpoint oficial em vez da heurística.
+- Override manual (`has_flex_override`/`has_full_override`) **mantido** — útil quando endpoint shipping_preferences não retorna info confiável.
+- Sem mudança de schema (migration 70 segue válida).
+
+---
+
 ## 2026-05-24 — feat(anuncios): modalidades de envio por conta ML (Flex/Full) + botão Flex inline
 
 **Problema:** O wizard de publicação não diferenciava modalidades de envio (ME2, Flex, Full) por conta. Anúncios eram sempre publicados como ME2 cross-docking padrão. Usuários com contas que tinham Flex habilitado precisavam ativar manualmente no Seller Center.
