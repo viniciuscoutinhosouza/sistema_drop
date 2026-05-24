@@ -652,8 +652,13 @@ async def get_items_descriptions(access_token: str, item_ids: list[str]) -> dict
     return dict(results)
 
 
-async def pause_item(access_token: str, item_id: str) -> None:
-    """Pause (close) an active ML listing."""
+async def pause_item(access_token: str, item_id: str) -> dict:
+    """Pause an active ML listing. Returns the updated item JSON from ML.
+
+    Why: o ML pode responder 200 OK e silenciosamente NÃO mudar o status
+    (itens Full, catálogo vinculado, ou com sub_status restritivo). Retornar
+    o dict permite o caller verificar `status` e `sub_status` reais.
+    """
     async with httpx.AsyncClient() as client:
         resp = await client.put(
             f"{ML_API_BASE}/items/{item_id}",
@@ -662,6 +667,7 @@ async def pause_item(access_token: str, item_id: str) -> None:
         )
     if resp.status_code not in (200, 201):
         raise HTTPException(status_code=400, detail=f"Erro ao pausar anúncio ML: {resp.text}")
+    return resp.json()
 
 
 async def close_item(access_token: str, item_id: str) -> None:
@@ -907,8 +913,12 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
     )
 
 
-async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) -> None:
-    """Reactivate a paused or closed ML listing.
+async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) -> dict:
+    """Reactivate a paused or closed ML listing. Returns the updated item JSON.
+
+    Why retornar dict: o caller precisa checar o `status` real retornado — o ML
+    pode aceitar a chamada (200 OK) mas manter o item no estado anterior em
+    cenários extremos (Full sem estoque, catálogo bloqueado, etc).
 
     ML has two conflicting constraints depending on item type:
     - Standard items: require available_quantity > 0 to activate (send both together).
@@ -944,7 +954,7 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
         )
 
         if resp.status_code in (200, 201):
-            return
+            return resp.json()
 
         # For not_modifiable: update stock via the proper endpoint first, then activate
         is_not_modifiable = False
@@ -969,7 +979,7 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
                 json={"status": "active"},
             )
             if resp_full.status_code in (200, 201):
-                return
+                return resp_full.json()
             # ML rejects Full items with no stock in its fulfillment warehouse
             try:
                 full_body = resp_full.json()
@@ -1007,7 +1017,7 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
                 json={"status": "active", "available_quantity": qty},
             )
             if resp2.status_code in (200, 201):
-                return
+                return resp2.json()
             # ML still rejects quantity alongside status — fall through to status-only attempt
 
         resp3 = await client.put(
@@ -1016,7 +1026,7 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
             json={"status": "active"},
         )
         if resp3.status_code in (200, 201):
-            return
+            return resp3.json()
 
         # Build a meaningful error: include stock_outcome so the user understands what happened
         outcome_msg = {

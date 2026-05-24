@@ -2627,22 +2627,48 @@ async def switch_to_cross_docking(
     return _serialize_listing(listing)
 
 
+def _ml_status_to_local(ml_status: str | None) -> str:
+    """Mapeia status do ML para nosso enum local."""
+    return {
+        "active": "published",
+        "paused": "paused",
+        "closed": "paused",
+        "under_review": "draft",
+        "inactive": "paused",
+    }.get(ml_status or "", "paused")
+
+
 @router.post("/{listing_id}/reactivate")
 async def reactivate_anuncio(
     listing_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Reativa anúncio pausado ou fechado no ML."""
+    """Reativa anúncio pausado ou fechado no ML.
+
+    Valida que o ML realmente trocou o status — se o ML respondeu 200 mas
+    manteve o item no estado anterior (caso raro), levanta erro pro usuário
+    saber que precisa agir manualmente no Seller Center.
+    """
     listing = await _get_listing_or_404(listing_id, current_user, db)
     if not listing.platform_item_id:
         raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma")
 
     access_token = await _get_valid_token(listing.account, db)
     quantity = listing.available_quantity or 1
-    await ml_service.reactivate_item(access_token, listing.platform_item_id, quantity)
+    ml_item = await ml_service.reactivate_item(access_token, listing.platform_item_id, quantity)
 
-    listing.status = "published"
+    ml_status = (ml_item or {}).get("status")
+    if ml_status and ml_status != "active":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Mercado Livre aceitou a chamada mas manteve o anúncio como '{ml_status}'. "
+                f"Verifique restrições no Seller Center (estoque, qualidade, sub_status)."
+            ),
+        )
+
+    listing.status = _ml_status_to_local(ml_status) if ml_status else "published"
     listing.last_sync_at = datetime.now(UTC)
     await db.commit()
     return _serialize_listing(listing)
@@ -2654,16 +2680,31 @@ async def pause_anuncio(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Pausa o anúncio no Mercado Livre."""
+    """Pausa o anúncio no Mercado Livre.
+
+    Valida que o ML realmente pausou — pause em itens Full/catálogo às vezes
+    retorna 200 mas o ML ignora silenciosamente.
+    """
     listing = await _get_listing_or_404(listing_id, current_user, db)
 
     if not listing.platform_item_id:
         raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma para pausar")
 
     access_token = await _get_valid_token(listing.account, db)
-    await ml_service.pause_item(access_token, listing.platform_item_id)
+    ml_item = await ml_service.pause_item(access_token, listing.platform_item_id)
 
-    listing.status = "paused"
+    ml_status = (ml_item or {}).get("status")
+    if ml_status and ml_status != "paused":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Mercado Livre aceitou a chamada mas manteve o anúncio como '{ml_status}'. "
+                f"Anúncios Full ou de catálogo do ML geralmente precisam ser pausados pelo Seller Center."
+            ),
+        )
+
+    listing.status = _ml_status_to_local(ml_status) if ml_status else "paused"
+    listing.last_sync_at = datetime.now(UTC)
     await db.commit()
     return _serialize_listing(listing)
 
