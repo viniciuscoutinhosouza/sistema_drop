@@ -70,6 +70,7 @@ from routers import (
     notifications,
     orders,
     people,
+    product_categories,
     products,
     returns,
     simulator,
@@ -101,6 +102,11 @@ app.include_router(warehouse.router, prefix=f"{PREFIX}/warehouse", tags=["Wareho
 app.include_router(goes.router, prefix=f"{PREFIX}/goes", tags=["GOs"])
 app.include_router(cmigs.router, prefix=f"{PREFIX}/cmigs", tags=["CMIGs"])
 app.include_router(anuncios.router, prefix=f"{PREFIX}/anuncios", tags=["Anuncios"])
+app.include_router(
+    product_categories.router,
+    prefix=f"{PREFIX}/product-categories",
+    tags=["ProductMarketplaceCategories"],
+)
 app.include_router(simulator.router, prefix=f"{PREFIX}/simulator", tags=["Simulator"])
 app.include_router(people.router, prefix=f"{PREFIX}/people", tags=["People"])
 app.include_router(

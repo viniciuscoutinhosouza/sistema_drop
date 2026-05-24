@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-05-24 — feat(products): múltiplas categorias por marketplace + 2 bugfixes ML
+
+**Bugfixes (commits anteriores `cee5fae` e `499a850`):**
+- `feat(ean)`: prefixo do EAN gerado mudou de 200 (interno GS1) para 789 (Brasil GS1) — produz códigos no formato público (ex: 7896585254999).
+- `fix(anuncios)`: `pictures_json` agora é persistido após publicar anúncio (extrai `pictures` da resposta do ML POST /items ou GET /items/{id}). Antes a tela de gestão ficava sem fotos.
+- `fix(anuncios)`: `attributes_json` agora é derivado de `attributes` (lista) quando o frontend só envia um dos dois — antes o campo ficava nulo no DB se o cliente esquecesse a versão serializada.
+
+**Feature: múltiplas categorias de marketplace por produto:**
+- `Scripts SQL/69_product_marketplace_categories.sql` — nova tabela `product_marketplace_categories` (FK exclusiva pra `catalog_products` OU `cmig_products`, unique por (owner, marketplace, category_id)). Idempotente.
+- `BACKEND/models/product.py` — nova classe `ProductMarketplaceCategory` + relationship `marketplace_categories` em `CatalogProduct`.
+- `BACKEND/models/cmig.py` — relationship `marketplace_categories` em `CMIGProduct`.
+- `BACKEND/routers/product_categories.py` — CRUD em `/api/v1/product-categories` (GET por owner, POST, PUT, DELETE).
+- `BACKEND/main.py` — registro do router.
+- `FRONTEND/src/components/products/MarketplaceCategoriesCard.vue` — componente reutilizável que lista categorias salvas, permite adicionar (busca ML pela API existente), expandir e preencher atributos da categoria.
+- `FRONTEND/src/views/cmig-products/CmigProductFormView.vue` e `PgProductFormView.vue` — integração do componente (só visível após salvar produto).
+- `FRONTEND/src/views/anuncios/AnunciosView.vue` — aba 3 do wizard de publicação ganhou seção "Categorias salvas neste produto" com botões de atalho que pré-preenchem `category_id` + atributos.
+
+**Decisões de produto:**
+- Inicialmente só Mercado Livre (Shopee virá depois — estrutura já preparada).
+- Atributos pré-cadastrados são template/sugestão; o usuário sempre pode editar/pular na hora de publicar.
+- Edição de atributos no momento de publicar **não** sobrescreve o cadastro do produto (vai só pro `ProductListing.attributes_json`).
+
+**Próximo passo:** rodar migration 69 em Oracle; testar fluxo end-to-end (cadastrar categoria num produto PG → publicar anúncio reutilizando atalho → confirmar atributos chegam ao ML).
+
+---
+
 ## 2026-05-21 — feat(products): suporte completo a produto Simples, Kit e Variante
 
 **Mudanças:**

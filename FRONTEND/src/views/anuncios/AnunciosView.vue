@@ -621,6 +621,26 @@
                   </button>
                 </div>
 
+                <!-- Categorias já cadastradas neste produto para o ML -->
+                <div v-if="savedProductCategories.length > 0" class="alert alert-light border mb-3 py-2">
+                  <label class="small font-weight-bold mb-1 d-block">
+                    <i class="fas fa-bookmark text-primary mr-1"></i>
+                    Categorias salvas neste produto
+                  </label>
+                  <div class="d-flex flex-wrap" style="gap:6px">
+                    <button v-for="pc in savedProductCategories" :key="pc.id"
+                            type="button"
+                            :class="['btn btn-sm', wf.category_id === pc.category_id ? 'btn-primary' : 'btn-outline-primary']"
+                            @click="applySavedCategory(pc)">
+                      <i class="fas fa-tag mr-1"></i>
+                      {{ pc.category_name || pc.category_id }}
+                      <span class="badge badge-light ml-1" :title="`${savedAttrsCount(pc)} atributo(s) pré-preenchidos`">
+                        {{ savedAttrsCount(pc) }}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
                 <!-- Campo de busca — visível apenas quando categoryEditMode = true -->
                 <div v-if="categoryEditMode" class="mb-3">
                   <div class="input-group">
@@ -1538,6 +1558,8 @@ function selectProduct(p) {
   if (wf.value.pictures.length === 0 && p.images?.length) {
     wf.value.pictures = p.images.slice(0, 12).map(i => i.url || i).filter(Boolean)
   }
+  // Carrega categorias já cadastradas neste produto para o atalho da aba 3
+  loadSavedProductCategories()
 }
 
 const refreshingProductImages = ref(false)
@@ -1589,6 +1611,68 @@ const attrValues = ref({})
 const savedAttrNames = ref({})   // { attr_id: display_name } para atributos já existentes
 const attrLoading = ref(false)
 const categoryEditMode = ref(false)  // exibe campo de busca de categoria somente qdo true
+
+// Categorias salvas no produto (carregadas ao selecionar produto na aba 1 ou ao chegar na aba 3)
+const savedProductCategories = ref([])
+
+async function loadSavedProductCategories() {
+  savedProductCategories.value = []
+  if (!wf.value.product_id) return
+  const endpoint = wf.value.product_type === 'cmig'
+    ? `/product-categories/cmig/${wf.value.product_id}`
+    : `/product-categories/catalog/${wf.value.product_id}`
+  try {
+    const { data } = await api.get(endpoint)
+    // Filtra só ML por ora (Shopee virá depois)
+    savedProductCategories.value = (Array.isArray(data) ? data : [])
+      .filter(c => c.marketplace === 'mercado_livre')
+  } catch {
+    savedProductCategories.value = []
+  }
+}
+
+function savedAttrsCount(pc) {
+  try {
+    const arr = JSON.parse(pc.attributes_json || '[]')
+    return Array.isArray(arr) ? arr.length : 0
+  } catch {
+    return 0
+  }
+}
+
+async function applySavedCategory(pc) {
+  // Aplica categoria + atributos pré-cadastrados no formulário do wizard
+  wf.value.category_id = pc.category_id
+  wf.value.category_name = pc.category_name || pc.category_id
+  if (pc.category_path_json) {
+    try {
+      const path = JSON.parse(pc.category_path_json)
+      if (Array.isArray(path) && path.length) categoryPaths.value[pc.category_id] = path
+    } catch { /* ignore */ }
+  }
+  categoryEditMode.value = false
+  categoryResults.value = []
+  attrValues.value = {}
+  attrLoading.value = true
+  try {
+    const { data } = await api.get(`/anuncios/categories/${pc.category_id}/attributes`)
+    categoryAttributes.value = Array.isArray(data) ? data : []
+  } catch {
+    categoryAttributes.value = []
+  } finally {
+    attrLoading.value = false
+  }
+  // Popula valores salvos
+  try {
+    const saved = JSON.parse(pc.attributes_json || '[]')
+    for (const a of saved) {
+      if (a.id) {
+        attrValues.value[a.id] = a.value_name ?? a.value ?? ''
+        if (a.name) savedAttrNames.value[a.id] = a.name
+      }
+    }
+  } catch { /* ignore */ }
+}
 
 // Atributos que existem no anúncio mas não estão na lista de atributos ML da categoria
 const extraCategoryAttrs = computed(() => {
@@ -1710,6 +1794,7 @@ async function openWizard(listing) {
   categoryAttributes.value = []
   attrValues.value = {}
   savedAttrNames.value = {}
+  savedProductCategories.value = []
   wizardFiscal.value = { ncm: '', ean: '', cest: '', gtin: '' }
   categoryEditMode.value = !listing  // edit mode: categoria só muda ao clicar; novo: já abre campo
   productSearch.value = ''
@@ -1775,6 +1860,7 @@ async function openWizard(listing) {
       wf.value.product_id = listing.catalog_product.id
       wf.value.selectedProduct = pgProductList.value.find(p => p.id === listing.catalog_product.id) || listing.catalog_product
     }
+    loadSavedProductCategories()
     // Pre-popular fotos do anúncio
     if (listing.pictures_json) {
       try {

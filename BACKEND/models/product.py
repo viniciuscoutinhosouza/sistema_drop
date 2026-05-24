@@ -1,4 +1,4 @@
-from sqlalchemy import TIMESTAMP, Boolean, Column, ForeignKey, Integer, Numeric, String, text
+from sqlalchemy import TIMESTAMP, Boolean, Column, ForeignKey, Integer, Numeric, String, Text, text
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -65,6 +65,12 @@ class CatalogProduct(Base):
         back_populates="composite",
         cascade="all, delete-orphan",
         lazy="selectin",
+    )
+    marketplace_categories = relationship(
+        "ProductMarketplaceCategory",
+        foreign_keys="ProductMarketplaceCategory.catalog_product_id",
+        back_populates="catalog_product",
+        cascade="all, delete-orphan",
     )
 
     @property
@@ -271,4 +277,41 @@ class MLFullTariff(Base):
     notes = Column(String(200))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
+
+
+class ProductMarketplaceCategory(Base):
+    """Categoria de marketplace cadastrada num produto (CMIG ou PG), com atributos pré-preenchidos.
+
+    Why: um mesmo produto pode ser anunciado em várias categorias do ML/Shopee, cada
+    uma exigindo atributos diferentes. Manter os atributos pré-preenchidos por categoria
+    permite que ao publicar um anúncio o usuário reutilize um conjunto pronto.
+
+    Owner: exatamente um de (catalog_product_id, cmig_product_id) — garantido pelo CHECK.
+    """
+
+    __tablename__ = "product_marketplace_categories"
+
+    id = Column(Integer, primary_key=True)
+    catalog_product_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=True)
+    cmig_product_id = Column(Integer, ForeignKey("cmig_products.id"), nullable=True)
+    marketplace = Column(String(30), nullable=False)  # 'mercado_livre' | 'shopee'
+    category_id = Column(String(100), nullable=False)
+    category_name = Column(String(300))
+    category_path_json = Column(Text)  # JSON: [{id, name}, ...]
+    attributes_json = Column(Text)  # JSON: [{id, name, value_name, value_id?}, ...]
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
+
+    catalog_product = relationship(
+        "CatalogProduct",
+        foreign_keys=[catalog_product_id],
+        back_populates="marketplace_categories",
+    )
+    cmig_product = relationship(
+        "CMIGProduct",
+        foreign_keys=[cmig_product_id],
+        back_populates="marketplace_categories",
     )

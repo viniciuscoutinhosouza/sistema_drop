@@ -113,6 +113,8 @@
 
                   <ProductFiscalFields :form="form" />
 
+                  <MarketplaceCategoriesCard owner-type="catalog" :owner-id="isEdit ? Number(route.params.id) : null" />
+
                   <div class="row" v-if="isEdit">
                     <div class="col-md-12 form-group pt-2">
                       <div class="custom-control custom-switch">
@@ -146,6 +148,7 @@ import api from '@/composables/useApi'
 import ProductPhotosCard from '@/components/products/ProductPhotosCard.vue'
 import ProductDimensionsFields from '@/components/products/ProductDimensionsFields.vue'
 import ProductFiscalFields from '@/components/products/ProductFiscalFields.vue'
+import MarketplaceCategoriesCard from '@/components/products/MarketplaceCategoriesCard.vue'
 import CategoryPickerWithModal from '@/components/products/CategoryPickerWithModal.vue'
 import { generateEan13 } from '@/utils/ean'
 

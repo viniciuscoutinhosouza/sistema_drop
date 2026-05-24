@@ -111,6 +111,12 @@ class CMIGProduct(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    marketplace_categories = relationship(
+        "ProductMarketplaceCategory",
+        foreign_keys="ProductMarketplaceCategory.cmig_product_id",
+        back_populates="cmig_product",
+        cascade="all, delete-orphan",
+    )
 
     @property
     def category_name(self):
