@@ -68,6 +68,23 @@ async def upload_anuncio_image(
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 
+def _pictures_to_json(ml_pictures: list | None, fallback_urls: list[str] | None) -> str | None:
+    """Normaliza pictures vindas da resposta do ML para o formato {id, url} salvo em pictures_json.
+
+    Why: o ML devolve pictures: [{id, url, secure_url}] ao criar/buscar item, mas o
+    create do listing antes não persistia isso — o grid de fotos da tela de gestão
+    consome pictures_json, então sem persistir a tela ficava em branco.
+    """
+    pics: list[dict] = []
+    for pic in ml_pictures or []:
+        url = (pic.get("secure_url") or pic.get("url") or "").replace("http://", "https://")
+        if url:
+            pics.append({"id": pic.get("id", ""), "url": url})
+    if not pics and fallback_urls:
+        pics = [{"id": "", "url": u} for u in fallback_urls if u]
+    return _json.dumps(pics, ensure_ascii=False) if pics else None
+
+
 def _title_similarity(a: str, b: str) -> float:
     """Jaccard similarity entre palavras de dois títulos (case-insensitive)."""
     sa = set(a.lower().split())
@@ -1434,7 +1451,10 @@ async def publish_anuncio(
     shipping_mode = body.get("shipping_mode") or "me2"
     free_shipping = bool(body.get("free_shipping", False))
     video_id = body.get("video_id")
+    attributes_list = body.get("attributes") or []
     attributes_json = body.get("attributes_json")
+    if not attributes_json and attributes_list:
+        attributes_json = _json.dumps(attributes_list, ensure_ascii=False)
     pictures = body.get("pictures") or []
 
     # Estoque local
@@ -1464,7 +1484,7 @@ async def publish_anuncio(
             "shipping_mode": shipping_mode,
             "free_shipping": free_shipping,
             "pictures": pictures,
-            "attributes": body.get("attributes") or [],
+            "attributes": attributes_list,
             "height_cm": body.get("height_cm"),
             "width_cm": body.get("width_cm"),
             "length_cm": body.get("length_cm"),
@@ -1482,6 +1502,8 @@ async def publish_anuncio(
         thumbnail = ml_item.get("secure_thumbnail") or ml_item.get("thumbnail") or (pictures[0] if pictures else None)
         if thumbnail:
             thumbnail = thumbnail.replace("http://", "https://")
+        # Persiste fotos no formato {id, url} para a tela de gestão exibir miniaturas
+        pictures_json = _pictures_to_json(ml_item.get("pictures"), pictures)
         status = "published"
         published_at = datetime.now(UTC)
     else:
@@ -1493,6 +1515,7 @@ async def publish_anuncio(
         thumbnail = ml_item_data.get("secure_thumbnail") or ml_item_data.get("thumbnail") or (pictures[0] if pictures else None)
         if thumbnail:
             thumbnail = thumbnail.replace("http://", "https://")
+        pictures_json = _pictures_to_json(ml_item_data.get("pictures"), pictures)
         status = "published"
         published_at = datetime.now(UTC)
 
@@ -1538,6 +1561,7 @@ async def publish_anuncio(
         length_cm=dim_length,
         status=status,
         published_at=published_at,
+        pictures_json=pictures_json,
         last_sync_at=datetime.now(UTC),
     )
     db.add(listing)
