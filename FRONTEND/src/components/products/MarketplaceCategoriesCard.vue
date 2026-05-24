@@ -110,15 +110,30 @@
               <a v-for="r in searchResults" :key="r.id"
                  class="list-group-item list-group-item-action py-1 small"
                  href="#" @click.prevent="selectSearchResult(r)">
-                <strong>{{ r.name }}</strong>
-                <code class="text-muted ml-2" style="font-size:11px">{{ r.id }}</code>
+                <code class="text-primary" style="font-size:11px">{{ r.id }}</code>
+                <span class="text-muted mx-2">-</span>
+                <template v-if="r.path_from_root && r.path_from_root.length">
+                  <span v-for="(p, i) in r.path_from_root" :key="p.id">
+                    <span :class="i === r.path_from_root.length - 1 ? 'font-weight-bold' : 'text-muted'">{{ p.name }}</span>
+                    <i v-if="i < r.path_from_root.length - 1" class="fas fa-angle-right mx-1 text-muted" style="font-size:9px"></i>
+                  </span>
+                </template>
+                <strong v-else>{{ r.name }}</strong>
               </a>
             </div>
           </div>
 
           <div v-if="newCat.category_id" class="alert alert-info py-2 small mb-2">
-            Categoria selecionada: <strong>{{ newCat.category_name }}</strong>
-            <code class="ml-1">{{ newCat.category_id }}</code>
+            <div>
+              Categoria selecionada: <strong>{{ newCat.category_name }}</strong>
+              <code class="ml-1">{{ newCat.category_id }}</code>
+            </div>
+            <div v-if="newCatPath.length" class="text-muted mt-1" style="font-size:11px">
+              <span v-for="(p, i) in newCatPath" :key="p.id">
+                <span>{{ p.name }}</span>
+                <i v-if="i < newCatPath.length - 1" class="fas fa-angle-right mx-1" style="font-size:9px"></i>
+              </span>
+            </div>
           </div>
 
           <div class="text-right">
@@ -136,7 +151,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 
@@ -171,6 +186,15 @@ const searchResults = ref([])
 const searchLoading = ref(false)
 let searchTimer = null
 
+const newCatPath = computed(() => {
+  try {
+    const p = JSON.parse(newCat.category_path_json || '[]')
+    return Array.isArray(p) ? p : []
+  } catch {
+    return []
+  }
+})
+
 const ownerEndpoint = () =>
   props.ownerType === 'cmig'
     ? `/product-categories/cmig/${props.ownerId}`
@@ -181,12 +205,12 @@ function marketplaceLabel(mk) {
 }
 
 function categoryDisplay(cat) {
-  if (cat.category_name) return cat.category_name
+  // Prefere o breadcrumb completo (mais informativo) quando disponível
   try {
     const path = JSON.parse(cat.category_path_json || '[]')
     if (Array.isArray(path) && path.length) return path.map(p => p.name).join(' > ')
   } catch { /* ignore */ }
-  return cat.category_id
+  return cat.category_name || cat.category_id
 }
 
 function filledCount(cat) {
