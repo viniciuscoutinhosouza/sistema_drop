@@ -48,7 +48,23 @@ class MarketplaceAccount(Base):
     power_seller_status = Column(String(20))  # platinum | gold | silver | None
     level_id = Column(String(20))  # 5_green | 4_light_green | 3_yellow | 2_orange | 1_red | None
     reputation_cached_at = Column(TIMESTAMP(timezone=True))
+    # Capacidades de envio detectadas via API ML (auto-detectadas + override manual)
+    # NULL no override = usa o has_*; TRUE/FALSE = override do admin
+    has_flex = Column(Boolean, nullable=False, default=False)
+    has_full = Column(Boolean, nullable=False, default=False)
+    has_flex_override = Column(Boolean, nullable=True)
+    has_full_override = Column(Boolean, nullable=True)
+    shipping_modes_checked_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+
+    @property
+    def effective_has_flex(self) -> bool:
+        """Retorna has_flex_override se admin marcou; senão o detectado."""
+        return self.has_flex_override if self.has_flex_override is not None else bool(self.has_flex)
+
+    @property
+    def effective_has_full(self) -> bool:
+        return self.has_full_override if self.has_full_override is not None else bool(self.has_full)
 
     __table_args__ = (
         UniqueConstraint("platform", "email", "phone", name="uq_account_platform_email_phone"),

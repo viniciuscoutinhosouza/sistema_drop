@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-05-24 — feat(anuncios): modalidades de envio por conta ML (Flex/Full) + botão Flex inline
+
+**Problema:** O wizard de publicação não diferenciava modalidades de envio (ME2, Flex, Full) por conta. Anúncios eram sempre publicados como ME2 cross-docking padrão. Usuários com contas que tinham Flex habilitado precisavam ativar manualmente no Seller Center.
+
+**Solução:**
+- `Scripts SQL/70_account_shipping_capabilities.sql` — colunas `has_flex`, `has_full`, `has_flex_override`, `has_full_override`, `shipping_modes_checked_at` em `marketplace_accounts`.
+- `BACKEND/models/integration.py` — campos + properties `effective_has_flex`/`effective_has_full` (override > detectado).
+- `BACKEND/services/ml_service.py`:
+  - `detect_shipping_capabilities(seller_id, token)` — heurística via `GET /users/{id}/items/search?logistic_type=...&limit=1` (se total>0, tem). Limitação documentada: contas novas sem itens precisam override manual.
+  - `toggle_item_flex(item_id, enable)` — `PUT /items/{id}` com `shipping.tags=['self_service_in']` para ativar ou `[]` para desativar.
+- `BACKEND/routers/integrations.py`:
+  - `GET /accounts/{id}/shipping-capabilities` — cache TTL 24h, auto-redetecta se expirou.
+  - `POST /accounts/{id}/shipping-capabilities/refresh` — força redetecção.
+  - `PUT /accounts/{id}/shipping-capabilities` — override manual de `has_flex_override`/`has_full_override`.
+  - Serialização da conta agora retorna `has_flex/has_full` (efetivo).
+- `BACKEND/routers/anuncios.py`:
+  - `POST /anuncios/{id}/toggle-flex` — ativa/desativa Flex em anúncio existente. Bloqueia em Full e em conta sem Flex.
+  - `_build_ml_payload` agora aceita `use_flex` no form (adiciona `shipping.tags=['self_service_in']`).
+  - `publish_anuncio` propaga `body.use_flex` ao payload ML.
+- `FRONTEND/src/views/anuncios/AnunciosView.vue`:
+  - Nova ref `accountCapabilities` carregada via `loadAccountCapabilities()` ao selecionar conta.
+  - Aba 5 do wizard: nova seção "Mercado Envios Flex" (toggle), visível só se `accountCapabilities.has_flex`.
+  - Default `use_flex=true` ao criar novo anúncio se conta tem Flex (decisão de produto).
+  - Edit do listing pré-popula `use_flex` a partir de `listing.logistic_type === 'self_service'`.
+  - Novo botão Flex inline na linha do anúncio (⚡): toggle on/off, só aparece se conta tem Flex e anúncio não é Full.
+
+**Decisões:**
+- Detecção: híbrida — auto-detecta + admin pode overrider (campo `*_override` nullable: null = usa detectado).
+- UX padrão: Flex marcado por padrão quando conta tem (usuário desmarca se não quiser).
+- Não tocar em Flex no fluxo de update — Flex tem endpoint próprio (`/toggle-flex`) por separação de concerns.
+
+**Próximo passo:** rodar migration 70 em produção; testar com conta ML real que tem Flex.
+
+---
+
 ## 2026-05-24 — feat(products): múltiplas categorias por marketplace + 2 bugfixes ML
 
 **Bugfixes (commits anteriores `cee5fae` e `499a850`):**

@@ -81,6 +81,15 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
         "reputation_cached_at": acc.reputation_cached_at.isoformat()
         if acc.reputation_cached_at
         else None,
+        "has_flex": acc.effective_has_flex,
+        "has_full": acc.effective_has_full,
+        "has_flex_detected": bool(acc.has_flex),
+        "has_full_detected": bool(acc.has_full),
+        "has_flex_override": acc.has_flex_override,
+        "has_full_override": acc.has_full_override,
+        "shipping_modes_checked_at": acc.shipping_modes_checked_at.isoformat()
+        if acc.shipping_modes_checked_at
+        else None,
         "created_at": acc.created_at.isoformat() if acc.created_at else None,
     }
 
@@ -437,6 +446,130 @@ async def get_account(
         )
     )
     return _serialize_account(account, is_owner=bool(owner_check.scalar_one_or_none()))
+
+
+# ─── Capacidades de envio (Flex, Full) ────────────────────────────────────────
+
+SHIPPING_CAPS_TTL_HOURS = 24
+
+
+async def _refresh_shipping_capabilities(
+    account: MarketplaceAccount, db: AsyncSession
+) -> MarketplaceAccount:
+    """Re-detecta has_flex/has_full chamando a API ML e atualiza o registro.
+
+    Why isolado: chamado tanto pelo GET (com lógica de cache) quanto pelo POST refresh.
+    """
+    from routers.anuncios import _get_valid_token  # evita import circular
+
+    if account.platform != "mercadolivre":
+        return account
+    if not account.platform_user_id:
+        return account
+
+    access_token = await _get_valid_token(account, db)
+    caps = await ml_service.detect_shipping_capabilities(access_token, account.platform_user_id)
+    account.has_flex = caps.get("has_flex", False)
+    account.has_full = caps.get("has_full", False)
+    account.shipping_modes_checked_at = datetime.now(UTC)
+    await db.commit()
+    return account
+
+
+@router.get("/{account_id}/shipping-capabilities")
+async def get_shipping_capabilities(
+    account_id: int,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retorna capacidades de envio (Flex, Full) detectadas + override manual.
+
+    Auto-redetecta se o cache expirou (TTL 24h). Usar POST .../refresh para forçar.
+    """
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    if account.platform != "mercadolivre":
+        return {
+            "has_flex": False,
+            "has_full": False,
+            "has_flex_override": None,
+            "has_full_override": None,
+            "shipping_modes_checked_at": None,
+            "stale": False,
+        }
+
+    checked_at = account.shipping_modes_checked_at
+    if checked_at and checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=UTC)
+    stale = (
+        checked_at is None
+        or (datetime.now(UTC) - checked_at) > timedelta(hours=SHIPPING_CAPS_TTL_HOURS)
+    )
+
+    if stale:
+        try:
+            await _refresh_shipping_capabilities(account, db)
+        except Exception:
+            pass  # falha de detecção não bloqueia leitura — devolve último valor conhecido
+
+    return {
+        "has_flex": account.effective_has_flex,
+        "has_full": account.effective_has_full,
+        "has_flex_detected": bool(account.has_flex),
+        "has_full_detected": bool(account.has_full),
+        "has_flex_override": account.has_flex_override,
+        "has_full_override": account.has_full_override,
+        "shipping_modes_checked_at": account.shipping_modes_checked_at.isoformat()
+        if account.shipping_modes_checked_at
+        else None,
+    }
+
+
+@router.post("/{account_id}/shipping-capabilities/refresh")
+async def refresh_shipping_capabilities(
+    account_id: int,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Força redetecção das capacidades agora (ignora cache)."""
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    await _refresh_shipping_capabilities(account, db)
+    return {
+        "has_flex": account.effective_has_flex,
+        "has_full": account.effective_has_full,
+        "has_flex_detected": bool(account.has_flex),
+        "has_full_detected": bool(account.has_full),
+        "shipping_modes_checked_at": account.shipping_modes_checked_at.isoformat()
+        if account.shipping_modes_checked_at
+        else None,
+    }
+
+
+@router.put("/{account_id}/shipping-capabilities")
+async def set_shipping_capabilities_override(
+    account_id: int,
+    body: dict,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Override manual: admin força has_flex/has_full ignorando a auto-detecção.
+
+    Body: {"has_flex_override": true|false|null, "has_full_override": true|false|null}
+    null limpa o override (volta a usar o valor detectado).
+    """
+    account = await _assert_ac_can_access(account_id, current_user.id, db)
+    if "has_flex_override" in body:
+        v = body["has_flex_override"]
+        account.has_flex_override = bool(v) if v is not None else None
+    if "has_full_override" in body:
+        v = body["has_full_override"]
+        account.has_full_override = bool(v) if v is not None else None
+    await db.commit()
+    return {
+        "has_flex": account.effective_has_flex,
+        "has_full": account.effective_has_full,
+        "has_flex_override": account.has_flex_override,
+        "has_full_override": account.has_full_override,
+    }
 
 
 @router.put("/{account_id}")

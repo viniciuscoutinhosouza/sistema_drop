@@ -19,7 +19,7 @@
             <div class="row align-items-center">
               <div class="col-md-5">
                 <label class="mb-0 mr-2 text-muted"><small>Conta Marketplace:</small></label>
-                <select v-model="selectedAccountId" class="form-control form-control-sm d-inline-block" style="width:auto;min-width:260px" @change="loadAnuncios">
+                <select v-model="selectedAccountId" class="form-control form-control-sm d-inline-block" style="width:auto;min-width:260px" @change="onAccountChange">
                   <option value="">Selecione uma conta...</option>
                   <option v-for="a in accounts" :key="a.id" :value="a.id">
                     {{ a.platform_label }} — {{ a.description || a.platform_username || a.email }}
@@ -384,6 +384,13 @@
                     <div class="btn-group btn-group-sm">
                       <button v-if="a.status === 'published'" class="btn btn-outline-warning" title="Pausar anúncio" @click="pauseAnuncio(a)"><i class="fas fa-pause"></i></button>
                       <button v-if="a.status === 'paused'" class="btn btn-outline-success" title="Reativar anúncio" @click="reactivateAnuncio(a)"><i class="fas fa-play"></i></button>
+                      <!-- Flex: aparece só se a conta tem Flex e o anúncio não é Full -->
+                      <button v-if="accountCapabilities.has_flex && !a.is_full && a.platform_item_id"
+                              :class="['btn', isFlexActive(a) ? 'btn-warning' : 'btn-outline-warning']"
+                              :title="isFlexActive(a) ? 'Desativar Mercado Envios Flex' : 'Ativar Mercado Envios Flex'"
+                              @click="toggleFlex(a)">
+                        <i class="fas fa-bolt"></i>
+                      </button>
                       <button v-if="a.is_full && a.qty_full === 0 && a.platform_item_id"
                               class="btn btn-outline-danger"
                               title="Deixar de oferecer Full — converter para cross-docking usando estoque do galpão do seller"
@@ -824,6 +831,27 @@
                       <div class="text-muted mt-1" style="font-size:10px">
                         {{ wf.free_shipping ? 'Frete Grátis — vendedor arca com o custo' : 'Frete cobrado do comprador' }}
                       </div>
+                    </div>
+
+                    <!-- Mercado Envios Flex — só aparece se a conta tem habilitado -->
+                    <div v-if="accountCapabilities.has_flex" class="form-group">
+                      <label class="small">Mercado Envios Flex</label>
+                      <div class="custom-control custom-switch">
+                        <input type="checkbox" class="custom-control-input"
+                               id="wf-use-flex" v-model="wf.use_flex" />
+                        <label class="custom-control-label" for="wf-use-flex">
+                          Oferecer entrega Flex (mesmo dia)
+                        </label>
+                      </div>
+                      <div class="text-muted" style="font-size:10px">
+                        {{ wf.use_flex
+                          ? '⚡ Flex ativo — você entregará no mesmo dia/24h pela região elegível'
+                          : 'Cross-docking padrão (Mercado Envios)' }}
+                      </div>
+                    </div>
+                    <div v-else-if="accountCapabilities.checked && wf.account_platform === 'mercadolivre'"
+                         class="alert alert-secondary py-1 px-2 mb-2" style="font-size:10px">
+                      <i class="fas fa-info-circle"></i> Esta conta não tem Mercado Envios Flex habilitado.
                     </div>
 
                     <hr />
@@ -1465,6 +1493,32 @@ const loadingStats = ref(false)
 const importResult = ref(null)
 const cmigs = ref([])
 
+// Capacidades de envio da conta ML selecionada — usado para mostrar opção Flex
+// no wizard e botão Flex inline. Carregadas via GET /accounts/{id}/shipping-capabilities.
+const accountCapabilities = ref({ has_flex: false, has_full: false, checked: false })
+
+async function onAccountChange() {
+  await loadAnuncios()
+  loadAccountCapabilities()  // fire-and-forget — não bloqueia listagem
+}
+
+async function loadAccountCapabilities() {
+  accountCapabilities.value = { has_flex: false, has_full: false, checked: false }
+  if (!selectedAccountId.value) return
+  const acc = accounts.value.find(a => a.id === selectedAccountId.value)
+  if (!acc || acc.platform !== 'mercadolivre') return
+  try {
+    const { data } = await api.get(`/accounts/${selectedAccountId.value}/shipping-capabilities`)
+    accountCapabilities.value = {
+      has_flex: !!data.has_flex,
+      has_full: !!data.has_full,
+      checked: true,
+    }
+  } catch {
+    accountCapabilities.value = { has_flex: false, has_full: false, checked: true }
+  }
+}
+
 const statusTabs = [
   { key: 'all',       label: 'Todos' },
   { key: 'published', label: 'Ativos' },
@@ -1515,6 +1569,8 @@ function defaultWizardForm() {
     video_id: '',
     shipping_mode:    'me2',
     free_shipping:    false,
+    use_flex:         false,
+    account_platform: 'mercadolivre',
     stock_mode:       'product',
     fixed_quantity:   1,
     keep_stock_fixed: false,
@@ -1789,6 +1845,11 @@ async function openWizard(listing) {
   wizardStep.value = 1
   wizard.value = { show: true, isEdit: !!listing, listingId: listing?.id || null, saving: false, error: '', originalSku: listing?.sku || '' }
   wf.value = defaultWizardForm()
+  // Default Flex quando criando anúncio numa conta que tem Flex (decisão de produto:
+  // "Flex padrão quando disponível"). No edit, sobrescrito depois pelo listing real.
+  if (!listing && accountCapabilities.value.has_flex) {
+    wf.value.use_flex = true
+  }
   categorySearch.value = ''
   categoryResults.value = []
   categoryAttributes.value = []
@@ -1818,6 +1879,7 @@ async function openWizard(listing) {
     wf.value.video_id = listing.video_id || ''
     wf.value.shipping_mode = listing.shipping_mode || 'me2'
     wf.value.free_shipping = !!listing.free_shipping
+    wf.value.use_flex = (listing.logistic_type || '').toLowerCase() === 'self_service'
     wf.value.warranty_type = listing.warranty_type || ''
     wf.value.warranty_time = listing.warranty_time || ''
     wf.value.sku       = listing.sku || ''
@@ -1936,6 +1998,7 @@ async function saveWizard() {
       warranty_time: wf.value.warranty_time || null,
       shipping_mode: wf.value.shipping_mode,
       free_shipping: wf.value.free_shipping,
+      use_flex: !!wf.value.use_flex,
       video_id: wf.value.video_id || null,
       weight_kg: wf.value.weight_kg !== '' ? parseFloat(wf.value.weight_kg) || null : null,
       height_cm: wf.value.height_cm !== '' ? parseFloat(wf.value.height_cm) || null : null,
@@ -2420,6 +2483,26 @@ async function doCreateCmigProduct() {
     createCmigModal.value.error = e.response?.data?.detail || 'Erro ao criar produto'
   } finally {
     createCmigModal.value.saving = false
+  }
+}
+
+function isFlexActive(listing) {
+  return (listing.logistic_type || '').toLowerCase() === 'self_service'
+}
+
+async function toggleFlex(listing) {
+  const turningOn = !isFlexActive(listing)
+  const msg = turningOn
+    ? `Ativar Mercado Envios Flex no anúncio "${listing.title_override}"? Você será responsável por entregar no mesmo dia/24h.`
+    : `Desativar Mercado Envios Flex no anúncio "${listing.title_override}"?`
+  if (!confirm(msg)) return
+  try {
+    const { data } = await api.post(`/anuncios/${listing.id}/toggle-flex`, { enable: turningOn })
+    const idx = anuncios.value.findIndex(a => a.id === listing.id)
+    if (idx !== -1) anuncios.value[idx] = data
+    toast.success(turningOn ? 'Flex ativado!' : 'Flex desativado.')
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao alterar Flex')
   }
 }
 
