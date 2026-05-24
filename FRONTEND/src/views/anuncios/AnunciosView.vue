@@ -384,8 +384,15 @@
                     <div class="btn-group btn-group-sm">
                       <button v-if="a.status === 'published'" class="btn btn-outline-warning" title="Pausar anúncio" @click="pauseAnuncio(a)"><i class="fas fa-pause"></i></button>
                       <button v-if="a.status === 'paused'" class="btn btn-outline-success" title="Reativar anúncio" @click="reactivateAnuncio(a)"><i class="fas fa-play"></i></button>
+                      <!-- Botão Flex: ação de ativar/desativar (só visivel se elígivel) -->
+                      <button v-if="canToggleFlex(a)"
+                              :class="['btn', isFlexActive(a) ? 'btn-warning' : 'btn-outline-warning']"
+                              :title="isFlexActive(a) ? 'Desativar Mercado Envios Flex' : 'Ativar Mercado Envios Flex'"
+                              @click="toggleFlex(a)">
+                        <i class="fas fa-bolt"></i>
+                      </button>
                       <!-- Badge informativo do logistic_type real do anúncio (read-only).
-                           Flex/Full são definidos pelo ML automaticamente baseado em conta+categoria+produto. -->
+                           Indica o tipo atual; a ação de Flex é o botão ao lado. -->
                       <span v-if="logisticBadge(a)"
                             :class="['badge align-self-center px-2', logisticBadge(a).cls]"
                             :title="logisticBadge(a).title"
@@ -2494,7 +2501,34 @@ async function doCreateCmigProduct() {
   }
 }
 
-// Badge informativo do logistic_type real (sem ação — ML controla Flex/Full automaticamente)
+function isFlexActive(listing) {
+  return (listing.logistic_type || '').toLowerCase() === 'self_service'
+}
+
+function canToggleFlex(listing) {
+  return accountCapabilities.value.has_flex
+      && !listing.is_full
+      && !!listing.platform_item_id
+      && listing.status === 'published'
+}
+
+async function toggleFlex(listing) {
+  const turningOn = !isFlexActive(listing)
+  const msg = turningOn
+    ? `Ativar Mercado Envios Flex no anúncio "${listing.title_override}"?\n\nVocê se compromete a entregar no mesmo dia/24h pela região elegível.`
+    : `Desativar Mercado Envios Flex no anúncio "${listing.title_override}"?`
+  if (!confirm(msg)) return
+  try {
+    const { data } = await api.post(`/anuncios/${listing.id}/toggle-flex`, { enable: turningOn })
+    const idx = anuncios.value.findIndex(a => a.id === listing.id)
+    if (idx !== -1) anuncios.value[idx] = data
+    toast.success(turningOn ? 'Flex ativado no anúncio!' : 'Flex desativado.')
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao alterar Flex')
+  }
+}
+
+// Badge informativo do logistic_type real (passivo — ação é o botão ⚡ ao lado)
 function logisticBadge(listing) {
   const lt = (listing.logistic_type || '').toLowerCase()
   if (!lt) return null

@@ -2713,6 +2713,62 @@ async def pause_anuncio(
     return _serialize_listing(listing)
 
 
+@router.post("/{listing_id}/toggle-flex")
+async def toggle_flex_anuncio(
+    listing_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Ativa/desativa Mercado Envios Flex (self_service) num anúncio.
+
+    Body: {"enable": true|false}
+
+    Usa o endpoint dedicado POST/DELETE /sites/MLB/shipping/selfservice/items/{id}
+    (PUT /items com shipping.tags é rejeitado pelo ML como field_not_updatable).
+    """
+    enable = bool(body.get("enable", True))
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma")
+    if listing.account.platform != "mercadolivre":
+        raise HTTPException(status_code=400, detail="Flex disponível apenas no Mercado Livre")
+    if (listing.logistic_type or "").lower() == "fulfillment":
+        raise HTTPException(
+            status_code=400,
+            detail="Anúncio Full não pode usar Flex (modalidades exclusivas).",
+        )
+    if enable and not listing.account.effective_has_flex:
+        raise HTTPException(
+            status_code=400,
+            detail="Esta conta não tem Mercado Envios Flex habilitado.",
+        )
+    if enable and listing.status != "published":
+        raise HTTPException(
+            status_code=400,
+            detail="Anúncio precisa estar publicado para ativar Flex. Reative o anúncio primeiro.",
+        )
+
+    access_token = await _get_valid_token(listing.account, db)
+    await ml_service.set_item_flex(access_token, listing.platform_item_id, enable, site_id="MLB")
+
+    # Re-busca o item no ML para pegar o logistic_type real após o toggle
+    # (mais confiável que confiar na resposta do POST/DELETE — propagação não é instantânea).
+    try:
+        ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
+        new_logistic = ((ml_item.get("shipping") or {}).get("logistic_type") or "").lower()
+        if new_logistic:
+            listing.logistic_type = new_logistic
+    except Exception:
+        # Otimisticamente seta o logistic_type esperado se o re-fetch falhar
+        listing.logistic_type = "self_service" if enable else "cross_docking"
+
+    listing.last_sync_at = datetime.now(UTC)
+    await db.commit()
+    return _serialize_listing(listing)
+
+
 @router.delete("/{listing_id}", status_code=204)
 async def delete_anuncio_sistema(
     listing_id: int,

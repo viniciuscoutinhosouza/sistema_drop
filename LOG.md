@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-05-24 — feat(anuncios): toggle Flex por anúncio via endpoint dedicado
+
+**Correção da refatoração anterior:** o commit `3f8f760` removeu o toggle por item assumindo que Flex era só por conta, mas o Seller Center do ML claramente expõe checkbox de Flex por anúncio. A causa real do erro `field_not_updatable` era usar o endpoint errado (`PUT /items` com `shipping.tags`).
+
+**Endpoint correto encontrado** (doc oficial `developers.mercadolivre.com.br/en_us/mercado-envios-flex`):
+- Ativar: `POST /sites/{SITE_ID}/shipping/selfservice/items/{ITEM_ID}`
+- Desativar: `DELETE /sites/{SITE_ID}/shipping/selfservice/items/{ITEM_ID}`
+- Pré-condição: item deve estar `active`
+
+**Mudanças:**
+- `BACKEND/services/ml_service.py`: nova função `set_item_flex(item_id, enable, site_id="MLB")` usando POST/DELETE no endpoint dedicado.
+- `BACKEND/routers/anuncios.py`: reintroduzido endpoint `POST /{listing_id}/toggle-flex` (Body `{"enable": true|false}`). Valida: anúncio é ML, não é Full, conta tem Flex, anúncio está publicado. Re-busca o item no ML pós-toggle para gravar `logistic_type` real.
+- `FRONTEND/src/views/anuncios/AnunciosView.vue`: botão ⚡ separado do badge informativo, ao lado dos botões pause/reativar. Visível só se `canToggleFlex` (conta tem Flex, não é Full, item publicado, tem platform_item_id). `logisticBadge` permanece como indicador passivo do estado.
+
+**Sem migration, sem mudança de schema.** Endpoints e modelo de `shipping-capabilities` por conta (commit `5b33dbc`) continuam intactos.
+
+---
+
 ## 2026-05-24 — refactor(anuncios): Flex é resolvido pelo ML (não por item) + badge informativo
 
 **Erro reportado:** `field_not_updatable` ao tentar habilitar Flex via `PUT /items/{id}` com `shipping.tags=['self_service_in']`.

@@ -725,6 +725,32 @@ async def detect_shipping_capabilities(access_token: str, seller_id: str) -> dic
     return result
 
 
+async def set_item_flex(access_token: str, item_id: str, enable: bool, site_id: str = "MLB") -> dict:
+    """Ativa (POST) ou desativa (DELETE) Mercado Envios Flex num item já publicado.
+
+    Endpoint oficial: /sites/{SITE_ID}/shipping/selfservice/items/{ITEM_ID}
+    Pré-condição: item deve estar 'active' (anúncio publicado).
+    Resultado: campo shipping.tags do item passa a conter 'self_service_in' (ativo)
+    ou 'self_service_out' (inativo); shipping.logistic_type vira 'self_service' quando ativo.
+
+    Why endpoint dedicado: PUT /items com shipping.tags é rejeitado por field_not_updatable.
+    """
+    method = "POST" if enable else "DELETE"
+    url = f"{ML_API_BASE}/sites/{site_id}/shipping/selfservice/items/{item_id}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.request(method, url, headers=headers)
+    if resp.status_code not in (200, 201, 204):
+        raise HTTPException(
+            status_code=400,
+            detail=f"ML rejeitou {'habilitar' if enable else 'desabilitar'} Flex no item {item_id}: {resp.text}",
+        )
+    try:
+        return resp.json()
+    except Exception:
+        return {}
+
+
 async def get_category_shipping_preferences(category_id: str) -> dict:
     """Retorna preferências de envio de uma categoria ML (endpoint público, sem token).
 
