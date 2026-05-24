@@ -255,7 +255,7 @@
               <label>Descrição</label>
               <input v-model="editForm.description" class="form-control" placeholder="Ex: Loja Principal ML" />
             </div>
-            <div class="form-group mb-0">
+            <div class="form-group">
               <div class="custom-control custom-switch">
                 <input type="checkbox" class="custom-control-input" id="editIsOfficialStore"
                        v-model="editForm.is_official_store" />
@@ -264,6 +264,85 @@
                 </label>
               </div>
               <small class="text-muted">Ative apenas para contas com <em>family_name</em> — permite editar o título do anúncio via API.</small>
+            </div>
+
+            <!-- Capacidades de Envio (só ML) -->
+            <div v-if="editTarget && editTarget.platform === 'mercadolivre'" class="form-group mb-0">
+              <hr class="mt-3 mb-2" />
+              <label class="d-block mb-2">
+                <i class="fas fa-truck text-info mr-1"></i>
+                <strong>Capacidades de Envio (Mercado Livre)</strong>
+              </label>
+              <div v-if="capsLoading" class="text-muted small">
+                <i class="fas fa-spinner fa-spin mr-1"></i>Detectando...
+              </div>
+              <template v-else>
+                <div class="small text-muted mb-2">
+                  Status detectado automaticamente:
+                  <span class="ml-1">
+                    Flex
+                    <i :class="['fas', capsState.has_flex_detected ? 'fa-check-circle text-success' : 'fa-times-circle text-muted']"></i>
+                  </span>
+                  <span class="ml-2">
+                    Full
+                    <i :class="['fas', capsState.has_full_detected ? 'fa-check-circle text-success' : 'fa-times-circle text-muted']"></i>
+                  </span>
+                  <button type="button" class="btn btn-link btn-sm p-0 ml-2" @click="refreshCaps" :disabled="capsRefreshing">
+                    <i :class="['fas', capsRefreshing ? 'fa-spinner fa-spin' : 'fa-sync-alt']" style="font-size:11px"></i>
+                    Re-detectar
+                  </button>
+                </div>
+
+                <!-- Override Flex -->
+                <div class="mb-2">
+                  <label class="small mb-1">Mercado Envios Flex</label>
+                  <div class="btn-group btn-group-sm d-flex">
+                    <button type="button"
+                            :class="['btn', editForm.has_flex_override === null ? 'btn-secondary' : 'btn-outline-secondary']"
+                            @click="editForm.has_flex_override = null">
+                      Auto ({{ capsState.has_flex_detected ? 'sim' : 'não' }})
+                    </button>
+                    <button type="button"
+                            :class="['btn', editForm.has_flex_override === true ? 'btn-warning' : 'btn-outline-warning']"
+                            @click="editForm.has_flex_override = true">
+                      <i class="fas fa-bolt mr-1"></i>Disponível
+                    </button>
+                    <button type="button"
+                            :class="['btn', editForm.has_flex_override === false ? 'btn-dark' : 'btn-outline-dark']"
+                            @click="editForm.has_flex_override = false">
+                      Indisponível
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Override Full -->
+                <div class="mb-0">
+                  <label class="small mb-1">Mercado Envios Full</label>
+                  <div class="btn-group btn-group-sm d-flex">
+                    <button type="button"
+                            :class="['btn', editForm.has_full_override === null ? 'btn-secondary' : 'btn-outline-secondary']"
+                            @click="editForm.has_full_override = null">
+                      Auto ({{ capsState.has_full_detected ? 'sim' : 'não' }})
+                    </button>
+                    <button type="button"
+                            :class="['btn', editForm.has_full_override === true ? 'btn-info' : 'btn-outline-info']"
+                            @click="editForm.has_full_override = true">
+                      <i class="fas fa-warehouse mr-1"></i>Disponível
+                    </button>
+                    <button type="button"
+                            :class="['btn', editForm.has_full_override === false ? 'btn-dark' : 'btn-outline-dark']"
+                            @click="editForm.has_full_override = false">
+                      Indisponível
+                    </button>
+                  </div>
+                </div>
+
+                <small class="text-muted d-block mt-2">
+                  <i class="fas fa-info-circle"></i>
+                  Use "Disponível" se sua conta tem Flex/Full habilitado mas o sistema não detectou
+                  (acontece em contas novas sem itens publicados).
+                </small>
+              </template>
             </div>
           </div>
           <div class="modal-footer">
@@ -348,7 +427,11 @@ const savingNewConta = ref(false)
 
 // Editar CONTA
 const editTarget = ref(null)
-const editForm   = ref({ cmig_id: '', description: '', is_official_store: false })
+const editForm   = ref({ cmig_id: '', description: '', is_official_store: false, has_flex_override: null, has_full_override: null })
+// Estado das capacidades detectadas (lado direito do override) carregadas ao abrir o modal
+const capsState = ref({ has_flex_detected: false, has_full_detected: false })
+const capsLoading = ref(false)
+const capsRefreshing = ref(false)
 const editError  = ref('')
 const savingEdit = ref(false)
 
@@ -396,11 +479,50 @@ function openNewContaModal() {
   modal.value.newConta = true
 }
 
-function openEditModal(acc) {
+async function openEditModal(acc) {
   editTarget.value = acc
-  editForm.value = { cmig_id: acc.cmig_id || '', description: acc.description || '', is_official_store: !!acc.is_official_store }
+  editForm.value = {
+    cmig_id: acc.cmig_id || '',
+    description: acc.description || '',
+    is_official_store: !!acc.is_official_store,
+    has_flex_override: null,
+    has_full_override: null,
+  }
   editError.value = ''
+  capsState.value = { has_flex_detected: false, has_full_detected: false }
   modal.value.edit = true
+  // Capacidades só fazem sentido pra ML — busca em background
+  if (acc.platform === 'mercadolivre') {
+    capsLoading.value = true
+    try {
+      const { data } = await api.get(`/accounts/${acc.id}/shipping-capabilities`)
+      capsState.value = {
+        has_flex_detected: !!data.has_flex_detected,
+        has_full_detected: !!data.has_full_detected,
+      }
+      editForm.value.has_flex_override = data.has_flex_override
+      editForm.value.has_full_override = data.has_full_override
+    } catch { /* ignore */ } finally {
+      capsLoading.value = false
+    }
+  }
+}
+
+async function refreshCaps() {
+  if (!editTarget.value) return
+  capsRefreshing.value = true
+  try {
+    const { data } = await api.post(`/accounts/${editTarget.value.id}/shipping-capabilities/refresh`)
+    capsState.value = {
+      has_flex_detected: !!data.has_flex_detected,
+      has_full_detected: !!data.has_full_detected,
+    }
+    toast('Capacidades re-detectadas', 'success')
+  } catch (err) {
+    toast(err.response?.data?.detail || 'Erro ao re-detectar', 'error')
+  } finally {
+    capsRefreshing.value = false
+  }
 }
 
 async function saveEdit() {
@@ -412,6 +534,13 @@ async function saveEdit() {
       description: editForm.value.description,
       is_official_store: editForm.value.is_official_store,
     })
+    // Override de capacidades é endpoint separado — só envia se conta é ML
+    if (editTarget.value.platform === 'mercadolivre') {
+      await api.put(`/accounts/${editTarget.value.id}/shipping-capabilities`, {
+        has_flex_override: editForm.value.has_flex_override,
+        has_full_override: editForm.value.has_full_override,
+      })
+    }
     modal.value.edit = false
     toast('Conta atualizada!', 'success')
     await loadAccounts()
