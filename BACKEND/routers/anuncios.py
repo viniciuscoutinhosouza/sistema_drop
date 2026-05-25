@@ -349,6 +349,7 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "category_name": listing.category_name,
         "category_path_json": listing.category_path_json,
         "is_full": bool(listing.is_full) if listing.is_full is not None else False,
+        "is_flex": (listing.logistic_type or "").lower() == "self_service",
         "logistic_type": listing.logistic_type
         or ("fulfillment" if listing.is_full else "cross_docking"),
         "ml_catalog_id": listing.ml_catalog_id,
@@ -745,8 +746,12 @@ async def import_anuncios(
         shipping = item.get("shipping") or {}
         shipping_mode = shipping.get("mode") or "me2"
         free_shipping = bool(shipping.get("free_shipping", False))
+        shipping_tags = set(shipping.get("tags") or [])
         # Captura logistic_type real do ML (cross_docking|drop_off|xd_drop_off|self_service|fulfillment)
         logistic_type_raw = (shipping.get("logistic_type") or "cross_docking").lower()
+        # self_service_in em tags é o indicador confiável de Flex — normaliza se logistic_type ainda não reflete
+        if "self_service_in" in shipping_tags and logistic_type_raw not in ("fulfillment", "self_service"):
+            logistic_type_raw = "self_service"
         is_full = logistic_type_raw == "fulfillment"
         qty_full = available_qty if is_full else 0
         qty_local = 0 if is_full else available_qty
@@ -2751,6 +2756,19 @@ async def toggle_flex_anuncio(
         )
 
     access_token = await _get_valid_token(listing.account, db)
+
+    if enable:
+        me = await ml_service.get_item_owner_me(access_token)
+        me_envios = (me.get("status") or {}).get("mercadoenvios") or "unknown"
+        if me_envios != "accepted":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"A conta '{listing.account.platform_username}' não está habilitada para Mercado Envios "
+                    f"(status: '{me_envios}'). Acesse Minha conta → Envios no Mercado Livre e aceite o serviço antes de ativar Flex."
+                ),
+            )
+
     result = await ml_service.set_item_flex(
         access_token, listing.platform_item_id, enable, site_id="MLB"
     )
@@ -2763,7 +2781,11 @@ async def toggle_flex_anuncio(
         # Refetch para pegar o estado pós-ação (propagação não é instantânea no ML)
         try:
             ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
-            new_logistic = ((ml_item.get("shipping") or {}).get("logistic_type") or "").lower()
+            ml_shipping = ml_item.get("shipping") or {}
+            ml_tags = set(ml_shipping.get("tags") or [])
+            new_logistic = (ml_shipping.get("logistic_type") or "").lower()
+            if "self_service_in" in ml_tags and new_logistic not in ("fulfillment", "self_service"):
+                new_logistic = "self_service"
         except Exception:
             new_logistic = "self_service" if enable else "cross_docking"
 
@@ -2788,6 +2810,99 @@ async def delete_anuncio_sistema(
     listing = await _get_listing_or_404(listing_id, current_user, db)
     db.delete(listing)
     await db.commit()
+
+
+@router.get("/{listing_id}/debug-shipping")
+async def debug_shipping_anuncio(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retorna o objeto shipping bruto do ML para diagnóstico.
+
+    Útil para verificar logistic_type, tags (self_service_in = Flex ativo)
+    e comparar com o que está salvo no banco, sem precisar reimportar.
+    """
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma")
+    if (listing.account.platform or "") != "mercadolivre":
+        raise HTTPException(status_code=400, detail="Debug de shipping disponível apenas para ML")
+
+    access_token = await _get_valid_token(listing.account, db)
+    data = await ml_service.get_item(access_token, listing.platform_item_id)
+    shipping = data.get("shipping") or {}
+    tags = shipping.get("tags") or []
+    return {
+        "platform_item_id": listing.platform_item_id,
+        "status": data.get("status"),
+        "shipping_raw": shipping,
+        "logistic_type": shipping.get("logistic_type"),
+        "tags": tags,
+        "is_flex_by_tag": "self_service_in" in tags,
+        "mode": shipping.get("mode"),
+        "free_shipping": shipping.get("free_shipping"),
+        "db_logistic_type": listing.logistic_type,
+        "db_is_flex": (listing.logistic_type or "").lower() == "self_service",
+    }
+
+
+@router.get("/{listing_id}/debug-oauth")
+async def debug_oauth_anuncio(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Diagnóstico OAuth: verifica scopes concedidos e identidade do token.
+
+    Teste 1 — GET /applications/{app_id}/grants: lista os scopes que o app tem
+    com o seller dono deste anúncio. Precisa de 'write' para ativar/desativar Flex.
+
+    Teste 2 — GET /users/me: confirma que o token pertence ao seller dono do anúncio.
+    Token de outra conta tentando mexer em item alheio gera 403 imediatamente.
+    """
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma")
+    if (listing.account.platform or "") != "mercadolivre":
+        raise HTTPException(status_code=400, detail="Debug OAuth disponível apenas para ML")
+
+    access_token = await _get_valid_token(listing.account, db)
+    app_id = get_settings().ML_APP_ID
+
+    grants_data, me_data = await ml_service.get_app_grants_and_me(access_token, app_id)
+
+    me_id = str(me_data.get("id") or "")
+    account_seller_id = str(listing.account.platform_user_id or "")
+    me_status = me_data.get("status") or {}
+    mercadoenvios_status = me_status.get("mercadoenvios") or "unknown"
+    mercadoenvios_ok = mercadoenvios_status == "accepted"
+
+    grants_error = grants_data.get("error")
+    grants_note = (
+        "Endpoint /grants exige credencial do dono do app (não do seller) — use o token da aplicação para checar scopes"
+        if grants_error else None
+    )
+
+    return {
+        "app_id": app_id,
+        "platform_item_id": listing.platform_item_id,
+        "account_name": listing.account.platform_username or listing.account.platform_user_id,
+        "test_1_grants": {
+            "raw": grants_data,
+            "note": grants_note,
+            "diagnosis": "Inconclusivo — endpoint /grants requer token do app owner, não do seller",
+        },
+        "test_2_users_me": {
+            "token_user_id": me_id,
+            "account_seller_id": account_seller_id,
+            "ids_match": me_id == account_seller_id,
+            "mercadoenvios_status": mercadoenvios_status,
+            "mercadoenvios_accepted": mercadoenvios_ok,
+            "diagnosis_token": "OK — token é do dono do anúncio" if me_id == account_seller_id else f"PROBLEMA — token é do user {me_id}, mas anúncio pertence ao seller {account_seller_id}",
+            "diagnosis_envios": "OK — Mercado Envios aceito" if mercadoenvios_ok else f"BLOQUEADOR — mercadoenvios='{mercadoenvios_status}'. A conta precisa aceitar o Mercado Envios no painel ML antes de gerenciar Flex via API.",
+        },
+    }
 
 
 @router.delete("/{listing_id}/marketplace", status_code=204)

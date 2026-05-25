@@ -620,7 +620,7 @@ async def get_items_bulk(access_token: str, item_ids: list[str]) -> list[dict]:
             resp = await client.get(
                 f"{ML_API_BASE}/items",
                 headers={"Authorization": f"Bearer {access_token}"},
-                params={"ids": ",".join(chunk)},
+                params={"ids": ",".join(chunk), "attributes": "id,title,price,available_quantity,sold_quantity,status,listing_type_id,category_id,thumbnail,permalink,seller_sku,shipping,pictures,attributes,catalog_product_id,catalog_listing,item_condition,variations"},
             )
             if resp.status_code != 200:
                 continue
@@ -771,13 +771,10 @@ async def set_item_flex(access_token: str, item_id: str, enable: bool, site_id: 
         "Authorization": f"Bearer {access_token}",
         "User-Agent": "SistemaDrop/1.0",
         "Accept": "application/json",
-        "Content-Type": "application/json",
     }
     logger.info("set_item_flex: %s %s (current_flex=%s, want=%s)", method, url, is_currently_flex, enable)
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.request(
-            method, url, headers=headers_action, content=b"" if enable else None
-        )
+        resp = await client.request(method, url, headers=headers_action)
 
     if resp.status_code in (200, 201, 204):
         try:
@@ -787,15 +784,15 @@ async def set_item_flex(access_token: str, item_id: str, enable: bool, site_id: 
         return {"already_in_state": False, "response": ml_resp}
 
     body_text = resp.text or ""
-    is_html = body_text.lstrip().lower().startswith("<!doctype") or "<html" in body_text[:200].lower()
     logger.warning("set_item_flex erro %s: %s", resp.status_code, body_text[:500])
-    if is_html and resp.status_code == 403:
+    if resp.status_code == 403:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Mercado Livre bloqueou a requisição (403 Forbidden via proxy). "
-                "Possíveis causas: aplicação ML sem permissão para gerenciar Flex por item, "
-                "conta sem acesso a Flex, ou item não elegível por categoria/região. "
+                "O Mercado Livre recusou a operação de Flex (403). "
+                "Isso ocorre quando o OAuth scope da aplicação não inclui permissão de gerenciamento de envios. "
+                "Acesse o painel de desenvolvedores ML (developers.mercadolibre.com.br), "
+                "edite o app e adicione o scope 'write:shipping_preferences' (ou equivalente para Flex). "
                 f"Item: {item_id}"
             ),
         )
@@ -803,6 +800,34 @@ async def set_item_flex(access_token: str, item_id: str, enable: bool, site_id: 
         status_code=400,
         detail=f"ML rejeitou {'habilitar' if enable else 'desabilitar'} Flex no item {item_id}: {body_text[:500]}",
     )
+
+
+async def get_item_owner_me(access_token: str) -> dict:
+    """Retorna os dados do usuário dono do token (GET /users/me)."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    return resp.json() if resp.status_code == 200 else {}
+
+
+async def get_app_grants_and_me(access_token: str, app_id: str) -> tuple[dict, dict]:
+    """Busca em paralelo os grants do app e o usuário do token (para diagnóstico OAuth)."""
+    import asyncio
+
+    async def _get(url: str) -> tuple[int, dict]:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+        if resp.status_code == 200:
+            return resp.status_code, resp.json()
+        return resp.status_code, {"error": resp.text[:300], "status": resp.status_code}
+
+    (grants_status, grants_data), (me_status, me_data) = await asyncio.gather(
+        _get(f"{ML_API_BASE}/applications/{app_id}/grants"),
+        _get(f"{ML_API_BASE}/users/me"),
+    )
+    return grants_data, me_data
 
 
 async def get_category_shipping_preferences(category_id: str) -> dict:

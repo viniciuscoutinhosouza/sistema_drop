@@ -195,6 +195,7 @@
                       <span v-if="a.sku" class="text-muted" style="font-size:11px">· SKU: {{ a.sku }}</span>
                       <span v-if="a.listing_type" :class="listingTypeBadge(a.listing_type)" style="font-size:10px">{{ listingTypeLabel(a.listing_type) }}</span>
                       <span v-if="a.is_full" class="badge" style="background:#00a650;color:#fff;font-size:10px"><i class="fas fa-warehouse mr-1"></i>Full</span>
+                      <span v-if="a.is_flex && !a.is_full" class="badge" style="background:#f97316;color:#fff;font-size:10px" title="Mercado Envios Flex ativo"><i class="fas fa-motorcycle mr-1"></i>Flex</span>
                       <span v-if="a.catalog_listing && a.ml_catalog_id" class="badge badge-primary" style="font-size:10px" :title="'Produto: ' + a.ml_catalog_id"><i class="fas fa-bookmark mr-1"></i>Anúncio de Catálogo</span>
                       <span v-else-if="!a.catalog_listing && a.ml_catalog_id" class="badge badge-secondary" style="font-size:10px" :title="'Vinculado: ' + a.ml_catalog_id"><i class="fas fa-link mr-1"></i>Vinculado ao Catálogo</span>
                       <span :class="'badge ' + listingQuality(a).cls" style="font-size:10px;cursor:help"
@@ -391,14 +392,6 @@
                               @click="toggleFlex(a)">
                         <i class="fas fa-bolt"></i>
                       </button>
-                      <!-- Badge informativo do logistic_type real do anúncio (read-only).
-                           Indica o tipo atual; a ação de Flex é o botão ao lado. -->
-                      <span v-if="logisticBadge(a)"
-                            :class="['badge align-self-center px-2', logisticBadge(a).cls]"
-                            :title="logisticBadge(a).title"
-                            style="font-size:10px;font-weight:600">
-                        <i :class="['fas', logisticBadge(a).icon, 'mr-1']"></i>{{ logisticBadge(a).label }}
-                      </span>
                       <button v-if="a.is_full && a.qty_full === 0 && a.platform_item_id"
                               class="btn btn-outline-danger"
                               title="Deixar de oferecer Full — converter para cross-docking usando estoque do galpão do seller"
@@ -2976,6 +2969,7 @@ function isCubicBillable(listing) {
 
 function logisticLabel(listing) {
   if (listing.is_full) return 'Full ML'
+  if (listing.is_flex) return 'ME2 Flex'
   if (listing.shipping_mode === 'me1') return 'ME1'
   return 'ME2 Drop Off'
 }
