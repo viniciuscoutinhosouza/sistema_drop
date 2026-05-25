@@ -2047,7 +2047,10 @@ def _apply_ml_item_to_listing(
     shipping = item.get("shipping") or {}
     shipping_mode = shipping.get("mode") or "me2"
     free_shipping = bool(shipping.get("free_shipping", False))
+    shipping_tags = set(shipping.get("tags") or [])
     logistic_type_raw = (shipping.get("logistic_type") or "cross_docking").lower()
+    if "self_service_in" in shipping_tags and logistic_type_raw not in ("fulfillment", "self_service"):
+        logistic_type_raw = "self_service"
     is_full = logistic_type_raw == "fulfillment"
     ml_catalog_id = item.get("catalog_product_id") or ""
     catalog_listing = bool(item.get("catalog_listing", False))
@@ -2830,7 +2833,9 @@ async def debug_shipping_anuncio(
         raise HTTPException(status_code=400, detail="Debug de shipping disponível apenas para ML")
 
     access_token = await _get_valid_token(listing.account, db)
-    data = await ml_service.get_item(access_token, listing.platform_item_id)
+    data, selfservice_raw = await ml_service.get_item_and_selfservice(
+        access_token, listing.platform_item_id
+    )
     shipping = data.get("shipping") or {}
     tags = shipping.get("tags") or []
     return {
@@ -2844,6 +2849,12 @@ async def debug_shipping_anuncio(
         "free_shipping": shipping.get("free_shipping"),
         "db_logistic_type": listing.logistic_type,
         "db_is_flex": (listing.logistic_type or "").lower() == "self_service",
+        "selfservice_endpoint": {
+            "url": f"GET /sites/MLB/shipping/selfservice/items/{listing.platform_item_id}",
+            "status_code": selfservice_raw.get("_status_code"),
+            "headers_sent": selfservice_raw.get("headers_sent"),
+            "raw": selfservice_raw.get("body"),
+        },
     }
 
 

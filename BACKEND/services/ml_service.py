@@ -772,9 +772,11 @@ async def set_item_flex(access_token: str, item_id: str, enable: bool, site_id: 
         "User-Agent": "SistemaDrop/1.0",
         "Accept": "application/json",
     }
-    logger.info("set_item_flex: %s %s (current_flex=%s, want=%s)", method, url, is_currently_flex, enable)
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.request(method, url, headers=headers_action)
+        req = client.build_request(method, url, headers=headers_action)
+        sent_headers = dict(req.headers)
+        logger.info("set_item_flex: %s %s | headers=%s", method, url, sent_headers)
+        resp = await client.send(req)
 
     if resp.status_code in (200, 201, 204):
         try:
@@ -789,17 +791,52 @@ async def set_item_flex(access_token: str, item_id: str, enable: bool, site_id: 
         raise HTTPException(
             status_code=400,
             detail=(
-                "O Mercado Livre recusou a operação de Flex (403). "
-                "Isso ocorre quando o OAuth scope da aplicação não inclui permissão de gerenciamento de envios. "
-                "Acesse o painel de desenvolvedores ML (developers.mercadolibre.com.br), "
-                "edite o app e adicione o scope 'write:shipping_preferences' (ou equivalente para Flex). "
-                f"Item: {item_id}"
+                f"O Mercado Livre bloqueou o acesso ao endpoint de gerenciamento de Flex para o app {settings.ML_APP_ID} (403 tengine). "
+                "Headers e token estão corretos — o bloqueio é policy do ML no recurso /shipping/selfservice. "
+                "Para desbloquear: abra ticket em developers.mercadolibre.com.br solicitando acesso ao endpoint "
+                "POST/DELETE /sites/MLB/shipping/selfservice/items para este app ID."
             ),
         )
     raise HTTPException(
         status_code=400,
         detail=f"ML rejeitou {'habilitar' if enable else 'desabilitar'} Flex no item {item_id}: {body_text[:500]}",
     )
+
+
+async def get_item_and_selfservice(access_token: str, item_id: str) -> tuple[dict, dict]:
+    """Busca em paralelo GET /items/{id} e GET /sites/MLB/shipping/selfservice/items/{id}.
+
+    Retorna (item_data, selfservice_result) onde selfservice_result tem:
+      {"_status_code": int, "body": dict|str}
+    """
+    import asyncio
+
+    headers = {"Authorization": f"Bearer {access_token}", "User-Agent": "SistemaDrop/1.0"}
+
+    async def _get_item() -> dict:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{ML_API_BASE}/items/{item_id}", headers=headers)
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Anúncio {item_id} não encontrado no ML")
+        if resp.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"Erro ao buscar item ML: {resp.text}")
+        return resp.json()
+
+    async def _get_selfservice() -> dict:
+        url_ss = f"{ML_API_BASE}/sites/MLB/shipping/selfservice/items/{item_id}"
+        async with httpx.AsyncClient(timeout=15) as client:
+            req = client.build_request("GET", url_ss, headers=headers)
+            sent_headers = dict(req.headers)
+            resp = await client.send(req)
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text[:1000]
+        logger.info("selfservice GET %s → %s | headers_sent=%s", url_ss, resp.status_code, sent_headers)
+        return {"_status_code": resp.status_code, "body": body, "headers_sent": sent_headers}
+
+    item_data, selfservice_result = await asyncio.gather(_get_item(), _get_selfservice())
+    return item_data, selfservice_result
 
 
 async def get_item_owner_me(access_token: str) -> dict:
