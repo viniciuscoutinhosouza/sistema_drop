@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-05-24 — fix(anuncios): Flex é opt-out automático — check-then-act + alert explicativo
+
+**Erro observado:** `403 Forbidden` (HTML do tengine/WAF) ao clicar ⚡ Flex no anúncio `MLB6833247070`.
+
+**Causa real (correção da premissa anterior):** Flex no ML é **opt-OUT automático** — se a conta tem Flex habilitado e o item é elegível pela categoria/região/atributos, o checkbox no Seller Center já vem **marcado por padrão**. O anúncio já oferece Flex sem ação alguma. O POST `/sites/MLB/shipping/selfservice/items/{id}` é necessário só para REATIVAR Flex que foi explicitamente desativado antes (raro). Chamar POST num item que já tem `self_service_in` causou o 403 do WAF (estado inconsistente).
+
+**Mudanças:**
+- `BACKEND/services/ml_service.py`: `set_item_flex` agora faz **check-then-act**:
+  1. `GET /items/{id}?attributes=shipping,status` → lê `shipping.tags` atual
+  2. Se já no estado desejado → retorna `{already_in_state: True, logistic_type}` SEM chamar `/selfservice`
+  3. Senão → chama POST/DELETE com headers completos (`User-Agent`, `Accept`, `Content-Type`)
+  4. Detecta resposta HTML do WAF → mensagem amigável citando causas prováveis
+- `BACKEND/routers/anuncios.py` (endpoint `/toggle-flex`): usa `already_in_state` da resposta — reutiliza `logistic_type` do GET inicial sem refetch; expõe `_already_in_state: True` no response.
+- `FRONTEND/src/views/anuncios/AnunciosView.vue` (`toggleFlex`):
+  - Alert na **ativação** explica o opt-out: "O Flex é AUTOMÁTICO… use APENAS se desativou antes".
+  - Sem alert extra na desativação.
+  - Se `_already_in_state` → `toast.info` "Flex já estava ativo/desativado" em vez de "Flex ativado".
+
+**Outcome:** evita chamada inútil ao endpoint dedicado (que provavelmente causou o 403), educa o usuário sobre o comportamento real do Flex, e mantém compatibilidade total com o caso legítimo (item que estava `self_service_out` e usuário quer reativar).
+
+---
+
 ## 2026-05-24 — feat(anuncios): toggle Flex por anúncio via endpoint dedicado
 
 **Correção da refatoração anterior:** o commit `3f8f760` removeu o toggle por item assumindo que Flex era só por conta, mas o Seller Center do ML claramente expõe checkbox de Flex por anúncio. A causa real do erro `field_not_updatable` era usar o endpoint errado (`PUT /items` com `shipping.tags`).

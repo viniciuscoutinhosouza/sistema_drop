@@ -726,29 +726,83 @@ async def detect_shipping_capabilities(access_token: str, seller_id: str) -> dic
 
 
 async def set_item_flex(access_token: str, item_id: str, enable: bool, site_id: str = "MLB") -> dict:
-    """Ativa (POST) ou desativa (DELETE) Mercado Envios Flex num item já publicado.
+    """Ativa (POST) ou desativa (DELETE) Mercado Envios Flex num item, com check-then-act.
 
-    Endpoint oficial: /sites/{SITE_ID}/shipping/selfservice/items/{ITEM_ID}
-    Pré-condição: item deve estar 'active' (anúncio publicado).
-    Resultado: campo shipping.tags do item passa a conter 'self_service_in' (ativo)
-    ou 'self_service_out' (inativo); shipping.logistic_type vira 'self_service' quando ativo.
+    IMPORTANTE: Flex no ML é OPT-OUT automático — se a conta tem Flex habilitado e o item
+    é elegível, ele já vem ativo automaticamente. POST/DELETE só são necessários se o
+    item está fora do estado desejado. Chamar POST num item que já tem 'self_service_in'
+    pode causar 403 do WAF.
 
-    Why endpoint dedicado: PUT /items com shipping.tags é rejeitado por field_not_updatable.
+    Fluxo:
+    1. GET /items/{id} lê shipping.tags atual
+    2. Se já no estado desejado retorna {already_in_state: True, ...} sem chamar /selfservice
+    3. Senão chama POST (ativar) ou DELETE (desativar) com headers completos
     """
-    method = "POST" if enable else "DELETE"
-    url = f"{ML_API_BASE}/sites/{site_id}/shipping/selfservice/items/{item_id}"
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers_get = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": "SistemaDrop/1.0",
+        "Accept": "application/json",
+    }
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.request(method, url, headers=headers)
-    if resp.status_code not in (200, 201, 204):
+        item_resp = await client.get(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers=headers_get,
+            params={"attributes": "shipping,status"},
+        )
+    if item_resp.status_code != 200:
         raise HTTPException(
             status_code=400,
-            detail=f"ML rejeitou {'habilitar' if enable else 'desabilitar'} Flex no item {item_id}: {resp.text}",
+            detail=f"Não foi possível consultar o item {item_id} no ML antes do toggle: {item_resp.text[:300]}",
         )
-    try:
-        return resp.json()
-    except Exception:
-        return {}
+    item_data = item_resp.json()
+    shipping = item_data.get("shipping") or {}
+    tags = set(shipping.get("tags") or [])
+    is_currently_flex = "self_service_in" in tags
+    current_logistic = (shipping.get("logistic_type") or "").lower()
+
+    if enable and is_currently_flex:
+        return {"already_in_state": True, "logistic_type": current_logistic, "tags": list(tags)}
+    if not enable and not is_currently_flex:
+        return {"already_in_state": True, "logistic_type": current_logistic, "tags": list(tags)}
+
+    method = "POST" if enable else "DELETE"
+    url = f"{ML_API_BASE}/sites/{site_id}/shipping/selfservice/items/{item_id}"
+    headers_action = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": "SistemaDrop/1.0",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    logger.info("set_item_flex: %s %s (current_flex=%s, want=%s)", method, url, is_currently_flex, enable)
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.request(
+            method, url, headers=headers_action, content=b"" if enable else None
+        )
+
+    if resp.status_code in (200, 201, 204):
+        try:
+            ml_resp = resp.json()
+        except Exception:
+            ml_resp = {}
+        return {"already_in_state": False, "response": ml_resp}
+
+    body_text = resp.text or ""
+    is_html = body_text.lstrip().lower().startswith("<!doctype") or "<html" in body_text[:200].lower()
+    logger.warning("set_item_flex erro %s: %s", resp.status_code, body_text[:500])
+    if is_html and resp.status_code == 403:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Mercado Livre bloqueou a requisição (403 Forbidden via proxy). "
+                "Possíveis causas: aplicação ML sem permissão para gerenciar Flex por item, "
+                "conta sem acesso a Flex, ou item não elegível por categoria/região. "
+                f"Item: {item_id}"
+            ),
+        )
+    raise HTTPException(
+        status_code=400,
+        detail=f"ML rejeitou {'habilitar' if enable else 'desabilitar'} Flex no item {item_id}: {body_text[:500]}",
+    )
 
 
 async def get_category_shipping_preferences(category_id: str) -> dict:

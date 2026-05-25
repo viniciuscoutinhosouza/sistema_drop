@@ -2514,15 +2514,35 @@ function canToggleFlex(listing) {
 
 async function toggleFlex(listing) {
   const turningOn = !isFlexActive(listing)
-  const msg = turningOn
-    ? `Ativar Mercado Envios Flex no anúncio "${listing.title_override}"?\n\nVocê se compromete a entregar no mesmo dia/24h pela região elegível.`
-    : `Desativar Mercado Envios Flex no anúncio "${listing.title_override}"?`
+
+  // Alert explicativo APENAS na ativação — esclarece o comportamento opt-out automático
+  let msg
+  if (turningOn) {
+    msg = `Ativar Mercado Envios Flex no anúncio "${listing.title_override}"?
+
+ℹ️ Como funciona o Flex:
+• O Flex é AUTOMÁTICO: se sua conta tem Flex e o item é elegível pela categoria/região, ele já é oferecido sem você precisar fazer nada.
+• Use esta ação APENAS se você desativou o Flex deste anúncio antes e quer reativar.
+• Você se compromete a entregar no mesmo dia/24h pela região elegível.
+
+Deseja continuar?`
+  } else {
+    msg = `Desativar Mercado Envios Flex no anúncio "${listing.title_override}"?
+
+Após desativar, este anúncio não será mais oferecido com Flex (mesmo que sua conta tenha Flex habilitado).`
+  }
+
   if (!confirm(msg)) return
+
   try {
     const { data } = await api.post(`/anuncios/${listing.id}/toggle-flex`, { enable: turningOn })
     const idx = anuncios.value.findIndex(a => a.id === listing.id)
     if (idx !== -1) anuncios.value[idx] = data
-    toast.success(turningOn ? 'Flex ativado no anúncio!' : 'Flex desativado.')
+    if (data._already_in_state) {
+      toast.info(turningOn ? 'Flex já estava ativo neste anúncio.' : 'Flex já estava desativado neste anúncio.')
+    } else {
+      toast.success(turningOn ? 'Flex ativado no anúncio!' : 'Flex desativado.')
+    }
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao alterar Flex')
   }

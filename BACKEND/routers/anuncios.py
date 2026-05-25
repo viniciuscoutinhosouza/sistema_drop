@@ -2751,22 +2751,31 @@ async def toggle_flex_anuncio(
         )
 
     access_token = await _get_valid_token(listing.account, db)
-    await ml_service.set_item_flex(access_token, listing.platform_item_id, enable, site_id="MLB")
+    result = await ml_service.set_item_flex(
+        access_token, listing.platform_item_id, enable, site_id="MLB"
+    )
 
-    # Re-busca o item no ML para pegar o logistic_type real após o toggle
-    # (mais confiável que confiar na resposta do POST/DELETE — propagação não é instantânea).
-    try:
-        ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
-        new_logistic = ((ml_item.get("shipping") or {}).get("logistic_type") or "").lower()
-        if new_logistic:
-            listing.logistic_type = new_logistic
-    except Exception:
-        # Otimisticamente seta o logistic_type esperado se o re-fetch falhar
-        listing.logistic_type = "self_service" if enable else "cross_docking"
+    # already_in_state: o item já estava no estado desejado (Flex é opt-out automático).
+    # Reusa o logistic_type que veio do GET inicial, sem refetch.
+    if result.get("already_in_state"):
+        new_logistic = result.get("logistic_type") or ""
+    else:
+        # Refetch para pegar o estado pós-ação (propagação não é instantânea no ML)
+        try:
+            ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
+            new_logistic = ((ml_item.get("shipping") or {}).get("logistic_type") or "").lower()
+        except Exception:
+            new_logistic = "self_service" if enable else "cross_docking"
 
+    if new_logistic:
+        listing.logistic_type = new_logistic
     listing.last_sync_at = datetime.now(UTC)
     await db.commit()
-    return _serialize_listing(listing)
+
+    result_dict = _serialize_listing(listing)
+    if result.get("already_in_state"):
+        result_dict["_already_in_state"] = True
+    return result_dict
 
 
 @router.delete("/{listing_id}", status_code=204)
