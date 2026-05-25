@@ -2544,12 +2544,7 @@ function logisticBadge(listing) {
       title: 'Mercado Envios Full — estoque e logística pelo galpão do ML.',
     }
   }
-  if (lt === 'cross_docking' || lt === 'xd_drop_off' || lt === 'drop_off') {
-    return {
-      label: 'ME2', icon: 'fa-truck', cls: 'badge-light border',
-      title: 'Mercado Envios padrão (cross-docking).',
-    }
-  }
+  // ME2 (cross_docking/drop_off/xd_drop_off) é o padrão e não recebe badge — reduz ruído visual.
   return null
 }
 
