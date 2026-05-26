@@ -466,6 +466,174 @@ async def create_item(access_token: str, item_data: dict) -> dict:
     return resp.json()
 
 
+# ─── Faturador / Fiscal Information ──────────────────────────────────────────
+# Endpoint dedicado do Faturador — indexa por SKU, separado do PUT /items.
+# Doc: https://developers.mercadolivre.com.br/pt_br/envio-dos-dados-fiscais
+
+
+def origin_detail_to_type(origin_detail: int | str | None) -> str:
+    """Mapeia origin_detail numérico (0-8) → origin_type aceito pelo Faturador.
+
+    Tabela CST/CSOSN origem:
+    - 0,3,4,5,8: Nacional/produção própria → "manufacturer"
+    - 1,6: Estrangeira (importação direta) → "imported"
+    - 2,7: Estrangeira (mercado interno) → "reseller"
+    """
+    if origin_detail is None or origin_detail == "":
+        return "manufacturer"
+    try:
+        d = int(origin_detail)
+    except (TypeError, ValueError):
+        return "manufacturer"
+    if d in (1, 6):
+        return "imported"
+    if d in (2, 7):
+        return "reseller"
+    return "manufacturer"
+
+
+async def register_or_update_fiscal_information(
+    access_token: str, sku: str, payload: dict
+) -> dict:
+    """Cadastra ou atualiza dados fiscais de um SKU no Faturador do ML.
+
+    Tenta POST /items/fiscal_information; se já existir (409 ou outro indicador
+    de duplicidade), faz PUT /items/fiscal_information/{sku}.
+
+    Retorna dict com:
+    - ok: bool
+    - status_code: int (do método final)
+    - method: 'POST' | 'PUT'
+    - body: response body do ML
+    - error: str | None — mensagem amigável se falhar
+
+    NÃO levanta exception — caller decide o que fazer com erro (log/warning).
+    Failures não devem derrubar o flow de publicação/update.
+    """
+    url_post = f"{ML_API_BASE}/items/fiscal_information"
+    url_put = f"{ML_API_BASE}/items/fiscal_information/{sku}"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "content-type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # POST primeiro (cria)
+        post_resp = await client.post(url_post, headers=headers, json=payload)
+        try:
+            post_body = post_resp.json()
+        except Exception:
+            post_body = {"_raw_text": post_resp.text[:500]}
+
+        if post_resp.status_code in (200, 201):
+            return {
+                "ok": True,
+                "status_code": post_resp.status_code,
+                "method": "POST",
+                "body": post_body,
+                "error": None,
+            }
+
+        # Se POST falhou, tenta PUT (pode já existir)
+        put_resp = await client.put(url_put, headers=headers, json=payload)
+        try:
+            put_body = put_resp.json()
+        except Exception:
+            put_body = {"_raw_text": put_resp.text[:500]}
+
+        if put_resp.status_code in (200, 201):
+            return {
+                "ok": True,
+                "status_code": put_resp.status_code,
+                "method": "PUT",
+                "body": put_body,
+                "error": None,
+            }
+
+        # Ambos falharam — retorna erro
+        err_msg = None
+        if isinstance(put_body, dict):
+            err_msg = (
+                put_body.get("message")
+                or post_body.get("message") if isinstance(post_body, dict) else None
+            )
+        return {
+            "ok": False,
+            "status_code": put_resp.status_code,
+            "method": "PUT",
+            "body": {"post": post_body, "put": put_body},
+            "error": err_msg or f"ML returned {post_resp.status_code} on POST, {put_resp.status_code} on PUT",
+        }
+
+
+def build_fiscal_information_payload(
+    *,
+    sku: str,
+    title: str,
+    cost: float,
+    is_composite: bool = False,
+    measurement_unit: str = "UN",
+    ncm: str | None = None,
+    cest: str | None = None,
+    ean: str | None = None,
+    origin: int | None = None,
+    csosn: str | None = None,
+    tax_rule_id: int | None = None,
+    weight_kg: float | None = None,
+    fci: str | None = None,
+    ex_tipi: str | None = None,
+) -> dict:
+    """Monta o payload no formato esperado por POST/PUT /items/fiscal_information.
+
+    Inclui apenas campos preenchidos no `tax_information` para evitar enviar
+    chaves vazias que poderiam ser interpretadas como reset pelo ML.
+    """
+    tax_info: dict = {}
+
+    if ncm:
+        clean_ncm = str(ncm).replace(".", "").replace("-", "")[:8]
+        if clean_ncm:
+            tax_info["ncm"] = clean_ncm
+
+    if origin is not None:
+        tax_info["origin_detail"] = str(int(origin))
+        tax_info["origin_type"] = origin_detail_to_type(origin)
+    else:
+        tax_info["origin_type"] = "manufacturer"
+
+    if cest:
+        clean_cest = str(cest).replace(".", "").replace("-", "")[:7]
+        if clean_cest:
+            tax_info["cest"] = clean_cest
+
+    if csosn:
+        tax_info["csosn"] = str(csosn)
+
+    if tax_rule_id is not None:
+        tax_info["tax_rule_id"] = int(tax_rule_id)
+
+    if ean:
+        tax_info["ean"] = str(ean).strip()
+
+    if weight_kg is not None:
+        tax_info["net_weight"] = float(weight_kg)
+        tax_info["gross_weight"] = float(weight_kg)
+
+    if fci:
+        tax_info["fci"] = str(fci)
+    if ex_tipi:
+        tax_info["ex_tipi"] = str(ex_tipi)
+
+    return {
+        "sku": str(sku),
+        "title": (title or "")[:255],
+        "type": "bundle" if is_composite else "single",
+        "measurement_unit": measurement_unit,
+        "cost": float(cost),
+        "tax_information": tax_info,
+    }
+
+
 async def update_item_stock(access_token: str, item_id: str, quantity: int) -> str:
     """Update available quantity for an existing ML listing.
 

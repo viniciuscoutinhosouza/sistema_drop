@@ -25,6 +25,22 @@ from models.user import User
 from services import ml_service
 
 
+def _is_valid_ean13(s: str | None) -> bool:
+    """True se `s` é um EAN-13 válido (13 dígitos numéricos + checksum mod-10 correto).
+
+    Algoritmo idêntico ao do `FRONTEND/src/utils/ean.js:ean13Checksum`:
+    soma posições pares × 1 e ímpares × 3 (índice 0-based), dígito verificador
+    = (10 − soma mod 10) mod 10.
+    """
+    if not s or not isinstance(s, str):
+        return False
+    s = s.strip()
+    if len(s) != 13 or not s.isdigit():
+        return False
+    sum_ = sum(int(d) * (1 if i % 2 == 0 else 3) for i, d in enumerate(s[:12]))
+    return (10 - (sum_ % 10)) % 10 == int(s[12])
+
+
 def _absolutize_image_url(url: str) -> str:
     """Converte URL relativa de imagem (/static/...) em URL absoluta usando
     PUBLIC_BASE_URL. Necessário para enviar pro ML/Shopee que precisam baixar a imagem.
@@ -92,6 +108,71 @@ def _title_similarity(a: str, b: str) -> float:
     if not sa or not sb:
         return 0.0
     return len(sa & sb) / len(sa | sb)
+
+
+def _build_fiscal_payload_from_product(
+    product, sku: str, cmig_crt: int | None, fiscal_overrides: dict | None = None
+) -> dict | None:
+    """Monta o payload de fiscal_information a partir do produto + overrides do fiscal_json.
+
+    Retorna None se não houver dados fiscais mínimos para cadastrar (sem NCM,
+    o ML rejeita com `tax_information.ncm is required` — error_code 10027).
+    """
+    overrides = fiscal_overrides or {}
+
+    ncm = overrides.get("ncm") or getattr(product, "ncm", None)
+    if not ncm:
+        return None  # sem NCM o ML rejeita — não tenta
+
+    csosn = overrides.get("csosn") or getattr(product, "csosn", None)
+    if not csosn and cmig_crt in (1, 2):
+        csosn = "102"  # default Simples Nacional
+
+    return ml_service.build_fiscal_information_payload(
+        sku=sku,
+        title=product.title or "",
+        cost=float(product.cost_price) if getattr(product, "cost_price", None) else 0.0,
+        is_composite=getattr(product, "is_composite", False),
+        measurement_unit="UN",
+        ncm=ncm,
+        cest=overrides.get("cest") or getattr(product, "cest", None),
+        ean=overrides.get("ean") or overrides.get("gtin") or getattr(product, "ean", None),
+        origin=overrides.get("origin") if "origin" in overrides else getattr(product, "origin", None),
+        csosn=csosn,
+        weight_kg=float(product.weight_kg) if getattr(product, "weight_kg", None) else None,
+    )
+
+
+def _parse_fiscal_json(raw) -> dict:
+    """Aceita string JSON ou dict; retorna dict (vazio em erro)."""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return _json.loads(raw) or {}
+        except Exception:
+            return {}
+    return {}
+
+
+async def _resolve_cmig_crt(account: MarketplaceAccount, db: AsyncSession) -> int | None:
+    """Retorna o CRT (regime tributário) da CMIG vinculada à conta, ou None.
+
+    Usado como fallback do CSOSN no envio fiscal ao ML quando o produto não tem
+    csosn explícito. CRT 1/2 (Simples Nacional) → CSOSN 102; CRT 3 (Normal) → CST.
+    """
+    if not getattr(account, "cmig_id", None):
+        return None
+    from models.fiscal import CMIGFiscalConfig
+
+    cfg = (
+        await db.execute(
+            select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == account.cmig_id)
+        )
+    ).scalar_one_or_none()
+    return cfg.crt if cfg else None
 
 
 async def _get_account_or_403(account_id: int, user: User, db: AsyncSession) -> MarketplaceAccount:
@@ -188,6 +269,73 @@ def _build_ml_payload(
     model = form.get("model") or getattr(product, "model", None)
     if model and "MODEL" not in existing_ids:
         attributes.append({"id": "MODEL", "value_name": str(model)})
+
+    # Atributos fiscais (NCM, CEST, GTIN, ORIGIN) — necessários pro Faturador ML emitir NFe
+    # sem retornar "Sku not found" (error_code 10316). Prioridade:
+    # attributes manuais > form.fiscal_json > campo fiscal do produto.
+    fiscal = {}
+    raw_fiscal = form.get("fiscal_json")
+    if isinstance(raw_fiscal, str) and raw_fiscal.strip():
+        try:
+            fiscal = _json.loads(raw_fiscal) or {}
+        except Exception:
+            fiscal = {}
+    elif isinstance(raw_fiscal, dict):
+        fiscal = raw_fiscal
+
+    def _fiscal_str(*keys, prod_attr: str | None = None) -> str | None:
+        """Retorna primeira chave não-vazia em fiscal (case-insensitive) ou prod.<prod_attr>."""
+        for k in keys:
+            v = fiscal.get(k) or fiscal.get(k.upper()) or fiscal.get(k.lower())
+            if v not in (None, ""):
+                return str(v).strip() or None
+        if prod_attr:
+            v = getattr(product, prod_attr, None)
+            if v not in (None, ""):
+                return str(v).strip() or None
+        return None
+
+    ncm_val = _fiscal_str("ncm", prod_attr="ncm")
+    if ncm_val:
+        ncm_val = ncm_val.replace(".", "").replace("-", "")[:8] or None
+    if ncm_val and "NCM" not in existing_ids and "FISCAL_CLASSIFICATION" not in existing_ids:
+        attributes.append({"id": "NCM", "value_name": ncm_val})
+        existing_ids.add("NCM")
+
+    cest_val = _fiscal_str("cest", prod_attr="cest")
+    if cest_val:
+        cest_val = cest_val.replace(".", "").replace("-", "")[:7] or None
+    if cest_val and "CEST" not in existing_ids:
+        attributes.append({"id": "CEST", "value_name": cest_val})
+        existing_ids.add("CEST")
+
+    # NOTA: CSOSN NÃO é atributo de item ML — o ML droppou silenciosamente quando
+    # tentamos enviar como `ICMS_CSOSN` em PUT /items. CSOSN é gravado via endpoint
+    # dedicado `POST /items/fiscal_information` chamado depois pelo Faturador
+    # (ver ml_service.register_or_update_fiscal_information). Aqui só atributos de
+    # categoria do item ML (NCM/CEST/GTIN/ORIGIN já estão acima).
+
+    # EAN e GTIN são equivalentes pro ML — usamos GTIN como id canônico.
+    # Validamos checksum EAN-13 antes de enviar: GTIN inválido derrubaria todo o
+    # PUT /items com 400 (item.attribute.product_identifier.invalid_format), e
+    # com isso NCM/CEST/ORIGIN também não salvariam. Skip silencioso é melhor UX.
+    gtin_val = _fiscal_str("gtin", "ean", prod_attr="ean")
+    if gtin_val and "GTIN" not in existing_ids and "EAN" not in existing_ids:
+        if _is_valid_ean13(gtin_val):
+            attributes.append({"id": "GTIN", "value_name": gtin_val})
+            existing_ids.add("GTIN")
+        else:
+            logging.getLogger(__name__).warning(
+                "GTIN '%s' com checksum EAN-13 inválido — skip envio ao ML", gtin_val
+            )
+
+    # Origin é numérico (0-8); fiscal_json raramente tem, então caímos no product.origin
+    origin_val = fiscal.get("origin")
+    if origin_val in (None, ""):
+        origin_val = getattr(product, "origin", None)
+    if origin_val not in (None, "") and "ORIGIN" not in existing_ids:
+        attributes.append({"id": "ORIGIN", "value_name": str(origin_val)})
+        existing_ids.add("ORIGIN")
 
     for field, attr_id in [
         ("height_cm", "SELLER_PACKAGE_HEIGHT"),
@@ -446,7 +594,15 @@ async def _get_valid_token(account: MarketplaceAccount, db: AsyncSession) -> str
             )
         from datetime import timedelta
 
-        token_data = await ml_service.refresh_ml_token(account.refresh_token)
+        try:
+            token_data = await ml_service.refresh_ml_token(account.refresh_token)
+        except HTTPException as exc:
+            # ML revogou o refresh_token (invalid_grant) → marca pra UI mostrar alerta
+            # de reconexão imediatamente, sem esperar o job sync_tokens (1h).
+            if exc.status_code == 401 and "invalid_grant" in (exc.detail or "").lower():
+                account.requires_reauth = True
+                await db.commit()
+            raise
         account.access_token = token_data["access_token"]
         account.refresh_token = token_data.get("refresh_token", account.refresh_token)
         account.token_expires_at = now + timedelta(seconds=token_data.get("expires_in", 21600))
@@ -1475,12 +1631,14 @@ async def publish_anuncio(
     else:
         available_quantity = fixed_quantity
 
+    fiscal_sync_warning = None
     if mode == "create":
         if not category_id:
             raise HTTPException(
                 status_code=400, detail="category_id é obrigatório para criar anúncio"
             )
 
+        cmig_crt = await _resolve_cmig_crt(account, db)
         ml_form = {
             "title_override": product_title,
             "sale_price": sale_price,
@@ -1499,9 +1657,45 @@ async def publish_anuncio(
             "length_cm": body.get("length_cm"),
             "weight_kg": body.get("weight_kg"),
             "model": body.get("model"),
+            "sku": body.get("sku"),
+            "fiscal_json": body.get("fiscal_json"),
+            "cmig_crt": cmig_crt,
         }
         ml_item = await _create_ml_item_with_retry(access_token, prod, ml_form)
         platform_item_id = ml_item.get("id")
+
+        # Faturador: cadastra fiscal_information do SKU (endpoint dedicado).
+        # Best-effort — não derruba a publicação se falhar.
+        sku_for_fiscal = (
+            body.get("sku")
+            or getattr(prod, "sku_cmig", None)
+            or getattr(prod, "sku", None)
+        )
+        if sku_for_fiscal:
+            fiscal_payload = _build_fiscal_payload_from_product(
+                prod,
+                str(sku_for_fiscal),
+                cmig_crt,
+                fiscal_overrides=_parse_fiscal_json(body.get("fiscal_json")),
+            )
+            if fiscal_payload:
+                try:
+                    fr = await ml_service.register_or_update_fiscal_information(
+                        access_token, str(sku_for_fiscal), fiscal_payload
+                    )
+                    if not fr.get("ok"):
+                        fiscal_sync_warning = fr.get("error") or "Erro ao cadastrar fiscal_information"
+                        logging.getLogger(__name__).warning(
+                            "fiscal_information sync falhou para SKU %s: %s",
+                            sku_for_fiscal, fr.get("body"),
+                        )
+                except Exception as exc:
+                    fiscal_sync_warning = f"Exceção ao sincronizar fiscal: {exc}"
+                    logging.getLogger(__name__).warning(
+                        "Exceção em register_or_update_fiscal_information SKU %s: %s",
+                        sku_for_fiscal, exc,
+                    )
+
         if description and platform_item_id:
             try:
                 await ml_service.post_item_description(access_token, platform_item_id, description)
@@ -1577,7 +1771,10 @@ async def publish_anuncio(
     await db.commit()
     await db.refresh(listing)
 
-    return _serialize_listing(listing)
+    response = _serialize_listing(listing)
+    if fiscal_sync_warning:
+        response["fiscal_sync_warning"] = fiscal_sync_warning
+    return response
 
 
 @router.put("/{listing_id}")
@@ -1680,12 +1877,14 @@ async def update_anuncio(
 
     ml_error: str | None = None
     ml_skipped: list[str] = []
+    fiscal_sync_warning: str | None = None
 
     # Sincroniza ML com payload completo se listing tem platform_item_id
     if listing.platform_item_id and listing.account.platform == "mercadolivre":
         try:
             access_token = await _get_valid_token(listing.account, db)
 
+            cmig_crt = await _resolve_cmig_crt(listing.account, db)
             # Monta form consolidado com dados do body ou do DB como fallback
             form = {
                 "title_override": listing.title_override,
@@ -1706,6 +1905,8 @@ async def update_anuncio(
                 "width_cm": body.get("width_cm"),
                 "length_cm": body.get("length_cm"),
                 "weight_kg": body.get("weight_kg"),
+                "fiscal_json": body.get("fiscal_json") or listing.fiscal_json,
+                "cmig_crt": cmig_crt,
             }
             # Se fotos não vieram no body, tenta parsear pictures_json do DB
             if not form["pictures"] and listing.pictures_json:
@@ -1749,6 +1950,34 @@ async def update_anuncio(
             )
             ml_skipped = ml_resp.get("_skipped_fields") or []
 
+            # Faturador: sincroniza fiscal_information do SKU (endpoint dedicado).
+            # Best-effort — não derruba o update se falhar.
+            sku_for_fiscal = body.get("sku") or listing.sku or getattr(product, "sku_cmig", None) or getattr(product, "sku", None)
+            if sku_for_fiscal:
+                fiscal_payload = _build_fiscal_payload_from_product(
+                    product,
+                    str(sku_for_fiscal),
+                    cmig_crt,
+                    fiscal_overrides=_parse_fiscal_json(body.get("fiscal_json") or listing.fiscal_json),
+                )
+                if fiscal_payload:
+                    try:
+                        fr = await ml_service.register_or_update_fiscal_information(
+                            access_token, str(sku_for_fiscal), fiscal_payload
+                        )
+                        if not fr.get("ok"):
+                            fiscal_sync_warning = fr.get("error") or "Erro ao sincronizar fiscal_information"
+                            logging.getLogger(__name__).warning(
+                                "fiscal_information sync falhou para SKU %s: %s",
+                                sku_for_fiscal, fr.get("body"),
+                            )
+                    except Exception as exc:
+                        fiscal_sync_warning = f"Exceção ao sincronizar fiscal: {exc}"
+                        logging.getLogger(__name__).warning(
+                            "Exceção em register_or_update_fiscal_information SKU %s: %s",
+                            sku_for_fiscal, exc,
+                        )
+
             description = listing.description_override
             if description:
                 desc_ok = True
@@ -1788,6 +2017,8 @@ async def update_anuncio(
         result["ml_sync_warning"] = ml_error
     if ml_skipped:
         result["ml_skipped_fields"] = ml_skipped
+    if fiscal_sync_warning:
+        result["fiscal_sync_warning"] = fiscal_sync_warning
     if cascade_summary["cmig_updated"] or cascade_summary["pg_updated"]:
         result["_cascade"] = cascade_summary
     return result
@@ -3677,6 +3908,515 @@ async def get_anuncio_costs_debug(
                     debug["skip_reason"] = f"exception: {exc}"
 
     return debug
+
+
+@router.post("/{listing_id}/debug-fiscal-sync")
+async def debug_fiscal_sync(
+    listing_id: int,
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Debug: envia atributos fiscais para o ML e retorna a resposta CRUA.
+
+    Útil pra investigar por que NCM/CEST/GTIN/ORIGIN/CSOSN não aparecem no painel
+    "Edite os dados fiscais" do anúncio ML. **Não commita nada no banco** — só
+    faz o PUT direto no ML e devolve status + body + cause + atributos persistidos.
+
+    Body (opcional):
+    ```json
+    {
+      "overrides": {
+        "ncm": "61091000",
+        "cest": null,
+        "gtin": "7891234567890",
+        "origin": 0,
+        "csosn": "102"
+      },
+      "extra_attributes": [
+        {"id": "ICMS_CSOSN", "value_name": "102"},
+        {"id": "TIPO_DE_ORIGEM", "value_name": "Nacional"}
+      ],
+      "only_fiscal": true
+    }
+    ```
+
+    - `overrides`: substituem os valores resolvidos do produto/fiscal_json/CMIG.
+    - `extra_attributes`: enviados literalmente — útil pra testar IDs experimentais.
+    - `only_fiscal` (default true): se true, envia só atributos fiscais; se false,
+      envia o payload completo do `_build_ml_payload` (mesmo do update real).
+    """
+    import httpx
+
+    body = body or {}
+    overrides = body.get("overrides") or {}
+    extra_attrs = body.get("extra_attributes") or []
+    only_fiscal = body.get("only_fiscal", True)
+
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if listing.account.platform != "mercadolivre":
+        raise HTTPException(status_code=400, detail="Disponível apenas para Mercado Livre")
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem platform_item_id no ML")
+
+    product = listing.cmig_product or listing.catalog_product
+    if not product:
+        raise HTTPException(status_code=400, detail="Anúncio sem produto vinculado")
+
+    access_token = await _get_valid_token(listing.account, db)
+    cmig_crt = await _resolve_cmig_crt(listing.account, db)
+
+    # Monta fiscal_json mesclando o do listing com overrides
+    fiscal_dict: dict = {}
+    if listing.fiscal_json:
+        try:
+            fiscal_dict = _json.loads(listing.fiscal_json) or {}
+        except Exception:
+            fiscal_dict = {}
+    for k, v in overrides.items():
+        if v is not None:
+            fiscal_dict[k] = v
+
+    # Override de origin direto no produto (in-memory, sem commit)
+    if "origin" in overrides and overrides["origin"] is not None:
+        try:
+            product.origin = int(overrides["origin"])
+        except (TypeError, ValueError):
+            pass
+
+    # Form igual ao do update real — _build_ml_payload faz toda a lógica
+    form = {
+        "title_override": listing.title_override,
+        "sale_price": listing.sale_price,
+        "listing_type": listing.listing_type or "gold_special",
+        "available_quantity": listing.available_quantity or 1,
+        "item_condition": listing.item_condition or "new",
+        "category_id": listing.category_id,
+        "pictures": [],
+        "attributes": list(extra_attrs),  # extras já entram como manuais (prioridade)
+        "warranty_type": listing.warranty_type,
+        "warranty_time": listing.warranty_time,
+        "shipping_mode": listing.shipping_mode or "me2",
+        "free_shipping": listing.free_shipping or False,
+        "sku": listing.sku,
+        "model": getattr(product, "model", None),
+        "height_cm": float(listing.height_cm) if listing.height_cm else None,
+        "width_cm": float(listing.width_cm) if listing.width_cm else None,
+        "length_cm": float(listing.length_cm) if listing.length_cm else None,
+        "weight_kg": float(listing.weight_kg) if listing.weight_kg else None,
+        "fiscal_json": fiscal_dict,
+        "cmig_crt": cmig_crt,
+    }
+
+    full_payload = _build_ml_payload(product, form, for_update=True)
+
+    # Filtra só atributos fiscais se only_fiscal=true (isola variável)
+    FISCAL_ATTR_IDS = {
+        "NCM", "FISCAL_CLASSIFICATION", "CEST", "GTIN", "EAN", "ORIGIN",
+        "ICMS_CSOSN", "CSOSN", "TIPO_DE_ORIGEM", "ORIGIN_TYPE",
+    }
+    # Inclui IDs dos extra_attributes (usuário pode estar testando IDs novos)
+    FISCAL_ATTR_IDS.update(
+        a.get("id", "").upper() for a in extra_attrs if isinstance(a, dict)
+    )
+
+    if only_fiscal:
+        all_attrs = full_payload.get("attributes") or []
+        fiscal_attrs = [a for a in all_attrs if (a.get("id") or "").upper() in FISCAL_ATTR_IDS]
+        payload_to_send = {"attributes": fiscal_attrs}
+    else:
+        # Mesmo payload do update real — remove imutáveis
+        payload_to_send = dict(full_payload)
+        for f in ("buying_mode", "listing_type_id", "condition", "category_id"):
+            payload_to_send.pop(f, None)
+        if not getattr(listing.account, "is_official_store", False):
+            payload_to_send.pop("title", None)
+
+    # PUT direto no ML
+    ML_BASE = "https://api.mercadolibre.com"
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        put_resp = await client.put(
+            f"{ML_BASE}/items/{listing.platform_item_id}",
+            headers=headers,
+            json=payload_to_send,
+        )
+        try:
+            put_body = put_resp.json()
+        except Exception:
+            put_body = {"_raw_text": put_resp.text[:2000]}
+
+        # GET pós-PUT pra confirmar quais atributos persistiram no ML
+        get_resp = await client.get(
+            f"{ML_BASE}/items/{listing.platform_item_id}",
+            headers=headers,
+            params={"include_attributes": "all"},
+        )
+        try:
+            get_body = get_resp.json() if get_resp.status_code == 200 else {}
+        except Exception:
+            get_body = {}
+
+    persisted_attrs = [
+        {
+            "id": a.get("id"),
+            "name": a.get("name"),
+            "value_name": a.get("value_name"),
+            "value_id": a.get("value_id"),
+        }
+        for a in (get_body.get("attributes") or [])
+        if (a.get("id") or "").upper() in FISCAL_ATTR_IDS
+    ]
+
+    causes = None
+    if isinstance(put_body, dict):
+        causes = put_body.get("cause") or put_body.get("causes")
+
+    return {
+        "listing_id": listing.id,
+        "platform_item_id": listing.platform_item_id,
+        "ml_url": f"{ML_BASE}/items/{listing.platform_item_id}",
+        "payload_sent": payload_to_send,
+        "ml_status_code": put_resp.status_code,
+        "ml_response_body": put_body,
+        "ml_error_causes": causes,
+        "fiscal_attributes_persisted_after_put": persisted_attrs,
+        "note": (
+            "only_fiscal=true isola só atributos fiscais. Use overrides para testar valores; "
+            "extra_attributes para testar IDs novos (ex: ICMS_CSOSN). Nada foi commitado no DB."
+        ),
+    }
+
+
+@router.post("/{listing_id}/sync-fiscal")
+async def sync_listing_fiscal_information(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sincroniza fiscal_information de UM anúncio no Faturador do ML.
+
+    Útil para empurrar dados fiscais de anúncios já publicados sem precisar
+    abrir/salvar o wizard. Usa os campos do produto vinculado (PG ou CMIG)
+    + fiscal_json do listing + fallback do CRT da CMIG para o CSOSN.
+
+    Retorna `{ok, status_code, method, body}` da operação.
+    """
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if listing.account.platform != "mercadolivre":
+        raise HTTPException(status_code=400, detail="Disponível apenas para Mercado Livre")
+
+    product = listing.cmig_product or listing.catalog_product
+    if not product:
+        raise HTTPException(status_code=400, detail="Anúncio sem produto vinculado")
+
+    sku = (
+        listing.sku
+        or getattr(product, "sku_cmig", None)
+        or getattr(product, "sku", None)
+    )
+    if not sku:
+        raise HTTPException(status_code=400, detail="Anúncio/produto sem SKU")
+
+    access_token = await _get_valid_token(listing.account, db)
+    cmig_crt = await _resolve_cmig_crt(listing.account, db)
+
+    payload = _build_fiscal_payload_from_product(
+        product,
+        str(sku),
+        cmig_crt,
+        fiscal_overrides=_parse_fiscal_json(listing.fiscal_json),
+    )
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail="Sem NCM configurado no produto/anúncio — Faturador rejeita sem NCM",
+        )
+
+    result = await ml_service.register_or_update_fiscal_information(
+        access_token, str(sku), payload
+    )
+    return {
+        "listing_id": listing.id,
+        "sku": sku,
+        "payload_sent": payload,
+        **result,
+    }
+
+
+@router.post("/{listing_id}/debug-fiscal-information")
+async def debug_fiscal_information(
+    listing_id: int,
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Debug: cadastra/atualiza dados fiscais via endpoint dedicado do Faturador ML.
+
+    Diferente de `debug-fiscal-sync` (que envia atributos via `PUT /items` mas
+    NÃO consegue gravar CSOSN), este endpoint usa o caminho correto descoberto
+    em `https://developers.mercadolivre.com.br/pt_br/envio-dos-dados-fiscais`:
+
+    - **POST** `/items/fiscal_information` → cadastra fiscal data para o SKU
+    - **PUT** `/items/fiscal_information/{SKU}` → atualiza
+    - **GET** `/items/fiscal_information/{SKU}` → consulta
+
+    O endpoint tenta POST primeiro; se retornar 409/duplicate, faz PUT.
+
+    **Não commita nada no DB.** Retorna a resposta crua do ML.
+
+    Body (opcional):
+    ```json
+    {
+      "overrides": {
+        "ncm": "61091000",
+        "csosn": "102",
+        "cest": "2806400",
+        "ean": "7898510754383",
+        "origin_type": "manufacturer",
+        "origin_detail": 0,
+        "cost": 25.0,
+        "net_weight": 5.55,
+        "gross_weight": 5.55,
+        "measurement_unit": "UN",
+        "type": "single"
+      },
+      "method": "auto"
+    }
+    ```
+
+    `method`: "auto" (default — POST primeiro, PUT se 409), "post", "put".
+
+    Mapeamento padrão (quando overrides não passa):
+    - sku → product.sku/sku_cmig
+    - title → product.title
+    - type → "bundle" se product.is_composite senão "single"
+    - measurement_unit → "UN"
+    - cost → product.cost_price
+    - tax_information.ncm → product.ncm
+    - tax_information.origin_detail → product.origin (0-8)
+    - tax_information.origin_type → derivado de origin: {0,3,4,5,8}→manufacturer,
+      {1,6}→imported, {2,7}→reseller
+    - tax_information.cest → product.cest
+    - tax_information.ean → product.ean
+    - tax_information.csosn → product.csosn ou "102" (Simples) ou null (Normal)
+    - tax_information.net/gross_weight → product.weight_kg
+    """
+    import httpx
+
+    body = body or {}
+    overrides = body.get("overrides") or {}
+    method = (body.get("method") or "auto").lower()
+
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if listing.account.platform != "mercadolivre":
+        raise HTTPException(status_code=400, detail="Disponível apenas para Mercado Livre")
+
+    product = listing.cmig_product or listing.catalog_product
+    if not product:
+        raise HTTPException(status_code=400, detail="Anúncio sem produto vinculado")
+
+    access_token = await _get_valid_token(listing.account, db)
+    cmig_crt = await _resolve_cmig_crt(listing.account, db)
+
+    # Resolve SKU — o Faturador indexa por SKU, não por item_id
+    sku = (
+        overrides.get("sku")
+        or listing.sku
+        or getattr(product, "sku_cmig", None)
+        or getattr(product, "sku", None)
+    )
+    if not sku:
+        raise HTTPException(
+            status_code=400,
+            detail="SKU obrigatório para Faturador — anúncio/produto sem SKU",
+        )
+
+    # Mapeamento origin (0-8) → origin_type (manufacturer/imported/reseller)
+    def _origin_to_type(o: int | None) -> str:
+        if o is None:
+            return "manufacturer"
+        o = int(o)
+        if o in (1, 6):
+            return "imported"
+        if o in (2, 7):
+            return "reseller"
+        return "manufacturer"  # 0, 3, 4, 5, 8
+
+    origin_detail = overrides.get("origin_detail")
+    if origin_detail is None:
+        origin_detail = getattr(product, "origin", None) or 0
+
+    origin_type = overrides.get("origin_type") or _origin_to_type(origin_detail)
+
+    # CSOSN — só Simples Nacional
+    csosn = overrides.get("csosn") if "csosn" in overrides else getattr(product, "csosn", None)
+    if not csosn and cmig_crt in (1, 2):
+        csosn = "102"  # default Simples Nacional sem permissão de crédito
+
+    # Monta tax_information apenas com campos preenchidos
+    tax_info: dict = {}
+
+    def _add_if_present(key: str, value, normalize=None):
+        if value is None or value == "":
+            return
+        if normalize:
+            value = normalize(value)
+            if not value:
+                return
+        tax_info[key] = value
+
+    ncm = overrides.get("ncm") if "ncm" in overrides else getattr(product, "ncm", None)
+    _add_if_present("ncm", ncm, lambda v: str(v).replace(".", "").replace("-", "")[:8] or None)
+
+    _add_if_present("origin_type", origin_type)
+    if origin_detail is not None:
+        tax_info["origin_detail"] = str(origin_detail)
+
+    cest = overrides.get("cest") if "cest" in overrides else getattr(product, "cest", None)
+    _add_if_present("cest", cest, lambda v: str(v).replace(".", "").replace("-", "")[:7] or None)
+
+    if csosn:
+        tax_info["csosn"] = str(csosn)
+
+    ean = overrides.get("ean") if "ean" in overrides else getattr(product, "ean", None)
+    if ean and _is_valid_ean13(str(ean).strip()):
+        tax_info["ean"] = str(ean).strip()
+
+    weight_kg = overrides.get("net_weight")
+    if weight_kg is None:
+        weight_kg = float(product.weight_kg) if getattr(product, "weight_kg", None) else None
+    if weight_kg is not None:
+        tax_info["net_weight"] = float(weight_kg)
+        tax_info["gross_weight"] = float(overrides.get("gross_weight") or weight_kg)
+
+    # tax_rule_id é para Regime Normal apenas (CRT=3) — se for o caso, espera
+    # vir explícito em overrides; sem isso o ML aceitará só Simples
+    if "tax_rule_id" in overrides:
+        tax_info["tax_rule_id"] = overrides["tax_rule_id"]
+
+    # Campos opcionais avançados
+    for opt_key in ("fci", "ex_tipi", "med_anvisa_code", "med_exemption_reason"):
+        if opt_key in overrides:
+            tax_info[opt_key] = overrides[opt_key]
+
+    cost = overrides.get("cost")
+    if cost is None:
+        cost = float(product.cost_price) if getattr(product, "cost_price", None) else 0.0
+
+    product_type = overrides.get("type") or (
+        "bundle" if getattr(product, "is_composite", False) else "single"
+    )
+
+    payload = {
+        "sku": str(sku),
+        "title": (overrides.get("title") or product.title or "")[:255],
+        "type": product_type,
+        "measurement_unit": overrides.get("measurement_unit") or "UN",
+        "cost": float(cost),
+        "tax_information": tax_info,
+    }
+
+    ML_BASE = "https://api.mercadolibre.com"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "content-type": "application/json",
+    }
+
+    attempts: list[dict] = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # POST primeiro (cria) — se 409/duplicate, PUT
+        if method in ("auto", "post"):
+            post_resp = await client.post(
+                f"{ML_BASE}/items/fiscal_information",
+                headers=headers,
+                json=payload,
+            )
+            try:
+                post_body = post_resp.json()
+            except Exception:
+                post_body = {"_raw_text": post_resp.text[:2000]}
+            attempts.append({
+                "method": "POST",
+                "url": f"{ML_BASE}/items/fiscal_information",
+                "status": post_resp.status_code,
+                "body": post_body,
+            })
+
+            # Se POST sucesso ou método explícito post, retorna
+            if method == "post" or post_resp.status_code in (200, 201):
+                final_status = post_resp.status_code
+                final_body = post_body
+            else:
+                # Fallback PUT
+                put_resp = await client.put(
+                    f"{ML_BASE}/items/fiscal_information/{sku}",
+                    headers=headers,
+                    json=payload,
+                )
+                try:
+                    put_body = put_resp.json()
+                except Exception:
+                    put_body = {"_raw_text": put_resp.text[:2000]}
+                attempts.append({
+                    "method": "PUT",
+                    "url": f"{ML_BASE}/items/fiscal_information/{sku}",
+                    "status": put_resp.status_code,
+                    "body": put_body,
+                })
+                final_status = put_resp.status_code
+                final_body = put_body
+        else:  # method == "put"
+            put_resp = await client.put(
+                f"{ML_BASE}/items/fiscal_information/{sku}",
+                headers=headers,
+                json=payload,
+            )
+            try:
+                put_body = put_resp.json()
+            except Exception:
+                put_body = {"_raw_text": put_resp.text[:2000]}
+            attempts.append({
+                "method": "PUT",
+                "url": f"{ML_BASE}/items/fiscal_information/{sku}",
+                "status": put_resp.status_code,
+                "body": put_body,
+            })
+            final_status = put_resp.status_code
+            final_body = put_body
+
+        # GET pós-operação pra confirmar persistência
+        get_resp = await client.get(
+            f"{ML_BASE}/items/fiscal_information/{sku}",
+            headers=headers,
+        )
+        try:
+            get_body = get_resp.json() if get_resp.status_code == 200 else {}
+        except Exception:
+            get_body = {}
+
+    causes = None
+    if isinstance(final_body, dict):
+        causes = final_body.get("fields") or final_body.get("cause") or final_body.get("causes")
+
+    return {
+        "listing_id": listing.id,
+        "platform_item_id": listing.platform_item_id,
+        "sku": sku,
+        "cmig_crt": cmig_crt,
+        "payload_sent": payload,
+        "attempts": attempts,
+        "final_status_code": final_status,
+        "final_response_body": final_body,
+        "ml_error_causes": causes,
+        "fiscal_data_persisted": get_body if get_resp.status_code == 200 else None,
+        "get_status": get_resp.status_code,
+        "note": (
+            "Endpoint dedicado do Faturador. Indexa por SKU, não por item_id. "
+            "Método 'auto' tenta POST e cai pra PUT se já existir. Nada foi commitado no DB."
+        ),
+    }
 
 
 @router.get("/{listing_id}/prices-debug")

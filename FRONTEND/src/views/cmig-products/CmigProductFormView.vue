@@ -59,7 +59,7 @@
                         <input v-model="form.ean" class="form-control" maxlength="14" placeholder="7891234567890" />
                         <div class="input-group-append">
                           <button type="button" class="btn btn-outline-secondary"
-                                  title="Gerar código EAN-13 interno (prefixo 200)"
+                                  title="Gerar código EAN-13 com prefixo 789 (GS1 Brasil) e checksum válido"
                                   @click="generateEan">
                             <i class="fas fa-magic"></i>
                           </button>
@@ -166,7 +166,7 @@ const form = ref({
   description: '', cost_price: null, suggested_price: null,
   weight_kg: null, height_cm: null,
   width_cm: null, length_cm: null, ncm: '', cest: '',
-  origin: 0, category_id: null, video_id: '', attributes_json: null,
+  origin: 0, csosn: null, category_id: null, video_id: '', attributes_json: null,
   is_active: true,
 })
 
@@ -193,7 +193,7 @@ onMounted(async () => {
 
 function generateEan() {
   form.value.ean = generateEan13()
-  toast.success('EAN gerado (prefixo 200 — uso interno).')
+  toast.success('EAN gerado (prefixo 789 — GS1 Brasil).')
 }
 
 async function recalculateStock() {

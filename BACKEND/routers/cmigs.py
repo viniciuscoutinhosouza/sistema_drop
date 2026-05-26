@@ -146,6 +146,7 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
         "ncm": p.ncm,
         "cest": p.cest,
         "origin": p.origin,
+        "csosn": p.csosn,
         "category_id": p.category_id,
         "category_name": p.category_name,
         "video_id": p.video_id,
@@ -689,6 +690,7 @@ async def duplicate_cmig_product(
         ncm=src.ncm,
         cest=src.cest,
         origin=src.origin,
+        csosn=src.csosn,
         category_id=src.category_id,
         video_id=src.video_id,
         attributes_json=src.attributes_json,
@@ -899,6 +901,7 @@ async def import_cmig_product_to_pg(
         cest=cp.cest,
         brand=cp.brand,
         origin=cp.origin or 0,
+        csosn=cp.csosn,
         category_id=cp.category_id,
         video_id=cp.video_id,
         attributes_json=cp.attributes_json,
@@ -1027,6 +1030,8 @@ async def sync_pg_from_cmig(
         pg.length_cm = cp.length_cm
     if cp.origin is not None:
         pg.origin = cp.origin
+    if cp.csosn is not None:
+        pg.csosn = cp.csosn
     if cp.category_id is not None:
         pg.category_id = cp.category_id
     if cp.video_id is not None:

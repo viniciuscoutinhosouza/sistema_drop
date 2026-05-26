@@ -37,6 +37,7 @@ class CatalogProduct(Base):
     model = Column(String(200))
     ean = Column(String(14))
     origin = Column(Integer, default=0)
+    csosn = Column(String(3))  # ICMS CSOSN para Faturador ML (ex: "102" Simples Nacional)
     category_id = Column(Integer, ForeignKey("categories.id"))
     video_id = Column(String(100))
     attributes_json = Column(String)  # CLOB

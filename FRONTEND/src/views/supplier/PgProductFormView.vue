@@ -56,15 +56,19 @@
                     <div class="col-md-3 form-group">
                       <label>EAN / GTIN</label>
                       <div class="input-group">
-                        <input v-model="form.ean" class="form-control" maxlength="14" placeholder="7891234567890" />
+                        <input v-model="form.ean" class="form-control" maxlength="14" placeholder="7891234567890"
+                               :class="{ 'is-invalid': eanInvalid }" />
                         <div class="input-group-append">
                           <button type="button" class="btn btn-outline-secondary"
-                                  title="Gerar código EAN-13 interno (prefixo 200)"
+                                  title="Gerar código EAN-13 com prefixo 789 (GS1 Brasil) e checksum válido"
                                   @click="generateEan">
                             <i class="fas fa-magic"></i>
                           </button>
                         </div>
                       </div>
+                      <small v-if="eanInvalid" class="text-danger">
+                        <i class="fas fa-exclamation-triangle mr-1"></i>EAN-13 com dígito verificador incorreto — o ML rejeitará.
+                      </small>
                     </div>
                   </div>
 
@@ -150,7 +154,7 @@ import ProductDimensionsFields from '@/components/products/ProductDimensionsFiel
 import ProductFiscalFields from '@/components/products/ProductFiscalFields.vue'
 import MarketplaceCategoriesCard from '@/components/products/MarketplaceCategoriesCard.vue'
 import CategoryPickerWithModal from '@/components/products/CategoryPickerWithModal.vue'
-import { generateEan13 } from '@/utils/ean'
+import { generateEan13, isValidEan13 } from '@/utils/ean'
 
 const route  = useRoute()
 const router = useRouter()
@@ -165,13 +169,18 @@ const form = ref({
   description: '', cost_price: null, suggested_price: null,
   weight_kg: null, height_cm: null,
   width_cm: null, length_cm: null, ncm: '', cest: '',
-  origin: 0, category_id: null, video_id: '', attributes_json: null,
+  origin: 0, csosn: null, category_id: null, video_id: '', attributes_json: null,
   is_active: true,
 })
 
 const pictures = ref([])
 const originalSku = ref('')
 const recalculating = ref(false)
+
+const eanInvalid = computed(() => {
+  const v = (form.value.ean || '').trim()
+  return v.length > 0 && !isValidEan13(v)
+})
 
 onMounted(async () => {
   if (isEdit.value) {
@@ -184,7 +193,7 @@ onMounted(async () => {
 
 function generateEan() {
   form.value.ean = generateEan13()
-  toast.success('EAN gerado (prefixo 200 — uso interno).')
+  toast.success('EAN gerado (prefixo 789 — GS1 Brasil).')
 }
 
 async function recalculateStock() {

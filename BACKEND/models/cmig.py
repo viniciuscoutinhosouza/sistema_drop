@@ -81,6 +81,7 @@ class CMIGProduct(Base):
     ncm = Column(String(8))
     cest = Column(String(7))
     origin = Column(Integer, default=0)
+    csosn = Column(String(3))  # ICMS CSOSN para Faturador ML (ex: "102" Simples Nacional)
     category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
     suggested_price = Column(Numeric(15, 2))
     video_id = Column(String(100))

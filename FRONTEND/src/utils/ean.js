@@ -20,7 +20,14 @@ export function ean13Checksum(first12) {
   return (10 - (sum % 10)) % 10
 }
 
-/** Gera um EAN-13 com prefixo interno 200 + 9 dígitos aleatórios + checksum. */
+/** Gera um EAN-13 com prefixo 789 (GS1 Brasil) + 9 dígitos aleatórios + checksum válido.
+ *  Atenção: 789/790 são prefixos comerciais reais da GS1 Brasil — usar sem cadastro
+ *  GS1 pode colidir com produtos de outros vendedores. Para uso 100% interno sem
+ *  risco de colisão, prefixos 020-029 ou 200-299 (in-store/restricted) são mais
+ *  apropriados, mas alguns marketplaces (incluindo ML) podem rejeitar GTIN com
+ *  esses prefixos por serem "restricted distribution". Mantemos 789 como pragmatic
+ *  default — ML aceita, e a probabilidade de colisão é baixa em 9 dígitos aleatórios.
+ */
 export function generateEan13() {
   let body = INTERNAL_PREFIX
   for (let i = 0; i < 9; i++) {

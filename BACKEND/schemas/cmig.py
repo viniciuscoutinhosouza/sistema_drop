@@ -121,6 +121,7 @@ class CMIGProductCreate(BaseModel):
     ncm: str | None = None
     cest: str | None = None
     origin: int | None = 0
+    csosn: str | None = None
     category_id: int | None = None
     video_id: str | None = None
     attributes_json: str | None = None
@@ -166,6 +167,7 @@ class CMIGProductUpdate(BaseModel):
     def normalize_cest(cls, v):
         return _norm_cest(v)
     origin: int | None = None
+    csosn: str | None = None
     is_active: bool | None = None
     category_id: int | None = None
     video_id: str | None = None
@@ -212,6 +214,7 @@ class CMIGProductOut(BaseModel):
     ncm: str | None
     cest: str | None
     origin: int | None
+    csosn: str | None = None
     category_id: int | None = None
     category_name: str | None = None  # derivado do join (read-only)
     video_id: str | None

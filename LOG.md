@@ -4,6 +4,169 @@
 
 ---
 
+## 2026-05-26 — feat(faturador): integração com /items/fiscal_information (endpoint correto do Faturador ML)
+
+**Descoberta:** O endpoint de debug `/debug-fiscal-sync` (PUT /items com atributo `ICMS_CSOSN`) confirmou que **o ML droppa silenciosamente** `ICMS_CSOSN` e `TIPO_DE_ORIGEM` com warning `item.attributes.invalid - was dropped because does not exists`. Os atributos NCM/CEST/GTIN/ORIGIN persistem (são atributos de categoria), mas CSOSN não é atributo de item.
+
+Pesquisa em [https://developers.mercadolivre.com.br/pt_br/envio-dos-dados-fiscais](https://developers.mercadolivre.com.br/pt_br/envio-dos-dados-fiscais) revelou o endpoint correto: **`POST/PUT /items/fiscal_information`** (indexado por SKU, não por item_id).
+
+**Teste de debug confirmou:** SKU 5505 cadastrado com sucesso, `status: 201`, `can_invoice: true`, todos os campos (`ncm`, `csosn=102`, `origin_type=reseller`, `origin_detail=2`, `cest`, `ean`, `net_weight`, `gross_weight`) persistidos.
+
+**Mudanças:**
+
+`BACKEND/services/ml_service.py`:
+- `origin_detail_to_type(origin_detail)`: mapeia 0-8 → "manufacturer" | "imported" | "reseller" conforme tabela CST/CSOSN origem.
+- `register_or_update_fiscal_information(access_token, sku, payload)`: tenta POST `/items/fiscal_information`; fallback PUT `/items/fiscal_information/{sku}` se POST falhar. **Best-effort** — retorna dict `{ok, status_code, method, body, error}` sem levantar exception.
+- `build_fiscal_information_payload(**kwargs)`: monta payload no formato esperado do endpoint, com `tax_information` apenas com campos preenchidos (evita reset acidental por chave vazia).
+
+`BACKEND/routers/anuncios.py`:
+- `_build_fiscal_payload_from_product(product, sku, cmig_crt, overrides)`: helper que extrai fiscal do produto + overrides + fallback CRT→CSOSN.
+- `_parse_fiscal_json(raw)`: aceita string JSON ou dict.
+- **NOVO endpoint** `POST /{listing_id}/sync-fiscal`: empurra fiscal_information para o ML manualmente, útil para anúncios antigos sem precisar reabrir o wizard.
+- **NOVO endpoint** `POST /{listing_id}/debug-fiscal-information`: variante do sync com overrides via Swagger. Tenta POST→PUT, retorna `attempts[]` + GET pós-operação para validar persistência.
+- `publish_anuncio` (`mode=create`): após `_create_ml_item_with_retry`, chama `register_or_update_fiscal_information`. Falha vira `fiscal_sync_warning` no response.
+- `update_listing`: após `update_item`, chama a mesma rotina. Mesmo padrão de warning.
+- Removido bloco `ICMS_CSOSN` do `_build_ml_payload` (ML droppava com warning — atributo não existe na categoria).
+
+**Como testar:**
+1. **Reemitir NFe** do pedido travado anteriormente — agora o SKU 5505 está cadastrado no Faturador (`can_invoice: true`).
+2. Para outros anúncios já publicados: `POST /api/v1/anuncios/{listing_id}/sync-fiscal` via Swagger.
+3. Para novos anúncios: o publish já sincroniza fiscal automaticamente. Se faltar NCM no produto, retorna `fiscal_sync_warning` no response.
+
+**Deploy:** scp + `pm2 restart sistema-drop-backend`. Backend online sem erros.
+
+**Pendências futuras:**
+- UI para mostrar warning de fiscal_sync_warning no toast pós-save do wizard.
+- Botão "Sincronizar fiscal" no menu de ações por anúncio (chama `/sync-fiscal`).
+- Endpoint em lote para sincronizar fiscal de múltiplos anúncios de uma vez.
+
+---
+
+## 2026-05-26 — feat(anuncios,products): suporte a CSOSN + endpoint de debug fiscal
+
+**Contexto:** Mesmo após enviar NCM/CEST/GTIN/ORIGIN no `PUT /items`, os dados fiscais não apareciam no painel "Edite os dados fiscais do anúncio" do ML. O usuário identificou que o formulário do ML exige um campo **CSOSN do ICMS** (Código de Situação da Operação no Simples Nacional, ex: "102 - Tributada pelo Simples") que não existia no nosso schema.
+
+**Mudanças backend:**
+- `Scripts SQL/71_add_csosn_to_products.sql` (NOVO): coluna `csosn VARCHAR2(3)` em `cmig_products` e `catalog_products`. Idempotente. Aplicado em produção (3 blocos OK).
+- `BACKEND/models/cmig.py` e `BACKEND/models/product.py`: novo campo `csosn = Column(String(3))`.
+- `BACKEND/schemas/cmig.py`: `csosn` em `CMIGProductCreate`, `CMIGProductUpdate`, `CMIGProductOut`.
+- `BACKEND/routers/supplier_products.py`: aceita `csosn` no create/update/duplicate e inclui no serialize.
+- `BACKEND/routers/cmigs.py`: idem para CMIGProduct + duplicate + import-to-pg + sync-pg.
+- `BACKEND/routers/anuncios.py`:
+  - Helper `_resolve_cmig_crt(account, db)` consulta o CRT da CMIG vinculada à conta.
+  - `_build_ml_payload`: novo bloco que envia atributo ML `ICMS_CSOSN` com prioridade `fiscal_json.csosn → product.csosn → derivado do CRT (1/2 → "102")`.
+  - `publish_anuncio` e `update_listing` injetam `cmig_crt` no `ml_form`.
+  - **NOVO endpoint** `POST /{listing_id}/debug-fiscal-sync`: monta payload fiscal completo (com overrides opcionais e extra_attributes), faz `PUT /items` direto no ML e retorna `payload_sent`, `ml_status_code`, `ml_response_body`, `ml_error_causes` e `fiscal_attributes_persisted_after_put` (GET pós-PUT). Não commita nada no DB. Exposto em Swagger `/docs`.
+
+**Mudanças frontend:**
+- `FRONTEND/src/components/products/ProductFiscalFields.vue`: novo `<select>` CSOSN com 10 opções comuns + helper text explicando o fallback automático.
+- `FRONTEND/src/views/supplier/PgProductFormView.vue` e `cmig-products/CmigProductFormView.vue`: campo `csosn: null` no form ref.
+- `FRONTEND/src/views/anuncios/AnunciosView.vue`: select CSOSN na aba Fiscal do wizard + `wizardFiscal.csosn` no ref + parse/serialize via `fiscal_json` + resets atualizados.
+
+**Como testar:**
+1. Acessar `https://ecommerce.madeingroup.com.br/docs`
+2. Autenticar com JWT
+3. Executar `POST /api/v1/anuncios/{listing_id}/debug-fiscal-sync` com body `{"overrides": {"csosn": "102"}}`
+4. Observar `ml_status_code` e `fiscal_attributes_persisted_after_put` para confirmar se ML aceita o atributo `ICMS_CSOSN`
+5. Se ML rejeitar, ajustar via `extra_attributes: [{"id": "CSOSN", "value_name": "102"}]` para testar IDs alternativos
+
+**Deploy:** migration 71 aplicada + scp dos arquivos + `pm2 restart sistema-drop-backend`. Backend online às 03:09:43 UTC. Bundle frontend ativo: `index-c67c41ee.js`.
+
+**Riscos conhecidos:** o ID `ICMS_CSOSN` é palpite — o endpoint de debug é precisamente para confirmar o ID correto via tentativa-e-erro pelo Swagger. Pode ser `CSOSN`, `ICMS_CSOSN` ou um endpoint dedicado a fiscal_data que ainda não conhecemos.
+
+---
+
+## 2026-05-25 — refactor(anuncios): mover badge Flex/Full para a linha de info
+
+**Pedido do usuário:** o badge informativo de logistic_type (⚡ Flex, etc) estava sendo renderizado dentro do bloco de Ações de cada anúncio, no meio dos botões pause/Flex-toggle/external-link. Visualmente confuso porque misturava informação com ação.
+
+**Mudança em `FRONTEND/src/views/anuncios/AnunciosView.vue`:**
+- O `<span>` do `logisticBadge(a)` foi movido da área de Ações (~linha 396) para a linha de info do anúncio, entre `logisticLabel(a)` (ME2 Drop Off) e `Frete Grátis` (~linha 204).
+- O **botão** de toggle Flex (`canToggleFlex` + `fa-bolt`) permanece na área de Ações — é ação, não label.
+
+**Deploy:** `npm run build` (20.97s) + scp do `FRONTEND/dist/`. Bundle ativo: `index-cec1e9fc.js`.
+
+---
+
+## 2026-05-25 — docs(ean): alinhar tooltips/toasts/docstring com prefixo real 789
+
+**Inconsistência:** tooltips, toasts e docstring diziam "prefixo **200**" (in-store/restricted GS1), mas o código real em `FRONTEND/src/utils/ean.js:8` usa `const INTERNAL_PREFIX = '789'` (GS1 Brasil, comercial). O usuário ficou em dúvida se o gerador estava gerando EAN inválido — não estava (checksum sempre OK), mas o prefixo divergia da documentação.
+
+**Verificação:** rodei o gerador 10 vezes via Node — todos os EANs gerados (`7892856056200`, `7898865820092`, etc.) passaram no checksum. O EAN ruim `7890614555133` do erro anterior **não saiu do gerador** — provavelmente foi digitado manualmente ou veio de import.
+
+**Decisão (do usuário):** manter prefixo `789` no código (ML aceita; baixo risco de colisão com 9 dígitos aleatórios) e corrigir a documentação.
+
+**Mudanças (só strings, sem alteração de lógica):**
+- `FRONTEND/src/utils/ean.js`: docstring de `generateEan13` atualizada explicando 789/GS1 Brasil + aviso sobre o trade-off.
+- `FRONTEND/src/views/supplier/PgProductFormView.vue`: tooltip e toast.
+- `FRONTEND/src/views/cmig-products/CmigProductFormView.vue`: tooltip e toast.
+
+**Deploy:** `npm run build` (16.58s) + scp do `FRONTEND/dist/`. Sem restart de backend.
+
+---
+
+## 2026-05-25 — fix(anuncios): valida checksum EAN-13 antes de enviar GTIN ao ML
+
+**Erro observado:** `Aviso ML: Erro ao atualizar anúncio ML: ... "code":"item.attribute.product_identifier.invalid_format" ... "Product Identifier [GTIN] contains values with invalid format: [7890614555133]"` ao salvar anúncio com fiscal preenchido.
+
+**Causa raiz:** GTIN `7890614555133` falha no checksum EAN-13 (esperado terminar em `2`, não `3`). Provavelmente typo do usuário. Como nosso backend enviava o GTIN bruto sem validar, o ML rejeitava o PUT inteiro com 400 e os outros campos fiscais (NCM/CEST/ORIGIN) também não eram salvos.
+
+**Mudanças:**
+- `BACKEND/routers/anuncios.py`: nova função `_is_valid_ean13(s)` (algoritmo idêntico ao `FRONTEND/src/utils/ean.js:ean13Checksum`). No `_build_ml_payload`, se o GTIN coletado falhar no checksum, atributo é pulado com warning no log — NCM/CEST/ORIGIN seguem sendo enviados. Evita derrubar o update inteiro por causa de 1 GTIN errado.
+- `FRONTEND/src/views/supplier/PgProductFormView.vue`: import de `isValidEan13`, computed `eanInvalid`, classe `is-invalid` no input e mensagem de erro visual quando o checksum falha.
+- `FRONTEND/src/views/anuncios/AnunciosView.vue`: mesmo padrão para o campo EAN/GTIN da aba Fiscal do wizard (`wizardEanInvalid`).
+
+**Deploy:** scp backend + scp frontend/dist + `pm2 restart sistema-drop-backend`. Backend online, build do frontend passou (7.15s).
+
+---
+
+## 2026-05-25 — fix(anuncios,simulator): marca requires_reauth imediatamente em invalid_grant
+
+**Problema:** ao salvar anúncio, ML retornava `invalid_grant` (refresh token revogado). O sistema mostrava o toast de erro mas não setava `MarketplaceAccount.requires_reauth=True` — esse flag só era marcado pelo job `tasks/sync_tokens.py` (1x/h), então o usuário ficava sem o alerta vermelho de "Reconectar" até o background job rodar.
+
+**Fix:** em `BACKEND/routers/anuncios.py:_get_valid_token` e `BACKEND/routers/simulator.py`, envolver a chamada `ml_service.refresh_ml_token()` com try/except — se receber HTTPException 401 com detail contendo `invalid_grant`, marcar `account.requires_reauth=True` e commit antes de re-raise. UI passa a mostrar o alerta de reconexão imediatamente.
+
+**Deploy:** scp + `pm2 restart sistema-drop-backend`. Backend online, sintaxe validada.
+
+---
+
+## 2026-05-25 — fix(anuncios): publish/update ML agora envia NCM/CEST/GTIN/ORIGIN
+
+**Erro observado:** ao tentar emitir NFe pelo Faturador do ML, retornou `{"message":"Sku not found by sku: 5505 and caller.id: 2471116577","error_code":"10316"}`.
+
+**Causa raiz:** o Faturador do ML tem um cadastro fiscal próprio (SKU → NCM/CEST/GTIN/Origem). Nosso fluxo de publicação enviava apenas `SELLER_SKU`, `BRAND`, `MODEL`, dimensões e fotos via `POST /items`. NCM/CEST/GTIN/ORIGIN ficavam só no nosso DB (`listing.fiscal_json` e campos do produto) e nunca eram empurrados ao ML. Resultado: o SKU existia no anúncio do ML, mas sem dados fiscais → Faturador rejeitava a emissão.
+
+**Mudanças em `BACKEND/routers/anuncios.py`:**
+- `_build_ml_payload`: novo bloco que extrai NCM/CEST/GTIN/ORIGIN com prioridade `form.attributes (manual) > form.fiscal_json > product.fiscal` e injeta como atributos do item ML. NCM e CEST normalizados (remove `.` e `-`).
+- `publish_anuncio`: passa `fiscal_json` e `sku` no `ml_form` antes de chamar `_build_ml_payload`.
+- `update_listing`: passa `fiscal_json` no `form` (com fallback no DB: `body.get("fiscal_json") or listing.fiscal_json`), garantindo que anúncios editados também sincronizam fiscal.
+
+**Mapeamento usado:**
+- NCM → atributo ML `NCM` (skip se já tiver `NCM` ou `FISCAL_CLASSIFICATION` manual)
+- CEST → atributo ML `CEST`
+- EAN/GTIN → atributo ML `GTIN` (skip se já tiver `GTIN` ou `EAN`)
+- Origem → atributo ML `ORIGIN` (numérico 0-8)
+
+**Deploy:** scp do arquivo + `pm2 restart sistema-drop-backend`. Backend subiu em 02:01:35 UTC, application startup complete, sem stack trace.
+
+**Próximo passo do usuário:** para anúncios já publicados sem fiscal (ex: o que travou a NFe do SKU 5505), abrir o wizard de edição e clicar Salvar — vai disparar o PUT no ML com os atributos fiscais e desbloquear a emissão.
+
+---
+
+## 2026-05-25 — fix(product-categories): índices únicos colidiam em rows com owner NULL
+
+**Erro observado em produção:** `500 Internal Server Error` em `POST /api/v1/product-categories` ao tentar adicionar a categoria "Bolas" (MLB123037) em um segundo produto PG. Toast genérico "Erro ao adicionar categoria" no frontend porque o backend levantou `IntegrityError` sem `detail` HTTP.
+
+**Causa raiz (via `pm2 logs`):** `ORA-00001: unique constraint (ADMIN.UQ_PMC_CMIG) violated`. Os índices únicos da migration 69 — `uq_pmc_catalog (catalog_product_id, marketplace, category_id)` e `uq_pmc_cmig (cmig_product_id, marketplace, category_id)` — indexavam **toda** linha porque `marketplace` e `category_id` são NOT NULL. Resultado: duas linhas PG com `cmig_product_id=NULL`, mesmo marketplace e mesmo `category_id` colidiam entre si (e vice-versa para linhas CMIG no índice catalog).
+
+**Fix:** `Scripts SQL/70_fix_pmc_unique_null_handling.sql` — DROP dos dois índices e CREATE de novos usando `CASE WHEN col IS NULL THEN NULL ELSE col END` em todas as colunas. Quando o owner é NULL, as três colunas da chave do índice ficam NULL → Oracle não indexa a linha ("does not index keys composed entirely of nulls"), eliminando a falsa colisão.
+
+**Como aplicar:** subir o `.sql` para o servidor e rodar `python BACKEND/run_migration.py "Scripts SQL/70_fix_pmc_unique_null_handling.sql"`. Idempotente (sobrevive a re-runs).
+
+**Aplicado em produção 2026-05-25 01:25 UTC** — verificado via `user_indexes`: `UQ_PMC_CATALOG` e `UQ_PMC_CMIG` agora são `FUNCTION-BASED NORMAL` com expressão `CASE WHEN ... IS NULL THEN NULL ELSE col END` nas três colunas. Sem restart do backend necessário (mudança só em DDL).
+
+---
+
 ## 2026-05-24 — fix(anuncios): Flex é opt-out automático — check-then-act + alert explicativo
 
 **Erro observado:** `403 Forbidden` (HTML do tengine/WAF) ao clicar ⚡ Flex no anúncio `MLB6833247070`.

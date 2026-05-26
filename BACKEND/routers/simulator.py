@@ -52,7 +52,13 @@ async def _get_account_with_token(
             raise HTTPException(
                 status_code=401, detail="Token expirado. Reconecte a conta em Integrações."
             )
-        token_data = await ml_service.refresh_ml_token(account.refresh_token)
+        try:
+            token_data = await ml_service.refresh_ml_token(account.refresh_token)
+        except HTTPException as exc:
+            if exc.status_code == 401 and "invalid_grant" in (exc.detail or "").lower():
+                account.requires_reauth = True
+                await db.commit()
+            raise
         account.access_token = token_data["access_token"]
         account.refresh_token = token_data.get("refresh_token", account.refresh_token)
         account.token_expires_at = now + timedelta(seconds=token_data.get("expires_in", 21600))

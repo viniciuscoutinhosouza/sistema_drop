@@ -20,6 +20,25 @@
         </select>
       </div>
     </div>
+    <div class="row">
+      <div class="col-md-6 form-group">
+        <label>CSOSN do ICMS <small class="text-muted">(Simples Nacional)</small></label>
+        <select v-model="form.csosn" class="form-control">
+          <option :value="null">— Default da CMIG (102 se Simples) —</option>
+          <option value="101">101 - Tributada com permissão de crédito</option>
+          <option value="102">102 - Tributada sem permissão de crédito</option>
+          <option value="103">103 - Isenção do ICMS para faixa de receita bruta</option>
+          <option value="201">201 - Tributada com permissão e ICMS-ST</option>
+          <option value="202">202 - Tributada sem permissão e ICMS-ST</option>
+          <option value="203">203 - Isenção para faixa receita bruta e ICMS-ST</option>
+          <option value="300">300 - Imune</option>
+          <option value="400">400 - Não tributada pelo Simples Nacional</option>
+          <option value="500">500 - ICMS cobrado anteriormente por ST ou antecipação</option>
+          <option value="900">900 - Outros</option>
+        </select>
+        <small class="text-muted">Obrigatório no Faturador ML. Em branco usa "102" se a CMIG é Simples Nacional.</small>
+      </div>
+    </div>
   </div>
 </template>
 

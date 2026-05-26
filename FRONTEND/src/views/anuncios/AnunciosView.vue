@@ -203,6 +203,12 @@
                         <i class="fas fa-star mr-1"></i>{{ listingQuality(a).label }}
                       </span>
                       <span class="text-muted" style="font-size:11px"><i class="fas fa-truck mr-1"></i>{{ logisticLabel(a) }}</span>
+                      <span v-if="logisticBadge(a)"
+                            :class="['badge', logisticBadge(a).cls]"
+                            :title="logisticBadge(a).title"
+                            style="font-size:10px;font-weight:600">
+                        <i :class="['fas', logisticBadge(a).icon, 'mr-1']"></i>{{ logisticBadge(a).label }}
+                      </span>
                       <span v-if="a.free_shipping" class="text-success font-weight-bold" style="font-size:11px">· Frete Grátis</span>
                       <span v-if="listingBrand(a)" class="text-muted" style="font-size:11px">· <i class="fas fa-tag mr-1"></i>{{ listingBrand(a) }}</span>
                       <!-- Badge de ajuste automático de preço (PRICE_DISCOUNT / PRICE_MATCHING) -->
@@ -385,7 +391,9 @@
                     <div class="btn-group btn-group-sm">
                       <button v-if="a.status === 'published'" class="btn btn-outline-warning" title="Pausar anúncio" @click="pauseAnuncio(a)"><i class="fas fa-pause"></i></button>
                       <button v-if="a.status === 'paused'" class="btn btn-outline-success" title="Reativar anúncio" @click="reactivateAnuncio(a)"><i class="fas fa-play"></i></button>
-                      <!-- Botão Flex: ação de ativar/desativar (só visivel se elígivel) -->
+                      <!-- Botão Flex: ação de ativar/desativar (só visivel se elígivel).
+                           O badge informativo do logistic_type fica na linha de info do anúncio
+                           (próximo ao ME2 Drop Off), não aqui. -->
                       <button v-if="canToggleFlex(a)"
                               :class="['btn', isFlexActive(a) ? 'btn-warning' : 'btn-outline-warning']"
                               :title="isFlexActive(a) ? 'Desativar Mercado Envios Flex' : 'Ativar Mercado Envios Flex'"
@@ -917,11 +925,33 @@
                   </div>
                   <div class="col-md-3 form-group">
                     <label class="small">EAN / GTIN</label>
-                    <input v-model="wizardFiscal.ean" class="form-control form-control-sm" placeholder="Ex: 7891234567890" maxlength="14" />
+                    <input v-model="wizardFiscal.ean" class="form-control form-control-sm"
+                           :class="{ 'is-invalid': wizardEanInvalid }"
+                           placeholder="Ex: 7891234567890" maxlength="14" />
+                    <small v-if="wizardEanInvalid" class="text-danger">
+                      <i class="fas fa-exclamation-triangle mr-1"></i>Checksum EAN-13 inválido — ML rejeitará.
+                    </small>
                   </div>
                   <div class="col-md-3 form-group">
                     <label class="small">CEST</label>
                     <input v-model="wizardFiscal.cest" class="form-control form-control-sm" placeholder="Ex: 2800100" maxlength="7" />
+                  </div>
+                  <div class="col-md-3 form-group">
+                    <label class="small">CSOSN do ICMS</label>
+                    <select v-model="wizardFiscal.csosn" class="form-control form-control-sm">
+                      <option :value="null">— Default da CMIG —</option>
+                      <option value="101">101 - Tributada c/ crédito</option>
+                      <option value="102">102 - Tributada s/ crédito</option>
+                      <option value="103">103 - Isenção faixa receita</option>
+                      <option value="201">201 - Tributada c/ crédito e ST</option>
+                      <option value="202">202 - Tributada s/ crédito e ST</option>
+                      <option value="203">203 - Isenção faixa e ST</option>
+                      <option value="300">300 - Imune</option>
+                      <option value="400">400 - Não tributada</option>
+                      <option value="500">500 - ICMS por ST</option>
+                      <option value="900">900 - Outros</option>
+                    </select>
+                    <small class="text-muted">Obrigatório no Faturador ML</small>
                   </div>
                 </div>
               </div>
@@ -1485,6 +1515,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
+import { isValidEan13 } from '@/utils/ean'
 
 const toast = useToast()
 
@@ -1753,7 +1784,12 @@ const currentListingLogisticBadge = computed(() => {
 })
 
 // Dados fiscais do anúncio
-const wizardFiscal = ref({ ncm: '', ean: '', cest: '', gtin: '' })
+const wizardFiscal = ref({ ncm: '', ean: '', cest: '', gtin: '', csosn: null })
+
+const wizardEanInvalid = computed(() => {
+  const v = (wizardFiscal.value.ean || '').trim()
+  return v.length > 0 && !isValidEan13(v)
+})
 
 let catDebounceTimer = null
 function debouncedCategorySearch() {
@@ -1865,7 +1901,7 @@ async function openWizard(listing) {
   attrValues.value = {}
   savedAttrNames.value = {}
   savedProductCategories.value = []
-  wizardFiscal.value = { ncm: '', ean: '', cest: '', gtin: '' }
+  wizardFiscal.value = { ncm: '', ean: '', cest: '', gtin: '', csosn: null }
   categoryEditMode.value = !listing  // edit mode: categoria só muda ao clicar; novo: já abre campo
   productSearch.value = ''
   extraImageUrl.value = ''
@@ -1897,7 +1933,7 @@ async function openWizard(listing) {
     wf.value.width_cm  = listing.width_cm  != null ? listing.width_cm  : ''
     wf.value.length_cm = listing.length_cm != null ? listing.length_cm : ''
     // Pre-popular dados fiscais
-    wizardFiscal.value = { ncm: '', ean: '', cest: '', gtin: '' }
+    wizardFiscal.value = { ncm: '', ean: '', cest: '', gtin: '', csosn: null }
     if (listing.fiscal_json) {
       try {
         const f = JSON.parse(listing.fiscal_json)
@@ -1906,6 +1942,7 @@ async function openWizard(listing) {
         wizardFiscal.value.ean  = f.ean  || f.EAN  || f.gtin || f.GTIN || ''
         wizardFiscal.value.cest = f.cest || f.CEST || ''
         wizardFiscal.value.gtin = f.gtin || f.GTIN || f.ean  || f.EAN  || ''
+        wizardFiscal.value.csosn = f.csosn || f.CSOSN || f.icms_csosn || null
       } catch { /* ignore */ }
     }
     // Fallback: busca NCM/EAN/CEST em attributes_json caso não estejam em fiscal_json
@@ -2012,8 +2049,8 @@ async function saveWizard() {
       height_cm: wf.value.height_cm !== '' ? parseFloat(wf.value.height_cm) || null : null,
       width_cm:  wf.value.width_cm  !== '' ? parseFloat(wf.value.width_cm)  || null : null,
       length_cm: wf.value.length_cm !== '' ? parseFloat(wf.value.length_cm) || null : null,
-      fiscal_json: (wizardFiscal.value.ncm || wizardFiscal.value.ean || wizardFiscal.value.cest)
-        ? JSON.stringify({ ncm: wizardFiscal.value.ncm || null, ean: wizardFiscal.value.ean || null, cest: wizardFiscal.value.cest || null, gtin: wizardFiscal.value.gtin || null })
+      fiscal_json: (wizardFiscal.value.ncm || wizardFiscal.value.ean || wizardFiscal.value.cest || wizardFiscal.value.csosn)
+        ? JSON.stringify({ ncm: wizardFiscal.value.ncm || null, ean: wizardFiscal.value.ean || null, cest: wizardFiscal.value.cest || null, gtin: wizardFiscal.value.gtin || null, csosn: wizardFiscal.value.csosn || null })
         : undefined,
       mode: wf.value.mode,
     }
