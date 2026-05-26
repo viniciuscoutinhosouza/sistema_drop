@@ -269,6 +269,17 @@
                     <span v-else class="badge badge-secondary" title="Estoque no Galpão">
                       <i class="fas fa-warehouse"></i> Galpão
                     </span>
+                    <!-- Flex ou Agência (complementar ao badge principal) -->
+                    <span v-if="logisticLabel(order.shipping_method) === 'Flex'"
+                          :class="['badge', logisticBadge(order.shipping_method)]"
+                          title="Mercado Envios Flex">
+                      <i :class="logisticIcon(order.shipping_method)"></i> Flex
+                    </span>
+                    <span v-else-if="logisticLabel(order.shipping_method) === 'ME2 Agência'"
+                          :class="['badge', logisticBadge(order.shipping_method)]"
+                          title="Envio via Agência">
+                      <i :class="logisticIcon(order.shipping_method)"></i> Agência
+                    </span>
 
                     <!-- Catálogo ou Normal -->
                     <span v-if="item.catalog_listing" class="badge badge-primary" title="Anúncio de Catálogo">
