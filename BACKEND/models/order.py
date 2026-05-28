@@ -22,6 +22,7 @@ class Order(Base):
     buyer_document = Column(String(20))
     shipping_address = Column(String)  # JSON CLOB
     shipping_method = Column(String(100))
+    shipping_mode = Column(String(20))  # full|flex|agencia|correios|coletado|combinado|desconhecido
     shipment_status = Column(String(50))
     tracking_code = Column(String(100))
     tracking_url = Column(String(500))

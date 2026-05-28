@@ -18,10 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import get_settings
 from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
-from models.product import DropshipperProduct
+from models.product import CatalogProduct, DropshipperProduct
 from models.webhook import WebhookEvent
 from services.ml_service import get_shipment, get_shipment_costs
 from services.notification_service import create_notification
+from services.order_item_resolver import resolve_order_item_link
+from services.shipping_mode import MODE_DESCONHECIDO, classify_shipping
 
 settings = get_settings()
 
@@ -90,9 +92,17 @@ def _apply_shipment_to_order(
         order.shipment_status = new_status
         status_changed = new_status != prev_status
 
-    new_logistic = shipment_data.get("logistic_type")
+    # ML tem 2 formatos de resposta para shipment:
+    # - Antigo (default): logistic_type + mode no root
+    # - Novo (x-format-new): logistic.type + logistic.mode aninhado
+    nested = shipment_data.get("logistic") or {}
+    new_logistic = shipment_data.get("logistic_type") or nested.get("type")
+    new_mode = shipment_data.get("mode") or nested.get("mode")
     if new_logistic and new_logistic != order.shipping_method:
         order.shipping_method = new_logistic
+    order.shipping_mode = classify_shipping(
+        order.shipping_method, new_mode, order.shipment_id
+    )
 
     new_tracking = shipment_data.get("tracking_number")
     if new_tracking:
@@ -239,6 +249,48 @@ async def record_webhook(
         return result.scalar_one_or_none()
 
 
+async def _backfill_order_links(db: AsyncSession, order: Order, integration: MarketplaceAccount) -> bool:
+    """Tenta resolver vínculos de OrderItems sem produto e atualiza Order.product_cost.
+
+    Idempotente: itens que já têm dropshipper_product_id OU catalog_product_id são
+    pulados. Retorna True se algo mudou.
+    """
+    items = (
+        await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
+    ).scalars().all()
+    if not items:
+        return False
+
+    changed = False
+    for it in items:
+        if it.dropshipper_product_id or it.catalog_product_id:
+            continue
+        resolved = await resolve_order_item_link(
+            db,
+            account_id=order.account_id,
+            ml_item_id=it.ml_item_id,
+            cmig_id=order.cmig_id,
+            sku=it.sku,
+            dropshipper_id=integration.owner_id if integration else None,
+        )
+        if not resolved.has_link:
+            continue
+        if resolved.dropshipper_product:
+            it.dropshipper_product_id = resolved.dropshipper_product.id
+        if resolved.catalog_product:
+            it.catalog_product_id = resolved.catalog_product.id
+        if it.unit_cost is None and resolved.unit_cost is not None:
+            it.unit_cost = resolved.unit_cost
+        changed = True
+
+    if changed:
+        total = sum((i.unit_cost or Decimal("0")) * i.quantity for i in items)
+        if total > 0:
+            order.product_cost = total
+
+    return changed
+
+
 async def process_ml_order(
     db: AsyncSession,
     ml_order_data: dict,
@@ -282,7 +334,11 @@ async def process_ml_order(
         shipment_id = shipping.get("id")
         if shipment_id and integration.access_token:
             try:
-                shipment_data = await get_shipment(integration.access_token, str(shipment_id))
+                shipment_data = await get_shipment(
+                    integration.access_token,
+                    str(shipment_id),
+                    caller_id=integration.platform_user_id,
+                )
                 costs_data = {}
                 try:
                     costs_data = await get_shipment_costs(
@@ -312,6 +368,12 @@ async def process_ml_order(
         if not existing_order.sale_amount:
             existing_order.sale_amount = Decimal(str(ml_order_data.get("total_amount") or 0))
         _apply_fees_to_order(existing_order, ml_order_data)
+
+        # Resolve vínculos de produtos faltantes (idempotente — só toca em items sem vínculo)
+        try:
+            await _backfill_order_links(db, existing_order, integration)
+        except Exception:
+            pass
         return
 
     buyer = ml_order_data.get("buyer", {})
@@ -341,10 +403,21 @@ async def process_ml_order(
     buyer_shipping_paid = None
     seller_shipping_cost = None
     shipment_id = shipping.get("id")
+    shipping_mode_value = None
     if shipment_id and integration.access_token:
         try:
-            shipment_data = await get_shipment(integration.access_token, str(shipment_id))
-            shipping_method = shipment_data.get("logistic_type", "")
+            shipment_data = await get_shipment(
+                integration.access_token,
+                str(shipment_id),
+                caller_id=integration.platform_user_id,
+            )
+            # ML: logistic_type+mode no root OU logistic.{type,mode} aninhado
+            nested = shipment_data.get("logistic") or {}
+            shipping_method = shipment_data.get("logistic_type") or nested.get("type") or ""
+            ml_mode = shipment_data.get("mode") or nested.get("mode")
+            shipping_mode_value = classify_shipping(
+                shipping_method, ml_mode, str(shipment_id) if shipment_id else None
+            )
             shipment_status = shipment_data.get("status", "")
             tracking_code = shipment_data.get("tracking_number", "") or ""
             receiver_address = shipment_data.get("receiver_address") or {}
@@ -477,6 +550,9 @@ async def process_ml_order(
         buyer_document=buyer.get("identification", {}).get("number"),
         shipping_address=shipping_address_json,
         shipping_method=shipping_method,
+        shipping_mode=shipping_mode_value or classify_shipping(
+            shipping_method, None, str(shipment_id) if shipment_id else None
+        ),
         shipment_status=shipment_status or None,
         shipment_id=str(shipment_id) if shipment_id else None,
         tracking_code=tracking_code or None,
@@ -504,32 +580,50 @@ async def process_ml_order(
     for item_data in ml_order_data.get("order_items", []):
         item_info = item_data.get("item", {})
         ml_item_id = str(item_info.get("id", ""))
-        # Try to find matching dropshipper product by ML item ID
-        dp_result = await db.execute(
-            select(DropshipperProduct).where(
-                DropshipperProduct.ml_item_id == ml_item_id,
-                DropshipperProduct.dropshipper_id == integration.owner_id,
-            )
-        )
-        dp = dp_result.scalar_one_or_none()
 
         # Normalize thumbnail to HTTPS
         raw_thumb = item_info.get("thumbnail", "") or ""
         thumbnail_url = raw_thumb.replace("http://", "https://") if raw_thumb else None
 
+        # Resolve vínculo via ProductListing (fonte canônica)
+        resolved = await resolve_order_item_link(
+            db,
+            account_id=integration.id,
+            ml_item_id=ml_item_id,
+            cmig_id=order.cmig_id,
+            sku=item_info.get("seller_sku") or None,
+            dropshipper_id=integration.owner_id,
+        )
+
         db.add(
             OrderItem(
                 order_id=order.id,
-                dropshipper_product_id=dp.id if dp else None,
-                catalog_product_id=dp.catalog_product_id if dp else None,
+                dropshipper_product_id=(
+                    resolved.dropshipper_product.id if resolved.dropshipper_product else None
+                ),
+                catalog_product_id=(
+                    resolved.catalog_product.id if resolved.catalog_product else None
+                ),
                 ml_item_id=ml_item_id,
                 sku=item_info.get("seller_sku", ""),
                 title=item_info.get("title", ""),
                 quantity=item_data.get("quantity", 1),
                 unit_price=Decimal(str(item_data.get("unit_price", 0))),
+                unit_cost=resolved.unit_cost,
                 thumbnail_url=thumbnail_url,
             )
         )
+
+    await db.flush()
+
+    # Agrega product_cost no pedido (sum(unit_cost * qty) dos OrderItems criados)
+    items_result = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
+    items = items_result.scalars().all()
+    total_cost = sum(
+        (i.unit_cost or Decimal("0")) * i.quantity for i in items
+    )
+    if total_cost > 0:
+        order.product_cost = total_cost
 
     await db.commit()
 
@@ -577,31 +671,66 @@ async def process_shopee_order(
         buyer_name=recipient_address.get("name", ""),
         shipping_address=json.dumps(recipient_address, ensure_ascii=False),
         sale_amount=Decimal(str(shopee_order_data.get("total_amount", 0))),
+        shipping_mode=MODE_DESCONHECIDO,  # Shopee usa rede propria — fora do escopo do bucket ML
     )
     db.add(order)
     await db.flush()
 
     for item_data in shopee_order_data.get("item_list", []):
         shopee_item_id = item_data.get("item_id")
+
+        # Caminho legado (DropshipperProduct.shopee_item_id) — preservar pro fallback de DP
         dp_result = await db.execute(
             select(DropshipperProduct).where(
                 DropshipperProduct.shopee_item_id == shopee_item_id,
                 DropshipperProduct.dropshipper_id == integration.owner_id,
             )
         )
-        dp = dp_result.scalar_one_or_none()
+        dp_legacy = dp_result.scalar_one_or_none()
+
+        resolved = await resolve_order_item_link(
+            db,
+            account_id=integration.id,
+            shopee_item_id=shopee_item_id,
+            cmig_id=order.cmig_id,
+            sku=item_data.get("item_sku") or None,
+            dropshipper_id=integration.owner_id,
+        )
+
+        # Se o helper não achou via ProductListing mas o lookup legado achou, usa esse
+        dp_resolved = resolved.dropshipper_product or dp_legacy
+        catalog_resolved = resolved.catalog_product
+        if not catalog_resolved and dp_legacy and dp_legacy.catalog_product_id:
+            catalog_resolved = await (db.execute(
+                select(CatalogProduct).where(CatalogProduct.id == dp_legacy.catalog_product_id)
+            ))
+            catalog_resolved = catalog_resolved.scalar_one_or_none()
+        unit_cost = resolved.unit_cost
+        if unit_cost is None and catalog_resolved and catalog_resolved.cost_price is not None:
+            unit_cost = Decimal(str(catalog_resolved.cost_price))
 
         db.add(
             OrderItem(
                 order_id=order.id,
-                dropshipper_product_id=dp.id if dp else None,
-                catalog_product_id=dp.catalog_product_id if dp else None,
+                dropshipper_product_id=dp_resolved.id if dp_resolved else None,
+                catalog_product_id=catalog_resolved.id if catalog_resolved else None,
                 sku=item_data.get("item_sku", ""),
                 title=item_data.get("item_name", ""),
                 quantity=item_data.get("model_quantity_purchased", 1),
                 unit_price=Decimal(str(item_data.get("model_discounted_price", 0))),
+                unit_cost=unit_cost,
             )
         )
+
+    await db.flush()
+
+    items_result = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
+    items = items_result.scalars().all()
+    total_cost = sum(
+        (i.unit_cost or Decimal("0")) * i.quantity for i in items
+    )
+    if total_cost > 0:
+        order.product_cost = total_cost
 
     await db.commit()
 

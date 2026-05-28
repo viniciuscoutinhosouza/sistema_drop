@@ -300,28 +300,41 @@ async def get_order_fiscal_data(
     return fiscal.get("invoice") or {}
 
 
-async def get_shipment(access_token: str, shipment_id: str) -> dict:
+async def get_shipment(
+    access_token: str, shipment_id: str, caller_id: str | int | None = None
+) -> dict:
     """Fetch shipment details from ML API — includes logistic_type and receiver_address.
-    x-format-new: true is required to receive SLA date fields in shipping_option.
+
+    IMPORTANTE: NAO enviar `x-format-new: true` aqui — diagnostico em 2026-05-27
+    mostrou que esse header faz o ML devolver view "podada" (logistic_type=null,
+    shipping_option ausente, sender_id=null). Sem o header, a resposta vem
+    completa com SLA dates inclusos em shipping_option.
     """
+    params = {}
+    if caller_id:
+        params["caller.id"] = str(caller_id)
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(
             f"{ML_API_BASE}/shipments/{shipment_id}",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "x-format-new": "true",
-            },
+            params=params or None,
+            headers={"Authorization": f"Bearer {access_token}"},
         )
     if resp.status_code != 200:
         return {}
     return resp.json()
 
 
-async def get_shipment_history(access_token: str, shipment_id: str) -> dict:
+async def get_shipment_history(
+    access_token: str, shipment_id: str, caller_id: str | int | None = None
+) -> dict:
     """Fetch shipment movement history from ML API."""
+    params = {}
+    if caller_id:
+        params["caller.id"] = str(caller_id)
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(
             f"{ML_API_BASE}/shipments/{shipment_id}/history",
+            params=params or None,
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "x-format-new": "true",
@@ -332,11 +345,17 @@ async def get_shipment_history(access_token: str, shipment_id: str) -> dict:
     return resp.json()
 
 
-async def get_shipment_carrier(access_token: str, shipment_id: str) -> dict:
+async def get_shipment_carrier(
+    access_token: str, shipment_id: str, caller_id: str | int | None = None
+) -> dict:
     """Fetch carrier info (name, tracking URL) from ML API."""
+    params = {}
+    if caller_id:
+        params["caller.id"] = str(caller_id)
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(
             f"{ML_API_BASE}/shipments/{shipment_id}/carrier",
+            params=params or None,
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "x-format-new": "true",

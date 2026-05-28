@@ -25,7 +25,7 @@
             </div>
             <div class="col-4">
               <small class="text-muted d-block">Tipo</small>
-              <span :class="shippingTypeBadge">{{ shippingTypeLabel }}</span>
+              <span class="badge" :style="shippingTypeBadge">{{ shippingTypeLabel }}</span>
             </div>
             <div class="col-4">
               <small class="text-muted d-block">Status da Plataforma</small>
@@ -119,6 +119,7 @@
 <script setup>
 import { computed } from 'vue'
 import { formatDate, formatDocument } from '@/utils/formatters'
+import { shippingModeStyle } from '@/utils/constants'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -154,28 +155,42 @@ const addressZip = computed(() => {
   return d.length === 8 ? `${d.slice(0, 5)}-${d.slice(5)}` : z
 })
 
-// Maps ML logistic_type values to human-readable labels
-const shippingCarrier = computed(() => {
-  const m = props.order?.shipping_method || ''
-  if (m === 'fulfillment') return 'Mercado Envios Full'
-  if (m === 'self_service') return 'Mercado Flex'
-  if (m === 'xd_drop_off' || m === 'cross_docking' || m.includes('me2')) return 'Mercado Envios'
-  return m || '—'
-})
+// Mapeamento ML logistic_type -> bucket (validado 2026-05-27). Cores vem
+// da paleta canonica em utils/constants.js — NAO duplicar cores aqui.
+const LEGACY_TO_MODE = {
+  fulfillment:   'full',
+  self_service:  'flex',
+  xd_drop_off:   'agencia',    // Places/Agil
+  drop_off:      'correios',   // vendedor leva nos Correios
+  cross_docking: 'coletado',   // ML coleta
+  xd_pickup:     'coletado',
+  not_specified: 'combinado',
+}
+function resolveMode(order) {
+  if (order?.shipping_mode && order.shipping_mode !== 'desconhecido') return order.shipping_mode
+  const m = order?.shipping_method || ''
+  for (const key of Object.keys(LEGACY_TO_MODE)) {
+    if (m.includes(key)) return LEGACY_TO_MODE[key]
+  }
+  return 'desconhecido'
+}
 
-const shippingTypeLabel = computed(() => {
-  const m = props.order?.shipping_method || ''
-  if (m === 'fulfillment') return 'FULL'
-  if (m === 'self_service') return 'FLEX'
-  if (m === 'xd_drop_off' || m === 'cross_docking') return 'ME2'
-  return 'Padrão'
-})
+const MODE_CARRIER = {
+  full: 'Mercado Envios Full',
+  flex: 'Mercado Flex',
+  agencia: 'Mercado Envios Places/Ágil',
+  correios: 'Mercado Envios — Correios',
+  coletado: 'Mercado Envios Coleta',
+  combinado: 'Combinado com vendedor',
+  desconhecido: 'Mercado Envios',
+}
 
+const shippingMode      = computed(() => resolveMode(props.order))
+const shippingCarrier   = computed(() => MODE_CARRIER[shippingMode.value] || '—')
+const shippingTypeLabel = computed(() => (shippingModeStyle(shippingMode.value).label || 'Padrão').toUpperCase())
 const shippingTypeBadge = computed(() => {
-  const m = props.order?.shipping_method || ''
-  if (m === 'fulfillment') return 'badge badge-warning'
-  if (m === 'self_service') return 'badge badge-info'
-  return 'badge badge-secondary'
+  const s = shippingModeStyle(shippingMode.value)
+  return { background: s.bg, color: s.fg }
 })
 
 const isDeliveryUrgent = computed(() => {

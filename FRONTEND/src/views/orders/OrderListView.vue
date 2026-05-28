@@ -172,7 +172,13 @@
             <!-- ── Col COMPRADOR ── -->
             <div style="min-width:210px;max-width:220px;flex-shrink:0">
               <div class="d-flex align-items-center mb-1">
-                <i class="fas fa-user-circle text-muted mr-1 fa-sm"></i>
+                <img v-if="platformLogo(order.platform)"
+                     :src="platformLogo(order.platform).src"
+                     :alt="platformLogo(order.platform).label"
+                     :title="platformLogo(order.platform).label"
+                     class="mr-2"
+                     style="height:18px;max-width:90px;object-fit:contain" />
+                <i v-else class="fas fa-user-circle text-muted mr-1 fa-sm"></i>
                 <strong style="font-size:.85rem" class="text-truncate" :title="order.buyer_name">{{ order.buyer_name || '—' }}</strong>
               </div>
 
@@ -318,7 +324,19 @@
                     <span v-if="item.available_quantity != null" class="text-muted">
                       | {{ item.available_quantity }} disponíveis após esta venda
                     </span>
-                    <span class="text-muted">| {{ order.shipping_method || 'Mercado Envios' }}</span>
+                    <span class="text-muted">|</span>
+                    <span
+                      class="badge"
+                      :title="shippingModeStyle(effectiveShippingMode(order)).title"
+                      :style="{
+                        background: shippingModeStyle(effectiveShippingMode(order)).bg,
+                        color: shippingModeStyle(effectiveShippingMode(order)).fg,
+                        fontSize: '.68rem',
+                        fontWeight: 500,
+                      }"
+                    >
+                      <i :class="shippingModeStyle(effectiveShippingMode(order)).icon" class="mr-1"></i>{{ shippingModeLabel(order) }}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -558,7 +576,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import api from '@/composables/useApi'
 import { formatCurrency, formatDateTime, formatDate } from '@/utils/formatters'
-import { ORDER_STATUSES, PLATFORMS } from '@/utils/constants'
+import { ORDER_STATUSES, PLATFORMS, SHIPPING_MODE_STYLE, shippingModeStyle, platformLogo } from '@/utils/constants'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import OrderStatusStepper from '@/components/orders/OrderStatusStepper.vue'
@@ -733,7 +751,29 @@ const LABEL_READY_STATES = ['handling', 'ready_to_ship', 'shipped', 'delivered',
 
 function isFullOrder(order) {
   // Full (Fulfillment) shipments are managed by ML — seller doesn't print labels
-  return (order.shipping_method || '').includes('fulfillment')
+  if (order.shipping_mode && order.shipping_mode !== 'desconhecido') {
+    return order.shipping_mode === 'full'
+  }
+  if ((order.shipping_method || '').includes('fulfillment')) return true
+  // Fallback final: se algum item do pedido é Full, considerar Full
+  return !!order.items?.some(i => i.is_full)
+}
+
+// Resolve o modo efetivo do pedido. Prefere o normalizado do backend; quando
+// desconhecido/ausente, so deriva quando temos evidencia (item.is_full = Full).
+// NAO adivinhar "correios" so porque ha shipment_id — pode ser Flex/Agencia tambem.
+function effectiveShippingMode(order) {
+  const m = order.shipping_mode
+  if (m && m !== 'desconhecido') return m
+  if (order.items?.some(i => i.is_full)) return 'full'
+  return 'desconhecido'
+}
+function shippingModeLabel(order) {
+  const mode = effectiveShippingMode(order)
+  if (mode === order.shipping_mode && order.shipping_mode_label && order.shipping_mode_label !== '—') {
+    return order.shipping_mode_label
+  }
+  return SHIPPING_MODE_STYLE[mode]?.label || 'Mercado Envios'
 }
 function labelAvailable(order) {
   return !isFullOrder(order) && LABEL_READY_STATES.includes(order.shipment_status)

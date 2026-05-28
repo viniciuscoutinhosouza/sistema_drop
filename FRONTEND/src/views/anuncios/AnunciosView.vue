@@ -194,20 +194,13 @@
                       <span class="text-monospace text-muted" style="font-size:11px">{{ a.platform_item_id }}</span>
                       <span v-if="a.sku" class="text-muted" style="font-size:11px">· SKU: {{ a.sku }}</span>
                       <span v-if="a.listing_type" :class="listingTypeBadge(a.listing_type)" style="font-size:10px">{{ listingTypeLabel(a.listing_type) }}</span>
-                      <span v-if="a.is_full" class="badge" style="background:#00a650;color:#fff;font-size:10px"><i class="fas fa-warehouse mr-1"></i>Full</span>
-                      <span v-if="a.is_flex && !a.is_full" class="badge" style="background:#f97316;color:#fff;font-size:10px" title="Mercado Envios Flex ativo"><i class="fas fa-motorcycle mr-1"></i>Flex</span>
+                      <span v-if="a.is_full" class="badge" :style="{background: smStyle('full').bg, color: smStyle('full').fg, fontSize:'10px'}" :title="smStyle('full').title"><i :class="smStyle('full').icon" class="mr-1"></i>{{ smStyle('full').label }}</span>
+                      <span v-if="a.is_flex && !a.is_full" class="badge" :style="{background: smStyle('flex').bg, color: smStyle('flex').fg, fontSize:'10px'}" :title="smStyle('flex').title"><i :class="smStyle('flex').icon" class="mr-1"></i>{{ smStyle('flex').label }}</span>
                       <span v-if="a.catalog_listing && a.ml_catalog_id" class="badge badge-primary" style="font-size:10px" :title="'Produto: ' + a.ml_catalog_id"><i class="fas fa-bookmark mr-1"></i>Anúncio de Catálogo</span>
                       <span v-else-if="!a.catalog_listing && a.ml_catalog_id" class="badge badge-secondary" style="font-size:10px" :title="'Vinculado: ' + a.ml_catalog_id"><i class="fas fa-link mr-1"></i>Vinculado ao Catálogo</span>
                       <span :class="'badge ' + listingQuality(a).cls" style="font-size:10px;cursor:help"
                             :title="listingQuality(a).issues.length ? listingQuality(a).issues.join('\n') : 'Anúncio completo'">
                         <i class="fas fa-star mr-1"></i>{{ listingQuality(a).label }}
-                      </span>
-                      <span class="text-muted" style="font-size:11px"><i class="fas fa-truck mr-1"></i>{{ logisticLabel(a) }}</span>
-                      <span v-if="logisticBadge(a)"
-                            :class="['badge', logisticBadge(a).cls]"
-                            :title="logisticBadge(a).title"
-                            style="font-size:10px;font-weight:600">
-                        <i :class="['fas', logisticBadge(a).icon, 'mr-1']"></i>{{ logisticBadge(a).label }}
                       </span>
                       <span v-if="a.free_shipping" class="text-success font-weight-bold" style="font-size:11px">· Frete Grátis</span>
                       <span v-if="listingBrand(a)" class="text-muted" style="font-size:11px">· <i class="fas fa-tag mr-1"></i>{{ listingBrand(a) }}</span>
@@ -615,102 +608,19 @@
 
               <!-- ABA 3 — Categoria & Atributos -->
               <div v-if="wizardStep === 3">
-                <!-- Categoria atual como breadcrumb -->
-                <div class="d-flex align-items-center mb-3">
-                  <div class="flex-grow-1">
-                    <label class="mb-1 d-block small font-weight-bold">Categoria</label>
-                    <div v-if="wf.category_id" class="d-flex align-items-center flex-wrap" style="gap:4px;font-size:12px">
-                      <template v-if="categoryPaths[wf.category_id]?.length">
-                        <span v-for="(p, i) in categoryPaths[wf.category_id]" :key="p.id">
-                          <span :class="i === categoryPaths[wf.category_id].length-1 ? 'font-weight-bold text-dark' : 'text-muted'">{{ p.name }}</span>
-                          <i v-if="i < categoryPaths[wf.category_id].length-1" class="fas fa-angle-right mx-1 text-muted"></i>
-                        </span>
-                      </template>
-                      <span v-else class="font-weight-bold">{{ wf.category_name || wf.category_id }}</span>
-                      <code class="text-muted ml-1" style="font-size:11px">{{ wf.category_id }}</code>
-                    </div>
-                    <span v-else class="text-muted small">Nenhuma categoria selecionada</span>
-                  </div>
-                  <button type="button" class="btn btn-sm btn-outline-secondary ml-3" @click="categoryEditMode = !categoryEditMode"
-                          :title="categoryEditMode ? 'Fechar busca' : 'Alterar categoria'">
-                    <i :class="['fas', categoryEditMode ? 'fa-times' : 'fa-pencil-alt']"></i>
-                  </button>
-                </div>
-
-                <!-- Categorias já cadastradas neste produto para o ML -->
-                <div v-if="savedProductCategories.length > 0" class="alert alert-light border mb-3 py-2">
-                  <label class="small font-weight-bold mb-1 d-block">
-                    <i class="fas fa-bookmark text-primary mr-1"></i>
-                    Categorias salvas neste produto
-                  </label>
-                  <div class="d-flex flex-wrap" style="gap:6px">
-                    <button v-for="pc in savedProductCategories" :key="pc.id"
-                            type="button"
-                            :class="['btn btn-sm', wf.category_id === pc.category_id ? 'btn-primary' : 'btn-outline-primary']"
-                            @click="applySavedCategory(pc)">
-                      <i class="fas fa-tag mr-1"></i>
-                      {{ pc.category_name || pc.category_id }}
-                      <span class="badge badge-light ml-1" :title="`${savedAttrsCount(pc)} atributo(s) pré-preenchidos`">
-                        {{ savedAttrsCount(pc) }}
-                      </span>
-                    </button>
-                  </div>
-                </div>
-
-                <!-- Campo de busca — visível apenas quando categoryEditMode = true -->
-                <div v-if="categoryEditMode" class="mb-3">
-                  <div class="input-group">
-                    <input v-model="categorySearch" class="form-control" placeholder="Ex: Tênis Masculino, Celular, Notebook..." @input="debouncedCategorySearch" />
-                    <div class="input-group-append">
-                      <button class="btn btn-outline-secondary" @click="searchCategories" :disabled="catLoading">
-                        <i :class="['fas', catLoading ? 'fa-spinner fa-spin' : 'fa-search']"></i>
-                      </button>
-                    </div>
-                  </div>
-                  <div v-if="categoryResults.length > 0" class="list-group mt-2" style="max-height:200px;overflow-y:auto">
-                    <a v-for="c in categoryResults" :key="c.id"
-                      :class="['list-group-item list-group-item-action py-1', wf.category_id === c.id ? 'active' : '']"
-                      href="#" @click.prevent="selectCategory(c); categoryEditMode = false">
-                      <strong>{{ c.name }}</strong>
-                      <span class="text-muted small ml-2">{{ c.id }}</span>
-                      <span v-if="c.total_items_in_this_category" class="badge badge-light ml-1">{{ c.total_items_in_this_category.toLocaleString() }}</span>
-                    </a>
-                  </div>
-                </div>
-
-                <!-- Atributos ML da categoria (obrigatórios/recomendados) -->
-                <div v-if="wf.category_id">
-                  <div v-if="attrLoading" class="text-center py-2"><i class="fas fa-spinner fa-spin text-muted"></i> Carregando atributos...</div>
-                  <template v-else>
-                    <div v-if="categoryAttributes.length > 0">
-                      <h6 class="text-muted small text-uppercase mb-2">Atributos da Categoria</h6>
-                      <div class="row">
-                        <div v-for="attr in categoryAttributes" :key="attr.id" class="col-md-4 form-group">
-                          <label class="small">
-                            {{ attr.name }}
-                            <span v-if="attr.is_required" class="text-danger">*</span>
-                            <span v-else class="text-muted">(recom.)</span>
-                          </label>
-                          <select v-if="attr.values && attr.values.length > 0" v-model="attrValues[attr.id]" class="form-control form-control-sm">
-                            <option value="">— Selecione —</option>
-                            <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
-                          </select>
-                          <input v-else v-model="attrValues[attr.id]" class="form-control form-control-sm" :placeholder="attr.name" />
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- Atributos extras do anúncio (existentes mas fora da lista ML da categoria) -->
-                    <div v-if="extraCategoryAttrs.length > 0" class="mt-2">
-                      <h6 class="text-muted small text-uppercase mb-2">Características Secundárias</h6>
-                      <div class="row">
-                        <div v-for="attr in extraCategoryAttrs" :key="attr.id" class="col-md-4 form-group">
-                          <label class="small">{{ attr.name }}</label>
-                          <input v-model="attrValues[attr.id]" class="form-control form-control-sm" />
-                        </div>
-                      </div>
-                    </div>
-                  </template>
+                <PublishCategoryPicker
+                  v-if="wf.product_id && wizardPickerMarketplace"
+                  :key="`${wf.product_type}-${wf.product_id}-${wizardPickerMarketplace}`"
+                  :owner-type="wf.product_type === 'cmig' ? 'cmig' : 'catalog'"
+                  :owner-id="wf.product_id"
+                  :marketplace="wizardPickerMarketplace"
+                  :product-hints="{ brand: wf.selectedProduct?.brand, model: wf.selectedProduct?.model }"
+                  :initial-value="wizardCategoryInitialValue"
+                  v-model="wizardCategorySel"
+                />
+                <div v-else class="alert alert-warning py-2 small">
+                  <i class="fas fa-info-circle mr-1"></i>
+                  Selecione um produto na Aba 1 para escolher a categoria.
                 </div>
               </div>
 
@@ -1515,7 +1425,10 @@
 import { ref, computed, onMounted } from 'vue'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
+import { shippingModeStyle as smStyle } from '@/utils/constants'
 import { isValidEan13 } from '@/utils/ean'
+import PublishCategoryPicker from '@/components/catalog/PublishCategoryPicker.vue'
+import { persistCategoryToProduct } from '@/composables/usePublishCategory'
 
 const toast = useToast()
 
@@ -1653,8 +1566,8 @@ function selectProduct(p) {
   if (wf.value.pictures.length === 0 && p.images?.length) {
     wf.value.pictures = p.images.slice(0, 12).map(i => i.url || i).filter(Boolean)
   }
-  // Carrega categorias já cadastradas neste produto para o atalho da aba 3
-  loadSavedProductCategories()
+  // Reset da seleção de categoria — o picker recarrega ao perceber novo produto
+  resetWizardCategorySel()
 }
 
 const refreshingProductImages = ref(false)
@@ -1697,85 +1610,30 @@ async function refreshProductImages() {
   }
 }
 
-// Category search
-const categorySearch = ref('')
-const categoryResults = ref([])
-const catLoading = ref(false)
-const categoryAttributes = ref([])
-const attrValues = ref({})
-const savedAttrNames = ref({})   // { attr_id: display_name } para atributos já existentes
-const attrLoading = ref(false)
-const categoryEditMode = ref(false)  // exibe campo de busca de categoria somente qdo true
-
-// Categorias salvas no produto (carregadas ao selecionar produto na aba 1 ou ao chegar na aba 3)
-const savedProductCategories = ref([])
-
-async function loadSavedProductCategories() {
-  savedProductCategories.value = []
-  if (!wf.value.product_id) return
-  const endpoint = wf.value.product_type === 'cmig'
-    ? `/product-categories/cmig/${wf.value.product_id}`
-    : `/product-categories/catalog/${wf.value.product_id}`
-  try {
-    const { data } = await api.get(endpoint)
-    // Filtra só ML por ora (Shopee virá depois)
-    savedProductCategories.value = (Array.isArray(data) ? data : [])
-      .filter(c => c.marketplace === 'mercado_livre')
-  } catch {
-    savedProductCategories.value = []
-  }
-}
-
-function savedAttrsCount(pc) {
-  try {
-    const arr = JSON.parse(pc.attributes_json || '[]')
-    return Array.isArray(arr) ? arr.length : 0
-  } catch {
-    return 0
-  }
-}
-
-async function applySavedCategory(pc) {
-  // Aplica categoria + atributos pré-cadastrados no formulário do wizard
-  wf.value.category_id = pc.category_id
-  wf.value.category_name = pc.category_name || pc.category_id
-  if (pc.category_path_json) {
-    try {
-      const path = JSON.parse(pc.category_path_json)
-      if (Array.isArray(path) && path.length) categoryPaths.value[pc.category_id] = path
-    } catch { /* ignore */ }
-  }
-  categoryEditMode.value = false
-  categoryResults.value = []
-  attrValues.value = {}
-  attrLoading.value = true
-  try {
-    const { data } = await api.get(`/anuncios/categories/${pc.category_id}/attributes`)
-    categoryAttributes.value = Array.isArray(data) ? data : []
-  } catch {
-    categoryAttributes.value = []
-  } finally {
-    attrLoading.value = false
-  }
-  // Popula valores salvos
-  try {
-    const saved = JSON.parse(pc.attributes_json || '[]')
-    for (const a of saved) {
-      if (a.id) {
-        attrValues.value[a.id] = a.value_name ?? a.value ?? ''
-        if (a.name) savedAttrNames.value[a.id] = a.name
-      }
-    }
-  } catch { /* ignore */ }
-}
-
-// Atributos que existem no anúncio mas não estão na lista de atributos ML da categoria
-const extraCategoryAttrs = computed(() => {
-  const catIds = new Set(categoryAttributes.value.map(a => a.id))
-  return Object.keys(attrValues.value)
-    .filter(id => !catIds.has(id) && attrValues.value[id])
-    .map(id => ({ id, name: savedAttrNames.value[id] || id }))
+// ── Categoria + atributos (gerenciado por PublishCategoryPicker) ──────────────
+// 'mercadolivre' / 'shopee' → 'mercado_livre' / 'shopee'
+const wizardPickerMarketplace = computed(() => {
+  const p = selectedAccount.value?.platform || wf.value.account_platform
+  if (p === 'mercadolivre') return 'mercado_livre'
+  if (p === 'shopee')       return 'shopee'
+  return ''
 })
+
+const wizardCategorySel = ref({
+  pmc_id: null, category_id: '', category_name: '',
+  category_path_json: null, isNew: false, attributes: [],
+})
+
+// initialValue para o picker no modo edição (preenchido em openWizard com listing)
+const wizardCategoryInitialValue = ref(null)
+
+function resetWizardCategorySel() {
+  wizardCategorySel.value = {
+    pmc_id: null, category_id: '', category_name: '',
+    category_path_json: null, isNew: false, attributes: [],
+  }
+  wizardCategoryInitialValue.value = null
+}
 
 // Badge do logistic_type do listing em edição — reusa a mesma função da listagem
 const currentListingLogisticBadge = computed(() => {
@@ -1790,41 +1648,6 @@ const wizardEanInvalid = computed(() => {
   const v = (wizardFiscal.value.ean || '').trim()
   return v.length > 0 && !isValidEan13(v)
 })
-
-let catDebounceTimer = null
-function debouncedCategorySearch() {
-  clearTimeout(catDebounceTimer)
-  catDebounceTimer = setTimeout(searchCategories, 400)
-}
-
-async function searchCategories() {
-  if (!categorySearch.value.trim()) return
-  catLoading.value = true
-  try {
-    const { data } = await api.get(`/anuncios/categories/search?q=${encodeURIComponent(categorySearch.value)}`)
-    categoryResults.value = Array.isArray(data) ? data.slice(0, 20) : []
-  } catch {
-    categoryResults.value = []
-  } finally {
-    catLoading.value = false
-  }
-}
-
-async function selectCategory(c) {
-  wf.value.category_id = c.id
-  wf.value.category_name = c.name
-  categoryResults.value = []
-  attrValues.value = {}
-  attrLoading.value = true
-  try {
-    const { data } = await api.get(`/anuncios/categories/${c.id}/attributes`)
-    categoryAttributes.value = Array.isArray(data) ? data : []
-  } catch {
-    categoryAttributes.value = []
-  } finally {
-    attrLoading.value = false
-  }
-}
 
 // Photos
 const extraImageUrl = ref('')
@@ -1895,14 +1718,8 @@ async function openWizard(listing) {
   wizardStep.value = 1
   wizard.value = { show: true, isEdit: !!listing, listingId: listing?.id || null, saving: false, error: '', originalSku: listing?.sku || '' }
   wf.value = defaultWizardForm()
-  categorySearch.value = ''
-  categoryResults.value = []
-  categoryAttributes.value = []
-  attrValues.value = {}
-  savedAttrNames.value = {}
-  savedProductCategories.value = []
+  resetWizardCategorySel()
   wizardFiscal.value = { ncm: '', ean: '', cest: '', gtin: '', csosn: null }
-  categoryEditMode.value = !listing  // edit mode: categoria só muda ao clicar; novo: já abre campo
   productSearch.value = ''
   extraImageUrl.value = ''
 
@@ -1919,7 +1736,6 @@ async function openWizard(listing) {
     wf.value.keep_stock_fixed   = !!listing.keep_stock_fixed
     wf.value.item_condition = listing.item_condition || 'new'
     wf.value.platform_item_id = listing.platform_item_id || ''
-    wf.value.category_id = listing.category_id || ''
     wf.value.description_override = listing.description_override || ''
     wf.value.video_id = listing.video_id || ''
     wf.value.shipping_mode = listing.shipping_mode || 'me2'
@@ -1968,7 +1784,6 @@ async function openWizard(listing) {
       wf.value.product_id = listing.catalog_product.id
       wf.value.selectedProduct = pgProductList.value.find(p => p.id === listing.catalog_product.id) || listing.catalog_product
     }
-    loadSavedProductCategories()
     // Pre-popular fotos do anúncio
     if (listing.pictures_json) {
       try {
@@ -1977,23 +1792,21 @@ async function openWizard(listing) {
       } catch { /* ignore */ }
     }
     if (listing.category_id) {
-      wf.value.category_name = listing.category_name || listing.category_id
       fetchCategoryPath(listing.category_id)  // carrega breadcrumb no mapa compartilhado
-      try {
-        const { data } = await api.get(`/anuncios/categories/${listing.category_id}/attributes`)
-        categoryAttributes.value = Array.isArray(data) ? data : []
-        if (listing.attributes_json) {
-          try {
-            const saved = JSON.parse(listing.attributes_json)
-            for (const a of saved) {
-              if (a.id) {
-                attrValues.value[a.id] = a.value ?? a.value_name ?? ''
-                if (a.name) savedAttrNames.value[a.id] = a.name
-              }
-            }
-          } catch { /* ignore */ }
-        }
-      } catch { /* ignore */ }
+      let initialAttrs = []
+      if (listing.attributes_json) {
+        try {
+          const saved = JSON.parse(listing.attributes_json)
+          initialAttrs = saved
+            .filter(a => a && a.id)
+            .map(a => ({ id: a.id, value_name: a.value_name ?? a.value ?? '' }))
+        } catch { /* ignore */ }
+      }
+      wizardCategoryInitialValue.value = {
+        category_id: listing.category_id,
+        category_name: listing.category_name || listing.category_id,
+        attributes: initialAttrs,
+      }
     }
   }
 }
@@ -2018,11 +1831,9 @@ async function saveWizard() {
   try {
     if (!wf.value.sale_price) throw new Error('Preço de venda é obrigatório (Aba 2)')
     if (!wf.value.title_override) throw new Error('Título é obrigatório (Aba 2)')
+    if (!wizardCategorySel.value.category_id) throw new Error('Selecione uma categoria (Aba 3)')
 
-    // Build attributes array from attrValues
-    const attributes = categoryAttributes.value
-      .filter(a => attrValues.value[a.id])
-      .map(a => ({ id: a.id, value_name: attrValues.value[a.id] }))
+    const attributes = wizardCategorySel.value.attributes || []
 
     const payload = {
       account_id: selectedAccountId.value,
@@ -2035,7 +1846,7 @@ async function saveWizard() {
       item_condition: wf.value.item_condition,
       platform_item_id: wf.value.platform_item_id || null,
       sku: wf.value.sku || null,
-      category_id: wf.value.category_id || null,
+      category_id: wizardCategorySel.value.category_id || null,
       description_override: wf.value.description_override || null,
       attributes_json: attributes.length ? JSON.stringify(attributes) : null,
       attributes,
@@ -2091,6 +1902,16 @@ async function saveWizard() {
     } else {
       await api.post('/anuncios/publish', payload)
       toast.success('Anúncio publicado!')
+    }
+
+    // Persiste categoria/atributos no produto para reuso futuro (best-effort).
+    if (wf.value.product_id && wizardPickerMarketplace.value) {
+      await persistCategoryToProduct(
+        wizardCategorySel.value,
+        wf.value.product_type === 'cmig' ? 'cmig' : 'catalog',
+        wf.value.product_id,
+        wizardPickerMarketplace.value,
+      )
     }
 
     wizard.value.show = false

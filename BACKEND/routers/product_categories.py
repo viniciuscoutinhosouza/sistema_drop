@@ -14,7 +14,7 @@ Endpoints:
 """
 import json as _json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,7 +45,11 @@ def _serialize(pmc: ProductMarketplaceCategory) -> dict:
 
 
 async def _list_for_owner(
-    db: AsyncSession, *, catalog_product_id: int | None = None, cmig_product_id: int | None = None
+    db: AsyncSession,
+    *,
+    catalog_product_id: int | None = None,
+    cmig_product_id: int | None = None,
+    marketplace: str | None = None,
 ) -> list[dict]:
     stmt = select(ProductMarketplaceCategory)
     if catalog_product_id:
@@ -54,6 +58,8 @@ async def _list_for_owner(
         stmt = stmt.where(ProductMarketplaceCategory.cmig_product_id == cmig_product_id)
     else:
         return []
+    if marketplace:
+        stmt = stmt.where(ProductMarketplaceCategory.marketplace == marketplace)
     stmt = stmt.order_by(ProductMarketplaceCategory.marketplace, ProductMarketplaceCategory.id)
     result = await db.execute(stmt)
     return [_serialize(pmc) for pmc in result.scalars().all()]
@@ -62,27 +68,35 @@ async def _list_for_owner(
 @router.get("/catalog/{pid}")
 async def list_categories_for_catalog(
     pid: int,
+    marketplace: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Lista categorias de marketplace cadastradas num produto PG."""
+    """Lista categorias de marketplace cadastradas num produto PG.
+
+    Filtro opcional por marketplace (`?marketplace=mercado_livre|shopee`).
+    """
     prod = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == pid))).scalar_one_or_none()
     if not prod:
         raise HTTPException(status_code=404, detail="Produto PG não encontrado")
-    return await _list_for_owner(db, catalog_product_id=pid)
+    return await _list_for_owner(db, catalog_product_id=pid, marketplace=marketplace)
 
 
 @router.get("/cmig/{pid}")
 async def list_categories_for_cmig(
     pid: int,
+    marketplace: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Lista categorias de marketplace cadastradas num produto CMIG."""
+    """Lista categorias de marketplace cadastradas num produto CMIG.
+
+    Filtro opcional por marketplace (`?marketplace=mercado_livre|shopee`).
+    """
     prod = (await db.execute(select(CMIGProduct).where(CMIGProduct.id == pid))).scalar_one_or_none()
     if not prod:
         raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
-    return await _list_for_owner(db, cmig_product_id=pid)
+    return await _list_for_owner(db, cmig_product_id=pid, marketplace=marketplace)
 
 
 def _validate_body(body: dict) -> tuple[int | None, int | None, str, str]:

@@ -308,51 +308,17 @@
             <small class="text-muted">Obrigatório em algumas categorias do Mercado Livre.</small>
           </div>
 
-          <!-- Categoria -->
+          <!-- Categoria + Características (componente reutilizável) -->
           <div class="form-group">
-            <label class="font-weight-bold">Categoria <span class="text-danger">*</span></label>
-            <div v-if="form.category_id">
-              <div class="d-flex align-items-center flex-wrap" style="gap:8px">
-                <span class="badge badge-info p-2" style="font-size:13px">
-                  <i class="fas fa-layer-group mr-1"></i>{{ form.category_name }}
-                </span>
-                <button class="btn btn-sm btn-outline-secondary" @click="clearCategory">
-                  <i class="fas fa-times"></i> Trocar
-                </button>
-                <span v-if="attrsModal.loading" class="text-muted small">
-                  <i class="fas fa-spinner fa-spin mr-1"></i>Carregando características...
-                </span>
-                <button v-else-if="attrsModal.attrs.length" type="button"
-                        class="btn btn-sm btn-outline-primary" @click="attrsModal.show = true">
-                  <i class="fas fa-list-ul mr-1"></i>Características
-                  <span v-if="filledAttrsCount" class="badge badge-primary ml-1">{{ filledAttrsCount }}</span>
-                  <span v-if="requiredUnfilledCount" class="badge badge-danger ml-1">{{ requiredUnfilledCount }} obrigatórios</span>
-                </button>
-              </div>
-            </div>
-            <div v-else>
-              <div class="input-group">
-                <input v-model="catSearch" type="text" class="form-control"
-                       placeholder="Pesquisar categoria no Mercado Livre..." @input="debouncedCatSearch" />
-                <div class="input-group-append">
-                  <span class="input-group-text"><i class="fas fa-search"></i></span>
-                </div>
-              </div>
-              <div v-if="catSearching" class="text-muted small mt-1">
-                <i class="fas fa-spinner fa-spin mr-1"></i>Buscando...
-              </div>
-              <div v-if="catResults.length" class="list-group mt-1"
-                   style="max-height:200px;overflow-y:auto;position:relative;z-index:10">
-                <button v-for="cat in catResults" :key="cat.id" type="button"
-                        class="list-group-item list-group-item-action py-1 px-2" style="font-size:13px"
-                        @click="selectCategory(cat)">
-                  <strong>{{ cat.name }}</strong>
-                  <span v-if="cat.path_from_root?.length" class="text-muted ml-2">
-                    {{ cat.path_from_root.map(p => p.name).join(' › ') }}
-                  </span>
-                </button>
-              </div>
-            </div>
+            <PublishCategoryPicker
+              v-if="modal.show && pickerOwnerId && pickerMarketplace"
+              :key="`${pickerOwnerType}-${pickerOwnerId}-${pickerMarketplace}`"
+              :owner-type="pickerOwnerType"
+              :owner-id="pickerOwnerId"
+              :marketplace="pickerMarketplace"
+              :product-hints="{ brand: modal.product?.brand, model: form.model }"
+              v-model="categorySel"
+            />
           </div>
 
           <!-- ── Fotos ── -->
@@ -533,106 +499,14 @@
     </div>
   </div>
 
-  <!-- ── Modal: Características da Categoria ── -->
-  <div v-if="attrsModal.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,0.45);z-index:1060">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-      <div class="modal-content">
-
-        <div class="modal-header">
-          <h5 class="modal-title"><i class="fas fa-list-ul mr-2"></i>Características da Categoria</h5>
-          <button type="button" class="close" @click="attrsModal.show = false"><span>&times;</span></button>
-        </div>
-
-        <div class="modal-body">
-
-          <!-- Obrigatórios -->
-          <div v-if="requiredAttrs.length" class="mb-4">
-            <h6 class="font-weight-bold text-danger mb-2">
-              <i class="fas fa-asterisk mr-1" style="font-size:10px"></i>Obrigatórios
-            </h6>
-            <div class="row">
-              <div v-for="attr in requiredAttrs" :key="attr.id" class="col-md-6 form-group mb-2">
-                <label class="font-weight-bold small">{{ attr.name }} <span class="text-danger">*</span></label>
-                <select v-if="attr.values && attr.values.length"
-                        v-model="attrValues[attr.id]"
-                        class="form-control form-control-sm"
-                        :class="{ 'border-danger': !attrValues[attr.id] }">
-                  <option value="">Selecione...</option>
-                  <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
-                </select>
-                <input v-else v-model="attrValues[attr.id]" type="text" class="form-control form-control-sm"
-                       :class="{ 'border-danger': !attrValues[attr.id] }"
-                       :placeholder="attr.allowed_units?.length ? `Valor (${attr.allowed_units.join(', ')})` : 'Digite...'" />
-              </div>
-            </div>
-          </div>
-
-          <!-- Recomendados -->
-          <div v-if="recommendedAttrs.length" class="mb-4">
-            <h6 class="font-weight-bold text-primary mb-2">
-              <i class="fas fa-star mr-1" style="font-size:10px"></i>Recomendados
-            </h6>
-            <div class="row">
-              <div v-for="attr in recommendedAttrs" :key="attr.id" class="col-md-6 form-group mb-2">
-                <label class="small font-weight-bold">{{ attr.name }}</label>
-                <select v-if="attr.values && attr.values.length"
-                        v-model="attrValues[attr.id]"
-                        class="form-control form-control-sm">
-                  <option value="">Selecione...</option>
-                  <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
-                </select>
-                <input v-else v-model="attrValues[attr.id]" type="text" class="form-control form-control-sm"
-                       :placeholder="attr.allowed_units?.length ? `Valor (${attr.allowed_units.join(', ')})` : 'Digite...'" />
-              </div>
-            </div>
-          </div>
-
-          <!-- Secundários (colapsável) -->
-          <div v-if="optionalAttrs.length">
-            <button type="button" class="btn btn-sm btn-outline-secondary w-100 text-left mb-2"
-                    @click="secondaryExpanded = !secondaryExpanded">
-              <i :class="['fas', secondaryExpanded ? 'fa-chevron-down' : 'fa-chevron-right', 'mr-1']"></i>
-              Características Secundárias ({{ optionalAttrs.length }})
-              <span v-if="filledOptionalCount" class="badge badge-secondary ml-2">{{ filledOptionalCount }} preenchidos</span>
-            </button>
-            <div v-if="secondaryExpanded" class="row">
-              <div v-for="attr in optionalAttrs" :key="attr.id" class="col-md-6 form-group mb-2">
-                <label class="small">{{ attr.name }}</label>
-                <select v-if="attr.values && attr.values.length"
-                        v-model="attrValues[attr.id]"
-                        class="form-control form-control-sm">
-                  <option value="">Selecione...</option>
-                  <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
-                </select>
-                <input v-else v-model="attrValues[attr.id]" type="text" class="form-control form-control-sm"
-                       :placeholder="attr.allowed_units?.length ? `Valor (${attr.allowed_units.join(', ')})` : 'Digite...'" />
-              </div>
-            </div>
-          </div>
-
-        </div>
-
-        <div class="modal-footer justify-content-between">
-          <span class="text-muted small">
-            {{ filledAttrsCount }} preenchido(s)
-            <span v-if="requiredUnfilledCount" class="text-danger ml-2">
-              · {{ requiredUnfilledCount }} obrigatório(s) pendente(s)
-            </span>
-          </span>
-          <button class="btn btn-primary" @click="attrsModal.show = false">
-            <i class="fas fa-check mr-1"></i>Confirmar
-          </button>
-        </div>
-
-      </div>
-    </div>
-  </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { formatCurrency } from '@/utils/formatters'
+import PublishCategoryPicker from '@/components/catalog/PublishCategoryPicker.vue'
+import { persistCategoryToProduct } from '@/composables/usePublishCategory'
 
 // ── Listagem ──────────────────────────────────────────────────────────────────
 const products    = ref([])
@@ -721,8 +595,6 @@ const modal = reactive({
 
 const form = reactive({
   title:            '',
-  category_id:      '',
-  category_name:    '',
   pictures:         [],
   sale_price:       '',
   listing_type:     'gold_special',
@@ -737,87 +609,27 @@ const form = reactive({
   weight_kg:        '',
 })
 
-// Busca de categoria
-const catSearch    = ref('')
-const catResults   = ref([])
-const catSearching = ref(false)
-let catDebounce    = null
+// ── Categoria + atributos (gerenciado por PublishCategoryPicker) ──────────────
+const categorySel = ref({
+  pmc_id: null, category_id: '', category_name: '',
+  category_path_json: null, isNew: false, attributes: [],
+})
 
-function debouncedCatSearch() {
-  clearTimeout(catDebounce)
-  catDebounce = setTimeout(searchCategories, 400)
-}
+// platform vem como 'mercadolivre' / 'shopee'; o backend espera 'mercado_livre' / 'shopee'
+const pickerMarketplace = computed(() => {
+  const p = selectedAccount.value?.platform
+  if (p === 'mercadolivre') return 'mercado_livre'
+  if (p === 'shopee')       return 'shopee'
+  return ''
+})
 
-async function searchCategories() {
-  const q = catSearch.value.trim()
-  if (!q) { catResults.value = []; return }
-  catSearching.value = true
-  try {
-    const { data } = await api.get('/anuncios/categories/search', { params: { q } })
-    catResults.value = Array.isArray(data) ? data : []
-  } catch {
-    catResults.value = []
-  } finally {
-    catSearching.value = false
-  }
-}
+const pickerOwnerType = computed(() => modal.cmigProductId ? 'cmig' : 'catalog')
+const pickerOwnerId   = computed(() => modal.cmigProductId || modal.product?.id || null)
 
-function selectCategory(cat) {
-  form.category_id   = cat.id
-  form.category_name = cat.name
-  catResults.value   = []
-  catSearch.value    = ''
-  loadCategoryAttrs(cat.id)
-}
-
-function clearCategory() {
-  form.category_id   = ''
-  form.category_name = ''
-  attrsModal.attrs   = []
-  Object.keys(attrValues).forEach(k => delete attrValues[k])
-}
-
-// ── Características da categoria ──────────────────────────────────────────────
-const attrsModal        = reactive({ show: false, loading: false, attrs: [] })
-const attrValues        = reactive({})
-const secondaryExpanded = ref(false)
-
-const requiredAttrs    = computed(() => attrsModal.attrs.filter(a => a.is_required))
-const recommendedAttrs = computed(() => attrsModal.attrs.filter(a => a.is_recommended))
-const optionalAttrs    = computed(() => attrsModal.attrs.filter(a => a.is_optional))
-
-const filledAttrsCount = computed(() =>
-  Object.values(attrValues).filter(v => v !== '' && v != null).length
-)
-
-const filledOptionalCount = computed(() =>
-  optionalAttrs.value.filter(a => attrValues[a.id]).length
-)
-
-const requiredUnfilledCount = computed(() =>
-  requiredAttrs.value.filter(a => !attrValues[a.id]).length
-)
-
-async function loadCategoryAttrs(categoryId) {
-  attrsModal.loading  = true
-  attrsModal.attrs    = []
-  secondaryExpanded.value = false
-  Object.keys(attrValues).forEach(k => delete attrValues[k])
-  try {
-    const { data } = await api.get(`/anuncios/categories/${categoryId}/attributes`)
-    attrsModal.attrs = Array.isArray(data) ? data : []
-    // Pré-preenche BRAND e MODEL com dados do produto
-    attrsModal.attrs.forEach(attr => {
-      if (attr.id === 'BRAND' && modal.product?.brand) {
-        attrValues[attr.id] = modal.product.brand
-      } else if (attr.id === 'MODEL' && form.model) {
-        attrValues[attr.id] = form.model
-      }
-    })
-  } catch {
-    attrsModal.attrs = []
-  } finally {
-    attrsModal.loading = false
+function resetCategorySel() {
+  categorySel.value = {
+    pmc_id: null, category_id: '', category_name: '',
+    category_path_json: null, isNew: false, attributes: [],
   }
 }
 
@@ -882,8 +694,6 @@ async function openPublishModal(product) {
   modal.cmigProductId = null
 
   form.title            = product.title?.slice(0, 60) || ''
-  form.category_id      = ''
-  form.category_name    = ''
   form.pictures         = product.image_url ? [product.image_url] : []
   form.sale_price       = ''
   form.listing_type     = 'gold_special'
@@ -896,13 +706,8 @@ async function openPublishModal(product) {
   form.width_cm      = product.width_cm  ?? ''
   form.length_cm     = product.length_cm ?? ''
   form.weight_kg     = product.weight_kg ?? ''
-  catSearch.value    = ''
-  catResults.value   = []
   newPhotoUrl.value  = ''
-  attrsModal.attrs        = []
-  attrsModal.show         = false
-  secondaryExpanded.value = false
-  Object.keys(attrValues).forEach(k => delete attrValues[k])
+  resetCategorySel()
 
   // Busca imagens completas do produto em background
   modal.loadingImages = true
@@ -934,24 +739,19 @@ function closeModal() {
 async function publishAnuncio() {
   modal.error   = ''
   modal.success = ''
-  if (!form.title.trim())      return (modal.error = 'Informe o título do anúncio.')
-  if (!form.category_id)       return (modal.error = 'Selecione uma categoria.')
+  if (!form.title.trim())          return (modal.error = 'Informe o título do anúncio.')
+  if (!categorySel.value.category_id) return (modal.error = 'Selecione uma categoria.')
   if (!form.sale_price || Number(form.sale_price) <= 0) return (modal.error = 'Informe um preço válido.')
 
   modal.saving = true
   try {
-    // Monta array de atributos extras preenchidos pelo usuário
-    const extraAttributes = Object.entries(attrValues)
-      .filter(([, v]) => v !== '' && v != null)
-      .map(([id, value_name]) => ({ id, value_name: String(value_name) }))
-
     await api.post('/anuncios/publish', {
       account_id:         selectedAccountId.value,
       ...(modal.cmigProductId
         ? { cmig_product_id: modal.cmigProductId }
         : { catalog_product_id: modal.product.id }),
       title_override:     form.title.trim(),
-      category_id:        form.category_id,
+      category_id:        categorySel.value.category_id,
       sale_price:         Number(form.sale_price),
       pictures:           form.pictures,
       listing_type:       form.listing_type,
@@ -964,9 +764,18 @@ async function publishAnuncio() {
       width_cm:           form.width_cm  !== '' ? Number(form.width_cm)  : null,
       length_cm:          form.length_cm !== '' ? Number(form.length_cm) : null,
       weight_kg:          form.weight_kg !== '' ? Number(form.weight_kg) : null,
-      attributes:         extraAttributes,
+      attributes:         categorySel.value.attributes || [],
       mode:               'create',
     })
+
+    // Após publish bem-sucedido, persiste categoria no produto (best-effort).
+    await persistCategoryToProduct(
+      categorySel.value,
+      pickerOwnerType.value,
+      pickerOwnerId.value,
+      pickerMarketplace.value,
+    )
+
     modal.success = 'Anúncio publicado com sucesso!'
     setTimeout(() => { modal.show = false }, 1800)
   } catch (err) {
@@ -1071,8 +880,6 @@ async function openPublishModalFromCmig(cmigProduct) {
     modal.success       = ''
 
     form.title            = cmigProduct.title?.slice(0, 60) || ''
-    form.category_id      = ''
-    form.category_name    = ''
     form.pictures         = (cmigProduct.images || []).map(i => i.url).filter(Boolean)
     if (!form.pictures.length && thumb) form.pictures = [thumb]
     form.sale_price       = ''
@@ -1086,13 +893,8 @@ async function openPublishModalFromCmig(cmigProduct) {
     form.width_cm         = cmigProduct.width_cm  || ''
     form.length_cm        = cmigProduct.length_cm || ''
     form.weight_kg        = cmigProduct.weight_kg || ''
-    catSearch.value       = ''
-    catResults.value      = []
     newPhotoUrl.value     = ''
-    attrsModal.attrs      = []
-    attrsModal.show       = false
-    secondaryExpanded.value = false
-    Object.keys(attrValues).forEach(k => delete attrValues[k])
+    resetCategorySel()
   }
 }
 

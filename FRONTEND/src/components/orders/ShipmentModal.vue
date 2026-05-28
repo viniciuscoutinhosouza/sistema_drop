@@ -137,7 +137,7 @@
                   <tr>
                     <td class="text-muted" style="width:45%">Logística</td>
                     <td>
-                      <span :class="['badge', logisticBadge]">
+                      <span class="badge" :style="logisticStyle">
                         <i :class="[logisticIcon, 'mr-1']"></i>{{ logisticLabel }}
                       </span>
                     </td>
@@ -239,6 +239,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import api from '@/composables/useApi'
+import { shippingModeStyle } from '@/utils/constants'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -326,22 +327,37 @@ const timeline = computed(() => {
 })
 
 // ─── Logistic type ────────────────────────────────────────────────────────────
-const LOGISTIC_MAP = {
-  fulfillment:    { label: 'Fulfillment (Full)',   icon: 'fas fa-warehouse',     badge: 'badge-info' },
-  cross_docking:  { label: 'ME2',                  icon: 'fas fa-shipping-fast', badge: 'badge-primary' },
-  xd_drop_off:    { label: 'ME2 Agência',          icon: 'fas fa-shipping-fast', badge: 'badge-primary' },
-  self_service:   { label: 'Flex',                 icon: 'fas fa-bolt',          badge: 'badge-warning text-dark' },
-  me1:            { label: 'ME1',                  icon: 'fas fa-truck',         badge: 'badge-secondary' },
-  not_specified:  { label: 'Sem Logística',        icon: 'fas fa-handshake',     badge: 'badge-light text-dark' },
+// Usa paleta canonica de utils/constants.js. NAO duplicar cores aqui.
+// Mapeamento ML logistic_type -> bucket conforme doc oficial (validado 2026-05-27).
+const LEGACY_TO_MODE = {
+  fulfillment:   'full',
+  self_service:  'flex',
+  xd_drop_off:   'agencia',     // Places/Agil — ponto parceiro ML
+  drop_off:      'correios',    // vendedor leva nos Correios
+  cross_docking: 'coletado',    // ML coleta no vendedor
+  xd_pickup:     'coletado',
+  not_specified: 'combinado',
 }
-function getLogistic(method) {
-  if (!method) return LOGISTIC_MAP.not_specified
-  const key = Object.keys(LOGISTIC_MAP).find(k => method.includes(k))
-  return LOGISTIC_MAP[key] || { label: method, icon: 'fas fa-question-circle', badge: 'badge-secondary' }
+function resolveMode(method) {
+  if (!method) return null
+  for (const key of Object.keys(LEGACY_TO_MODE)) {
+    if (method.includes(key)) return LEGACY_TO_MODE[key]
+  }
+  return null
 }
-const logisticLabel  = computed(() => getLogistic(trackingData.value?.logistic_type || props.order?.shipping_method).label)
-const logisticIcon   = computed(() => getLogistic(trackingData.value?.logistic_type || props.order?.shipping_method).icon)
-const logisticBadge  = computed(() => getLogistic(trackingData.value?.logistic_type || props.order?.shipping_method).badge)
+const logisticInfo = computed(() => {
+  const mode = props.order?.shipping_mode
+    || resolveMode(trackingData.value?.logistic_type)
+    || resolveMode(props.order?.shipping_method)
+    || 'desconhecido'
+  return shippingModeStyle(mode)
+})
+const logisticLabel = computed(() => logisticInfo.value.label)
+const logisticIcon  = computed(() => logisticInfo.value.icon)
+const logisticStyle = computed(() => ({
+  background: logisticInfo.value.bg,
+  color: logisticInfo.value.fg,
+}))
 
 // ─── Shipment status ──────────────────────────────────────────────────────────
 const SHIPMENT_STATUS_MAP = {

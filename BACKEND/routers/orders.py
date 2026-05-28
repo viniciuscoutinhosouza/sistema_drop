@@ -14,9 +14,11 @@ from sqlalchemy.orm import selectinload
 from config import get_settings
 from database import get_db
 from dependencies import get_active_ac, get_current_user
+from models.cmig import CMIGProduct
 from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
 from models.product import (
+    CatalogProduct,
     CatalogProductImage,
     DropshipperProduct,
     DropshipperProductImage,
@@ -26,6 +28,7 @@ from models.user import User
 from models.webhook import WebhookEvent
 from services import ml_service as _ml
 from services.financial_service import debit_balance
+from services.shipping_mode import classify_logistic_type, label_for_mode
 
 settings = get_settings()
 router = APIRouter()
@@ -60,6 +63,61 @@ def _ml_nfe_url(order: Order) -> str | None:
     return order.nfe_url
 
 
+def _resolve_item_cost_runtime(
+    item: OrderItem,
+    order: Order,
+    dp_map: dict,
+    listing_map: dict,
+    sku_listing_map: dict,
+    ml_item_listing_map: dict,
+    catalog_cost_map: dict,
+    cmig_cost_map: dict,
+    cmig_product_cost_map: dict,
+) -> float | None:
+    """Resolve custo unitário em runtime a partir dos maps pré-carregados.
+
+    Cascata (espelha order_item_resolver.resolve_order_item_link):
+      1) Listing (ml_item_id/sku/dp) com cmig_product_id → cmig_product_cost_map
+      2) Listing com catalog_product_id (sem cmig) → catalog_cost_map
+      3) catalog_product_id direto no item (ou via dp) → cmig_cost_map (preferido), fallback catalog
+    """
+    cmig_id = order.cmig_id
+    account_id = order.account_id
+
+    # 1) Achar listing
+    listing = None
+    if item.dropshipper_product_id:
+        listing = listing_map.get(item.dropshipper_product_id)
+    if not listing and account_id and getattr(item, "ml_item_id", None):
+        listing = ml_item_listing_map.get((account_id, item.ml_item_id))
+    if not listing and account_id and item.sku:
+        listing = sku_listing_map.get((account_id, item.sku))
+
+    if listing:
+        if listing.cmig_product_id:
+            c = cmig_product_cost_map.get(listing.cmig_product_id)
+            if c is not None:
+                return float(c)
+        if listing.catalog_product_id:
+            c = catalog_cost_map.get(listing.catalog_product_id)
+            if c is not None:
+                return float(c)
+
+    # 3) catalog_product_id direto no item ou via dropshipper
+    catalog_id = item.catalog_product_id
+    if not catalog_id:
+        dp = dp_map.get(item.dropshipper_product_id) if item.dropshipper_product_id else None
+        catalog_id = dp.catalog_product_id if dp else None
+    if not catalog_id:
+        return None
+    if cmig_id is not None:
+        c = cmig_cost_map.get((cmig_id, catalog_id))
+        if c is not None:
+            return float(c)
+    c = catalog_cost_map.get(catalog_id)
+    return float(c) if c is not None else None
+
+
 def _serialize_order_list(
     o: Order,
     images_by_catalog: dict,
@@ -69,7 +127,13 @@ def _serialize_order_list(
     sku_listing_map: dict,
     ml_item_listing_map: dict,
     cmig_map: dict | None = None,
+    catalog_cost_map: dict | None = None,
+    cmig_cost_map: dict | None = None,
+    cmig_product_cost_map: dict | None = None,
 ) -> dict:
+    catalog_cost_map = catalog_cost_map or {}
+    cmig_cost_map = cmig_cost_map or {}
+    cmig_product_cost_map = cmig_product_cost_map or {}
     items = []
     for i in o.items:
         dp = dp_map.get(i.dropshipper_product_id) if i.dropshipper_product_id else None
@@ -145,7 +209,26 @@ def _serialize_order_list(
         if o.ml_fee_pct is not None
         else (round(ml_fee / sale * 100, 2) if (sale and sale > 0 and ml_fee is not None) else None)
     )
-    product_cost = float(o.product_cost) if o.product_cost is not None else None
+    product_cost = float(o.product_cost) if o.product_cost else None
+    # Fallback retroativo: pedidos antigos com product_cost vazio (unit_cost não populado
+    # no webhook) — recomputa a partir do CMIG/PG vinculado em tempo de resposta.
+    if product_cost is None:
+        runtime_total = 0.0
+        any_resolved = False
+        for it in o.items:
+            unit = (
+                float(it.unit_cost)
+                if it.unit_cost is not None
+                else _resolve_item_cost_runtime(
+                    it, o, dp_map, listing_map, sku_listing_map, ml_item_listing_map,
+                    catalog_cost_map, cmig_cost_map, cmig_product_cost_map,
+                )
+            )
+            if unit is not None:
+                any_resolved = True
+                runtime_total += unit * (it.quantity or 0)
+        if any_resolved:
+            product_cost = round(runtime_total, 2)
 
     # Gross profit (only when we have sale + at least the fee component)
     gross_profit = None
@@ -182,6 +265,11 @@ def _serialize_order_list(
         "buyer_document": o.buyer_document,
         "shipping_address": shipping_address,
         "shipping_method": o.shipping_method,
+        "shipping_mode": o.shipping_mode
+        or classify_logistic_type(o.shipping_method, o.shipment_id),
+        "shipping_mode_label": label_for_mode(
+            o.shipping_mode or classify_logistic_type(o.shipping_method, o.shipment_id)
+        ),
         "shipment_status": o.shipment_status,
         "tracking_code": o.tracking_code,
         "tracking_url": o.tracking_url,
@@ -275,6 +363,7 @@ async def list_orders(
     platform: str = None,
     payment_status: str = None,
     shipment_status: str = None,
+    shipping_mode: str = None,
     tag: str = None,
     search: str = None,
     cmig_id: int = None,
@@ -324,6 +413,8 @@ async def list_orders(
         query = query.where(Order.payment_status == payment_status)
     if shipment_status:
         query = query.where(Order.shipment_status == shipment_status)
+    if shipping_mode:
+        query = query.where(Order.shipping_mode == shipping_mode)
     if tag:
         query = query.where(Order.order_tags.ilike(f"%{tag}%"))
     if search:
@@ -458,6 +549,52 @@ async def list_orders(
                 "cnpj": c.cnpj,
             }
 
+    # Batch: cost maps para fallback de product_cost em pedidos antigos sem unit_cost.
+    # catalog_cost_map  → custo do PG (CatalogProduct)
+    # cmig_cost_map     → custo do produto CMIG vinculado ao PG (preferido por galpão)
+    all_catalog_ids = set(catalog_ids)
+    for dp in dp_map.values():
+        if dp.catalog_product_id:
+            all_catalog_ids.add(dp.catalog_product_id)
+    catalog_cost_map: dict = {}
+    if all_catalog_ids:
+        cp_result = await db.execute(
+            select(CatalogProduct.id, CatalogProduct.cost_price).where(
+                CatalogProduct.id.in_(all_catalog_ids)
+            )
+        )
+        catalog_cost_map = {cid: cost for cid, cost in cp_result.all() if cost is not None}
+    cmig_cost_map: dict = {}
+    if cmig_ids and all_catalog_ids:
+        cm_result = await db.execute(
+            select(CMIGProduct.cmig_id, CMIGProduct.pg_product_id, CMIGProduct.cost_price).where(
+                CMIGProduct.cmig_id.in_(cmig_ids),
+                CMIGProduct.pg_product_id.in_(all_catalog_ids),
+            )
+        )
+        for cmig_id, pg_id, cost in cm_result.all():
+            if cost is not None and pg_id is not None:
+                cmig_cost_map[(cmig_id, pg_id)] = cost
+
+    # cmig_product_cost_map → custo por cmig_product_id (para resolução via Listing.cmig_product_id)
+    cmig_product_ids = {
+        lst.cmig_product_id
+        for lst in (
+            *listing_map.values(),
+            *sku_listing_map.values(),
+            *ml_item_listing_map.values(),
+        )
+        if lst.cmig_product_id
+    }
+    cmig_product_cost_map: dict = {}
+    if cmig_product_ids:
+        cpc_result = await db.execute(
+            select(CMIGProduct.id, CMIGProduct.cost_price).where(
+                CMIGProduct.id.in_(cmig_product_ids)
+            )
+        )
+        cmig_product_cost_map = {cid: cost for cid, cost in cpc_result.all() if cost is not None}
+
     return {
         "items": [
             _serialize_order_list(
@@ -469,6 +606,9 @@ async def list_orders(
                 sku_listing_map,
                 ml_item_listing_map,
                 cmig_map,
+                catalog_cost_map,
+                cmig_cost_map,
+                cmig_product_cost_map,
             )
             for o in orders
         ],
@@ -503,6 +643,39 @@ async def get_order(
         except (ValueError, TypeError):
             pass
 
+    # Fallback runtime de product_cost (mesmo padrão do list_orders, mas escopo de 1 pedido)
+    stored_pc = float(order.product_cost) if order.product_cost else None
+    product_cost_out = stored_pc
+    if product_cost_out is None:
+        from services.order_item_resolver import resolve_order_item_link
+        runtime_total = Decimal("0")
+        any_resolved = False
+        integration = None
+        if order.account_id:
+            integration = (
+                await db.execute(
+                    select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
+                )
+            ).scalar_one_or_none()
+        for it in items:
+            if it.unit_cost is not None:
+                any_resolved = True
+                runtime_total += Decimal(str(it.unit_cost)) * (it.quantity or 0)
+                continue
+            resolved = await resolve_order_item_link(
+                db,
+                account_id=order.account_id,
+                ml_item_id=it.ml_item_id,
+                cmig_id=order.cmig_id,
+                sku=it.sku,
+                dropshipper_id=integration.owner_id if integration else None,
+            )
+            if resolved.unit_cost is not None:
+                any_resolved = True
+                runtime_total += resolved.unit_cost * (it.quantity or 0)
+        if any_resolved:
+            product_cost_out = round(float(runtime_total), 2)
+
     return {
         "id": order.id,
         "platform": order.platform,
@@ -516,6 +689,12 @@ async def get_order(
         "buyer_document": order.buyer_document,
         "shipping_address": shipping_address,
         "shipping_method": order.shipping_method,
+        "shipping_mode": order.shipping_mode
+        or classify_logistic_type(order.shipping_method, order.shipment_id),
+        "shipping_mode_label": label_for_mode(
+            order.shipping_mode
+            or classify_logistic_type(order.shipping_method, order.shipment_id)
+        ),
         "tracking_code": order.tracking_code,
         "tracking_url": order.tracking_url,
         "label_url": order.label_url,
@@ -526,7 +705,7 @@ async def get_order(
         if order.estimated_delivery_date
         else None,
         "sale_amount": float(order.sale_amount) if order.sale_amount else None,
-        "product_cost": float(order.product_cost) if order.product_cost else None,
+        "product_cost": product_cost_out,
         "platform_fee": float(order.platform_fee) if order.platform_fee else None,
         "shipping_cost": float(order.shipping_cost) if order.shipping_cost else None,
         "total_debit": float(order.total_debit) if order.total_debit else None,
@@ -545,6 +724,126 @@ async def get_order(
             }
             for i in items
         ],
+    }
+
+
+@router.get("/{order_id}/debug-cost")
+async def debug_cost(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Diagnóstico do cálculo de product_cost de UM pedido.
+
+    Retorna, item a item: vínculos encontrados (DropshipperProduct, CatalogProduct,
+    CMIGProduct), o custo de cada fonte, e qual seria escolhido. Útil para
+    descobrir por que `product_cost` aparece vazio na tela.
+    """
+    order = (
+        await db.execute(
+            select(Order)
+            .where(Order.id == order_id)
+            .options(selectinload(Order.items))
+        )
+    ).scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+
+    from services.order_item_resolver import resolve_order_item_link
+
+    integration = None
+    if order.account_id:
+        integration = (
+            await db.execute(
+                select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
+            )
+        ).scalar_one_or_none()
+
+    items_debug = []
+    total_runtime = Decimal("0")
+    any_resolved = False
+    for it in order.items:
+        # Lookup via ProductListing (fonte canônica)
+        listing = None
+        if it.ml_item_id and order.account_id:
+            listing = (
+                await db.execute(
+                    select(ProductListing).where(
+                        ProductListing.platform_item_id == it.ml_item_id,
+                        ProductListing.account_id == order.account_id,
+                    )
+                )
+            ).scalar_one_or_none()
+
+        # Lookup do helper (resolve em cascata)
+        resolved = await resolve_order_item_link(
+            db,
+            account_id=order.account_id,
+            ml_item_id=it.ml_item_id,
+            cmig_id=order.cmig_id,
+            sku=it.sku,
+            dropshipper_id=integration.owner_id if integration else None,
+        )
+
+        # Fallbacks armazenados no item para debug
+        dp_stored = None
+        if it.dropshipper_product_id:
+            dp_stored = (
+                await db.execute(
+                    select(DropshipperProduct).where(DropshipperProduct.id == it.dropshipper_product_id)
+                )
+            ).scalar_one_or_none()
+        catalog_stored = None
+        if it.catalog_product_id:
+            catalog_stored = (
+                await db.execute(
+                    select(CatalogProduct).where(CatalogProduct.id == it.catalog_product_id)
+                )
+            ).scalar_one_or_none()
+
+        chosen_cost = float(resolved.unit_cost) if resolved.unit_cost is not None else None
+        runtime = float(it.unit_cost) if it.unit_cost is not None else chosen_cost
+        if runtime is not None:
+            any_resolved = True
+            total_runtime += Decimal(str(runtime)) * (it.quantity or 0)
+
+        items_debug.append({
+            "order_item_id": it.id,
+            "sku": it.sku,
+            "title": it.title,
+            "quantity": it.quantity,
+            "unit_price": float(it.unit_price) if it.unit_price else None,
+            "stored_unit_cost": float(it.unit_cost) if it.unit_cost is not None else None,
+            "ml_item_id": it.ml_item_id,
+            "stored_dropshipper_product_id": it.dropshipper_product_id,
+            "stored_catalog_product_id": it.catalog_product_id,
+            "stored_dropshipper_product_found": dp_stored is not None,
+            "stored_catalog_product_found": catalog_stored is not None,
+            # Resolução via ProductListing
+            "listing_found": listing is not None,
+            "listing_id": listing.id if listing else None,
+            "listing_cmig_product_id": listing.cmig_product_id if listing else None,
+            "listing_catalog_product_id": listing.catalog_product_id if listing else None,
+            # Resultado do helper
+            "resolved_via": resolved.source,
+            "resolved_cmig_product_id": resolved.cmig_product.id if resolved.cmig_product else None,
+            "resolved_cmig_cost_price": float(resolved.cmig_product.cost_price)
+                if resolved.cmig_product and resolved.cmig_product.cost_price is not None else None,
+            "resolved_catalog_product_id": resolved.catalog_product.id if resolved.catalog_product else None,
+            "resolved_catalog_cost_price": float(resolved.catalog_product.cost_price)
+                if resolved.catalog_product and resolved.catalog_product.cost_price is not None else None,
+            "chosen_cost": chosen_cost,
+            "runtime_unit_cost_used": runtime,
+        })
+
+    return {
+        "order_id": order.id,
+        "cmig_id": order.cmig_id,
+        "account_id": order.account_id,
+        "stored_product_cost": float(order.product_cost) if order.product_cost else None,
+        "computed_product_cost_runtime": round(float(total_runtime), 2) if any_resolved else None,
+        "any_item_resolved": any_resolved,
+        "items": items_debug,
     }
 
 
@@ -986,7 +1285,9 @@ async def get_shipment_tracking(
         raise HTTPException(status_code=400, detail="Conta sem token válido")
 
     try:
-        shipment = await _ml.get_shipment(account.access_token, order.shipment_id)
+        shipment = await _ml.get_shipment(
+            account.access_token, order.shipment_id, caller_id=account.platform_user_id
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Erro ao buscar envio no ML: {e}")
 
@@ -995,11 +1296,15 @@ async def get_shipment_tracking(
 
     # Fetch history and carrier in parallel-ish (sequential is fine for 2 calls)
     try:
-        history = await _ml.get_shipment_history(account.access_token, order.shipment_id)
+        history = await _ml.get_shipment_history(
+            account.access_token, order.shipment_id, caller_id=account.platform_user_id
+        )
     except Exception:
         history = {}
     try:
-        carrier = await _ml.get_shipment_carrier(account.access_token, order.shipment_id)
+        carrier = await _ml.get_shipment_carrier(
+            account.access_token, order.shipment_id, caller_id=account.platform_user_id
+        )
     except Exception:
         carrier = {}
 
@@ -1209,6 +1514,9 @@ async def _refresh_shipments(
                         (Order.estimated_delivery_date == None)
                         | (Order.estimated_delivery_final == None)
                     ),
+                    # Backfill: pedidos com shipment mas sem modo classificado
+                    Order.shipping_mode == None,
+                    Order.shipping_mode == "desconhecido",
                 ),
                 # No shipment_id at all — try to recover from /orders/{id}
                 (Order.shipment_id == None) & (Order.status != "cancelled"),
@@ -1234,7 +1542,9 @@ async def _refresh_shipments(
                     continue  # order has no shipment in ML either
                 order.shipment_id = str(shipment_id)
 
-            sd = await _ml.get_shipment(account.access_token, str(shipment_id))
+            sd = await _ml.get_shipment(
+                account.access_token, str(shipment_id), caller_id=account.platform_user_id
+            )
             if not sd:
                 continue
             costs = {}
@@ -1251,6 +1561,67 @@ async def _refresh_shipments(
     if updated:
         await db.commit()
     return updated
+
+
+async def _backfill_product_links(
+    db: AsyncSession,
+    ml_accounts: list,
+    current_user: User,
+    limit: int = 300,
+) -> int:
+    """Resolve vínculo produto↔OrderItem em pedidos que ainda não têm.
+
+    Itera Orders (escopo do usuário) cujos OrderItems estejam sem
+    dropshipper_product_id E sem catalog_product_id, e chama o helper
+    de resolução via ProductListing. Idempotente.
+    """
+    from services.webhook_service import _backfill_order_links
+
+    # Subquery: pedidos que têm pelo menos um item sem vínculo
+    orphan_subq = (
+        select(OrderItem.order_id)
+        .where(
+            OrderItem.dropshipper_product_id.is_(None),
+            OrderItem.catalog_product_id.is_(None),
+        )
+        .distinct()
+    )
+
+    q = (
+        select(Order)
+        .where(Order.is_hidden == False, Order.id.in_(orphan_subq))
+        .order_by(Order.id.desc())
+        .limit(limit)
+    )
+    if current_user.role == "ac":
+        q = q.where(Order.dropshipper_id == current_user.id)
+    elif current_user.role == "ugo" and current_user.warehouse_id:
+        from models.cmig import CMIG
+        ugo_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
+        q = q.where(Order.cmig_id.in_(ugo_cmigs))
+
+    orders = (await db.execute(q)).scalars().all()
+
+    accounts_by_id = {a.id: a for a in ml_accounts}
+    fixed = 0
+    for o in orders:
+        # MarketplaceAccount fictícia só pro helper extrair owner_id; busca real se faltar
+        integration = accounts_by_id.get(o.account_id)
+        if not integration and o.account_id:
+            integration = (
+                await db.execute(
+                    select(MarketplaceAccount).where(MarketplaceAccount.id == o.account_id)
+                )
+            ).scalar_one_or_none()
+        try:
+            if await _backfill_order_links(db, o, integration):
+                fixed += 1
+        except Exception:
+            continue
+
+    if fixed:
+        await db.commit()
+    return fixed
 
 
 async def _backfill_order_dates(
@@ -1324,6 +1695,160 @@ async def _backfill_order_dates(
     if fixed:
         await db.commit()
     return fixed
+
+
+@router.post("/{order_id}/debug-shipping-mode")
+async def debug_shipping_mode(
+    order_id: int,
+    apply: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Diagnostico verboso: testa 4 variantes da chamada /shipments/{id} no ML
+    para descobrir por que logistic_type vem null.
+
+    apply=true tambem aplica e commita a primeira variante que funcionou.
+    """
+    import httpx
+    from services.ml_service import ML_API_BASE
+    from services.webhook_service import _apply_shipment_to_order
+
+    order = await _get_order_checked(db, order_id, current_user)
+    if order.platform != "mercadolivre":
+        raise HTTPException(status_code=400, detail="Pedido nao e do Mercado Livre")
+    if not order.shipment_id:
+        return {"ok": False, "reason": "Pedido sem shipment_id no DB"}
+
+    account = await _get_account_for_order(db, order)
+    if not account or not account.access_token:
+        raise HTTPException(status_code=400, detail="Conta sem access_token")
+
+    sid = str(order.shipment_id)
+    seller = account.platform_user_id
+    token = account.access_token
+    base = f"{ML_API_BASE}/shipments/{sid}"
+
+    variants = [
+        {"name": "plain",        "url": base, "params": {}, "extra_headers": {}},
+        {"name": "caller_id_q",  "url": base, "params": {"caller.id": str(seller) if seller else ""}, "extra_headers": {}},
+        {"name": "x_caller_h",   "url": base, "params": {}, "extra_headers": {"x-caller-id": str(seller) if seller else ""}},
+        {"name": "format_new",   "url": base, "params": {}, "extra_headers": {"x-format-new": "true"}},
+        {"name": "caller+new",   "url": base, "params": {"caller.id": str(seller) if seller else ""}, "extra_headers": {"x-format-new": "true"}},
+    ]
+
+    results = []
+    first_full = None
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for v in variants:
+            headers = {"Authorization": f"Bearer {token}", **v["extra_headers"]}
+            try:
+                resp = await client.get(v["url"], params=v["params"] or None, headers=headers)
+                body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                lt = body.get("logistic_type")
+                results.append({
+                    "variant": v["name"],
+                    "http_status": resp.status_code,
+                    "logistic_type": lt,
+                    "status": body.get("status"),
+                    "substatus": body.get("substatus"),
+                    "mode": body.get("mode"),
+                    "shipping_option_present": bool(body.get("shipping_option")),
+                    "sender_id": body.get("sender_id") or (body.get("source") or {}).get("user_id"),
+                    "receiver_id": body.get("receiver_id"),
+                    "error": body.get("error") or body.get("message"),
+                    "cause_count": len(body.get("cause") or []),
+                })
+                if lt and first_full is None:
+                    first_full = (v["name"], body)
+            except Exception as e:
+                results.append({"variant": v["name"], "error_exc": str(e)})
+
+    diag = {
+        "ok": True,
+        "order_id": order.id,
+        "shipment_id": sid,
+        "account": {
+            "id": account.id,
+            "platform_user_id": account.platform_user_id,
+            "email": account.email,
+            "is_active": account.is_active,
+            "token_present": bool(account.access_token),
+            "token_prefix": (account.access_token or "")[:8] + "...",
+        },
+        "db_before": {
+            "shipping_method": order.shipping_method,
+            "shipping_mode": order.shipping_mode,
+            "shipment_status": order.shipment_status,
+        },
+        "ml_variants": results,
+        "first_variant_with_logistic_type": first_full[0] if first_full else None,
+    }
+
+    if apply and first_full:
+        _apply_shipment_to_order(order, first_full[1])
+        await db.commit()
+        await db.refresh(order)
+        diag["db_after"] = {
+            "shipping_method": order.shipping_method,
+            "shipping_mode": order.shipping_mode,
+            "shipment_status": order.shipment_status,
+        }
+        diag["applied"] = True
+
+    return diag
+
+
+@router.post("/refresh-shipping-modes")
+async def refresh_shipping_modes(
+    limit: int = 300,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Endpoint LEVE: refaz apenas o fetch de shipment para pedidos com shipping_mode
+    NULL/desconhecido. Nao roda NF-e sync, nao busca recentes do ML, nao backfill datas.
+
+    Pode ser chamado varias vezes em sequencia ate cobrir todos os pedidos pendentes.
+    Retorna {processed, updated, remaining}.
+    """
+    ml_accs_result = await db.execute(
+        select(MarketplaceAccount).where(
+            MarketplaceAccount.owner_id == current_user.id,
+            MarketplaceAccount.platform == "mercadolivre",
+            MarketplaceAccount.is_active == True,
+        )
+    )
+    ml_accounts = ml_accs_result.scalars().all()
+    if not ml_accounts:
+        return {"ok": False, "reason": "Sem contas ML ativas"}
+
+    dropshipper_id = current_user.id if current_user.role == "ac" else None
+    updated = await _refresh_shipments(
+        db,
+        ml_accounts,
+        dropshipper_id=dropshipper_id,
+        limit=limit,
+    )
+
+    # Conta quantos ainda faltam (pra usuario saber se precisa rodar mais vezes)
+    base_where = [
+        Order.platform == "mercadolivre",
+        Order.is_hidden == False,
+        Order.account_id.in_([a.id for a in ml_accounts]),
+        Order.shipment_id != None,
+        or_(Order.shipping_mode == None, Order.shipping_mode == "desconhecido"),
+    ]
+    if dropshipper_id is not None:
+        base_where.append(Order.dropshipper_id == dropshipper_id)
+    remaining = (
+        await db.execute(select(func.count()).select_from(select(Order).where(*base_where).subquery()))
+    ).scalar()
+
+    return {
+        "ok": True,
+        "processed_limit": limit,
+        "updated": updated,
+        "remaining_unclassified": remaining,
+    }
 
 
 @router.post("/sync")
@@ -1449,12 +1974,17 @@ async def trigger_sync(
         db, ml_accounts, current_user, platform_order_ids=ml_order_ids or None
     )
 
+    # Backfill de vínculos produto↔pedido para pedidos antigos sem vínculo
+    # (toda sync varre todos os pedidos do user que ainda têm OrderItem sem produto)
+    links_fixed = await _backfill_product_links(db, ml_accounts, current_user)
+
     return {
         "ok": True,
         "imported": imported,
         "nfe_updated": nfe_updated,
         "ship_updated": ship_updated,
         "dates_fixed": dates_fixed,
+        "links_fixed": links_fixed,
     }
 
 
@@ -1614,12 +2144,16 @@ async def sync_range(
         limit=100,
     )
 
+    # Backfill de vínculos produto↔pedido
+    links_fixed = await _backfill_product_links(db, ml_accounts, current_user)
+
     return {
         "ok": True,
         "imported": imported,
         "nfe_updated": nfe_updated,
         "dates_fixed": dates_fixed,
         "ship_updated": ship_updated,
+        "links_fixed": links_fixed,
         "date_from": date_from_iso,
         "date_to": date_to_iso,
     }
@@ -1958,7 +2492,9 @@ async def get_order_shipping_label(
     # Buscar shipment fresco do ML para detectar Full (logistic_type) e
     # NF-e pendente (substatus invoice_pending) com dados atualizados.
     try:
-        shipment = await _ml.get_shipment(account.access_token, order.shipment_id)
+        shipment = await _ml.get_shipment(
+            account.access_token, order.shipment_id, caller_id=account.platform_user_id
+        )
     except Exception:
         shipment = {}
 
@@ -1969,6 +2505,7 @@ async def get_order_shipping_label(
         changed = False
         if fresh_logistic and fresh_logistic != order.shipping_method:
             order.shipping_method = fresh_logistic
+            order.shipping_mode = classify_logistic_type(fresh_logistic, order.shipment_id)
             changed = True
         if fresh_status and fresh_status != order.shipment_status:
             order.shipment_status = fresh_status
@@ -2005,6 +2542,7 @@ async def get_order_shipping_label(
         if "is FF" in msg or "fulfillment" in msg.lower():
             if order.shipping_method != "fulfillment":
                 order.shipping_method = "fulfillment"
+                order.shipping_mode = classify_logistic_type("fulfillment", order.shipment_id)
                 try:
                     await db.commit()
                 except Exception:

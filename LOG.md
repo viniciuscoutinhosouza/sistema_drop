@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-05-27 — feat(envio): paleta canonica de cores para shipping_mode (Full/Flex/Agencia/Correios/Coletado/Combinado)
+
+**Problema:** FULL (badge-success) e FLEX (badge-info) tinham cores muito parecidas (verde claro vs ciano), alem de cores divergentes entre OrderListView, ShipmentModal, DeliveryModal e AnunciosView. Cada arquivo tinha seu proprio mapa de cores.
+
+**Solucao:** centralizada UMA paleta em `FRONTEND/src/utils/constants.js` (`SHIPPING_MODE_STYLE` + helper `shippingModeStyle(mode)`). Todos os badges importam dela. Cada modo tem `bg` (background), `fg` (texto), `icon` e `title`.
+
+### Paleta canonica — NAO duplicar cores em outros arquivos
+
+| Modo         | Cor (bg)   | Texto (fg) | Icone               | Significado                                  |
+|--------------|-----------|------------|---------------------|----------------------------------------------|
+| **full**     | `#00a650` | `#ffffff`  | fa-warehouse        | Verde ML oficial (Fulfillment)              |
+| **flex**     | `#f97316` | `#ffffff`  | fa-bolt             | Laranja Flex (Mercado Envios Flex)          |
+| **agencia**  | `#7c3aed` | `#ffffff`  | fa-store            | Roxo (Mercado Envios Places/Ágil)           |
+| **correios** | `#facc15` | `#1f2937`  | fa-truck            | Amarelo Correios (vendedor leva na agência) |
+| **coletado** | `#0891b2` | `#ffffff`  | fa-people-carry     | Ciano/Teal (ML coleta no vendedor)          |
+| **combinado**| `#6b7280` | `#ffffff`  | fa-handshake        | Cinza neutro (acordo direto vendedor↔comprador) |
+| **desconhecido** | `#e5e7eb` | `#4b5563` | fa-truck         | Cinza claro (modo nao identificado ainda)   |
+
+### Arquivos atualizados
+
+- `FRONTEND/src/utils/constants.js` — fonte unica da paleta (`SHIPPING_MODE_STYLE`, `shippingModeStyle()`).
+- `FRONTEND/src/views/orders/OrderListView.vue` — badge da lista de pedidos.
+- `FRONTEND/src/components/orders/ShipmentModal.vue` — campo "Logística" no modal de envio.
+- `FRONTEND/src/components/orders/DeliveryModal.vue` — campo "Tipo" no modal de entrega.
+- `FRONTEND/src/views/anuncios/AnunciosView.vue` — badges Full/Flex inline na linha do anuncio.
+
+**Regra:** qualquer view nova que mostre forma de entrega DEVE importar `shippingModeStyle` de `@/utils/constants`. NUNCA hardcodar cor de badge de shipping_mode em outro lugar — se a paleta mudar, vai dessincronizar.
+
+---
+
 ## 2026-05-26 — feat(faturador): integração com /items/fiscal_information (endpoint correto do Faturador ML)
 
 **Descoberta:** O endpoint de debug `/debug-fiscal-sync` (PUT /items com atributo `ICMS_CSOSN`) confirmou que **o ML droppa silenciosamente** `ICMS_CSOSN` e `TIPO_DE_ORIGEM` com warning `item.attributes.invalid - was dropped because does not exists`. Os atributos NCM/CEST/GTIN/ORIGIN persistem (são atributos de categoria), mas CSOSN não é atributo de item.

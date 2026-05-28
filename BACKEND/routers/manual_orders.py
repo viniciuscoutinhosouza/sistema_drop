@@ -7,6 +7,7 @@ from dependencies import get_active_ac
 from models.order import Order, OrderItem
 from models.product import CatalogProduct
 from models.user import User
+from services.shipping_mode import MODE_COMBINADO
 
 router = APIRouter()
 
@@ -42,6 +43,7 @@ async def create_manual_order(
         shipping_address=json.dumps(shipping_address, ensure_ascii=False),
         sale_amount=Decimal(str(product.cost_price)) * quantity,
         product_cost=Decimal(str(product.cost_price)) * quantity,
+        shipping_mode=MODE_COMBINADO,  # pedido manual nao passa por ME
     )
     db.add(order)
     await db.flush()
