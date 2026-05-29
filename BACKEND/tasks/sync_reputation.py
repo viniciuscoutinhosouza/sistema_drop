@@ -16,38 +16,50 @@ from sqlalchemy import select
 from database import task_db
 from models.integration import MarketplaceAccount
 from services import ml_service
+from tasks._job_wrapper import tracked_job
 
 
 async def refresh_ml_reputation():
-    async with task_db() as db:
-        result = await db.execute(
-            select(MarketplaceAccount).where(
-                MarketplaceAccount.platform == "mercadolivre",
-                MarketplaceAccount.is_active == True,
-                MarketplaceAccount.platform_user_id.isnot(None),
-                MarketplaceAccount.requires_reauth == False,
+    async with tracked_job("refresh_ml_reputation") as job_result:
+        async with task_db() as db:
+            result = await db.execute(
+                select(MarketplaceAccount).where(
+                    MarketplaceAccount.platform == "mercadolivre",
+                    MarketplaceAccount.is_active == True,
+                    MarketplaceAccount.platform_user_id.isnot(None),
+                    MarketplaceAccount.requires_reauth == False,
+                )
             )
+            accounts = result.scalars().all()
+
+            updated = 0
+            failed = 0
+            for acc in accounts:
+                try:
+                    if not acc.access_token:
+                        failed += 1
+                        continue
+                    rep = await ml_service.get_seller_reputation(
+                        acc.access_token, acc.platform_user_id
+                    )
+                    if not rep:
+                        failed += 1
+                        continue
+                    acc.power_seller_status = rep.get("power_seller_status")
+                    acc.level_id = rep.get("level_id")
+                    acc.reputation_cached_at = datetime.now(UTC)
+                    updated += 1
+                except Exception as exc:
+                    print(f"[REPUTATION] account {acc.id} ({acc.platform_username}) failed: {exc}")
+                    failed += 1
+
+            await db.commit()
+            print(f"[REPUTATION] refresh concluído: {updated} atualizadas, {failed} falharam")
+
+        job_result.set(
+            {
+                "sellers_processed": len(accounts),
+                "sellers_updated": updated,
+                "sellers_failed": failed,
+            }
         )
-        accounts = result.scalars().all()
-
-        updated = 0
-        failed = 0
-        for acc in accounts:
-            try:
-                if not acc.access_token:
-                    failed += 1
-                    continue
-                rep = await ml_service.get_seller_reputation(acc.access_token, acc.platform_user_id)
-                if not rep:
-                    failed += 1
-                    continue
-                acc.power_seller_status = rep.get("power_seller_status")
-                acc.level_id = rep.get("level_id")
-                acc.reputation_cached_at = datetime.now(UTC)
-                updated += 1
-            except Exception as exc:
-                print(f"[REPUTATION] account {acc.id} ({acc.platform_username}) failed: {exc}")
-                failed += 1
-
-        await db.commit()
-        print(f"[REPUTATION] refresh concluído: {updated} atualizadas, {failed} falharam")

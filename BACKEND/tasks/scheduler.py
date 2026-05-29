@@ -92,6 +92,16 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    from tasks.prune_logs import prune_job_executions
+
+    scheduler.add_job(
+        prune_job_executions,
+        CronTrigger(hour=4, minute=0),  # diário 04:00 UTC
+        id="prune_job_executions",
+        name="Limpa execuções antigas de jobs (retenção 30 dias)",
+        replace_existing=True,
+    )
+
     scheduler.start()
     print("Background scheduler started")
 

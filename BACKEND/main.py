@@ -73,6 +73,7 @@ from routers import (
     product_categories,
     products,
     returns,
+    scheduler_monitoring,
     simulator,
     supplier_products,
     users,
@@ -115,6 +116,9 @@ app.include_router(
 app.include_router(invoices.router, prefix=f"{PREFIX}/invoices", tags=["Invoices"])
 app.include_router(messages.router)
 app.include_router(ai_config.router)
+app.include_router(
+    scheduler_monitoring.router, prefix=f"{PREFIX}/scheduler", tags=["SchedulerMonitoring"]
+)
 
 
 _os.makedirs("static/uploads/cmig-products", exist_ok=True)

@@ -11,39 +11,64 @@ from sqlalchemy import select
 from database import task_db
 from models.integration import MarketplaceAccount
 from services import ml_service, shopee_service, webhook_service
+from tasks._job_wrapper import tracked_job
 
 
 async def sync_all_orders():
-    async with task_db() as db:
-        result = await db.execute(
-            select(MarketplaceAccount).where(
-                MarketplaceAccount.platform == "mercadolivre",
-                MarketplaceAccount.is_active == True,
+    async with tracked_job("sync_orders") as result:
+        stats = {
+            "ml_accounts_processed": 0,
+            "shopee_accounts_processed": 0,
+            "orders_imported_ml": 0,
+            "orders_imported_shopee": 0,
+            "errors": 0,
+        }
+
+        async with task_db() as db:
+            result_q = await db.execute(
+                select(MarketplaceAccount).where(
+                    MarketplaceAccount.platform == "mercadolivre",
+                    MarketplaceAccount.is_active == True,
+                )
             )
-        )
-        ml_accounts = list(result.scalars().all())
-        date_from = (datetime.now(UTC) - timedelta(minutes=60)).isoformat()
-        for integration in ml_accounts:
-            await sync_ml_integration(db, integration, date_from)
+            ml_accounts = list(result_q.scalars().all())
+            date_from = (datetime.now(UTC) - timedelta(minutes=60)).isoformat()
+            for integration in ml_accounts:
+                try:
+                    imported = await sync_ml_integration(db, integration, date_from)
+                    stats["orders_imported_ml"] += imported or 0
+                    stats["ml_accounts_processed"] += 1
+                except Exception as e:
+                    stats["errors"] += 1
+                    print(f"[SYNC] ML account {integration.id} error: {e}")
 
-        result = await db.execute(
-            select(MarketplaceAccount).where(
-                MarketplaceAccount.platform == "shopee",
-                MarketplaceAccount.is_active == True,
+            result_q = await db.execute(
+                select(MarketplaceAccount).where(
+                    MarketplaceAccount.platform == "shopee",
+                    MarketplaceAccount.is_active == True,
+                )
             )
-        )
-        now_ts = int(time.time())
-        for integration in result.scalars().all():
-            await sync_shopee_integration(db, integration, now_ts - 3600, now_ts)
+            now_ts = int(time.time())
+            for integration in result_q.scalars().all():
+                try:
+                    imported = await sync_shopee_integration(db, integration, now_ts - 3600, now_ts)
+                    stats["orders_imported_shopee"] += imported or 0
+                    stats["shopee_accounts_processed"] += 1
+                except Exception as e:
+                    stats["errors"] += 1
+                    print(f"[SYNC] Shopee account {integration.id} error: {e}")
 
-        # Refresh shipment status/dates for all ML orders that need it (cross-account)
-        if ml_accounts:
-            try:
-                from routers.orders import _refresh_shipments
+            # Refresh shipment status/dates for all ML orders that need it (cross-account)
+            if ml_accounts:
+                try:
+                    from routers.orders import _refresh_shipments
 
-                await _refresh_shipments(db, ml_accounts, dropshipper_id=None, limit=200)
-            except Exception as e:
-                print(f"[SYNC] Error refreshing shipments: {e}")
+                    await _refresh_shipments(db, ml_accounts, dropshipper_id=None, limit=200)
+                except Exception as e:
+                    stats["errors"] += 1
+                    print(f"[SYNC] Error refreshing shipments: {e}")
+
+        result.set(stats)
 
 
 async def _validate_ml_identity(integration: MarketplaceAccount) -> bool:

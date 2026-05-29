@@ -627,6 +627,15 @@ async def process_ml_order(
 
     await db.commit()
 
+    # Trigger recálculo de estoque (cobre kits via explosão de componentes)
+    try:
+        from services.fiscal.stock_calculator import (
+            trigger_stock_recompute_on_order_created,
+        )
+        await trigger_stock_recompute_on_order_created(order, db)
+    except Exception:
+        pass
+
     # Notify AC owner
     await create_notification(
         db=db,
@@ -733,6 +742,15 @@ async def process_shopee_order(
         order.product_cost = total_cost
 
     await db.commit()
+
+    # Trigger recálculo de estoque (cobre kits via explosão de componentes)
+    try:
+        from services.fiscal.stock_calculator import (
+            trigger_stock_recompute_on_order_created,
+        )
+        await trigger_stock_recompute_on_order_created(order, db)
+    except Exception:
+        pass
 
     await create_notification(
         db=db,

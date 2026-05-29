@@ -14,27 +14,34 @@ import services.messages_service as msg_svc
 from database import task_db
 from models.integration import MarketplaceAccount
 from models.messages import AIConfig, CMIGAIConfig, ConversationMessage, ConversationThread
+from tasks._job_wrapper import tracked_job
 
 logger = logging.getLogger(__name__)
 
 
 async def sync_all_messages():
     """Entry point do scheduler: itera todas as contas ML ativas."""
-    async with task_db() as db:
-        result = await db.execute(
-            select(MarketplaceAccount).where(
-                MarketplaceAccount.platform == "mercadolivre",
-                MarketplaceAccount.is_active == True,
-                MarketplaceAccount.access_token.isnot(None),
+    async with tracked_job("sync_messages") as job_result:
+        stats = {"accounts_processed": 0, "accounts_failed": 0}
+        async with task_db() as db:
+            result = await db.execute(
+                select(MarketplaceAccount).where(
+                    MarketplaceAccount.platform == "mercadolivre",
+                    MarketplaceAccount.is_active == True,
+                    MarketplaceAccount.access_token.isnot(None),
+                )
             )
-        )
-        accounts = result.scalars().all()
+            accounts = result.scalars().all()
 
-    for account in accounts:
-        try:
-            await sync_account_messages(account.id)
-        except Exception as e:
-            logger.error("Erro ao sincronizar mensagens conta %s: %s", account.id, e)
+        for account in accounts:
+            try:
+                await sync_account_messages(account.id)
+                stats["accounts_processed"] += 1
+            except Exception as e:
+                stats["accounts_failed"] += 1
+                logger.error("Erro ao sincronizar mensagens conta %s: %s", account.id, e)
+
+        job_result.set(stats)
 
 
 async def sync_account_messages(account_id: int):

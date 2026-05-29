@@ -19,18 +19,27 @@ from models.integration import MarketplaceAccount
 from models.product import CatalogProduct, DropshipperProduct, ProductListing
 from services.ml_service import update_item_stock as ml_update_stock
 from services.shopee_service import update_item_stock as shopee_update_stock
+from tasks._job_wrapper import tracked_job
 
 logger = logging.getLogger(__name__)
 
 
 async def sync_all_stock() -> None:
-    logger.info("sync_stock_job: iniciando")
-    async with task_db() as db:
-        await _sync(db)
-    logger.info("sync_stock_job: concluído")
+    async with tracked_job("sync_stock") as job_result:
+        logger.info("sync_stock_job: iniciando")
+        stats = {"listings_processed": 0, "listings_updated": 0, "errors": 0}
+        async with task_db() as db:
+            await _sync(db, stats)
+        logger.info(
+            "sync_stock_job: concluído (processed=%s updated=%s errors=%s)",
+            stats["listings_processed"],
+            stats["listings_updated"],
+            stats["errors"],
+        )
+        job_result.set(stats)
 
 
-async def _sync(db: AsyncSyncSession) -> None:
+async def _sync(db: AsyncSyncSession, stats: dict) -> None:
     result = await db.execute(
         select(ProductListing, MarketplaceAccount)
         .join(MarketplaceAccount, ProductListing.account_id == MarketplaceAccount.id)
@@ -43,6 +52,8 @@ async def _sync(db: AsyncSyncSession) -> None:
     rows = result.all()
 
     for listing, account in rows:
+        stats["listings_processed"] += 1
+
         # Full ML: estoque gerenciado pelo sistema de fulfillment do ML, não alteramos
         if account.platform == "mercadolivre" and listing.is_full:
             continue
@@ -61,6 +72,7 @@ async def _sync(db: AsyncSyncSession) -> None:
             try:
                 stock = await _compute_product_stock(db, listing)
             except Exception as exc:
+                stats["errors"] += 1
                 logger.warning(
                     "sync_stock: erro ao calcular estoque listing_id=%s: %s", listing.id, exc
                 )
@@ -71,6 +83,7 @@ async def _sync(db: AsyncSyncSession) -> None:
                 await ml_update_stock(account.access_token, listing.platform_item_id, stock)
                 listing.available_quantity = stock
                 listing.last_sync_at = datetime.now(UTC)
+                stats["listings_updated"] += 1
             elif account.platform == "shopee":
                 await shopee_update_stock(
                     account.access_token,
@@ -80,7 +93,9 @@ async def _sync(db: AsyncSyncSession) -> None:
                 )
                 listing.available_quantity = stock
                 listing.last_sync_at = datetime.now(UTC)
+                stats["listings_updated"] += 1
         except Exception as exc:
+            stats["errors"] += 1
             logger.warning(
                 "sync_stock: falha listing_id=%s platform_item=%s: %s",
                 listing.id,

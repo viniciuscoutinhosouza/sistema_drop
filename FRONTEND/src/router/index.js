@@ -86,6 +86,9 @@ const MessagesView = () => import('@/views/messages/MessagesView.vue')
 // Configuração IA
 const AIConfigView = () => import('@/views/settings/AIConfigView.vue')
 
+// Monitoramento de Rotinas (UGO + GO + Admin)
+const SchedulerMonitoringView = () => import('@/views/monitoring/SchedulerMonitoringView.vue')
+
 
 const routes = [
   // Auth routes (no sidebar)
@@ -127,7 +130,7 @@ const routes = [
       { path: 'orders', component: OrderListView, meta: { title: 'Pedidos' } },
       { path: 'orders/:id', component: OrderDetailView, meta: { title: 'Detalhes do Pedido' } },
 
-      { path: 'manual-orders', component: ManualOrderView, meta: { title: 'Drop Manual' } },
+      { path: 'manual-orders', component: ManualOrderView, meta: { title: 'Pedido Manual' } },
 
       { path: 'integrations', component: IntegrationsView, meta: { title: 'Integrações' } },
 
@@ -189,6 +192,9 @@ const routes = [
       { path: 'people',         component: PeopleListView, meta: { title: 'Pessoas' } },
       { path: 'people/new',     component: PersonFormView, meta: { title: 'Nova Pessoa' } },
       { path: 'people/:id',     component: PersonFormView, meta: { title: 'Editar Pessoa' } },
+
+      // Monitoramento de Rotinas — UGO + GO + Admin (GO/Admin herdam pela lógica do guard)
+      { path: 'monitoring/jobs', component: SchedulerMonitoringView, meta: { title: 'Monitoramento de Rotinas', role: 'ugo' } },
 
       // Fiscal — Entradas / Saídas
       { path: 'fiscal/entradas',         component: EntradasView,      meta: { title: 'Entradas (NF-e)' } },

@@ -98,7 +98,7 @@
             <li class="nav-item">
               <RouterLink to="/manual-orders" class="nav-link" :class="{ active: route.path.startsWith('/manual-orders') }">
                 <i class="nav-icon fas fa-hand-paper"></i>
-                <p>Drop Manual</p>
+                <p>Pedido Manual</p>
               </RouterLink>
             </li>
 
@@ -174,6 +174,17 @@
               <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') }">
                 <i class="nav-icon fas fa-arrow-up"></i>
                 <p>Saídas</p>
+              </RouterLink>
+            </li>
+          </template>
+
+          <!-- Monitoramento de Rotinas — UGO, GO e Admin -->
+          <template v-if="isUGO || isGO">
+            <li class="nav-header">MONITORAMENTO</li>
+            <li class="nav-item">
+              <RouterLink to="/monitoring/jobs" class="nav-link" :class="{ active: route.path.startsWith('/monitoring') }">
+                <i class="nav-icon fas fa-clock"></i>
+                <p>Rotinas Automatizadas</p>
               </RouterLink>
             </li>
           </template>

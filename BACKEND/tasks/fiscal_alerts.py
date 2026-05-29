@@ -15,26 +15,29 @@ from models.cmig import CMIG
 from models.fiscal import CMIGFiscalConfig, Invoice
 from models.notification import Notification
 from services.fiscal import focus_service
+from tasks._job_wrapper import tracked_job
 
 log = logging.getLogger(__name__)
 
 
 async def run_fiscal_alerts():
-    stats = {"cert_alerts": 0, "stale_invoices": 0, "errors": 0}
+    async with tracked_job("fiscal_alerts") as result:
+        stats = {"cert_alerts": 0, "stale_invoices": 0, "errors": 0}
 
-    async with task_db() as db:
-        await _check_expiring_certificates(db, stats)
+        async with task_db() as db:
+            await _check_expiring_certificates(db, stats)
 
-    async with task_db() as db:
-        await _refresh_stale_invoices(db, stats)
+        async with task_db() as db:
+            await _refresh_stale_invoices(db, stats)
 
-    log.info(
-        "Fiscal alerts: %d alertas de cert, %d invoices reconsultadas, %d erros",
-        stats["cert_alerts"],
-        stats["stale_invoices"],
-        stats["errors"],
-    )
-    return stats
+        log.info(
+            "Fiscal alerts: %d alertas de cert, %d invoices reconsultadas, %d erros",
+            stats["cert_alerts"],
+            stats["stale_invoices"],
+            stats["errors"],
+        )
+        result.set(stats)
+        return stats
 
 
 async def _check_expiring_certificates(db, stats: dict):
