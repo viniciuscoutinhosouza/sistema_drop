@@ -40,6 +40,7 @@ class Order(Base):
     estimated_handling_limit = Column(Date)
     estimated_delivery_final = Column(Date)
     order_tags = Column(String(500))
+    buyer_person_id = Column(Integer, ForeignKey("people.id"), nullable=True)
     sale_amount = Column(Numeric(15, 2))
     product_cost = Column(Numeric(15, 2))
     platform_fee = Column(Numeric(15, 2))  # tarifa ML (sale_fee somado dos itens)
@@ -59,6 +60,7 @@ class Order(Base):
 
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     invoice = relationship("Invoice", foreign_keys=[invoice_id])
+    buyer_person = relationship("Person", foreign_keys=[buyer_person_id])
 
 
 class OrderItem(Base):
@@ -68,6 +70,7 @@ class OrderItem(Base):
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
     dropshipper_product_id = Column(Integer, ForeignKey("dropshipper_products.id"))
     catalog_product_id = Column(Integer, ForeignKey("catalog_products.id"))
+    cmig_product_id = Column(Integer, ForeignKey("cmig_products.id"), nullable=True)
     catalog_variant_id = Column(Integer)
     sku = Column(String(100))
     title = Column(String(500))
