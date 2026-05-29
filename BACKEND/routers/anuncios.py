@@ -187,7 +187,18 @@ async def _get_account_or_403(account_id: int, user: User, db: AsyncSession) -> 
     if user.role not in ("admin", "ugo"):
         admin_ids = {a.user_id for a in account.administrators}
         if user.id not in admin_ids:
-            raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")
+            # Fallback: colaborador CMIG tem acesso a contas vinculadas à sua CMIG
+            has_cmig_access = False
+            if account.cmig_id:
+                r = await db.execute(
+                    select(CMIGAdministrator).where(
+                        CMIGAdministrator.user_id == user.id,
+                        CMIGAdministrator.cmig_id == account.cmig_id,
+                    )
+                )
+                has_cmig_access = r.scalar_one_or_none() is not None
+            if not has_cmig_access:
+                raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")
     return account
 
 
@@ -207,7 +218,18 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
     if user.role not in ("admin", "ugo"):
         admin_ids = {a.user_id for a in listing.account.administrators}
         if user.id not in admin_ids:
-            raise HTTPException(status_code=403, detail="Sem acesso a este anúncio")
+            # Fallback: colaborador CMIG tem acesso a anúncios de contas vinculadas à sua CMIG
+            has_cmig_access = False
+            if listing.account.cmig_id:
+                r = await db.execute(
+                    select(CMIGAdministrator).where(
+                        CMIGAdministrator.user_id == user.id,
+                        CMIGAdministrator.cmig_id == listing.account.cmig_id,
+                    )
+                )
+                has_cmig_access = r.scalar_one_or_none() is not None
+            if not has_cmig_access:
+                raise HTTPException(status_code=403, detail="Sem acesso a este anúncio")
     return listing
 
 

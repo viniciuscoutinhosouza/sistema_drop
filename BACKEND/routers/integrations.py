@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import get_settings
 from database import get_db
 from dependencies import get_active_ac, get_current_user
+from models.cmig import CMIGAdministrator
 from models.integration import AccountBalance, MarketplaceAccount, OTPVerification
 from models.product import DropshipperProduct, ProductListing
 from models.user import AccountAdministrator, User
@@ -46,7 +47,12 @@ def _generate_otp() -> str:
 async def _assert_ac_can_access(
     account_id: int, user_id: int, db: AsyncSession
 ) -> MarketplaceAccount:
-    """Verifica se o usuário é co-administrador da CONTA."""
+    """Verifica se o usuário pode acessar a CONTA.
+
+    Aceita dois caminhos:
+    1. Usuário é AccountAdministrator direto da conta.
+    2. Usuário é CMIGAdministrator de uma CMIG vinculada à conta.
+    """
     result = await db.execute(
         select(MarketplaceAccount)
         .join(AccountAdministrator, MarketplaceAccount.id == AccountAdministrator.account_id)
@@ -56,6 +62,19 @@ async def _assert_ac_can_access(
         )
     )
     account = result.scalar_one_or_none()
+    if account:
+        return account
+
+    # Fallback: acesso via CMIGAdministrator → conta vinculada à CMIG do usuário
+    result2 = await db.execute(
+        select(MarketplaceAccount)
+        .join(CMIGAdministrator, MarketplaceAccount.cmig_id == CMIGAdministrator.cmig_id)
+        .where(
+            MarketplaceAccount.id == account_id,
+            CMIGAdministrator.user_id == user_id,
+        )
+    )
+    account = result2.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta não encontrada ou sem permissão")
     return account
@@ -102,14 +121,33 @@ async def list_accounts(
     current_user: User = Depends(get_active_ac),
     db: AsyncSession = Depends(get_db),
 ):
-    """Lista todas as CONTAs que o AC co-administra."""
+    """Lista todas as CONTAs que o AC co-administra ou que pertencem às suas CMIGs."""
+    # Contas com vínculo direto via AccountAdministrator
     result = await db.execute(
         select(MarketplaceAccount, AccountAdministrator.is_owner)
         .join(AccountAdministrator, MarketplaceAccount.id == AccountAdministrator.account_id)
         .where(AccountAdministrator.user_id == current_user.id)
         .order_by(MarketplaceAccount.created_at)
     )
-    return [_serialize_account(acc, is_owner) for acc, is_owner in result.all()]
+    accounts: dict[int, tuple[MarketplaceAccount, bool]] = {
+        acc.id: (acc, is_owner) for acc, is_owner in result.all()
+    }
+
+    # Contas vinculadas às CMIGs que o usuário administra (colaborador CMIG)
+    cmig_ids_result = await db.execute(
+        select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == current_user.id)
+    )
+    cmig_ids = [row[0] for row in cmig_ids_result.all()]
+    if cmig_ids:
+        already_loaded = list(accounts.keys())
+        q = select(MarketplaceAccount).where(MarketplaceAccount.cmig_id.in_(cmig_ids))
+        if already_loaded:
+            q = q.where(MarketplaceAccount.id.notin_(already_loaded))
+        result2 = await db.execute(q.order_by(MarketplaceAccount.created_at))
+        for acc in result2.scalars().all():
+            accounts[acc.id] = (acc, False)
+
+    return [_serialize_account(acc, is_owner) for acc, is_owner in accounts.values()]
 
 
 # ─── Criar CONTA com verificação OTP ─────────────────────────────────────────
