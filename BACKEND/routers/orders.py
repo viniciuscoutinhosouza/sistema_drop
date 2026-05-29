@@ -63,6 +63,24 @@ def _ml_nfe_url(order: Order) -> str | None:
     return order.nfe_url
 
 
+def _ac_visible_filter(current_user):
+    """Predicado SQL de visibilidade de pedidos para usuarios AC.
+
+    AC ve um pedido quando:
+      - eh o dropshipper original (dono de conta); OU
+      - eh administrador (proprietario ou colaborador) da CMIG do pedido.
+    """
+    from models.cmig import CMIGAdministrator
+
+    ac_cmigs_subq = select(CMIGAdministrator.cmig_id).where(
+        CMIGAdministrator.user_id == current_user.id
+    )
+    return or_(
+        Order.dropshipper_id == current_user.id,
+        Order.cmig_id.in_(ac_cmigs_subq),
+    )
+
+
 def _resolve_item_cost_runtime(
     item: OrderItem,
     order: Order,
@@ -377,7 +395,7 @@ async def list_orders(
     # Role-based access control on CMIG
     if current_user.role == "ac":
         # AC só vê pedidos próprios
-        query = query.where(Order.dropshipper_id == current_user.id)
+        query = query.where(_ac_visible_filter(current_user))
     elif current_user.role == "ugo":
         # UGO só vê pedidos das CMIGs do seu galpão
         ugo_cmigs_subq = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
@@ -626,7 +644,7 @@ async def get_order(
 ):
     query = select(Order).where(Order.id == order_id)
     if current_user.role in ("ac",):
-        query = query.where(Order.dropshipper_id == current_user.id)
+        query = query.where(_ac_visible_filter(current_user))
 
     result = await db.execute(query)
     order = result.scalar_one_or_none()
@@ -854,7 +872,7 @@ async def pay_order(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Order).where(Order.id == order_id, Order.dropshipper_id == current_user.id)
+        select(Order).where(Order.id == order_id, _ac_visible_filter(current_user))
     )
     order = result.scalar_one_or_none()
     if not order:
@@ -912,7 +930,7 @@ async def update_order_status(
 
     query = select(Order).where(Order.id == order_id)
     if current_user.role in ("ac",):
-        query = query.where(Order.dropshipper_id == current_user.id)
+        query = query.where(_ac_visible_filter(current_user))
 
     result = await db.execute(query)
     order = result.scalar_one_or_none()
@@ -935,7 +953,7 @@ async def update_order_notes(
 ):
     query = select(Order).where(Order.id == order_id)
     if current_user.role in ("ac",):
-        query = query.where(Order.dropshipper_id == current_user.id)
+        query = query.where(_ac_visible_filter(current_user))
 
     result = await db.execute(query)
     order = result.scalar_one_or_none()
@@ -954,7 +972,7 @@ async def hide_order(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(Order).where(Order.id == order_id, Order.dropshipper_id == current_user.id)
+        select(Order).where(Order.id == order_id, _ac_visible_filter(current_user))
     )
     order = result.scalar_one_or_none()
     if not order:
@@ -968,7 +986,7 @@ async def _get_order_checked(db: AsyncSession, order_id: int, current_user: User
     """Fetch order with role-based access check."""
     query = select(Order).where(Order.id == order_id)
     if current_user.role == "ac":
-        query = query.where(Order.dropshipper_id == current_user.id)
+        query = query.where(_ac_visible_filter(current_user))
     elif current_user.role == "go":
         raise HTTPException(status_code=403, detail="GO não tem permissão para esta ação")
     result = await db.execute(query)
@@ -1361,7 +1379,7 @@ async def delete_order(
 ):
     query = select(Order).where(Order.id == order_id)
     if current_user.role == "ac":
-        query = query.where(Order.dropshipper_id == current_user.id)
+        query = query.where(_ac_visible_filter(current_user))
     elif current_user.role == "go":
         raise HTTPException(status_code=403, detail="GO não pode excluir pedidos")
 
@@ -1391,7 +1409,7 @@ async def bulk_delete_orders(
 
     query = select(Order).where(Order.id.in_(ids))
     if current_user.role == "ac":
-        query = query.where(Order.dropshipper_id == current_user.id)
+        query = query.where(_ac_visible_filter(current_user))
 
     result = await db.execute(query)
     orders = result.scalars().all()
@@ -1594,7 +1612,7 @@ async def _backfill_product_links(
         .limit(limit)
     )
     if current_user.role == "ac":
-        q = q.where(Order.dropshipper_id == current_user.id)
+        q = q.where(_ac_visible_filter(current_user))
     elif current_user.role == "ugo" and current_user.warehouse_id:
         from models.cmig import CMIG
         ugo_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
@@ -1677,7 +1695,7 @@ async def _backfill_order_dates(
         )
 
     if current_user.role == "ac":
-        dq = dq.where(Order.dropshipper_id == current_user.id)
+        dq = dq.where(_ac_visible_filter(current_user))
 
     dates_orders = (await db.execute(dq)).scalars().all()
     fixed = 0
@@ -1918,7 +1936,7 @@ async def trigger_sync(
             .limit(200)
         )
         if current_user.role == "ac":
-            q = q.where(Order.dropshipper_id == current_user.id)
+            q = q.where(_ac_visible_filter(current_user))
 
         nfe_result = await db.execute(q)
         orders_to_check = nfe_result.scalars().all()
@@ -2087,7 +2105,7 @@ async def sync_range(
             .limit(200)
         )
         if current_user.role == "ac":
-            q = q.where(Order.dropshipper_id == current_user.id)
+            q = q.where(_ac_visible_filter(current_user))
 
         nfe_result = await db.execute(q)
         orders_to_check = nfe_result.scalars().all()
@@ -2196,7 +2214,7 @@ async def sync_nfe_batch(
         .limit(200)
     )
     if current_user.role == "ac":
-        q = q.where(Order.dropshipper_id == current_user.id)
+        q = q.where(_ac_visible_filter(current_user))
 
     result = await db.execute(q)
     orders_to_check = result.scalars().all()
