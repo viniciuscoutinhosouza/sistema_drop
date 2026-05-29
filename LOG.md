@@ -4,6 +4,140 @@
 
 ---
 
+## 2026-05-28 — feat(stock-movements): redesign do modal + correcao de pedidos diretos no PG (sprints 1-4)
+
+**Pedido:** Tela de Movimentacao de Estoque nao exibia pedidos vendidos do PG quando o pedido apontava direto ao `OrderItem.catalog_product_id` (sem CMIG intermediario). Estudo amplo revelou multiplos gaps; pacote evoluiu em 4 sprints.
+
+**Bug-fix raiz** (pedido 2000016606129626, PG 66):
+- `calculate_pg_product_stock` em `services/fiscal/stock_calculator.py` so contava pedidos por overflow CMIG ou kit. Pedidos diretos ao PG ficavam orfaos (cache desatualizado e tabela vazia).
+- Adicionado 4o caminho que conta `OrderItem.catalog_product_id == pg.id` em shipped/delivered, excluindo via NOT EXISTS os ja cobertos por CMIG. Sem dupla contagem (regra: pedido com NFe vinculada conta 1x pelo pedido, NFe-out linked ignora; pedido sem NFe conta 1x).
+- Funcao gemea `_fetch_direct_pg_order_events` em `services/stock_history.py` para exibir esses eventos no modal (corrigido cartesian join inicial usando exclusao identica a do balanco).
+- Recompute retroativo: 6 PGs corrigiram saldo (PG 66: 8 -> 7).
+
+**Sprint 1 — coerencia visual:**
+- Banner de reconciliacao (cache vs calculado) no topo do modal.
+- Cards redesenhados: 3 cards de Estado Atual (Saldo / Reservado / Disponivel) + 4 cards de Movimentacao do Periodo (Entradas NFe / Saidas NFe / Saidas Pedidos / Variacao liquida).
+- Corrigida formula `current_balance_available`: cache - reservado (sem subtrair `moved_in_orders_no_nfe` que duplicava saidas).
+- Sub-badge na coluna Origem: `Direto PG` / `Overflow CMIG` / `Kit`.
+- Novo campo `origin_kind` em `StockEvent`.
+
+**Sprint 2 — auditoria + kit (M4 + M5):**
+- Migration 75 `Scripts SQL/75_stock_manual_adjustments.sql` (aplicada via DDL direto no Oracle): tabela `stock_manual_adjustments(id, product_type, product_id, old_value, new_value, delta, reason, user_id, adjustment_kind, created_at)`.
+- Model `BACKEND/models/stock_adjustment.py` + helper `BACKEND/services/fiscal/stock_audit.py::log_adjustment`.
+- Hooks de auditoria em 4 endpoints: `PUT /pg/{id}/stock` (manual_override), `POST /pg/{id}/recalculate-stock`, `POST /cmigs/.../recalculate-stock` (ambos recompute), `POST /pg/recalculate-all-stock` (batch_recompute).
+- `_fetch_kit_component_events`: pedidos vendendo um KIT do qual o PG e componente aparecem no modal com sub-badge "Kit" e linha "Kit: {nome do kit}".
+- Ajustes manuais aparecem na tabela como badge cinza (`Ajuste Manual` / `Recalculo` / `Recalculo em Lote`), informativos — nao alteram running_balance.
+
+**Sprint 3 — UX (M7 + M8 + M9):**
+- Toolbar de 5 checkboxes (NFe Entrada / NFe Saida / Pedidos / Reservados / Ajustes), filtragem client-side.
+- 2 linhas-resumo na tabela: "Saldo no fim do periodo" no topo + "Saldo no inicio do periodo" no fim (ordem DESC). Backend retorna `period_initial_available` e `period_final_available` com snapshot considerando ajustes.
+- Botao "Exportar CSV" com BOM UTF-8 + separador `;` (Excel BR). Respeita filtros ativos.
+
+**Sprint 4 — refator (M10 + M11):**
+- `FRONTEND/src/components/stock/StockMovementsModal.vue` — componente reutilizavel parametrizado por `productType: 'pg' | 'cmig'`. Encapsula filtros, banner, cards, tabela, recalc, export.
+- `BACKEND/services/stock_movements.py::build_movements_response` — funcao unica que constroi o response dos 2 endpoints. Mantem todos os campos legados + adiciona unificados (`current_balance`, `reserved`).
+- Endpoints `GET /pg/{id}/stock-movements` e `GET /cmigs/{cmig_id}/products/{id}/stock-movements` reduzidos a ~14 linhas cada. ~780 linhas duplicadas eliminadas (backend + frontend).
+
+**Validacoes:** PG 66 cache=7 / calculated=7 / movements=2 ✓. CMIG 2 cache=0 / calculated=0 / has_pg_link=True ✓. Build frontend OK (StockMovementsModal 23kB).
+
+---
+
+## 2026-05-28 — feat(scheduler-monitoring): tela de monitoramento + persistencia + recalculo automatico de estoque
+
+**Pedido:** (1) Recalcular estoque sempre que um pedido for recebido, com explosao de kits para recalcular componentes. (2) Tela de monitoramento das rotinas automatizadas exclusiva para Operador (UGO), Gestor (GO) e Admin, com janela default de ultimas 3h, indicadores por rotina e proxima execucao.
+
+**Mudancas:**
+
+- **Migration 74** `Scripts SQL/74_scheduler_job_executions.sql`: tabela `scheduler_job_executions(id, job_id, started_at, finished_at, duration_ms, status, result_json, error_message, triggered_by)` + indices.
+
+- **Wrapper** `BACKEND/tasks/_job_wrapper.py::tracked_job` — context manager que grava 1 linha por execucao em sessao isolada (sobrevive a rollback do job). Captura inicio/fim/duracao/status/erro/resultado.
+
+- **8 jobs APScheduler refatorados** para usar `tracked_job` e retornar dict de contadores: sync_orders, sync_stock, refresh_tokens, sync_dfe, sync_messages, check_subscriptions, fiscal_alerts, refresh_ml_reputation.
+
+- **Novo job** `BACKEND/tasks/prune_logs.py::prune_job_executions` — cron diario 04:00 UTC, apaga execucoes > 30 dias.
+
+- **Trigger event-driven** `services/fiscal/stock_calculator.py::trigger_stock_recompute_on_order_created` — recalcula PG + CMIG + kits afetados ao criar pedido. Registra como execucao `stock_recompute_on_order` com `triggered_by='event'`. Chamado em 3 caminhos: `process_ml_order` e `process_shopee_order` (webhook + polling) e `routers/manual_orders.create_manual_order`.
+
+- **Router** `BACKEND/routers/scheduler_monitoring.py` com prefixo `/api/v1/scheduler` (require_role("ugo","go","admin")):
+  - `GET /jobs?hours=N` — 10 rotinas com last_run, next_run (do APScheduler), success_rate, avg_duration.
+  - `GET /executions?date_from=...&date_to=...&job_id=...&status=...&page=...&size=...` — historico paginado, default ultimas 3h.
+  - `GET /executions/{id}` — detalhe com result_json + error_message completo.
+
+- **Frontend tela** `FRONTEND/src/views/monitoring/SchedulerMonitoringView.vue` (rota `/monitoring/jobs`, `meta.role: 'ugo'` — guard ja cobre GO e admin) + entrada na sidebar (`<template v-if="isUGO || isGO">` secao MONITORAMENTO). Cards de KPI por rotina + tabela paginada + modal de detalhe. Auto-refresh 30s.
+
+**Indicadores por rotina (10 monitoradas):** `accounts_processed`, `orders_imported_*`, `tokens_refreshed/failed`, `listings_processed/updated`, `dfes_new`, `tokens_checked`, `subscriptions_overdue`, `notifications_sent`, `alerts_sent`, `messages_fetched`, `sellers_updated`, `kits_recomputed`, etc.
+
+**Validacoes:** Build frontend OK (`SchedulerMonitoringView` 42kB). Backend imports OK. Migration 74 aplicada via DDL direto.
+
+---
+
+## 2026-05-28 — feat(pedido-manual): refatoracao Drop Manual -> Pedido Manual (catalogo + carrinho + cliente)
+
+**Pedido:** Renomear "Drop Manual" para "Pedido Manual"; adotar o mesmo padrao visual do Catalogo (grid + toggle PG/CMIG); permitir carrinho com varios itens; selecionar cliente cadastrado ou criar novo via modal.
+
+**Decisoes acordadas:**
+- Adicionada FK `buyer_person_id` em `orders` (rastreabilidade) — snapshot textual (`buyer_name`/email/document/shipping_address) continua sendo preenchido.
+- Carrinho mistura PG + CMIG. Nova FK `cmig_product_id` em `order_items` para itens CMIG sem `pg_product_id`.
+
+**Mudancas:**
+
+- **SQL** `Scripts SQL/76_pedido_manual_person_cmig_item.sql` (novo) — adiciona `orders.buyer_person_id` (FK `people`) e `order_items.cmig_product_id` (FK `cmig_products`), com blocos `DECLARE...EXCEPTION` idempotentes.
+
+- **Backend models** `BACKEND/models/order.py` — `Order` ganha `buyer_person_id` + relacionamento `buyer_person`; `OrderItem` ganha `cmig_product_id`.
+
+- **Backend router** `BACKEND/routers/manual_orders.py` — reescrito. `POST /api/v1/manual-orders` agora recebe `{cmig_id, buyer_person_id, items: [{kind, id, quantity}]}` onde `kind = 'pg' | 'cmig'`. Valida acesso a CMIG via `CMIGAdministrator`, carrega produtos em batch (Catalog + CMIG), cria `Order` com `cmig_id` e snapshot do comprador (Person), cria 1 `OrderItem` por entrada com `catalog_product_id` (PG) ou `cmig_product_id` (CMIG, com `catalog_product_id` espelhado quando ha `pg_product_id`). Mantem trigger de recalculo de estoque.
+
+- **Frontend rename:**
+  - `FRONTEND/src/components/common/AppSidebar.vue` — label "Drop Manual" -> "Pedido Manual" (icone `fa-hand-paper` mantido, regra `v-if="isAC"` mantida).
+  - `FRONTEND/src/router/index.js` — `meta.title` da rota `/manual-orders` -> "Pedido Manual". Path inalterado.
+
+- **Frontend componentes novos:**
+  - `FRONTEND/src/components/people/PersonSearchModal.vue` — modal `teleport` (padrao `ConfirmModal`), busca por nome/CPF/CNPJ via `usePeopleStore.fetchPeople({cmig_id, is_customer: true, search, page})` com paginacao.
+  - `FRONTEND/src/components/people/PersonFormModal.vue` — modal `teleport` enxuto (PF/PJ, doc, nome, contato, endereco), com botao de lookup CNPJ na BrasilAPI; salva via `usePeopleStore.createPerson(...)` forcando `is_customer = true`.
+
+- **Frontend view** `FRONTEND/src/views/manual-orders/ManualOrderView.vue` — reescrito em 4 cards verticais:
+  1. CMIG: select carregado por `GET /orders/cmigs/available` (auto-seleciona se houver so 1).
+  2. Selecionar Produtos: `btn-group` PG/CMIG (visual identico ao `CatalogView`), grid `col-xl-2 col-lg-3 col-md-4 col-sm-6` com cards (thumb 130px, SKU, titulo 50ch, preco verde, botao "Adicionar ao carrinho"). PG via `GET /catalog` (paginado), CMIG via `GET /cmigs/{cmig_id}/products` (filtro em memoria).
+  3. Cliente: botoes "Buscar cliente" e "+ Novo cliente"; ao selecionar exibe card com nome/doc/cidade e botao "Trocar".
+  4. Carrinho: tabela com thumb, SKU + badge PG/CMIG, qtde editavel, subtotal, total. Botao "Fechar pedido" (desabilitado sem cliente ou carrinho vazio) -> `POST /api/v1/manual-orders` -> redirect `/orders/{id}`.
+
+  Estado do carrinho em `ref([])` local (sem store global). Reabertura do mesmo produto incrementa quantidade em vez de duplicar.
+
+**Validacoes:** `npm run build` OK em 25.82s (`ManualOrderView` 21.31kB). Backend imports OK (`models.Order.buyer_person_id` e `models.OrderItem.cmig_product_id` presentes).
+
+**Proximo passo manual:** rodar a migration `Scripts SQL/76_pedido_manual_person_cmig_item.sql` no Oracle ATP antes de subir o backend novo.
+
+---
+
+## 2026-05-28 — feat(auth): opcao "Trocar senha" no menu do usuario (modal)
+
+**Pedido:** Permitir que o usuario logado troque a propria senha pelo dropdown do nome no canto superior direito.
+
+**Solucao:** Item "Trocar senha" adicionado no dropdown do `AppTopbar`. Ao clicar, abre modal (teleport para body, padrao Bootstrap 5 + AdminLTE) com 3 campos: senha atual, nova senha (min 6 chars) e confirmacao. Submit chama `POST /api/v1/auth/change-password` (endpoint ja existente em `routers/auth.py`), com toast de sucesso/erro. Inputs ficam desabilitados durante o submit; cancelar / esc fecha o modal e limpa o form.
+
+**Arquivo:** `FRONTEND/src/components/common/AppTopbar.vue` (unico arquivo alterado).
+
+**Backend:** sem mudanca — endpoint `POST /api/v1/auth/change-password` ja existia com schema `ChangePasswordRequest` validando `new_password == new_password_confirm`.
+
+---
+
+## 2026-05-28 — fix(pedidos): colaborador CMIG nao via pedidos na tela de Pedidos
+
+**Problema:** Usuarios com `role="ac"` que sao colaboradores (nao proprietarios) de uma CMIG nao viam nenhum pedido — a lista vinha vazia. Proprietarios da mesma CMIG viam tudo normalmente.
+
+**Causa raiz:** `BACKEND/routers/orders.py` filtrava pedidos via `Order.dropshipper_id == current_user.id` em **14 endpoints distintos** (list, detalhes, summary, kanban, exports, dashboards). Esse campo aponta para o AC dono original que recebe o pedido via webhook/sync das marketplaces — o id do colaborador nunca aparece la, por isso a query retornava 0 linhas. O proprio arquivo ja tinha o padrao correto no endpoint `/orders/cmigs/available`, que usa `CMIGAdministrator.user_id == current_user.id`.
+
+**Solucao:** Helper `_ac_visible_filter(current_user)` em `routers/orders.py` que retorna o predicado SQL `dropshipper_id = :uid OR cmig_id IN (SELECT cmig_id FROM cmig_administrators WHERE user_id = :uid)`. As 14 ocorrencias do filtro defeituoso foram substituidas pela chamada ao helper. Isso cobre:
+- AC proprietario (via `dropshipper_id` — backward compat)
+- AC colaborador da CMIG (via `cmig_administrators`)
+- Mantem isolamento — AC sem vinculo continua sem ver os pedidos
+
+**Arquivo:** `BACKEND/routers/orders.py` (unico arquivo alterado).
+
+**Fora de escopo:** Atribuicao de `dropshipper_id` na CRIACAO de pedidos manuais (linhas 876, 1824, 1969, 2143) — decisao de produto pendente sobre se colaborador vira dono direto ou se atribuir ao `owner_ac_id` da CMIG. Com o filtro hibrido nao ha regressao.
+
+---
+
 ## 2026-05-27 — feat(envio): paleta canonica de cores para shipping_mode (Full/Flex/Agencia/Correios/Coletado/Combinado)
 
 **Problema:** FULL (badge-success) e FLEX (badge-info) tinham cores muito parecidas (verde claro vs ciano), alem de cores divergentes entre OrderListView, ShipmentModal, DeliveryModal e AnunciosView. Cada arquivo tinha seu proprio mapa de cores.

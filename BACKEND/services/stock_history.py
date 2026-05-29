@@ -25,7 +25,7 @@ from models.cmig import CMIG, CMIGProduct
 from models.fiscal import Invoice, InvoiceItem
 from models.order import Order, OrderItem
 from models.person import Person
-from models.product import CatalogProduct, ProductListing
+from models.product import CatalogProduct, CatalogProductComponent, ProductListing
 
 RESERVED_STATUSES = ("handling", "ready_to_ship")
 DEFINITIVE_STATUSES = ("shipped", "delivered")
@@ -37,7 +37,7 @@ class StockEvent:
     """Um evento que afeta (ou poderia afetar) o estoque de um produto."""
 
     date: datetime
-    source: Literal["nfe_in", "nfe_out", "order"]
+    source: Literal["nfe_in", "nfe_out", "order", "adjustment"]
     direction: Literal["in", "out"]  # pra 'order' sempre 'out'
     qty: int
     qty_to_cmig: int = 0
@@ -72,6 +72,14 @@ class StockEvent:
     cmig_product_title: str | None = None
     cmig_id: int | None = None
     cmig_name: str | None = None
+    # Classificação visual (M3): "direct_pg" | "overflow_cmig" | "cmig" | "kit_component" | "nfe_direct_pg"
+    origin_kind: str | None = None
+    # M5 — Auditoria (apenas quando source='adjustment')
+    adjustment_kind: str | None = None  # manual_override | recompute | batch_recompute
+    adjustment_reason: str | None = None
+    adjustment_user_name: str | None = None
+    adjustment_old: int | None = None
+    adjustment_new: int | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -168,6 +176,7 @@ async def _fetch_nfe_events_for_cmig_product(
                 cmig_product_sku=cmig_product.sku_cmig,
                 cmig_product_title=cmig_product.title,
                 cmig_id=cmig_product.cmig_id,
+                origin_kind="nfe_cmig",
             )
         )
     return events
@@ -257,6 +266,7 @@ async def _fetch_order_events_for_cmig_product(
                 cmig_product_title=cmig_product.title,
                 cmig_id=cmig_product.cmig_id,
                 cmig_name=cmig_name,
+                origin_kind="cmig",
             )
         )
 
@@ -350,6 +360,13 @@ async def replay_stock_events_for_cmig_product(
 
     current_nfe_balance = int(cmig_product.stock_quantity or 0)
     nfe_only_initial = _apply_split_replay(events, cmig_product, current_nfe_balance)
+
+    # M5: ajustes manuais (informativo, não afetam o replay)
+    adjustments = await _fetch_manual_adjustments("cmig", cmig_product.id, db)
+    if adjustments:
+        events.extend(adjustments)
+        events.sort(key=lambda e: e.date)
+
     return events, nfe_only_initial
 
 
@@ -428,6 +445,199 @@ async def _fetch_direct_pg_events(
                 item_description=item.description,
                 item_sku=item.sku,
                 item_ean=item.ean,
+                origin_kind="nfe_direct_pg",
+            )
+        )
+    return events
+
+
+async def _fetch_direct_pg_order_events(
+    pg_product: CatalogProduct, db: AsyncSession
+) -> list[StockEvent]:
+    """Pedidos com OrderItem.catalog_product_id == pg.id em shipped/delivered/handling/ready_to_ship,
+    SEM CMIGProduct na CMIG do pedido capaz de contar (mesma regra de exclusão do balanço).
+
+    Esses pedidos não passam por CMIG (vínculo direto via catalog_product_id)
+    e antes ficavam invisíveis no histórico do PG. Eles vão 100% pro saldo do PG.
+
+    Regra de exclusão mantida idêntica à de `calculate_pg_product_stock` para
+    evitar dupla contagem: olhamos apenas sku_cmig e pg_product_id (não listing),
+    pois listing_match dentro de EXISTS aninhado gera cartesian join em SQLAlchemy.
+    Na prática, se há ProductListing.cmig_product_id apontando para algum CMIG
+    daquela CMIG, esse CMIG geralmente tem sku_cmig ou pg_product_id capazes
+    de bater na mesma condição.
+    """
+    has_cmig_match = exists().where(
+        and_(
+            CMIGProduct.cmig_id == Order.cmig_id,
+            or_(
+                CMIGProduct.sku_cmig == OrderItem.sku,
+                CMIGProduct.pg_product_id == OrderItem.catalog_product_id,
+            ),
+        )
+    )
+
+    stmt = (
+        select(OrderItem, Order)
+        .join(Order, Order.id == OrderItem.order_id)
+        .where(
+            and_(
+                OrderItem.catalog_product_id == pg_product.id,
+                Order.shipment_status.in_(SHIPPED_STATUSES),
+                ~has_cmig_match,
+            )
+        )
+    )
+
+    rows = (await db.execute(stmt)).all()
+    events: list[StockEvent] = []
+    for item, order in rows:
+        m_date = order.shipped_at or order.created_at
+        if m_date is None:
+            continue
+        qty = int(item.quantity or 0)
+        if qty <= 0:
+            continue
+        shipment_status = order.shipment_status or ""
+        events.append(
+            StockEvent(
+                date=m_date,
+                source="order",
+                direction="out",
+                qty=qty,
+                qty_to_cmig=0,
+                qty_to_pg=qty,  # 100% debita do PG (sem CMIG intermediário)
+                item_id=item.id,
+                order_id=order.id,
+                order_platform=order.platform,
+                order_platform_id=order.platform_order_id,
+                order_shipment_status=shipment_status,
+                order_has_invoice=bool(order.invoice_id),
+                order_invoice_finalized=False,
+                is_reserved=shipment_status in RESERVED_STATUSES,
+                is_definitive=shipment_status in DEFINITIVE_STATUSES,
+                person_name=order.buyer_name,
+                item_description=item.title,
+                item_sku=item.sku,
+                item_ml_item_id=item.ml_item_id,
+                origin_kind="direct_pg",
+            )
+        )
+    return events
+
+
+async def _fetch_kit_component_events(
+    pg_product: CatalogProduct, db: AsyncSession
+) -> list[StockEvent]:
+    """Pedidos vendendo um KIT do qual este PG é componente.
+
+    Para cada pedido shipped/delivered/handling/ready_to_ship cujo OrderItem
+    aponta para um CatalogProduct composto (kit), e cujos componentes incluem
+    este `pg_product`, gera 1 StockEvent com:
+      qty = OrderItem.quantity * CatalogProductComponent.quantity
+
+    Esses pedidos são contados no balanço via `kit_usage` em
+    `calculate_pg_product_stock` (caminho 3) — aqui só geramos a visualização
+    para a tabela do modal.
+    """
+    KitAlias = CatalogProduct
+    stmt = (
+        select(OrderItem, Order, KitAlias, CatalogProductComponent.quantity.label("comp_qty"))
+        .join(Order, Order.id == OrderItem.order_id)
+        .join(
+            CatalogProductComponent,
+            CatalogProductComponent.composite_id == OrderItem.catalog_product_id,
+        )
+        .join(KitAlias, KitAlias.id == OrderItem.catalog_product_id)
+        .where(
+            and_(
+                CatalogProductComponent.component_id == pg_product.id,
+                Order.shipment_status.in_(SHIPPED_STATUSES),
+            )
+        )
+    )
+    rows = (await db.execute(stmt)).all()
+    events: list[StockEvent] = []
+    for item, order, kit, comp_qty in rows:
+        m_date = order.shipped_at or order.created_at
+        if m_date is None:
+            continue
+        oi_qty = int(item.quantity or 0)
+        cq = int(comp_qty or 0)
+        effective_qty = oi_qty * cq
+        if effective_qty <= 0:
+            continue
+        shipment_status = order.shipment_status or ""
+        events.append(
+            StockEvent(
+                date=m_date,
+                source="order",
+                direction="out",
+                qty=effective_qty,
+                qty_to_cmig=0,
+                qty_to_pg=effective_qty,  # consumo 100% do componente
+                item_id=item.id,
+                order_id=order.id,
+                order_platform=order.platform,
+                order_platform_id=order.platform_order_id,
+                order_shipment_status=shipment_status,
+                order_has_invoice=bool(order.invoice_id),
+                order_invoice_finalized=False,
+                is_reserved=shipment_status in RESERVED_STATUSES,
+                is_definitive=shipment_status in DEFINITIVE_STATUSES,
+                person_name=order.buyer_name,
+                # Mostra qual kit consumiu o componente
+                item_description=f"Kit: {kit.title}",
+                item_sku=item.sku,
+                item_ml_item_id=item.ml_item_id,
+                origin_kind="kit_component",
+            )
+        )
+    return events
+
+
+async def _fetch_manual_adjustments(
+    product_type: str, product_id: int, db: AsyncSession
+) -> list[StockEvent]:
+    """Carrega entries de `stock_manual_adjustments` para auditoria visual.
+
+    Esses eventos são puramente INFORMATIVOS — não afetam o running balance
+    (já estão refletidos no cache stock_quantity).
+    """
+    from models.stock_adjustment import StockManualAdjustment
+    from models.user import User
+
+    rows = (
+        await db.execute(
+            select(StockManualAdjustment, User.full_name)
+            .outerjoin(User, User.id == StockManualAdjustment.user_id)
+            .where(
+                and_(
+                    StockManualAdjustment.product_type == product_type,
+                    StockManualAdjustment.product_id == product_id,
+                )
+            )
+            .order_by(StockManualAdjustment.created_at)
+        )
+    ).all()
+
+    events: list[StockEvent] = []
+    for adj, user_name in rows:
+        delta = int(adj.delta or 0)
+        events.append(
+            StockEvent(
+                date=adj.created_at,
+                source="adjustment",
+                direction="in" if delta >= 0 else "out",
+                qty=abs(delta),
+                qty_to_cmig=0,
+                qty_to_pg=0,  # informativo, não conta no running balance
+                origin_kind=adj.adjustment_kind,
+                adjustment_kind=adj.adjustment_kind,
+                adjustment_reason=adj.reason,
+                adjustment_user_name=user_name,
+                adjustment_old=int(adj.old_value or 0),
+                adjustment_new=int(adj.new_value or 0),
             )
         )
     return events
@@ -436,7 +646,8 @@ async def _fetch_direct_pg_events(
 async def replay_stock_events_for_pg_product(
     pg_product: CatalogProduct, db: AsyncSession
 ) -> tuple[list[StockEvent], list[CMIGProduct]]:
-    """Agrega eventos do PG: NFes dos CMIGProducts vinculados + NFes diretas em PG.
+    """Agrega eventos do PG: NFes dos CMIGProducts vinculados + NFes diretas em PG
+    + pedidos diretos no PG (sem CMIG intermediário).
 
     O frontend filtra `qty_to_pg > 0` pra mostrar overflow e NFes diretas.
     """
@@ -453,6 +664,9 @@ async def replay_stock_events_for_pg_product(
         for e in events:
             if e.item_id is not None and e.item_id in seen_item_ids:
                 continue
+            # No contexto PG, pedidos vindos via replay CMIG são "overflow"
+            if e.source == "order" and e.qty_to_pg > 0:
+                e.origin_kind = "overflow_cmig"
             all_events.append(e)
             if e.item_id is not None:
                 seen_item_ids.add(e.item_id)
@@ -465,6 +679,31 @@ async def replay_stock_events_for_pg_product(
         all_events.append(e)
         if e.item_id is not None:
             seen_item_ids.add(e.item_id)
+
+    # Pedidos diretos no PG (sem CMIG capaz de contar) — debitam 100% do PG.
+    # Dedup separado: OrderItem.id pode colidir com InvoiceItem.id (são tabelas distintas)
+    direct_orders = await _fetch_direct_pg_order_events(pg_product, db)
+    seen_order_item_ids: set[int] = set()
+    for e in direct_orders:
+        if e.item_id is not None and e.item_id in seen_order_item_ids:
+            continue
+        all_events.append(e)
+        if e.item_id is not None:
+            seen_order_item_ids.add(e.item_id)
+
+    # Kit component events — pedidos que vendem kits cujo componente é este PG
+    kit_events = await _fetch_kit_component_events(pg_product, db)
+    for e in kit_events:
+        # Dedup com direct_orders pelo OrderItem.id
+        if e.item_id is not None and e.item_id in seen_order_item_ids:
+            continue
+        all_events.append(e)
+        if e.item_id is not None:
+            seen_order_item_ids.add(e.item_id)
+
+    # M5: Auditoria de ajustes manuais (informativo)
+    adjustments = await _fetch_manual_adjustments("pg", pg_product.id, db)
+    all_events.extend(adjustments)
 
     all_events.sort(key=lambda e: e.date)
     return all_events, list(linked_cmigs)

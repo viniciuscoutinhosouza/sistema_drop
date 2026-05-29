@@ -440,6 +440,7 @@ async def recalculate_cmig_product_stock(
     (NFes finalizadas/autorizadas + pedidos shipped/delivered).
     `stock_quantity` é apenas cache — esta operação re-deriva do histórico.
     """
+    from services.fiscal.stock_audit import log_adjustment
     from services.fiscal.stock_calculator import recompute_cmig_product_stock
 
     cmig = await _get_cmig_or_404(cmig_id, db)
@@ -455,6 +456,16 @@ async def recalculate_cmig_product_stock(
         raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
     old = int(product.stock_quantity or 0)
     new = await recompute_cmig_product_stock(product_id, db)
+    await log_adjustment(
+        db,
+        product_type="cmig",
+        product_id=product_id,
+        old_value=old,
+        new_value=new,
+        kind="recompute",
+        reason="Recálculo solicitado via POST /cmigs/{id}/products/{id}/recalculate-stock",
+        user_id=current_user.id,
+    )
     await db.commit()
     return {"old_stock": old, "new_stock": new, "delta": (new or 0) - old}
 
@@ -1235,121 +1246,14 @@ async def get_cmig_product_stock_movements(
     if not product:
         raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
 
-    current_balance_nfe = int(product.stock_quantity or 0)
-
-    events, nfe_only_initial = await replay_stock_events_for_cmig_product(product, db)
-
-    end_dt = _datetime.combine(end_date, _time.max) if end_date is not None else None
-    start_dt = _datetime.combine(start_date, _time.min) if start_date is not None else None
-
-    def in_period(d) -> bool:
-        if start_dt is not None and d < start_dt:
-            return False
-        if end_dt is not None and d > end_dt:
-            return False
-        return True
-
-    # Calcula saldo NFe-only no início e fim do período
-    initial_balance_nfe = nfe_only_initial  # antes do primeiro evento
-    final_balance_nfe = nfe_only_initial
-    for e in events:
-        # initial: acumula NFes ANTES do start_dt
-        if start_dt is not None and e.date < start_dt:
-            if e.source == "nfe_in":
-                initial_balance_nfe += e.qty
-            elif e.source == "nfe_out":
-                initial_balance_nfe -= e.qty
-        # final: acumula NFes ATÉ end_dt
-        if end_dt is None or e.date <= end_dt:
-            if e.source == "nfe_in":
-                final_balance_nfe += e.qty
-            elif e.source == "nfe_out":
-                final_balance_nfe -= e.qty
-
-    # Agregados do período
-    nfe_in_period = 0
-    nfe_out_period = 0
-    period_out_orders_reserved = 0   # handling + ready_to_ship no período
-    period_out_orders_definitive = 0 # shipped + delivered no período
-    # Reservado (estado atual): pedidos com qty_to_cmig > 0 e shipment_status em {handling, ready_to_ship}
-    reserved_in_pending_orders = 0
-    # Movimentado em pedidos sem NFe finalizada (estado atual):
-    # shipped/delivered cuja saída ainda não foi refletida em stock_quantity via NFe-out.
-    moved_in_orders_no_nfe = 0
-    for e in events:
-        if e.source == "order" and e.qty_to_cmig > 0:
-            if e.is_reserved:
-                reserved_in_pending_orders += e.qty_to_cmig
-            elif e.is_definitive and not e.order_invoice_finalized:
-                moved_in_orders_no_nfe += e.qty_to_cmig
-        if not in_period(e.date):
-            continue
-        if e.source == "nfe_in":
-            nfe_in_period += e.qty
-        elif e.source == "nfe_out":
-            nfe_out_period += e.qty
-        elif e.source == "order" and e.qty_to_cmig > 0:
-            if e.is_reserved:
-                period_out_orders_reserved += e.qty_to_cmig
-            elif e.is_definitive:
-                period_out_orders_definitive += e.qty_to_cmig
-
-    # Walk cronológico de TODOS eventos pra computar running_available
-    # disponível = NFe acumulado − pedidos pendentes acumulados (sem NFe-out finalizada)
-    visible_events: list[dict] = []
-    running_nfe = nfe_only_initial
-    running_pending = 0
-    for e in events:
-        # Atualiza estado mesmo fora do período (pra running_available bater)
-        if e.source == "nfe_in":
-            running_nfe += e.qty
-        elif e.source == "nfe_out":
-            running_nfe -= e.qty
-        elif e.source == "order" and e.qty_to_cmig > 0 and not e.order_invoice_finalized:
-            running_pending += e.qty_to_cmig
-        # Filtra visibilidade
-        if not in_period(e.date):
-            continue
-        if e.source == "order" and e.qty_to_cmig <= 0:
-            continue
-        d = e.to_dict()
-        d["running_balance"] = running_nfe
-        d["running_available"] = running_nfe - running_pending
-        visible_events.append(d)
-
-    current_balance_available = (
-        current_balance_nfe - reserved_in_pending_orders - moved_in_orders_no_nfe
+    from services.stock_movements import build_movements_response
+    return await build_movements_response(
+        product=product,
+        product_type="cmig",
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
     )
-
-    # Exibição em ordem descendente (mais recente primeiro). O replay rodou
-    # cronológico pra calcular running_available; agora invertemos pra UI.
-    visible_events.reverse()
-
-    return {
-        "product_id": product.id,
-        "product_sku": product.sku_cmig,
-        "product_title": product.title,
-        "has_pg_link": product.pg_product_id is not None,
-        "pg_product_id": product.pg_product_id,
-        "start_date": start_date.isoformat() if start_date else None,
-        "end_date": end_date.isoformat() if end_date else None,
-        # Saldos NFe-only (verdade do banco)
-        "initial_balance": initial_balance_nfe,
-        "final_balance": final_balance_nfe,
-        "current_balance_nfe": current_balance_nfe,
-        # Visão considerando pedidos
-        "reserved_in_pending_orders": reserved_in_pending_orders,
-        "moved_in_orders_no_nfe": moved_in_orders_no_nfe,
-        "current_balance_available": current_balance_available,
-        # Agregados do período
-        "period_in_nfe": nfe_in_period,
-        "period_out_nfe": nfe_out_period,
-        "period_out_orders_reserved": period_out_orders_reserved,
-        "period_out_orders_definitive": period_out_orders_definitive,
-        "period_out_orders": period_out_orders_reserved + period_out_orders_definitive,
-        "period_net_nfe": nfe_in_period - nfe_out_period,
-        "movements": visible_events,
-    }
 
 
 # ── Configuração NF-e ──────────────────────────────────────────────────────────

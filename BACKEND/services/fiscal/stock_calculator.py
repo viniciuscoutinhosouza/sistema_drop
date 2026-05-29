@@ -17,7 +17,7 @@ e `_fetch_direct_pg_events` que já consideram a flag `invoice_linked_to_order`.
 
 from __future__ import annotations
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -134,6 +134,34 @@ async def calculate_pg_product_stock(
         )
     ).scalar() or 0
     balance -= int(kit_usage)
+
+    # 4) Pedidos diretos no PG (OrderItem.catalog_product_id == pg.id) em
+    # shipped/delivered, SEM CMIGProduct na CMIG do pedido capaz de contar.
+    # A exclusão evita dupla contagem com:
+    #   - caminho 2 (overflow): só dispara se houver CMIGProduct vinculado por pg_product_id
+    #   - caminho via sku_cmig (em _fetch_order_events_for_cmig_product)
+    direct_pg_order_qty = (
+        await db.execute(
+            select(func.sum(OrderItem.quantity))
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(
+                and_(
+                    OrderItem.catalog_product_id == pg_product.id,
+                    Order.shipment_status.in_(("shipped", "delivered")),
+                    ~exists().where(
+                        and_(
+                            CMIGProduct.cmig_id == Order.cmig_id,
+                            or_(
+                                CMIGProduct.sku_cmig == OrderItem.sku,
+                                CMIGProduct.pg_product_id == OrderItem.catalog_product_id,
+                            ),
+                        )
+                    ),
+                )
+            )
+        )
+    ).scalar() or 0
+    balance -= int(direct_pg_order_qty)
 
     return balance
 
@@ -405,6 +433,72 @@ async def recompute_after_order_change(
             kit.stock_quantity = min(stocks) if stocks else 0
 
     return {"cmig_recomputed": len(cmig_ids), "pg_recomputed": len(pg_ids)}
+
+
+async def trigger_stock_recompute_on_order_created(
+    order: Order, db: AsyncSession
+) -> dict:
+    """Trigger event-driven: roda recompute logo após criação de pedido novo.
+
+    Chamado em todos os caminhos de entrada de pedido (webhook ML, webhook Shopee,
+    polling ML/Shopee via webhook_service, manual_orders). Garante que `stock_quantity`
+    em CMIGProduct, CatalogProduct e kits fica em dia já no momento da entrada,
+    sem esperar a próxima mudança de shipment_status.
+
+    Registra execução em `scheduler_job_executions` com `triggered_by='event'`.
+    Captura exceções e re-raise — chamador deve envolver em try/except para
+    não falhar a criação do pedido.
+    """
+    from tasks._job_wrapper import tracked_job
+
+    async with tracked_job("stock_recompute_on_order", triggered_by="event") as result:
+        cmig_ids, pg_ids = await affected_products_from_order(order, db)
+        for cp_id in cmig_ids:
+            await recompute_cmig_product_stock(cp_id, db)
+        for pg_id in pg_ids:
+            await recompute_pg_product_stock(pg_id, db)
+
+        # Recalcula estoque virtual de kits cujos componentes foram tocados
+        kits_recomputed = 0
+        kit_ids = (
+            await db.execute(
+                select(CatalogProductComponent.composite_id)
+                .where(CatalogProductComponent.component_id.in_(pg_ids))
+                .distinct()
+            )
+        ).scalars().all() if pg_ids else []
+        for kit_id in kit_ids:
+            kit = (
+                await db.execute(
+                    select(CatalogProduct)
+                    .options(
+                        selectinload(CatalogProduct.components).selectinload(
+                            CatalogProductComponent.component
+                        )
+                    )
+                    .where(CatalogProduct.id == kit_id)
+                )
+            ).scalar_one_or_none()
+            if kit and kit.components:
+                stocks = [
+                    (comp.component.stock_quantity or 0) // comp.quantity
+                    for comp in kit.components
+                    if comp.quantity
+                ]
+                kit.stock_quantity = min(stocks) if stocks else 0
+                kits_recomputed += 1
+
+        await db.commit()
+
+        payload = {
+            "order_id": order.id,
+            "platform": order.platform,
+            "cmig_products_recomputed": len(cmig_ids),
+            "pg_products_recomputed": len(pg_ids),
+            "kits_recomputed": kits_recomputed,
+        }
+        result.set(payload)
+        return payload
 
 
 async def recompute_all_stock(db: AsyncSession) -> dict:

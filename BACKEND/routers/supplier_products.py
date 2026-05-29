@@ -511,11 +511,25 @@ async def update_stock(
     canônico (event-sourced). Para ajustes, crie uma NFe de entrada/saída.
     Mantido pra compat. Quando chamado, sobrescreve o cache — próximo recompute
     pode restaurar pro valor calculado dos eventos."""
+    from services.fiscal.stock_audit import log_adjustment
+
     result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
-    product.stock_quantity = body["stock_quantity"]
+    old_v = int(product.stock_quantity or 0)
+    new_v = int(body["stock_quantity"])
+    product.stock_quantity = new_v
+    await log_adjustment(
+        db,
+        product_type="pg",
+        product_id=product_id,
+        old_value=old_v,
+        new_value=new_v,
+        kind="manual_override",
+        reason=(body.get("reason") or "Override manual via PUT /pg/{id}/stock"),
+        user_id=current_user.id,
+    )
     await db.commit()
     return {"ok": True, "stock_quantity": product.stock_quantity}
 
@@ -528,6 +542,7 @@ async def recalculate_pg_product_stock(
 ):
     """Recalcula `stock_quantity` do PG a partir dos eventos canônicos
     (NFes diretas PG + overflow de pedidos dos CMIGs vinculados)."""
+    from services.fiscal.stock_audit import log_adjustment
     from services.fiscal.stock_calculator import recompute_pg_product_stock as _recompute
 
     product = (
@@ -537,6 +552,16 @@ async def recalculate_pg_product_stock(
         raise HTTPException(status_code=404, detail="Produto PG não encontrado")
     old = int(product.stock_quantity or 0)
     new = await _recompute(product_id, db)
+    await log_adjustment(
+        db,
+        product_type="pg",
+        product_id=product_id,
+        old_value=old,
+        new_value=new,
+        kind="recompute",
+        reason="Recálculo solicitado via POST /pg/{id}/recalculate-stock",
+        user_id=current_user.id,
+    )
     await db.commit()
     return {"old_stock": old, "new_stock": new, "delta": (new or 0) - old}
 
@@ -549,9 +574,57 @@ async def recalculate_all_stock(
     """ADMIN: recalcula `stock_quantity` de TODOS os CMIGProducts e CatalogProducts.
     Usar após deploy de mudanças que afetam a fórmula de cálculo, ou pra corrigir
     drift do cache."""
+    from services.fiscal.stock_audit import log_adjustment
     from services.fiscal.stock_calculator import recompute_all_stock
 
+    # Snapshot pre-recompute para gerar entries de auditoria por produto que mudar
+    pre_pg = {
+        pid: int(qty or 0)
+        for pid, qty in (
+            await db.execute(select(CatalogProduct.id, CatalogProduct.stock_quantity))
+        ).all()
+    }
+    pre_cmig = {
+        cpid: int(qty or 0)
+        for cpid, qty in (
+            await db.execute(select(CMIGProduct.id, CMIGProduct.stock_quantity))
+        ).all()
+    }
+
     result = await recompute_all_stock(db)
+
+    # Loga apenas produtos que de fato mudaram
+    post_pg = (await db.execute(select(CatalogProduct.id, CatalogProduct.stock_quantity))).all()
+    post_cmig = (await db.execute(select(CMIGProduct.id, CMIGProduct.stock_quantity))).all()
+    for pid, qty in post_pg:
+        new_v = int(qty or 0)
+        old_v = pre_pg.get(pid, 0)
+        if new_v != old_v:
+            await log_adjustment(
+                db,
+                product_type="pg",
+                product_id=pid,
+                old_value=old_v,
+                new_value=new_v,
+                kind="batch_recompute",
+                reason="Recálculo em lote (admin via /pg/recalculate-all-stock)",
+                user_id=current_user.id,
+            )
+    for cpid, qty in post_cmig:
+        new_v = int(qty or 0)
+        old_v = pre_cmig.get(cpid, 0)
+        if new_v != old_v:
+            await log_adjustment(
+                db,
+                product_type="cmig",
+                product_id=cpid,
+                old_value=old_v,
+                new_value=new_v,
+                kind="batch_recompute",
+                reason="Recálculo em lote (admin via /pg/recalculate-all-stock)",
+                user_id=current_user.id,
+            )
+
     await db.commit()
     return result
 
@@ -566,144 +639,24 @@ async def get_pg_product_stock_movements(
 ):
     """Histórico de movimentação de estoque do CatalogProduct (PG).
 
-    Agrega NFes dos CMIGProducts vinculados (via `CMIGProduct.pg_product_id`)
-    + pedidos overflow (quando o estoque CMIG projetado zerou e a saída foi
-    pra PG). O estoque PG (`CatalogProduct.stock_quantity`) é manual e
-    independente — exibido como saldo de referência.
+    Delega a construção do response para `services/stock_movements.py` —
+    M11 unifica a lógica com o endpoint análogo de CMIG.
     """
+    from services.stock_movements import build_movements_response
+
     product = (
         await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
     ).scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
 
-    current_balance_pg = int(product.stock_quantity or 0)
-
-    events, linked_cmigs = await replay_stock_events_for_pg_product(product, db)
-    linked_cmig_count = len(linked_cmigs)
-
-    if not events:
-        return {
-            "product_id": product.id,
-            "product_sku": product.sku,
-            "product_title": product.title,
-            "start_date": start_date.isoformat() if start_date else None,
-            "end_date": end_date.isoformat() if end_date else None,
-            "initial_balance": 0,
-            "final_balance": 0,
-            "current_balance_pg": current_balance_pg,
-            "reserved_in_pending_orders_pg": 0,
-            "current_balance_available": current_balance_pg,
-            "period_in_nfe": 0,
-            "period_out_nfe": 0,
-            "period_out_orders": 0,
-            "period_net_nfe": 0,
-            "linked_cmig_count": linked_cmig_count,
-            "movements": [],
-        }
-
-    end_dt = _datetime.combine(end_date, _time.max) if end_date is not None else None
-    start_dt = _datetime.combine(start_date, _time.min) if start_date is not None else None
-
-    def in_period(d) -> bool:
-        if start_dt is not None and d < start_dt:
-            return False
-        if end_dt is not None and d > end_dt:
-            return False
-        return True
-
-    # Para PG, "initial/final balance" representa o saldo agregado NFe-only
-    # dos CMIGs vinculados. Não é o saldo PG (que é manual e separado).
-    # Calculamos como sum cumulativo de NFe-in/out dos linked CMIGs.
-    initial_balance = 0
-    final_balance = 0
-    for e in events:
-        if start_dt is not None and e.date < start_dt:
-            if e.source == "nfe_in":
-                initial_balance += e.qty
-            elif e.source == "nfe_out":
-                initial_balance -= e.qty
-        if end_dt is None or e.date <= end_dt:
-            if e.source == "nfe_in":
-                final_balance += e.qty
-            elif e.source == "nfe_out":
-                final_balance -= e.qty
-
-    nfe_in_period = 0
-    nfe_out_period = 0
-    period_out_orders_reserved_pg = 0    # handling + ready_to_ship com overflow no período
-    period_out_orders_definitive_pg = 0  # shipped + delivered com overflow no período
-    # Reservado PG (estado atual): overflow de pedidos handling/ready_to_ship
-    reserved_in_pending_orders_pg = 0
-    # Movimentado em pedidos sem NFe (estado atual): overflow shipped/delivered sem NFe
-    moved_in_orders_no_nfe_pg = 0
-    for e in events:
-        if e.source == "order" and e.qty_to_pg > 0:
-            if e.is_reserved:
-                reserved_in_pending_orders_pg += e.qty_to_pg
-            elif e.is_definitive and not e.order_invoice_finalized:
-                moved_in_orders_no_nfe_pg += e.qty_to_pg
-        if not in_period(e.date):
-            continue
-        if e.source == "nfe_in":
-            nfe_in_period += e.qty
-        elif e.source == "nfe_out":
-            nfe_out_period += e.qty
-        elif e.source == "order" and e.qty_to_pg > 0:
-            if e.is_reserved:
-                period_out_orders_reserved_pg += e.qty_to_pg
-            elif e.is_definitive:
-                period_out_orders_definitive_pg += e.qty_to_pg
-
-    # Walk cronológico de TODOS eventos pra computar running_available agregado (overflow PG)
-    visible_events: list[dict] = []
-    running_nfe_agg = 0  # acumulado de NFe-in/out dos CMIGs vinculados
-    running_pending_pg = 0  # overflow PG de pedidos sem NFe finalizada
-    # Inicializar running_nfe_agg com saldo antes do primeiro evento (mesma referência usada em initial_balance)
-    for e in events:
-        if e.source == "nfe_in":
-            running_nfe_agg += e.qty
-        elif e.source == "nfe_out":
-            running_nfe_agg -= e.qty
-        elif e.source == "order" and e.qty_to_pg > 0 and not e.order_invoice_finalized:
-            running_pending_pg += e.qty_to_pg
-        if not in_period(e.date):
-            continue
-        if e.source == "order" and e.qty_to_pg <= 0:
-            continue
-        d = e.to_dict()
-        d["running_balance"] = running_nfe_agg
-        d["running_available"] = running_nfe_agg - running_pending_pg
-        visible_events.append(d)
-
-    current_balance_available = (
-        current_balance_pg - reserved_in_pending_orders_pg - moved_in_orders_no_nfe_pg
+    return await build_movements_response(
+        product=product,
+        product_type="pg",
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
     )
-
-    # Exibição em ordem descendente (mais recente primeiro)
-    visible_events.reverse()
-
-    return {
-        "product_id": product.id,
-        "product_sku": product.sku,
-        "product_title": product.title,
-        "start_date": start_date.isoformat() if start_date else None,
-        "end_date": end_date.isoformat() if end_date else None,
-        "initial_balance": initial_balance,
-        "final_balance": final_balance,
-        "current_balance_pg": current_balance_pg,
-        "reserved_in_pending_orders_pg": reserved_in_pending_orders_pg,
-        "moved_in_orders_no_nfe_pg": moved_in_orders_no_nfe_pg,
-        "current_balance_available": current_balance_available,
-        "period_in_nfe": nfe_in_period,
-        "period_out_nfe": nfe_out_period,
-        "period_out_orders_reserved": period_out_orders_reserved_pg,
-        "period_out_orders_definitive": period_out_orders_definitive_pg,
-        "period_out_orders": period_out_orders_reserved_pg + period_out_orders_definitive_pg,
-        "period_net_nfe": nfe_in_period - nfe_out_period,
-        "linked_cmig_count": linked_cmig_count,
-        "movements": visible_events,
-    }
 
 
 @router.delete("/{product_id}")
