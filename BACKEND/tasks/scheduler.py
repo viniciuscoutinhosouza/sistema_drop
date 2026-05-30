@@ -23,6 +23,7 @@ def start_scheduler():
     from tasks.sync_orders import sync_all_orders
     from tasks.sync_stock import sync_all_stock
     from tasks.sync_tokens import refresh_expiring_tokens
+    from tasks.sync_variation_stock import sync_all_variation_stock
 
     scheduler.add_job(
         sync_all_orders,
@@ -53,6 +54,14 @@ def start_scheduler():
         IntervalTrigger(minutes=30),
         id="sync_stock",
         name="Sync Stock to Marketplaces",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        sync_all_variation_stock,
+        IntervalTrigger(minutes=30),
+        id="sync_variation_stock",
+        name="Sync Estoque por Variação (ML)",
         replace_existing=True,
     )
 

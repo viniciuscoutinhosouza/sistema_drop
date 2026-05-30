@@ -739,6 +739,9 @@ async def get_order(
                 "unit_price": float(i.unit_price) if i.unit_price else None,
                 "unit_cost": float(i.unit_cost) if i.unit_cost else None,
                 "dropshipper_product_id": i.dropshipper_product_id,
+                "catalog_product_id": i.catalog_product_id,
+                "cmig_product_id": i.cmig_product_id,
+                "catalog_source": i.catalog_source,
             }
             for i in items
         ],
@@ -884,19 +887,23 @@ async def pay_order(
 
     items_result = await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
     items = items_result.scalars().all()
-    product_cost = sum((i.unit_cost or Decimal("0")) * i.quantity for i in items)
+    # Itens CMIG ja sao propriedade da Conta CMIG do vendedor — nao geram debito.
+    # Cobra apenas PG (galpao) e itens marketplace sem catalog_source definido.
+    chargeable_items = [i for i in items if i.catalog_source != "cmig"]
+    product_cost = sum((i.unit_cost or Decimal("0")) * i.quantity for i in chargeable_items)
     platform_fee = Decimal(str(settings.PLATFORM_FEE))
     shipping_cost = Decimal(str(order.shipping_cost or 0))
     total_debit = product_cost + platform_fee + shipping_cost
 
-    await debit_balance(
-        db,
-        dropshipper_id=current_user.id,
-        amount=total_debit,
-        description=f"Pagamento pedido #{order_id}",
-        reference_type="order",
-        reference_id=order_id,
-    )
+    if total_debit > 0:
+        await debit_balance(
+            db,
+            dropshipper_id=current_user.id,
+            amount=total_debit,
+            description=f"Pagamento pedido #{order_id}",
+            reference_type="order",
+            reference_id=order_id,
+        )
 
     order.payment_status = "paid"
     order.status = "paid"
@@ -911,6 +918,51 @@ async def pay_order(
         "message": "Pedido pago com sucesso",
         "total_debit": float(total_debit),
         "new_status": order.status,
+    }
+
+
+@router.put("/{order_id}/shipping-cost")
+async def update_shipping_cost(
+    order_id: int,
+    body: dict,
+    current_user: User = Depends(get_active_ac),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edita o frete (`shipping_cost`) de um pedido manual ainda nao pago.
+
+    Apos pago, o debito esta consolidado e o frete fica fixo.
+    """
+    order = (
+        await db.execute(
+            select(Order).where(Order.id == order_id, _ac_visible_filter(current_user))
+        )
+    ).scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido nao encontrado")
+    if order.platform != "manual":
+        raise HTTPException(
+            status_code=400,
+            detail="Edicao de frete disponivel apenas para pedidos manuais",
+        )
+    if order.payment_status == "paid":
+        raise HTTPException(
+            status_code=400, detail="Pedido ja pago — frete nao pode mais ser alterado"
+        )
+    raw = body.get("shipping_cost")
+    if raw is None:
+        raise HTTPException(status_code=400, detail="shipping_cost obrigatorio")
+    try:
+        value = Decimal(str(raw))
+    except Exception:
+        raise HTTPException(status_code=400, detail="shipping_cost invalido") from None
+    if value < 0:
+        raise HTTPException(status_code=400, detail="shipping_cost deve ser >= 0")
+
+    order.shipping_cost = value
+    await db.commit()
+    return {
+        "id": order.id,
+        "shipping_cost": float(order.shipping_cost),
     }
 
 

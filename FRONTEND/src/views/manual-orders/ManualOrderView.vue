@@ -93,12 +93,20 @@
                   <p class="font-weight-bold mb-1" style="font-size:12px">
                     {{ (p.title || '').slice(0, 50) }}{{ (p.title || '').length > 50 ? '…' : '' }}
                   </p>
-                  <p class="text-success mb-0" style="font-size:13px;font-weight:bold">
-                    {{ formatCurrency(p.cost_price) }}
+                  <p v-if="p.suggested_price != null" class="text-success mb-0" style="font-size:13px;font-weight:bold">
+                    {{ formatCurrency(p.suggested_price) }}
+                  </p>
+                  <p v-else class="text-danger mb-0" style="font-size:11px;font-weight:bold">
+                    <i class="fas fa-exclamation-triangle mr-1"></i>Sem preço de venda
                   </p>
                 </div>
                 <div class="card-footer p-1">
-                  <button class="btn btn-success btn-sm btn-block" @click="addToCart(p)">
+                  <button
+                    class="btn btn-success btn-sm btn-block"
+                    :disabled="p.suggested_price == null"
+                    :title="p.suggested_price == null ? 'Cadastre o preço de venda para vender este produto' : ''"
+                    @click="addToCart(p)"
+                  >
                     <i class="fas fa-cart-plus mr-1"></i> Adicionar
                   </button>
                 </div>
@@ -169,8 +177,8 @@
                   <th style="width:60px"></th>
                   <th>SKU</th>
                   <th>Produto</th>
-                  <th style="width:120px">Qtde</th>
-                  <th class="text-right">Unitário</th>
+                  <th style="width:110px">Qtde</th>
+                  <th class="text-right" style="width:130px" title="Preço unitário (editável)">Preço unit.</th>
                   <th class="text-right">Subtotal</th>
                   <th style="width:40px"></th>
                 </tr>
@@ -200,9 +208,18 @@
                       @change="normalizeQty(idx)"
                     />
                   </td>
-                  <td class="text-right">{{ formatCurrency(it.unit_cost) }}</td>
                   <td class="text-right">
-                    <strong>{{ formatCurrency(it.unit_cost * it.quantity) }}</strong>
+                    <input
+                      v-model.number="it.unit_price"
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      class="form-control form-control-sm text-right"
+                      @change="normalizePrice(idx)"
+                    />
+                  </td>
+                  <td class="text-right">
+                    <strong>{{ formatCurrency((Number(it.unit_price) || 0) * (Number(it.quantity) || 0)) }}</strong>
                   </td>
                   <td>
                     <button class="btn btn-sm btn-link text-danger" @click="removeItem(idx)">
@@ -213,11 +230,34 @@
               </tbody>
               <tfoot>
                 <tr>
-                  <td colspan="5" class="text-right"><strong>Total</strong></td>
+                  <td colspan="4" class="text-right text-muted small">Subtotal produtos</td>
                   <td class="text-right">
-                    <strong class="text-success">{{ formatCurrency(cartTotal) }}</strong>
+                    <span>{{ formatCurrency(cartTotal) }}</span>
                   </td>
-                  <td></td>
+                  <td colspan="2"></td>
+                </tr>
+                <tr>
+                  <td colspan="4" class="text-right text-muted small">
+                    <label class="mb-0" for="shipping-input">Frete</label>
+                  </td>
+                  <td class="text-right">
+                    <input
+                      id="shipping-input"
+                      v-model.number="shippingCost"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      class="form-control form-control-sm text-right"
+                    />
+                  </td>
+                  <td colspan="2"></td>
+                </tr>
+                <tr class="font-weight-bold">
+                  <td colspan="4" class="text-right">Total da venda</td>
+                  <td class="text-right">
+                    <strong class="text-success">{{ formatCurrency(saleTotal) }}</strong>
+                  </td>
+                  <td colspan="2"></td>
                 </tr>
               </tfoot>
             </table>
@@ -276,6 +316,7 @@ const pgPageSize = 18
 const pgTotal = ref(0)
 
 const cart = ref([])
+const shippingCost = ref(0)
 
 const selectedPerson = ref(null)
 const showSearch = ref(false)
@@ -284,8 +325,9 @@ const showForm = ref(false)
 const submitting = ref(false)
 
 const cartTotal = computed(() =>
-  cart.value.reduce((acc, it) => acc + (Number(it.unit_cost) || 0) * (Number(it.quantity) || 0), 0)
+  cart.value.reduce((acc, it) => acc + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0), 0)
 )
+const saleTotal = computed(() => cartTotal.value + (Number(shippingCost.value) || 0))
 const canSubmit = computed(() => cart.value.length > 0 && !!selectedPerson.value && !!cmigId.value)
 
 async function loadAvailableCmigs() {
@@ -304,6 +346,7 @@ async function loadAvailableCmigs() {
 function onCmigChange() {
   selectedPerson.value = null
   cart.value = []
+  shippingCost.value = 0
   products.value = []
   pgPage.value = 1
   pgTotal.value = 0
@@ -363,6 +406,10 @@ function changePgPage(p) {
 }
 
 function addToCart(p) {
+  if (p.suggested_price == null) {
+    toast.error('Cadastre o preço de venda antes de adicionar este produto')
+    return
+  }
   const kind = catalogTab.value
   const existing = cart.value.find((c) => c.kind === kind && c.id === p.id)
   if (existing) {
@@ -376,7 +423,7 @@ function addToCart(p) {
     title: p.title,
     thumb: p._thumb || null,
     quantity: 1,
-    unit_cost: Number(p.cost_price) || 0,
+    unit_price: Number(p.suggested_price) || 0,
   })
 }
 
@@ -384,6 +431,15 @@ function normalizeQty(idx) {
   const it = cart.value[idx]
   if (!it) return
   if (!Number.isFinite(it.quantity) || it.quantity < 1) it.quantity = 1
+}
+
+function normalizePrice(idx) {
+  const it = cart.value[idx]
+  if (!it) return
+  if (!Number.isFinite(it.unit_price) || it.unit_price <= 0) {
+    toast.warning('Preço deve ser maior que zero')
+    it.unit_price = 0.01
+  }
 }
 
 function removeItem(idx) {
@@ -407,7 +463,13 @@ async function closeOrder() {
     const { data } = await api.post('/manual-orders', {
       cmig_id: cmigId.value,
       buyer_person_id: selectedPerson.value.id,
-      items: cart.value.map((it) => ({ kind: it.kind, id: it.id, quantity: it.quantity })),
+      shipping_cost: Number(shippingCost.value) || 0,
+      items: cart.value.map((it) => ({
+        kind: it.kind,
+        id: it.id,
+        quantity: it.quantity,
+        unit_price: it.unit_price,
+      })),
     })
     toast.success('Pedido criado com sucesso')
     router.push(`/orders/${data.id}`)

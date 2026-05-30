@@ -182,7 +182,7 @@
                 <strong style="font-size:.85rem" class="text-truncate" :title="order.buyer_name">{{ order.buyer_name || '—' }}</strong>
               </div>
 
-              <!-- Link para ML -->
+              <!-- Numero da venda: marketplace usa platform_order_id, manual usa Order.id -->
               <div class="mb-1" style="font-size:.75rem">
                 <span class="text-muted">Venda: </span>
                 <a
@@ -196,8 +196,16 @@
                   #{{ order.platform_order_id }}
                   <i class="fas fa-external-link-alt ml-1" style="font-size:.65rem"></i>
                 </a>
+                <span v-else-if="order.platform === 'manual'" class="badge badge-light border" title="Pedido direto">
+                  #{{ order.id }}
+                </span>
                 <span v-else class="badge badge-light border">#{{ order.platform_order_id }}</span>
-                <i class="fas fa-copy ml-1 text-muted" style="cursor:pointer;font-size:.7rem" @click="copyText(order.platform_order_id)" title="Copiar"></i>
+                <i
+                  class="fas fa-copy ml-1 text-muted"
+                  style="cursor:pointer;font-size:.7rem"
+                  title="Copiar"
+                  @click="copyText(order.platform === 'manual' ? order.id : order.platform_order_id)"
+                ></i>
               </div>
 
               <div v-if="order.platform_order_ref && order.platform_order_ref !== order.platform_order_id" class="mb-1" style="font-size:.75rem">
@@ -437,38 +445,24 @@
               :payment-status="order.payment_status"
               :label-url="order.label_url || ''"
               :can-pay="canPay && !isCancelled(order)"
+              :can-print-label="canPrintLabel(order)"
+              :has-nfe="hasNfe(order)"
               @click:delivery="openShipmentModal(order)"
               @click:pay="payOrder(order)"
-              @click:label="openLabel(order)"
+              @click:label="handleLabelClick(order)"
+              @click:nfe="handleNfeClick(order)"
             />
 
-            <!-- Ícone redondo: Imprimir Etiqueta — não disponível para Full (ML gerencia logística) -->
-            <div
-              v-if="order.platform === 'mercadolivre' && order.shipment_id && !isFullOrder(order)"
-              class="step-circle invoice-circle"
-              :class="labelCircleClass(order)"
-              :title="labelCircleTooltip(order)"
-              style="cursor:pointer"
-              @click="printShippingLabel(order)"
-            >
-              <i class="fas fa-tag" :class="{ 'fa-spin': labelLoading[order.id] }"></i>
-            </div>
+            <!-- Pedido manual: botão ver detalhes (olho) — etiqueta esta no stepper -->
+            <RouterLink
+              v-if="order.platform === 'manual'"
+              :to="`/orders/${order.id}`"
+              class="btn btn-xs btn-outline-primary"
+              title="Ver detalhes do pedido"
+            ><i class="fas fa-eye"></i></RouterLink>
 
-            <!-- Ícone redondo: Consultar NF-e -->
-            <div
-              v-if="order.platform === 'mercadolivre'"
-              class="step-circle invoice-circle"
-              :class="invoiceCircleClass(order)"
-              :title="invoiceCircleTooltip(order)"
-              style="cursor:pointer"
-              @click="openInvoicesModal(order)"
-            >
-              <i class="fas fa-file-invoice-dollar"></i>
-            </div>
-
-            <!-- Atualizar status (UGO/Admin) — botões inline -->
+            <!-- Atualizar status (UGO/Admin) — acoes restantes apos label/NFe -->
             <template v-if="canUpdateStatus">
-              <button v-if="['paid','label_generated'].includes(order.status)" class="btn btn-xs btn-outline-warning" @click="updateStatus(order,'label_printed')" title="Etiqueta Impressa"><i class="fas fa-print"></i></button>
               <button v-if="order.status==='label_printed'" class="btn btn-xs btn-outline-info" @click="updateStatus(order,'separated')" title="Pedido Separado"><i class="fas fa-box-open"></i></button>
               <button v-if="order.status==='separated'" class="btn btn-xs btn-outline-success" @click="updateStatus(order,'shipped')" title="Coletado p/ Entrega"><i class="fas fa-truck"></i></button>
             </template>
@@ -573,7 +567,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { useRoute, RouterLink } from 'vue-router'
+import { useRoute, useRouter, RouterLink } from 'vue-router'
 import api from '@/composables/useApi'
 import { formatCurrency, formatDateTime, formatDate } from '@/utils/formatters'
 import { ORDER_STATUSES, PLATFORMS, SHIPPING_MODE_STYLE, shippingModeStyle, platformLogo } from '@/utils/constants'
@@ -587,6 +581,7 @@ import ShipmentModal from '@/components/orders/ShipmentModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 
 const route = useRoute()
+const router = useRouter()
 const toast = useToast()
 const authStore = useAuthStore()
 
@@ -743,6 +738,65 @@ function deliveryBtnClass(order) {
     return SHIPMENT_BTN_CLASS[order.shipment_status]
   }
   return statusBtnClass(order.status)
+}
+
+// ─── Etiqueta de Pedido Manual ──────────────────────────────────────────────
+const manualLabelLoading = ref({})
+
+async function downloadManualLabel(order) {
+  if (manualLabelLoading.value[order.id]) return
+  manualLabelLoading.value[order.id] = true
+  try {
+    const { data } = await api.get(`/manual-orders/${order.id}/label.pdf`, { responseType: 'blob' })
+    const blob = new Blob([data], { type: 'application/pdf' })
+    const url = URL.createObjectURL(blob)
+    window.open(url, '_blank')
+    setTimeout(() => URL.revokeObjectURL(url), 10000)
+  } catch (e) {
+    toast.error(e?.response?.data?.detail || 'Falha ao gerar etiqueta')
+  } finally {
+    manualLabelLoading.value[order.id] = false
+  }
+}
+
+// ─── Handlers do stepper: etiqueta e NF-e ───────────────────────────────────
+function canPrintLabel(order) {
+  if (order.platform === 'manual') return true
+  if (order.platform === 'mercadolivre' && order.shipment_id && !isFullOrder(order)) return true
+  return false
+}
+
+function hasNfe(order) {
+  return !!(order.nfe_status === 'authorized' || order.nfe_url || order.invoice_id || order.nfe_key)
+}
+
+async function handleLabelClick(order) {
+  // 1) Imprime/baixa a etiqueta conforme o tipo do pedido
+  if (order.platform === 'manual') {
+    await downloadManualLabel(order)
+  } else {
+    await printShippingLabel(order)
+  }
+  // 2) Marca como impressa (sem aguardar a UI confirmar — silencioso em caso de falha)
+  if (canUpdateStatus.value && ['paid', 'label_generated'].includes(order.status)) {
+    try {
+      await updateStatus(order, 'label_printed')
+    } catch {
+      /* silencioso */
+    }
+  }
+}
+
+function handleNfeClick(order) {
+  if (order.platform === 'manual') {
+    if (order.invoice_id) {
+      router.push(`/fiscal/invoices/${order.invoice_id}`)
+    } else {
+      router.push(`/orders/${order.id}`)
+    }
+    return
+  }
+  openInvoicesModal(order)
 }
 
 // ─── Ícone redondo de Etiqueta de Envio ─────────────────────────────────────

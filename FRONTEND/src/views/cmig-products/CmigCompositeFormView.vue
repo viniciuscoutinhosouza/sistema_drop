@@ -46,7 +46,16 @@
                     </div>
                     <div class="col-md-3 form-group">
                       <label>EAN / GTIN</label>
-                      <input v-model="form.ean" class="form-control" maxlength="14" />
+                      <div class="input-group">
+                        <input v-model="form.ean" class="form-control" maxlength="14" placeholder="7891234567890" />
+                        <div class="input-group-append">
+                          <button type="button" class="btn btn-outline-secondary"
+                                  title="Gerar código EAN-13 com prefixo 789 (GS1 Brasil) e checksum válido"
+                                  @click="generateEan">
+                            <i class="fas fa-magic"></i>
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -67,10 +76,16 @@
 
                   <div class="row">
                     <div class="col-md-4 form-group">
-                      <label>Preço de Custo</label>
+                      <label>Preço de Custo <small class="text-muted">(somatório dos componentes)</small></label>
                       <div class="input-group">
                         <div class="input-group-prepend"><span class="input-group-text">R$</span></div>
-                        <input v-model="form.cost_price" type="number" step="0.01" class="form-control" />
+                        <input
+                          :value="compositeCostTotal.toFixed(2)"
+                          type="text"
+                          class="form-control bg-light"
+                          readonly
+                          title="Custo calculado automaticamente a partir dos componentes do KIT"
+                        />
                       </div>
                     </div>
                     <div class="col-md-4 form-group">
@@ -93,6 +108,8 @@
 
                   <ProductDimensionsFields :form="form" />
                   <ProductFiscalFields :form="form" />
+
+                  <MarketplaceCategoriesCard owner-type="cmig" :owner-id="isEdit ? Number(route.params.id) : null" />
 
                   <div class="row" v-if="isEdit">
                     <div class="col-md-12 form-group pt-2">
@@ -266,6 +283,8 @@ import ProductPhotosCard from '@/components/products/ProductPhotosCard.vue'
 import ProductDimensionsFields from '@/components/products/ProductDimensionsFields.vue'
 import ProductFiscalFields from '@/components/products/ProductFiscalFields.vue'
 import CategoryPickerWithModal from '@/components/products/CategoryPickerWithModal.vue'
+import MarketplaceCategoriesCard from '@/components/products/MarketplaceCategoriesCard.vue'
+import { generateEan13 } from '@/utils/ean'
 
 const route  = useRoute()
 const router = useRouter()
@@ -317,6 +336,11 @@ async function doSearch() {
   }
 }
 
+function generateEan() {
+  form.value.ean = generateEan13()
+  toast.success('EAN gerado (prefixo 789 — GS1 Brasil).')
+}
+
 function isAlreadyAdded(r) {
   const pid = r.id
   return components.value.some(c =>
@@ -336,6 +360,7 @@ function addComponent(r) {
     sku: r.sku_cmig || r.sku,
     title: r.title,
     stock_quantity: r.stock_quantity,
+    cost_price: Number(r.cost_price) || 0,
     quantity: qty,
     contribution,
   })
@@ -353,6 +378,15 @@ function updateContribution(comp) {
 const compositeStock = computed(() => {
   if (!components.value.length) return 0
   return Math.min(...components.value.map(c => Math.floor(c.stock_quantity / Math.max(c.quantity, 1))))
+})
+
+// Custo do KIT = soma de (cost_price * quantidade) de cada componente.
+// Mantido como computed (nao editavel pelo usuario). O submit usa este valor.
+const compositeCostTotal = computed(() => {
+  return components.value.reduce(
+    (acc, c) => acc + (Number(c.cost_price) || 0) * Math.max(Number(c.quantity) || 1, 1),
+    0,
+  )
 })
 
 onMounted(async () => {
@@ -375,6 +409,7 @@ onMounted(async () => {
         sku: c.sku,
         title: c.title,
         stock_quantity: c.stock_quantity,
+        cost_price: Number(c.cost_price) || 0,
         quantity: c.quantity,
         contribution: c.contribution,
       }))
@@ -392,6 +427,8 @@ async function submit() {
   try {
     const payload = {
       ...form.value,
+      // Custo do KIT sempre = somatorio dos componentes (campo nao editavel no form).
+      cost_price: Number(compositeCostTotal.value.toFixed(2)),
       is_composite: true,
       images: pictures.value.map(p => ({ url: p.url })),
       components: components.value.map(c => ({

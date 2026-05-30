@@ -758,6 +758,49 @@ async def get_item(access_token: str, item_id: str) -> dict:
     return resp.json()
 
 
+async def update_item_variations(
+    access_token: str, item_id: str, variations: list[dict]
+) -> dict:
+    """Atualiza o array completo de variações de um item ML via PUT /items/{id}.
+
+    REGRA DE OURO DO ML: o PUT precisa conter a lista COMPLETA de variações que
+    devem permanecer. Qualquer variação cujo `id` não estiver presente será
+    DELETADA pelo ML. Por isso este helper recebe e envia o array inteiro.
+
+    `variations` deve ser um array no formato ML — cada item já com `id` (para
+    variações existentes que vão permanecer) ou sem `id` (para novas variações
+    a serem criadas).
+
+    Retorna o JSON do item atualizado.
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"variations": variations},
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=400, detail=f"Erro ao atualizar variações ML: {resp.text}"
+        )
+    return resp.json()
+
+
+async def update_item_status(access_token: str, item_id: str, status: str) -> dict:
+    """Atualiza apenas o status de um item ML (active|paused|closed)."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"status": status},
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=400, detail=f"Erro ao atualizar status ML: {resp.text}"
+        )
+    return resp.json()
+
+
 async def update_item_price(access_token: str, item_id: str, price: float) -> None:
     """Update the price of an existing ML listing."""
     async with httpx.AsyncClient() as client:

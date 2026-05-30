@@ -34,8 +34,8 @@
         </div>
       </div>
 
-      <!-- Toggle PG / CMIG -->
-      <div class="mb-3">
+      <!-- Toggle PG / CMIG + Atalho Anúncio com Variações -->
+      <div class="mb-3 d-flex flex-wrap align-items-center" style="gap:8px">
         <div class="btn-group">
           <button class="btn" :class="catalogTab === 'pg' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'pg'">
             <i class="fas fa-warehouse mr-1"></i> Catálogo PG
@@ -44,6 +44,13 @@
             <i class="fas fa-id-card mr-1"></i> Catálogo CMIG
           </button>
         </div>
+        <RouterLink
+          :to="variationsRouteTarget"
+          class="btn btn-outline-success ml-auto"
+          :title="variationsTooltip"
+        >
+          <i class="fas fa-layer-group mr-1"></i> Anúncio com Variações
+        </RouterLink>
       </div>
 
       <template v-if="catalogTab === 'pg'">
@@ -571,6 +578,19 @@ const selectedAccountLabel = computed(() => {
 })
 
 const isMercadoLivre = computed(() => selectedAccount.value?.platform === 'mercadolivre')
+
+const variationsTooltip = computed(() =>
+  selectedAccountId.value && isMercadoLivre.value
+    ? 'Criar anúncio com variações para esta conta'
+    : 'Criar anúncio com variações'
+)
+const variationsRouteTarget = computed(() => {
+  const useAccount = !!selectedAccountId.value && isMercadoLivre.value
+  return {
+    path: '/catalog/anuncios-variacoes/new',
+    query: useAccount ? { account_id: selectedAccountId.value } : {},
+  }
+})
 
 async function loadAccounts() {
   try {

@@ -79,5 +79,7 @@ class OrderItem(Base):
     unit_price = Column(Numeric(15, 2))
     unit_cost = Column(Numeric(15, 2))
     thumbnail_url = Column(String(1000))
+    # 'pg' (Catalogo Geral) | 'cmig' (Catalogo CMIG) | NULL (pedidos historicos de marketplace)
+    catalog_source = Column(String(10))
 
     order = relationship("Order", back_populates="items")

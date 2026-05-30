@@ -58,6 +58,8 @@ BACKEND/test_ml_order.py
 
 # Uploads de fotos (não versionar binários de produção/teste)
 BACKEND/static/uploads/
+# Etiquetas PDF geradas em runtime (label_service)
+BACKEND/static/labels/
 
 # Chaves SSH e binários pessoais (NUNCA commitar credenciais)
 *.key

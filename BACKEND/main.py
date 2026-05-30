@@ -57,6 +57,7 @@ from routers import (
     anuncios,
     auth,
     catalog,
+    cmig_reports,
     cmigs,
     dashboard,
     financial,
@@ -112,6 +113,9 @@ app.include_router(simulator.router, prefix=f"{PREFIX}/simulator", tags=["Simula
 app.include_router(people.router, prefix=f"{PREFIX}/people", tags=["People"])
 app.include_router(
     fiscal_config.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/fiscal-config", tags=["FiscalConfig"]
+)
+app.include_router(
+    cmig_reports.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/reports", tags=["CMIGReports"]
 )
 app.include_router(invoices.router, prefix=f"{PREFIX}/invoices", tags=["Invoices"])
 app.include_router(messages.router)

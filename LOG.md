@@ -4,6 +4,70 @@
 
 ---
 
+## 2026-05-30 — feat(catalog): anúncios com variações (ML) — publicar, editar e sincronizar estoque por variação
+
+**Pedido:** Botão "Anúncio com Variações" na tela Catálogo. Cada anúncio agrupa N variações (cor/tamanho/voltagem) com produtos simples vinculados (PG **ou** CMIG, origem única por anúncio). Sistema valida se a categoria do ML aceita variações, lê os atributos de combinação e popula SKU/EAN/estoque/preço sugerido a partir do produto vinculado. Usuário pode editar preço e fotos por variação. Estoque sempre = estoque disponível do produto vinculado; quando zera, variação fica "sem estoque" na VIP e volta sozinha quando o estoque cresce.
+
+**Backend:**
+- `BACKEND/routers/anuncios.py` — novos endpoints:
+  - `GET /anuncios/{id}` — listing único (para modo edição)
+  - `GET /anuncios/categories/{id}/variation-support` — detecta suporte a variações via atributos com tag `allow_variations` (e/ou `settings.attribute_types == "variations"`). Retorna `variation_combination_attrs`, `variation_own_attrs`, `max_variations_allowed`, `max_pictures_per_item_var`, flag `allows_custom_variations`.
+  - `POST /anuncios/publish-with-variations` — valida (origem única, combinações únicas, mesmos atributos em todas), monta payload ML em 2 passos (POST `/items` + PUT `/items/{id}` com `picture_ids` resolvidos via `pictures` retornado pelo ML).
+  - `PUT /anuncios/{id}/variations` — edição completa com a regra de ouro do ML (enviar lista completa de `variations`).
+  - Helpers `_validate_variations_input`, `_load_variation_product`, `_build_ml_variation_obj`, `_prepare_variations_for_ml`, `_enrich_variations_json`, `_consolidate_unique_pictures`, `_resolve_picture_ids_for_variation`.
+- `BACKEND/services/ml_service.py` — `update_item_variations(access_token, item_id, variations)` e `update_item_status(...)` para PUT atômicos.
+- `BACKEND/routers/cmigs.py` — `GET /cmigs/{id}/products` ganhou `search` (ilike por título/SKU) e `simple_only` (exclui kits).
+- `BACKEND/tasks/sync_variation_stock.py` (novo) + `BACKEND/tasks/scheduler.py` — job a cada 30min: para cada listing com `variations_json` lê stock do PG/CMIG via `_source`/`_catalog_product_id`/`_cmig_product_id`, envia `available_quantity = max(stock, 0)` (variações com 0 ficam "Sem estoque" — preservam histórico). Quando todas zeram pausa item; quando alguma volta positiva reativa.
+
+**Frontend:**
+- `FRONTEND/src/views/catalog/CatalogVariationsFormView.vue` (novo) — view única para publicar e editar. 4 seções: (1) conta/origem PG-CMIG/tipo classico-premium em ícones quadrados 80×80, (2) título/modelo/categoria com path completo (ex.: `Esportes › Fitness › Bolas`), (3) tabela editável de variações com selects para combinação, picker de produto, SKU/EAN/estoque readonly, preço editável (default = `suggested_price`), editor de fotos por variação, (4) frete + publicar.
+- `FRONTEND/src/components/catalog/VariationProductPicker.vue` (novo) — typeahead com `<Teleport to="body">` (evita corte pelo `.table-responsive`), posicionamento fixo via `getBoundingClientRect()`, largura mínima 320px, fonte alterna entre `/catalog?search=...` (PG) e `/cmigs/{id}/products?search=...&simple_only=true` (CMIG).
+- `FRONTEND/src/components/catalog/VariationPicturesEditor.vue` (novo) — modal por variação com galeria do produto vinculado, adicionar por URL, upload, drag/remove. Respeita `max_pictures_per_item_var` da categoria.
+- `FRONTEND/src/views/catalog/CatalogView.vue` — botão "Anúncio com Variações" (sempre clicável; leva `account_id` na query quando há ML selecionado).
+- `FRONTEND/src/router/index.js` — rotas `/catalog/anuncios-variacoes/new` e `.../:listing_id/edit`.
+
+**Decisões alinhadas:**
+- Origem única por anúncio: ou todas variações PG ou todas CMIG (nunca misturado). Validado client + server.
+- KITs (`is_composite=true`) excluídos dos pickers.
+- CMIG pode ser usado com ou sem vínculo PG.
+- Preço default = `suggested_price` (cai pra `cost_price` se nulo), sempre editável.
+- Quando variação fica com estoque 0: envia `available_quantity=0` (preserva histórico ML) em vez de deletar+recriar.
+- Variações personalizadas (`name` livre) fora da fase 1.
+
+**Bug corrigido na sessão (categoria MLB123037 / Bolas):**
+- Detecção de variações estava confiando só em `settings.attribute_types == "variations"`. Categoria de Bolas tem esse setting `None` mas tem atributo `COLOR` com tag `allow_variations` e aceita variações. Critério corrigido para priorizar atributos com `allow_variations` (fonte de verdade).
+
+---
+
+## 2026-05-29 — feat(cmig-reports): submenu Relatórios em MINHAS CONTAS com 2 PDFs (tabela de preços + estoque)
+
+**Pedido:** Novo submenu "Relatórios" em MINHAS CONTAS abrindo tela com cards/ícones de relatórios para impressão em PDF. Usuário escolhe a CMIG num dropdown e dispara: (1) Tabela de Preços (foto, SKU, EAN, título, preço de venda) ou (2) Relatório de Estoque (foto, SKU, EAN, título, estoque, custo unitário e custo total + total geral no rodapé).
+
+**Backend:**
+- `BACKEND/services/cmig_report_service.py` (novo) — `build_price_table_pdf()` e `build_stock_report_pdf()` usando ReportLab (já presente em `requirements.txt`). Layout A4 paisagem, fotos de capa embutidas via path local em `static/uploads/cmig-products/`, total geral no PDF de estoque (Decimal para evitar erro de float).
+- `BACKEND/routers/cmig_reports.py` (novo) — `GET /price-table` e `GET /stock` retornando `Response(application/pdf)` com `Content-Disposition: attachment`. Query string `?include_zero_stock=true|false`.
+- `BACKEND/main.py` — registrado em `prefix=/api/v1/cmigs/{cmig_id}/reports` (mesmo padrão de `fiscal_config`).
+- Autorização replicada do `_check_cmig_access` de `routers/cmigs.py`: admin libera tudo; UGO precisa do mesmo `warehouse_id`; AC precisa ser administrador da CMIG via `CMIGAdministrator`.
+- Preço de venda = `cmig_products.suggested_price` (decisão alinhada com o usuário — `product_listings.sale_price` ignorado para esta versão).
+- Render do PDF roda em `asyncio.to_thread()` para não bloquear o event loop.
+
+**Frontend:**
+- `FRONTEND/src/views/cmig-reports/CmigReportsView.vue` (novo) — dropdown popula via `useCmigStore().fetchCmigs()`; toggle "Incluir produtos sem estoque" (default: marcado); grid de 2 cards (`col-md-6 col-xl-4`) com ícone, título, descrição e botão "Gerar PDF". Download por blob + `URL.createObjectURL`.
+- `FRONTEND/src/components/common/AppSidebar.vue` — novo `<li>` "Relatórios" (ícone `fa-file-pdf`) dentro do bloco `MINHAS CONTAS` visível a AC e admin.
+- `FRONTEND/src/router/index.js` — rota `'cmig-reports'` com `meta.role: 'ac'`.
+
+**Decisões alinhadas:**
+- Preço de venda = `suggested_price` do CMIG.
+- PDF no backend com ReportLab (sem dependência nova).
+- Custo total por item + total geral no rodapé do PDF de estoque.
+- Toggle no frontend para incluir produtos sem estoque (default: incluir).
+
+**Follow-up no mesmo dia:**
+- Botão dos cards passa a exibir o nome do relatório ("Gerar Tabela de Preços" / "Gerar Relatório de Estoque") em vez de "Gerar PDF" genérico.
+- Fotos não apareciam no PDF porque o resolvedor de imagem só aceitava URLs `/static/...`. Refatorado `cmig_report_service.py`: agora também baixa imagens remotas (`http://`, `https://`) em paralelo via `httpx.AsyncClient`, normaliza via PIL (RGBA/P → RGB → JPEG) e passa BytesIO para o ReportLab. Pré-fetch acontece no `build_*_pdf` async antes do `asyncio.to_thread()` que renderiza o PDF.
+
+---
+
 ## 2026-05-28 — feat(stock-movements): redesign do modal + correcao de pedidos diretos no PG (sprints 1-4)
 
 **Pedido:** Tela de Movimentacao de Estoque nao exibia pedidos vendidos do PG quando o pedido apontava direto ao `OrderItem.catalog_product_id` (sem CMIG intermediario). Estudo amplo revelou multiplos gaps; pacote evoluiu em 4 sprints.

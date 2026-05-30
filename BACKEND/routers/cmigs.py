@@ -29,6 +29,7 @@ from models.product import (
     CatalogProductImage,
     CatalogProductVariant,
     ProductListing,
+    ProductMarketplaceCategory,
 )
 from models.user import User
 from models.warehouse import Warehouse
@@ -123,6 +124,7 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
                         "title": source.title,
                         "sku": source.sku_cmig if comp.cmig_product_id else source.sku,
                         "stock_quantity": source.stock_quantity,
+                        "cost_price": float(source.cost_price) if source.cost_price is not None else 0.0,
                         "quantity": comp.quantity,
                         "contribution": source.stock_quantity // qty,
                     }
@@ -390,6 +392,8 @@ async def remove_cmig_admin(
 async def list_cmig_products(
     cmig_id: int,
     composite_only: bool = False,
+    simple_only: bool = False,
+    search: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -403,6 +407,13 @@ async def list_cmig_products(
     )
     if composite_only:
         stmt = stmt.where(CMIGProduct.is_composite == True)
+    if simple_only:
+        stmt = stmt.where(CMIGProduct.is_composite == False)
+    if search:
+        like = f"%{search.strip()}%"
+        stmt = stmt.where(
+            or_(CMIGProduct.title.ilike(like), CMIGProduct.sku_cmig.ilike(like))
+        )
 
     result = await db.execute(stmt)
     return [_serialize_cmig_product(p) for p in result.scalars().all()]
@@ -860,6 +871,163 @@ async def link_cmig_product_to_pg(
     product.pg_product_id = body.pg_product_id
     await db.commit()
     return {"detail": "Produto CMIG vinculado ao PG com sucesso"}
+
+
+@router.post("/{cmig_id}/import-from-pg", status_code=201)
+async def import_pg_to_cmig(
+    cmig_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """AC cria um CMIGProduct a partir de um produto PG (Catálogo Geral) buscado por SKU.
+
+    Body: {"sku": "<SKU do PG>"}
+    Cria um novo CMIGProduct copiando dados do PG e ja deixando o vínculo
+    (`pg_product_id`) setado. Imagens são copiadas. Variantes são copiadas
+    quando existem. Evita duplicar quando ja existe CMIGProduct nessa CMIG
+    vinculado ao mesmo PG.
+    """
+    sku_raw = (body or {}).get("sku")
+    if not sku_raw or not str(sku_raw).strip():
+        raise HTTPException(status_code=400, detail="Informe o SKU do produto PG")
+    sku = str(sku_raw).strip()
+
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+
+    pg = (
+        await db.execute(
+            select(CatalogProduct)
+            .options(
+                selectinload(CatalogProduct.images),
+                selectinload(CatalogProduct.variants),
+                selectinload(CatalogProduct.marketplace_categories),
+            )
+            .where(CatalogProduct.sku == sku)
+        )
+    ).scalar_one_or_none()
+    if not pg:
+        raise HTTPException(status_code=404, detail=f"Produto PG com SKU '{sku}' não encontrado")
+
+    # Evita duplicar vínculo na mesma CMIG
+    already = (
+        await db.execute(
+            select(CMIGProduct).where(
+                and_(CMIGProduct.cmig_id == cmig_id, CMIGProduct.pg_product_id == pg.id)
+            )
+        )
+    ).scalar_one_or_none()
+    if already:
+        raise HTTPException(
+            status_code=409,
+            detail=f"PG '{pg.sku}' já está vinculado ao CMIGProduct #{already.id} ('{already.sku_cmig}') nesta CMIG",
+        )
+
+    # Resolve sku_cmig: preserva o sku do PG; se já existe nessa CMIG, adiciona sufixo
+    base_sku = pg.sku
+    sku_cmig = base_sku
+    suffix = 2
+    while (
+        await db.execute(
+            select(CMIGProduct).where(
+                and_(CMIGProduct.cmig_id == cmig_id, CMIGProduct.sku_cmig == sku_cmig)
+            )
+        )
+    ).scalar_one_or_none():
+        sku_cmig = f"{base_sku}-{suffix}"
+        suffix += 1
+
+    cp = CMIGProduct(
+        cmig_id=cmig_id,
+        sku_cmig=sku_cmig,
+        title=pg.title,
+        description=pg.description,
+        brand=pg.brand,
+        model=pg.model,
+        ean=pg.ean,
+        cost_price=pg.cost_price,
+        suggested_price=pg.suggested_price,
+        weight_kg=pg.weight_kg,
+        height_cm=pg.height_cm,
+        width_cm=pg.width_cm,
+        length_cm=pg.length_cm,
+        ncm=pg.ncm,
+        cest=pg.cest,
+        origin=pg.origin or 0,
+        csosn=pg.csosn,
+        category_id=pg.category_id,
+        video_id=pg.video_id,
+        attributes_json=pg.attributes_json,
+        is_composite=False,
+        is_active=True,
+        pg_product_id=pg.id,
+    )
+    db.add(cp)
+    await db.flush()
+
+    # Copia imagens do PG para o CMIG
+    photos_imported = 0
+    for i, img in enumerate(sorted(pg.images or [], key=lambda x: x.sort_order or 0)):
+        db.add(
+            CMIGProductImage(
+                cmig_product_id=cp.id,
+                url=img.url,
+                sort_order=img.sort_order if img.sort_order is not None else i,
+                is_primary=bool(img.is_primary) or (i == 0),
+            )
+        )
+        photos_imported += 1
+
+    # Copia variantes do PG → CMIG (mesmo padrão de import-to-pg)
+    variants_imported = 0
+    for v in pg.variants or []:
+        db.add(
+            CMIGProductVariant(
+                cmig_product_id=cp.id,
+                sku=f"{v.sku}-{cmig_id}",
+                variant_name=v.variant_name,
+                color=v.color,
+                size_label=v.size_label,
+                voltage=v.voltage,
+                price_modifier=v.price_modifier,
+                suggested_price=v.suggested_price,
+                attributes_json=v.attributes_json,
+            )
+        )
+        variants_imported += 1
+
+    # Copia categorias de marketplace (ML/Shopee) do PG → CMIG
+    # CHECK do banco exige exatamente um de (catalog_product_id, cmig_product_id);
+    # passamos catalog_product_id=None pois agora o owner é o CMIGProduct.
+    marketplace_categories_imported = 0
+    for mc in pg.marketplace_categories or []:
+        db.add(
+            ProductMarketplaceCategory(
+                catalog_product_id=None,
+                cmig_product_id=cp.id,
+                marketplace=mc.marketplace,
+                category_id=mc.category_id,
+                category_name=mc.category_name,
+                category_path_json=mc.category_path_json,
+                attributes_json=mc.attributes_json,
+            )
+        )
+        marketplace_categories_imported += 1
+
+    await db.commit()
+    await db.refresh(cp)
+
+    return {
+        "id": cp.id,
+        "sku_cmig": cp.sku_cmig,
+        "title": cp.title,
+        "pg_product_id": pg.id,
+        "pg_sku": pg.sku,
+        "photos_imported": photos_imported,
+        "variants_imported": variants_imported,
+        "marketplace_categories_imported": marketplace_categories_imported,
+    }
 
 
 @router.post("/{cmig_id}/products/{product_id}/import-to-pg", status_code=201)

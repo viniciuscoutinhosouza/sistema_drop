@@ -14,6 +14,9 @@
             <RouterLink v-if="isAC" :to="`/cmig-products/new?cmig_id=${cmigId}`" class="btn btn-outline-primary mr-2">
               <i class="fas fa-plus mr-1"></i> Novo Produto
             </RouterLink>
+            <button v-if="isAC" class="btn btn-outline-success mr-2" @click="openImportPgModal" title="Importar produto do Catálogo Geral (PG) para esta CMIG">
+              <i class="fas fa-file-import mr-1"></i> Importar PG
+            </button>
             <RouterLink v-if="isAC" :to="`/cmig-products/novo-composto?cmig_id=${cmigId}`" class="btn btn-primary">
               <i class="fas fa-layer-group mr-1"></i> Novo KIT
             </RouterLink>
@@ -215,6 +218,43 @@
         </div>
       </div>
     </div>
+
+    <!-- Modal Importar PG (cria CMIGProduct vinculado a partir de SKU PG) -->
+    <div v-if="importPgModal.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title"><i class="fas fa-file-import mr-2"></i>Importar Produto do PG</h6>
+            <button type="button" class="close" :disabled="importPgModal.loading" @click="closeImportPgModal"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <p class="text-muted mb-2" style="font-size:12px">
+              Informe o SKU do produto no Catálogo Geral (PG). Será criado um produto nesta CMIG vinculado ao PG.
+            </p>
+            <div class="form-group mb-0">
+              <label class="font-weight-bold" style="font-size:13px">SKU do PG <span class="text-danger">*</span></label>
+              <input
+                v-model="importPgModal.sku"
+                type="text"
+                class="form-control"
+                placeholder="Ex: 5510"
+                :disabled="importPgModal.loading"
+                @keyup.enter="confirmImportPg"
+                ref="importPgInput"
+              />
+            </div>
+          </div>
+          <div class="modal-footer py-2">
+            <button class="btn btn-sm btn-secondary" :disabled="importPgModal.loading" @click="closeImportPgModal">Cancelar</button>
+            <button class="btn btn-sm btn-success" :disabled="!importPgModal.sku.trim() || importPgModal.loading" @click="confirmImportPg">
+              <i v-if="importPgModal.loading" class="fas fa-spinner fa-spin mr-1"></i>
+              <i v-else class="fas fa-file-import mr-1"></i>
+              Importar
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -293,6 +333,43 @@ const showLinkModal = ref(false)
 const selectedProduct = ref(null)
 const pgProductId = ref('')
 const savingLink = ref(false)
+
+const importPgModal = reactive({ show: false, sku: '', loading: false })
+const importPgInput = ref(null)
+
+function openImportPgModal() {
+  importPgModal.sku = ''
+  importPgModal.show = true
+  // Foca o input apos render
+  setTimeout(() => importPgInput.value?.focus?.(), 50)
+}
+
+function closeImportPgModal() {
+  if (importPgModal.loading) return
+  importPgModal.show = false
+  importPgModal.sku = ''
+}
+
+async function confirmImportPg() {
+  const sku = importPgModal.sku.trim()
+  if (!sku) return
+  importPgModal.loading = true
+  try {
+    const { data } = await api.post(`/cmigs/${cmigId.value}/import-from-pg`, { sku })
+    const extras = [
+      data.photos_imported ? `${data.photos_imported} foto(s)` : null,
+      data.variants_imported ? `${data.variants_imported} variante(s)` : null,
+      data.marketplace_categories_imported ? `${data.marketplace_categories_imported} categoria(s) marketplace` : null,
+    ].filter(Boolean).join(' · ')
+    toast.success(`Produto importado: SKU ${data.sku_cmig}${extras ? ' · ' + extras : ''}`)
+    importPgModal.show = false
+    await loadProducts()
+  } catch (e) {
+    toast.error(e?.response?.data?.detail || 'Erro ao importar produto do PG')
+  } finally {
+    importPgModal.loading = false
+  }
+}
 
 const isAC = computed(() => authStore.user?.role === 'ac')
 const isUGO = computed(() => ['ugo', 'admin'].includes(authStore.user?.role))

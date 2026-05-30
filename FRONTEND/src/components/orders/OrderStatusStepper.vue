@@ -38,32 +38,50 @@ const props = defineProps({
   paymentStatus: { type: String, default: '' },
   labelUrl:      { type: String, default: '' },
   canPay:        { type: Boolean, default: false },
+  canPrintLabel: { type: Boolean, default: false }, // true para manual ou ML com shipment
+  hasNfe:        { type: Boolean, default: false }, // true quando ha NFe associada
 })
-const emit = defineEmits(['click:delivery', 'click:pay', 'click:label'])
+const emit = defineEmits(['click:delivery', 'click:pay', 'click:label', 'click:nfe'])
 
 const steps = [
   { key: 'downloaded',      label: 'Pedido Baixado',      icon: 'fas fa-download' },
   { key: 'paid',            label: 'Pedido Pago',         icon: 'fas fa-dollar-sign' },
-  { key: 'label_generated', label: 'Etiqueta Gerada',     icon: 'fas fa-tag' },
-  { key: 'label_printed',   label: 'Etiqueta Impressa',   icon: 'fas fa-print' },
+  { key: 'label_generated', label: 'Etiqueta',            icon: 'fas fa-tag' },
+  { key: 'nfe',             label: 'NF-e',                icon: 'fas fa-file-invoice-dollar' },
   { key: 'separated',       label: 'Pedido Separado',     icon: 'fas fa-box-open' },
   { key: 'shipped',         label: 'Coletado p/ Entrega', icon: 'fas fa-truck' },
 ]
-const stepOrder = steps.map(s => s.key)
+// Ordem para isPast/isCurrent (mantém pipeline de status, NFe e label sao acoes paralelas)
+const stepOrderForStatus = ['downloaded', 'paid', 'label_generated', 'label_printed', 'separated', 'shipped']
 
 function isPast(key) {
-  const cur = stepOrder.indexOf(props.status)
-  const idx = stepOrder.indexOf(key)
+  // 'nfe' nao faz parte da progressao linear; ativo so quando hasNfe
+  if (key === 'nfe') return false
+  const cur = stepOrderForStatus.indexOf(props.status)
+  const idx = stepOrderForStatus.indexOf(key)
   return idx !== -1 && cur !== -1 && idx < cur
 }
-function isCurrent(key) { return props.status === key }
+function isCurrent(key) {
+  if (key === 'nfe') return false
+  if (key === 'label_generated' && props.status === 'label_printed') return true
+  return props.status === key
+}
 
 function stepClass(key) {
   if (key === 'paid' && props.paymentStatus === 'pending' && props.canPay) {
     return ['bg-warning', 'text-dark']
   }
   if (key === 'label_generated') {
-    return props.labelUrl ? ['bg-success', 'text-white'] : ['bg-secondary', 'text-white']
+    if (props.status === 'label_printed' || props.labelUrl) {
+      return ['bg-success', 'text-white', 'step-actionable']
+    }
+    if (props.canPrintLabel) return ['bg-info', 'text-white', 'step-actionable']
+    return ['bg-secondary', 'text-white']
+  }
+  if (key === 'nfe') {
+    return props.hasNfe
+      ? ['bg-success', 'text-white', 'step-actionable']
+      : ['bg-secondary', 'text-white', 'step-actionable']
   }
   const active = isPast(key) || isCurrent(key)
   return [
@@ -78,14 +96,20 @@ function stepTooltip(key, defaultLabel) {
     return 'Não Pago — clique para pagar'
   }
   if (key === 'label_generated') {
-    return props.labelUrl ? 'Ver etiqueta' : 'Etiqueta não gerada'
+    if (props.status === 'label_printed') return 'Etiqueta impressa — clique para reimprimir'
+    if (props.canPrintLabel) return 'Clique para imprimir etiqueta'
+    return 'Etiqueta indisponível para este pedido'
+  }
+  if (key === 'nfe') {
+    return props.hasNfe ? 'NF-e autorizada — clique para detalhes' : 'NF-e — clique para emitir/consultar'
   }
   return defaultLabel
 }
 
 function stepClickable(key) {
   if (key === 'paid' && props.paymentStatus === 'pending' && props.canPay) return true
-  if (key === 'label_generated' && props.labelUrl) return true
+  if (key === 'label_generated' && props.canPrintLabel) return true
+  if (key === 'nfe') return true
   return false
 }
 
@@ -94,8 +118,12 @@ function onStepClick(key) {
     emit('click:pay')
     return
   }
-  if (key === 'label_generated' && props.labelUrl) {
+  if (key === 'label_generated' && props.canPrintLabel) {
     emit('click:label')
+    return
+  }
+  if (key === 'nfe') {
+    emit('click:nfe')
   }
 }
 

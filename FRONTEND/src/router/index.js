@@ -23,6 +23,7 @@ const ProductEditView = () => import('@/views/products/ProductEditView.vue')
 // Catalog
 const CatalogView = () => import('@/views/catalog/CatalogView.vue')
 const CatalogProductView = () => import('@/views/catalog/CatalogProductView.vue')
+const CatalogVariationsFormView = () => import('@/views/catalog/CatalogVariationsFormView.vue')
 
 // Orders
 const OrderListView = () => import('@/views/orders/OrderListView.vue')
@@ -66,6 +67,9 @@ const CmigCompositeFormView     = () => import('@/views/cmig-products/CmigCompos
 
 // Anúncios (AC)
 const AnunciosView = () => import('@/views/anuncios/AnunciosView.vue')
+
+// Relatórios CMIG (AC)
+const CmigReportsView = () => import('@/views/cmig-reports/CmigReportsView.vue')
 
 // Simulador ML
 const SimuladorView = () => import('@/views/simulator/SimuladorView.vue')
@@ -125,6 +129,8 @@ const routes = [
       { path: 'products/:id/edit', component: ProductEditView, meta: { title: 'Editar Produto' } },
 
       { path: 'catalog', component: CatalogView, meta: { title: 'Catálogo' } },
+      { path: 'catalog/anuncios-variacoes/new', component: CatalogVariationsFormView, meta: { title: 'Novo Anúncio com Variações' } },
+      { path: 'catalog/anuncios-variacoes/:listing_id/edit', component: CatalogVariationsFormView, meta: { title: 'Editar Anúncio com Variações' } },
       { path: 'catalog/:id', component: CatalogProductView, meta: { title: 'Produto do Catálogo' } },
 
       { path: 'orders', component: OrderListView, meta: { title: 'Pedidos' } },
@@ -178,6 +184,9 @@ const routes = [
 
       // Anúncios — AC
       { path: 'anuncios', component: AnunciosView, meta: { title: 'Anúncios', role: 'ac' } },
+
+      // Relatórios CMIG — AC
+      { path: 'cmig-reports', component: CmigReportsView, meta: { title: 'Relatórios CMIG', role: 'ac' } },
 
       // Atendimento (Mensagens + Perguntas) — AC e Admin
       { path: 'messages', component: MessagesView, meta: { title: 'Central de Atendimento' } },

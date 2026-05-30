@@ -55,6 +55,13 @@
               </RouterLink>
             </li>
 
+            <li class="nav-item">
+              <RouterLink to="/cmig-reports" class="nav-link" :class="{ active: route.path.startsWith('/cmig-reports') }">
+                <i class="nav-icon fas fa-file-pdf"></i>
+                <p>Relatórios</p>
+              </RouterLink>
+            </li>
+
             <li class="nav-header">OPERAÇÕES</li>
 
             <li class="nav-item">

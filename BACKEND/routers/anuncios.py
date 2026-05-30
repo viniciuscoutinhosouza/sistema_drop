@@ -816,6 +816,17 @@ async def list_anuncios(
     return serialized
 
 
+@router.get("/{listing_id}")
+async def get_anuncio(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retorna um anúncio individual com produto vinculado e variações parseadas."""
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    return _serialize_listing(listing)
+
+
 @router.post("/import/{account_id}")
 async def import_anuncios(
     account_id: int,
@@ -1583,6 +1594,622 @@ async def create_cmig_product_from_listing(
     }
 
 
+# ── Anúncios com Variações ────────────────────────────────────────────────────
+
+
+def _normalize_combination_key(combination: list[dict]) -> tuple:
+    """Chave canônica de uma combinação para detectar duplicatas (ordem-invariante)."""
+    items = []
+    for c in combination or []:
+        key = c.get("id") or c.get("name") or ""
+        val = c.get("value_id") or c.get("value_name") or ""
+        items.append((str(key), str(val)))
+    return tuple(sorted(items))
+
+
+def _combination_attr_ids(combination: list[dict]) -> set[str]:
+    return {str(c.get("id") or c.get("name") or "") for c in (combination or [])}
+
+
+def _validate_variations_input(source: str, variations: list[dict]) -> None:
+    """Valida regras estruturais de variações antes de qualquer chamada externa."""
+    if source not in ("pg", "cmig"):
+        raise HTTPException(status_code=422, detail="source deve ser 'pg' ou 'cmig'")
+    if not variations or not isinstance(variations, list):
+        raise HTTPException(status_code=422, detail="variations não pode ser vazio")
+    if len(variations) > 100:
+        raise HTTPException(
+            status_code=422, detail="Máximo de 100 variações por anúncio (limite ML)"
+        )
+
+    seen_keys: set[tuple] = set()
+    reference_attr_ids: set[str] | None = None
+
+    for idx, var in enumerate(variations, start=1):
+        comb = var.get("attribute_combinations") or []
+        if not comb:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Variação #{idx}: attribute_combinations não pode ser vazio",
+            )
+        attr_ids = _combination_attr_ids(comb)
+        if reference_attr_ids is None:
+            reference_attr_ids = attr_ids
+        elif attr_ids != reference_attr_ids:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Variação #{idx}: combinação usa atributos {sorted(attr_ids)} "
+                    f"mas a primeira variação usa {sorted(reference_attr_ids)}. "
+                    "Todas as variações devem declarar os mesmos atributos."
+                ),
+            )
+        key = _normalize_combination_key(comb)
+        if key in seen_keys:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Variação #{idx}: combinação de valores repetida",
+            )
+        seen_keys.add(key)
+
+        if source == "pg":
+            if not var.get("catalog_product_id"):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Variação #{idx}: catalog_product_id é obrigatório (source=pg)",
+                )
+            if var.get("cmig_product_id"):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Variação #{idx}: não misture cmig_product_id quando source=pg",
+                )
+        else:
+            if not var.get("cmig_product_id"):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Variação #{idx}: cmig_product_id é obrigatório (source=cmig)",
+                )
+            if var.get("catalog_product_id"):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Variação #{idx}: não misture catalog_product_id quando source=cmig",
+                )
+
+
+async def _load_variation_product(
+    source: str,
+    var: dict,
+    db: AsyncSession,
+    account: MarketplaceAccount,
+    user: User,
+) -> dict:
+    """Carrega o produto (PG ou CMIG) referenciado pela variação e devolve dict normalizado."""
+    if source == "pg":
+        pid = var["catalog_product_id"]
+        r = await db.execute(
+            select(CatalogProduct)
+            .options(selectinload(CatalogProduct.images))
+            .where(CatalogProduct.id == pid)
+        )
+        prod = r.scalar_one_or_none()
+        if not prod:
+            raise HTTPException(status_code=404, detail=f"Produto PG #{pid} não encontrado")
+        if prod.is_composite:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Produto PG #{pid} é um KIT — variações exigem produtos simples",
+            )
+        if user.role not in ("admin", "ugo") and user.warehouse_id and prod.warehouse_id and prod.warehouse_id != user.warehouse_id:
+            raise HTTPException(
+                status_code=403, detail=f"Produto PG #{pid} não pertence ao seu galpão"
+            )
+        images_sorted = sorted(prod.images or [], key=lambda i: i.sort_order or 0)
+        return {
+            "id": prod.id,
+            "sku": prod.sku,
+            "ean": prod.ean,
+            "stock": int(prod.stock_quantity or 0),
+            "price_default": float(prod.suggested_price) if prod.suggested_price else (
+                float(prod.cost_price) if prod.cost_price else None
+            ),
+            "images": [img.url for img in images_sorted if img.url],
+        }
+
+    pid = var["cmig_product_id"]
+    r = await db.execute(
+        select(CMIGProduct)
+        .options(selectinload(CMIGProduct.images))
+        .where(CMIGProduct.id == pid)
+    )
+    prod = r.scalar_one_or_none()
+    if not prod:
+        raise HTTPException(status_code=404, detail=f"Produto CMIG #{pid} não encontrado")
+    if prod.is_composite:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Produto CMIG #{pid} é um KIT — variações exigem produtos simples",
+        )
+    if not account.cmig_id or prod.cmig_id != account.cmig_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Produto CMIG #{pid} pertence à CMIG {prod.cmig_id}, mas a conta "
+                f"selecionada está vinculada à CMIG {account.cmig_id}"
+            ),
+        )
+    images_sorted = sorted(prod.images or [], key=lambda i: i.sort_order or 0)
+    return {
+        "id": prod.id,
+        "sku": prod.sku_cmig,
+        "ean": prod.ean,
+        "stock": int(prod.stock_quantity or 0),
+        "price_default": float(prod.suggested_price) if prod.suggested_price else (
+            float(prod.cost_price) if prod.cost_price else None
+        ),
+        "images": [img.url for img in images_sorted if img.url],
+    }
+
+
+def _build_ml_variation_obj(
+    var_input: dict, loaded: dict, *, include_id: bool = False
+) -> dict:
+    """Monta o objeto de variação para o payload ML.
+
+    `include_id`: True quando estamos atualizando uma variação que já tem ml_id.
+    """
+    attrs_var: list[dict] = []
+    if loaded.get("sku"):
+        attrs_var.append({"id": "SELLER_SKU", "value_name": str(loaded["sku"])})
+    ean = loaded.get("ean")
+    if ean and _is_valid_ean13(ean):
+        attrs_var.append({"id": "GTIN", "value_name": str(ean)})
+
+    price = var_input.get("price_override")
+    if price in (None, ""):
+        price = loaded.get("price_default")
+    if price in (None, ""):
+        raise HTTPException(
+            status_code=422,
+            detail="Preço não informado e produto não tem preço sugerido.",
+        )
+
+    stock = max(int(loaded.get("stock") or 0), 0)
+
+    obj: dict = {
+        "attribute_combinations": var_input["attribute_combinations"],
+        "attributes": attrs_var,
+        "price": float(price),
+        "available_quantity": stock,
+    }
+    if include_id and var_input.get("_ml_variation_id"):
+        obj["id"] = var_input["_ml_variation_id"]
+    return obj
+
+
+def _consolidate_unique_pictures(parent_urls: list[str], variations_urls: list[list[str]]) -> list[str]:
+    """Une URLs preservando ordem (parent primeiro), sem duplicar."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for u in parent_urls or []:
+        if u and u not in seen:
+            seen.add(u)
+            result.append(u)
+    for var_pics in variations_urls or []:
+        for u in var_pics or []:
+            if u and u not in seen:
+                seen.add(u)
+                result.append(u)
+    return result[:12]  # ML aceita até 12 fotos por item
+
+
+def _build_url_to_pic_id_map(ml_pictures: list[dict] | None) -> dict[str, str]:
+    """Mapeia URL → picture_id a partir da resposta do ML (que pode trazer http/https/secure_url)."""
+    m: dict[str, str] = {}
+    for p in ml_pictures or []:
+        pid = p.get("id") or ""
+        if not pid:
+            continue
+        for key in ("url", "secure_url"):
+            u = p.get(key)
+            if u:
+                m[u] = pid
+                m[u.replace("http://", "https://")] = pid
+                m[u.replace("https://", "http://")] = pid
+    return m
+
+
+def _resolve_picture_ids_for_variation(
+    var_pics_urls: list[str], url_to_id: dict[str, str]
+) -> list[str]:
+    """Resolve URLs de uma variação para picture_ids do ML, mantendo ordem e dedup."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for u in var_pics_urls or []:
+        candidates = [
+            u,
+            _absolutize_image_url(u),
+            u.replace("http://", "https://"),
+            u.replace("https://", "http://"),
+        ]
+        pid = next((url_to_id[c] for c in candidates if c in url_to_id), None)
+        if pid and pid not in seen:
+            seen.add(pid)
+            out.append(pid)
+    return out
+
+
+async def _prepare_variations_for_ml(
+    source: str,
+    variations_input: list[dict],
+    db: AsyncSession,
+    account: MarketplaceAccount,
+    user: User,
+) -> tuple[list[dict], list[dict], list[list[str]]]:
+    """Carrega produtos, valida estoque mínimo e devolve (loaded, ml_var_objects, var_urls_lists)."""
+    loaded_list: list[dict] = []
+    ml_vars: list[dict] = []
+    pics_per_var: list[list[str]] = []
+    total_stock = 0
+
+    for var in variations_input:
+        loaded = await _load_variation_product(source, var, db, account, user)
+        loaded_list.append(loaded)
+        ml_vars.append(_build_ml_variation_obj(var, loaded))
+        # Fotos: override > do produto
+        override = var.get("picture_urls_override")
+        var_pics = override if isinstance(override, list) and override else loaded.get("images") or []
+        pics_per_var.append(list(var_pics))
+        total_stock += max(int(loaded.get("stock") or 0), 0)
+
+    if total_stock <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Nenhuma variação tem estoque disponível — o ML exige ao menos uma "
+                "unidade para publicar. Reabasteça pelo menos um produto antes."
+            ),
+        )
+
+    return loaded_list, ml_vars, pics_per_var
+
+
+def _enrich_variations_json(
+    ml_variations_returned: list[dict],
+    variations_input: list[dict],
+    pics_per_var: list[list[str]],
+    source: str,
+) -> str:
+    """Monta o variations_json a salvar — anota _source, _catalog_product_id/_cmig_product_id,
+    _pictures_urls e mantém o id ML para sync futuro."""
+    enriched: list[dict] = []
+    for i, var_ret in enumerate(ml_variations_returned or []):
+        original = variations_input[i] if i < len(variations_input) else {}
+        # Combinação salva: prefer o que o ML devolveu (já normalizado), caindo no input
+        comb = var_ret.get("attribute_combinations") or original.get("attribute_combinations") or []
+        attrs_var = var_ret.get("attributes") or []
+        enriched.append({
+            "id": var_ret.get("id"),
+            "attribute_combinations": comb,
+            "attributes": attrs_var,
+            "price": var_ret.get("price"),
+            "available_quantity": var_ret.get("available_quantity"),
+            "picture_ids": var_ret.get("picture_ids", []),
+            "_source": source,
+            "_catalog_product_id": original.get("catalog_product_id"),
+            "_cmig_product_id": original.get("cmig_product_id"),
+            "_pictures_urls": pics_per_var[i] if i < len(pics_per_var) else [],
+        })
+    return _json.dumps(enriched, ensure_ascii=False)
+
+
+@router.post("/publish-with-variations")
+async def publish_anuncio_with_variations(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cria um anúncio ML com variações vinculadas a produtos PG OU CMIG (origem única)."""
+    account_id = body.get("account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id é obrigatório")
+
+    account = await _get_account_or_403(account_id, current_user, db)
+    if account.platform != "mercadolivre":
+        raise HTTPException(
+            status_code=422,
+            detail="Anúncios com variações só estão disponíveis para Mercado Livre",
+        )
+    access_token = await _get_valid_token(account, db)
+    await _validate_token_owner(account, access_token)
+
+    source = body.get("source")
+    variations_input = body.get("variations") or []
+    _validate_variations_input(source, variations_input)
+
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="title é obrigatório")
+    category_id = body.get("category_id")
+    if not category_id:
+        raise HTTPException(status_code=422, detail="category_id é obrigatório")
+
+    # Confirma que a categoria aceita variações (server-side guard)
+    cat_support = await get_category_variation_support(category_id, current_user)
+    if not cat_support.get("supports_variations"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Categoria {category_id} não aceita variações",
+        )
+    max_vars = cat_support.get("max_variations_allowed")
+    if max_vars and len(variations_input) > max_vars:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Categoria aceita no máximo {max_vars} variações (recebido {len(variations_input)})",
+        )
+
+    listing_type = body.get("listing_type", "gold_special")
+    free_shipping = bool(body.get("free_shipping", False))
+    parent_pictures = list(body.get("pictures") or [])
+    parent_attributes = list(body.get("attributes") or [])
+    model = body.get("model")
+    warranty_type = body.get("warranty_type")
+    warranty_time = body.get("warranty_time")
+
+    loaded_list, ml_vars, pics_per_var = await _prepare_variations_for_ml(
+        source, variations_input, db, account, current_user
+    )
+
+    # Fotos consolidadas no nível-pai (capa primeiro, depois únicas das variações)
+    all_pics = _consolidate_unique_pictures(parent_pictures, pics_per_var)
+
+    # Atributos do item-pai: MODEL se informado + atributos manuais do formulário
+    parent_attrs_out = list(parent_attributes)
+    parent_ids = {a.get("id", "").upper() for a in parent_attrs_out}
+    if model and "MODEL" not in parent_ids:
+        parent_attrs_out.append({"id": "MODEL", "value_name": str(model)})
+
+    # Dimensões: tira do primeiro produto carregado (todos da mesma família via variação)
+    first = loaded_list[0] if loaded_list else {}
+
+    ml_payload: dict = {
+        "title": title[:60],
+        "category_id": category_id,
+        "currency_id": "BRL",
+        "buying_mode": "buy_it_now",
+        "condition": body.get("item_condition") or "new",
+        "listing_type_id": listing_type,
+        "pictures": [{"source": _absolutize_image_url(u)} for u in all_pics],
+        "attributes": parent_attrs_out or [],
+        "variations": ml_vars,
+        "shipping": {
+            "mode": body.get("shipping_mode") or "me2",
+            "free_shipping": free_shipping,
+        },
+    }
+    if warranty_type:
+        ml_payload["sale_terms"] = [{"id": "WARRANTY_TYPE", "value_name": warranty_type}]
+        if warranty_time:
+            ml_payload["sale_terms"].append({"id": "WARRANTY_TIME", "value_name": warranty_time})
+
+    # Dimensões do pacote (imutáveis após criação)
+    _h = body.get("height_cm")
+    _w = body.get("width_cm")
+    _l = body.get("length_cm")
+    _kg = body.get("weight_kg")
+    if _h and _w and _l and _kg:
+        ml_payload["shipping"]["dimensions"] = (
+            f"{int(float(_h))}x{int(float(_w))}x{int(float(_l))},{int(float(_kg) * 1000)}"
+        )
+
+    # 1) POST /items
+    ml_item = await ml_service.create_item(access_token, ml_payload)
+    platform_item_id = ml_item.get("id")
+    ml_pictures = ml_item.get("pictures") or []
+    url_to_id = _build_url_to_pic_id_map(ml_pictures)
+    ml_vars_returned = list(ml_item.get("variations") or [])
+
+    # 2) PUT /items/{id} para associar picture_ids a cada variação
+    need_pictures_update = False
+    pictures_update_payload: list[dict] = []
+    for i, var_ret in enumerate(ml_vars_returned):
+        pic_urls = pics_per_var[i] if i < len(pics_per_var) else []
+        pic_ids = _resolve_picture_ids_for_variation(pic_urls, url_to_id)
+        if pic_ids and pic_ids != (var_ret.get("picture_ids") or []):
+            need_pictures_update = True
+        pictures_update_payload.append(
+            {
+                "id": var_ret.get("id"),
+                "attribute_combinations": var_ret.get("attribute_combinations"),
+                "attributes": var_ret.get("attributes"),
+                "price": var_ret.get("price"),
+                "available_quantity": var_ret.get("available_quantity"),
+                "picture_ids": pic_ids,
+            }
+        )
+
+    if need_pictures_update and platform_item_id:
+        try:
+            updated = await ml_service.update_item_variations(
+                access_token, platform_item_id, pictures_update_payload
+            )
+            ml_vars_returned = list(updated.get("variations") or ml_vars_returned)
+        except HTTPException as exc:
+            logger.warning(
+                "Falha ao associar picture_ids às variações do item %s: %s",
+                platform_item_id, exc.detail,
+            )
+
+    # 3) Persiste ProductListing
+    thumbnail = ml_item.get("secure_thumbnail") or ml_item.get("thumbnail") or (
+        all_pics[0] if all_pics else None
+    )
+    if thumbnail:
+        thumbnail = thumbnail.replace("http://", "https://")
+    pictures_json = _pictures_to_json(ml_pictures, all_pics)
+    variations_json = _enrich_variations_json(
+        ml_vars_returned, variations_input, pics_per_var, source
+    )
+
+    total_stock = sum(max(int(l.get("stock") or 0), 0) for l in loaded_list)
+
+    listing = ProductListing(
+        account_id=account_id,
+        cmig_product_id=None,
+        catalog_product_id=None,
+        platform_item_id=platform_item_id,
+        permalink=ml_item.get("permalink") or "",
+        thumbnail=thumbnail,
+        title_override=title[:60],
+        category_id=category_id,
+        category_name=cat_support.get("category_name") or "",
+        listing_type=listing_type,
+        sale_price=float(ml_item.get("price") or ml_vars_returned[0].get("price") or 0),
+        available_quantity=total_stock,
+        stock_mode="product",
+        fixed_quantity=1,
+        keep_stock_fixed=False,
+        item_condition=body.get("item_condition") or "new",
+        warranty_type=warranty_type,
+        warranty_time=warranty_time,
+        shipping_mode=body.get("shipping_mode") or "me2",
+        free_shipping=free_shipping,
+        weight_kg=float(_kg) if _kg else None,
+        height_cm=float(_h) if _h else None,
+        width_cm=float(_w) if _w else None,
+        length_cm=float(_l) if _l else None,
+        status="published",
+        published_at=datetime.now(UTC),
+        last_sync_at=datetime.now(UTC),
+        pictures_json=pictures_json,
+        variations_json=variations_json,
+        attributes_json=_json.dumps(parent_attrs_out, ensure_ascii=False) if parent_attrs_out else None,
+    )
+    db.add(listing)
+    await db.commit()
+    await db.refresh(listing)
+
+    return _serialize_listing(listing)
+
+
+@router.put("/{listing_id}/variations")
+async def update_anuncio_variations(
+    listing_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Edita um anúncio com variações: title/model/frete/fotos do nível-pai e o array completo de variações.
+
+    Regra ML: o PUT envia a lista COMPLETA. Variações cujo `_ml_variation_id` não vier
+    no body serão removidas do anúncio no ML.
+    """
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID no marketplace")
+    if listing.account.platform != "mercadolivre":
+        raise HTTPException(status_code=422, detail="Edição de variações só para Mercado Livre")
+
+    access_token = await _get_valid_token(listing.account, db)
+
+    source = body.get("source")
+    variations_input = body.get("variations") or []
+    _validate_variations_input(source, variations_input)
+
+    loaded_list, ml_vars, pics_per_var = await _prepare_variations_for_ml(
+        source, variations_input, db, listing.account, current_user
+    )
+
+    # Mantém id ML das variações que já existem
+    for i, var in enumerate(variations_input):
+        if var.get("_ml_variation_id"):
+            ml_vars[i]["id"] = var["_ml_variation_id"]
+
+    parent_pictures = list(body.get("pictures") or [])
+    all_pics = _consolidate_unique_pictures(parent_pictures, pics_per_var)
+
+    # Etapa 1: PUT atualizando título/fotos do nível-pai + variações sem picture_ids
+    update_payload: dict = {"variations": ml_vars}
+
+    title_new = (body.get("title") or "").strip()
+    if title_new:
+        update_payload["title"] = title_new[:60]
+
+    if all_pics:
+        update_payload["pictures"] = [{"source": _absolutize_image_url(u)} for u in all_pics]
+
+    if "free_shipping" in body:
+        update_payload["shipping"] = {
+            "mode": listing.shipping_mode or "me2",
+            "free_shipping": bool(body.get("free_shipping")),
+        }
+
+    if "listing_type" in body and body["listing_type"]:
+        update_payload["listing_type_id"] = body["listing_type"]
+
+    parent_attributes = list(body.get("attributes") or [])
+    model = body.get("model")
+    if model:
+        ids = {a.get("id", "").upper() for a in parent_attributes}
+        if "MODEL" not in ids:
+            parent_attributes.append({"id": "MODEL", "value_name": str(model)})
+    if parent_attributes:
+        update_payload["attributes"] = parent_attributes
+
+    ml_updated = await ml_service.update_item(
+        access_token, listing.platform_item_id, update_payload
+    )
+
+    # Etapa 2: resolver picture_ids por variação a partir do array `pictures` retornado
+    ml_pictures = ml_updated.get("pictures") or []
+    url_to_id = _build_url_to_pic_id_map(ml_pictures)
+    ml_vars_returned = list(ml_updated.get("variations") or [])
+
+    need_pics_put = False
+    pics_payload: list[dict] = []
+    for i, var_ret in enumerate(ml_vars_returned):
+        pic_urls = pics_per_var[i] if i < len(pics_per_var) else []
+        pic_ids = _resolve_picture_ids_for_variation(pic_urls, url_to_id)
+        if pic_ids and pic_ids != (var_ret.get("picture_ids") or []):
+            need_pics_put = True
+        pics_payload.append({
+            "id": var_ret.get("id"),
+            "picture_ids": pic_ids,
+        })
+
+    if need_pics_put:
+        try:
+            ml_updated = await ml_service.update_item_variations(
+                access_token, listing.platform_item_id, pics_payload
+            )
+            ml_vars_returned = list(ml_updated.get("variations") or ml_vars_returned)
+        except HTTPException as exc:
+            logger.warning(
+                "Falha ao atualizar picture_ids em variações do item %s: %s",
+                listing.platform_item_id, exc.detail,
+            )
+
+    # Persiste no listing
+    if title_new:
+        listing.title_override = title_new[:60]
+    if "free_shipping" in body:
+        listing.free_shipping = bool(body.get("free_shipping"))
+    if "listing_type" in body and body["listing_type"]:
+        listing.listing_type = body["listing_type"]
+    if parent_attributes:
+        listing.attributes_json = _json.dumps(parent_attributes, ensure_ascii=False)
+
+    listing.pictures_json = _pictures_to_json(ml_pictures, all_pics)
+    listing.variations_json = _enrich_variations_json(
+        ml_vars_returned, variations_input, pics_per_var, source
+    )
+    listing.available_quantity = sum(max(int(l.get("stock") or 0), 0) for l in loaded_list)
+    listing.last_sync_at = datetime.now(UTC)
+
+    await db.commit()
+    await db.refresh(listing)
+    return _serialize_listing(listing)
+
+
 @router.post("/publish")
 async def publish_anuncio(
     body: dict,
@@ -2145,6 +2772,92 @@ async def get_category_attributes(
             }
         )
     return result
+
+
+@router.get("/categories/{category_id}/variation-support")
+async def get_category_variation_support(
+    category_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Retorna informações sobre suporte a variações de uma categoria ML.
+
+    Critério de detecção (em ordem de prioridade):
+      1. Algum atributo da categoria com tag `allow_variations` → aceita variações
+         por atributo da categoria (ex.: COLOR, SIZE, VOLTAGE).
+      2. `settings.attribute_types == "variations"` → aceita variações também.
+      3. Caso contrário, aceita pelo menos variações **personalizadas**
+         (name + value_name) quando o ML permite — sinalizamos via flag dedicada.
+
+    Por que não confiar só em `settings.attribute_types`: algumas categorias
+    permitem variações sem esse setting estar como "variations" (caso típico
+    de categorias antigas). O sinal forte é a presença de atributos com a tag
+    `allow_variations` na lista de /categories/{id}/attributes.
+    """
+    import httpx
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        cat_resp = await client.get(f"https://api.mercadolibre.com/categories/{category_id}")
+    cat_data = cat_resp.json() if cat_resp.status_code == 200 else {}
+    settings = cat_data.get("settings") or {}
+    attribute_types = settings.get("attribute_types") or ""
+
+    # Sempre carrega atributos para detectar allow_variations / variation_attribute
+    attrs = await ml_service.get_category_attributes(category_id)
+
+    combination_attrs: list[dict] = []
+    own_attrs: list[dict] = []
+    variations_required = False
+
+    for attr in attrs:
+        tags = attr.get("tags") or {}
+        # ML retorna tags ora como lista, ora como dict — normaliza
+        if isinstance(tags, dict):
+            tag_keys = set(tags.keys())
+        else:
+            tag_keys = set(tags or [])
+        allow_variations = "allow_variations" in tag_keys
+        variation_attribute = "variation_attribute" in tag_keys
+        if not (allow_variations or variation_attribute):
+            continue
+        is_required = "required" in tag_keys
+        if is_required and allow_variations:
+            variations_required = True
+        entry = {
+            "id": attr.get("id"),
+            "name": attr.get("name"),
+            "value_type": attr.get("value_type"),
+            "is_required": is_required,
+            "values": [
+                {"id": v.get("id"), "name": v.get("name")}
+                for v in (attr.get("values") or [])[:200]
+            ],
+        }
+        if allow_variations:
+            combination_attrs.append(entry)
+        if variation_attribute:
+            own_attrs.append(entry)
+
+    has_allow_variations_attr = bool(combination_attrs)
+    supports_via_setting = attribute_types == "variations"
+    # Variações personalizadas: categorias que aceitam variações mas não têm
+    # atributos `allow_variations` (raro). Aí o usuário inventa um nome livre.
+    allows_custom_variations = supports_via_setting and not has_allow_variations_attr
+
+    supports_variations = has_allow_variations_attr or supports_via_setting
+
+    return {
+        "category_id": category_id,
+        "category_name": cat_data.get("name") or category_id,
+        "supports_variations": supports_variations,
+        "variations_required": variations_required,
+        "allows_custom_variations": allows_custom_variations,
+        "attribute_types": attribute_types or None,
+        "max_variations_allowed": settings.get("max_variations_allowed"),
+        "max_pictures_per_item_var": settings.get("max_pictures_per_item_var")
+        or settings.get("max_pictures_per_variation"),
+        "variation_combination_attrs": combination_attrs,
+        "variation_own_attrs": own_attrs,
+    }
 
 
 _DIMENSIONAL_ATTR_IDS = {

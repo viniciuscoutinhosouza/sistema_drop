@@ -29,6 +29,11 @@ apscheduler==3.10.4
 # XML parsing (NFe import)
 xmltodict==0.13.0
 
+# Etiqueta de pedido manual (PDF + barcode)
+reportlab>=4.0.0
+python-barcode>=0.15.1
+Pillow>=10.0.0
+
 # Certificado A1 (.pfx) — validação local antes de enviar ao Focus
 cryptography>=42.0.0
 
