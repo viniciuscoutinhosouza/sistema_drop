@@ -1763,6 +1763,32 @@ def _validate_variations_input(source: str, variations: list[dict]) -> None:
                 )
 
 
+async def _refresh_product_stock(prod, db: AsyncSession) -> int:
+    """Recalcula o cache `stock_quantity` do produto antes de uma publicação.
+
+    O cache event-sourced pode estar stale (pedido recente, NFe finalizada não
+    propagada, etc.). Publicar um anúncio é ponto crítico — vale gastar 1 round-trip
+    extra para garantir que o ML receba o estoque real.
+
+    Retorna o novo stock_quantity calculado (já gravado no prod via mutação).
+    """
+    from services.fiscal.stock_calculator import (
+        recompute_cmig_product_stock,
+        recompute_pg_product_stock,
+    )
+
+    if isinstance(prod, CMIGProduct):
+        new_stock = await recompute_cmig_product_stock(prod.id, db)
+    elif isinstance(prod, CatalogProduct):
+        new_stock = await recompute_pg_product_stock(prod.id, db)
+    else:
+        return int(getattr(prod, "stock_quantity", 0) or 0)
+
+    if new_stock is not None:
+        prod.stock_quantity = new_stock
+    return int(prod.stock_quantity or 0)
+
+
 async def _load_variation_product(
     source: str,
     var: dict,
@@ -1791,11 +1817,12 @@ async def _load_variation_product(
                 status_code=403, detail=f"Produto PG #{pid} não pertence ao seu galpão"
             )
         images_sorted = sorted(prod.images or [], key=lambda i: i.sort_order or 0)
+        fresh_stock = await _refresh_product_stock(prod, db)
         return {
             "id": prod.id,
             "sku": prod.sku,
             "ean": prod.ean,
-            "stock": int(prod.stock_quantity or 0),
+            "stock": fresh_stock,
             "price_default": float(prod.suggested_price) if prod.suggested_price else (
                 float(prod.cost_price) if prod.cost_price else None
             ),
@@ -1825,11 +1852,12 @@ async def _load_variation_product(
             ),
         )
     images_sorted = sorted(prod.images or [], key=lambda i: i.sort_order or 0)
+    fresh_stock = await _refresh_product_stock(prod, db)
     return {
         "id": prod.id,
         "sku": prod.sku_cmig,
         "ean": prod.ean,
-        "stock": int(prod.stock_quantity or 0),
+        "stock": fresh_stock,
         "price_default": float(prod.suggested_price) if prod.suggested_price else (
             float(prod.cost_price) if prod.cost_price else None
         ),
@@ -2778,7 +2806,10 @@ async def publish_anuncio(
     fixed_quantity = int(body.get("fixed_quantity") or 1)
     keep_stock_fixed = bool(body.get("keep_stock_fixed", False))
     if stock_mode == "product":
-        available_quantity = int(getattr(prod, "stock_quantity", None) or 0)
+        # Recalcula antes de publicar — o cache pode estar stale (pedido recente,
+        # NFe finalizada não propagada). Publicar com estoque desatualizado pode
+        # gerar vendas que o vendedor não consegue entregar.
+        available_quantity = await _refresh_product_stock(prod, db)
     else:
         available_quantity = fixed_quantity
 
