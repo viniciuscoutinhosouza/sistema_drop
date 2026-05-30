@@ -173,11 +173,22 @@
                   </div>
 
                   <!-- Thumbnail (fallback pra imagem do produto vinculado se listing.thumbnail vazio) -->
-                  <img v-if="listingThumb(a)" :src="listingThumb(a)"
-                       style="width:64px;height:64px;object-fit:cover;border-radius:4px;flex-shrink:0" />
-                  <div v-else class="d-flex align-items-center justify-content-center bg-light"
-                       style="width:64px;height:64px;border-radius:4px;flex-shrink:0">
-                    <i class="fas fa-image text-muted"></i>
+                  <div style="position:relative;flex-shrink:0">
+                    <img v-if="listingThumb(a)" :src="listingThumb(a)"
+                         style="width:64px;height:64px;object-fit:cover;border-radius:4px" />
+                    <div v-else class="d-flex align-items-center justify-content-center bg-light"
+                         style="width:64px;height:64px;border-radius:4px">
+                      <i class="fas fa-image text-muted"></i>
+                    </div>
+                    <button v-if="listingHasProcessingPictures(a)"
+                            type="button"
+                            class="btn btn-warning btn-sm"
+                            style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;padding:0;border-radius:50%;font-size:10px"
+                            :disabled="!!refreshingPictures[a.id]"
+                            :title="'Fotos ainda em processamento no ML. Clique para atualizar.'"
+                            @click="refreshListingPictures(a)">
+                      <i :class="['fas', refreshingPictures[a.id] ? 'fa-spinner fa-spin' : 'fa-sync-alt']"></i>
+                    </button>
                   </div>
 
                   <!-- Info central -->
@@ -2592,11 +2603,47 @@ const listingPromos = ref({})
 const loadingPromos = ref({})
 
 function listingThumb(a) {
-  if (a.thumbnail) return a.thumbnail
+  if (a.thumbnail && !isProcessingPlaceholder(a.thumbnail)) return a.thumbnail
   const imgs = a.cmig_product?.images || a.catalog_product?.images || []
   const first = imgs[0]
   if (!first) return null
   return first.url || first
+}
+
+function isProcessingPlaceholder(url) {
+  return typeof url === 'string' && url.toLowerCase().includes('processing-image')
+}
+
+function listingHasProcessingPictures(a) {
+  if (isProcessingPlaceholder(a.thumbnail)) return true
+  if (!a.pictures_json) return false
+  try {
+    const pics = JSON.parse(a.pictures_json)
+    if (!Array.isArray(pics) || !pics.length) return false
+    return pics.every(p => isProcessingPlaceholder(p?.url))
+  } catch {
+    return false
+  }
+}
+
+const refreshingPictures = ref({})
+async function refreshListingPictures(a) {
+  refreshingPictures.value = { ...refreshingPictures.value, [a.id]: true }
+  try {
+    const { data } = await api.post(`/anuncios/${a.id}/refresh-pictures`)
+    if (data.still_processing) {
+      toast.warning('ML ainda está processando — tente de novo em alguns segundos.')
+    } else {
+      toast.success(`Fotos atualizadas (${data.pictures_count}).`)
+      await loadAnuncios()
+    }
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao atualizar fotos.')
+  } finally {
+    const novo = { ...refreshingPictures.value }
+    delete novo[a.id]
+    refreshingPictures.value = novo
+  }
 }
 
 function hasDimensions(a) {

@@ -84,18 +84,50 @@ async def upload_anuncio_image(
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 
+def _is_processing_placeholder_url(url: str | None) -> bool:
+    """True se a URL é o placeholder do ML enquanto a imagem é processada
+    (`statics/processing-image/...`). Acontece logo após o POST e some quando
+    o ML termina o processing — pode demorar de segundos a minutos."""
+    if not url:
+        return False
+    return "processing-image" in url.lower()
+
+
 def _pictures_to_json(ml_pictures: list | None, fallback_urls: list[str] | None) -> str | None:
     """Normaliza pictures vindas da resposta do ML para o formato {id, url} salvo em pictures_json.
 
     Why: o ML devolve pictures: [{id, url, secure_url}] ao criar/buscar item, mas o
     create do listing antes não persistia isso — o grid de fotos da tela de gestão
     consome pictures_json, então sem persistir a tela ficava em branco.
+
+    Gotcha: logo após POST /items, o ML retorna pictures com URLs do placeholder
+    `statics/processing-image/1.0.0/O-PT.jpg` (todas iguais, sem a imagem real).
+    Detectamos isso e usamos `fallback_urls` (URLs originais que o vendedor mandou)
+    como fonte alternativa, mantendo os `id`s do ML — quando o usuário clicar em
+    "Atualizar fotos", refazemos GET /items/{id} e gravamos URLs reais.
     """
     pics: list[dict] = []
+    all_processing = True
     for pic in ml_pictures or []:
         url = (pic.get("secure_url") or pic.get("url") or "").replace("http://", "https://")
         if url:
             pics.append({"id": pic.get("id", ""), "url": url})
+            if not _is_processing_placeholder_url(url):
+                all_processing = False
+
+    # Se o ML devolveu pictures mas TODAS são placeholders de processing,
+    # preferimos as fallback_urls (URLs reais que o vendedor enviou).
+    # Mantemos os `id`s do ML alinhando por posição quando possível.
+    if pics and all_processing and fallback_urls:
+        merged: list[dict] = []
+        for i, u in enumerate(fallback_urls):
+            if not u:
+                continue
+            pid = pics[i]["id"] if i < len(pics) else ""
+            merged.append({"id": pid, "url": u})
+        if merged:
+            pics = merged
+
     if not pics and fallback_urls:
         pics = [{"id": "", "url": u} for u in fallback_urls if u]
     return _json.dumps(pics, ensure_ascii=False) if pics else None
@@ -1301,6 +1333,57 @@ async def refresh_listing_costs(
     return {
         "ok": True,
         "costs_cached_at": listing.costs_cached_at.isoformat() if listing.costs_cached_at else None,
+    }
+
+
+@router.post("/{listing_id}/refresh-pictures", status_code=200)
+async def refresh_listing_pictures(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Rebusca as fotos do item no ML e atualiza pictures_json + thumbnail.
+
+    Útil quando o item foi publicado enquanto o ML ainda estava processando as
+    imagens — o pictures_json original ficou com URLs de placeholder
+    (`statics/processing-image/...`) e agora as URLs reais já estão disponíveis.
+    """
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID no marketplace")
+    if listing.account.platform != "mercadolivre":
+        raise HTTPException(status_code=422, detail="Refresh de fotos só para Mercado Livre")
+
+    access_token = await _get_valid_token(listing.account, db)
+    ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
+
+    ml_pictures = ml_item.get("pictures") or []
+    # Atualiza thumbnail se a versão atual ainda é placeholder ou se o ML tem nova
+    new_thumb = ml_item.get("secure_thumbnail") or ml_item.get("thumbnail")
+    if new_thumb:
+        new_thumb = new_thumb.replace("http://", "https://")
+        if not _is_processing_placeholder_url(new_thumb):
+            listing.thumbnail = new_thumb
+
+    pics: list[dict] = []
+    still_processing = False
+    for pic in ml_pictures:
+        url = (pic.get("secure_url") or pic.get("url") or "").replace("http://", "https://")
+        if url:
+            pics.append({"id": pic.get("id", ""), "url": url})
+            if _is_processing_placeholder_url(url):
+                still_processing = True
+
+    if pics:
+        listing.pictures_json = _json.dumps(pics, ensure_ascii=False)
+        listing.last_sync_at = datetime.now(UTC)
+        await db.commit()
+
+    return {
+        "ok": True,
+        "pictures_count": len(pics),
+        "still_processing": still_processing,
+        "thumbnail": listing.thumbnail,
     }
 
 

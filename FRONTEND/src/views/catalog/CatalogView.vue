@@ -874,64 +874,50 @@ function getCmigThumb(p) {
 }
 
 async function openPublishModalFromCmig(cmigProduct) {
-  if (cmigProduct.pg_product_id) {
-    // Tem vínculo PG → publica via produto PG (estoque real no PG)
-    await openPublishModal({
-      id:             cmigProduct.pg_product_id,
-      title:          cmigProduct.title,
-      sku:            cmigProduct.sku_cmig,
-      cost_price:     cmigProduct.cost_price,
-      image_url:      getCmigThumb(cmigProduct),
-      stock_quantity: cmigProduct.stock_quantity,
-      model:          cmigProduct.model     || '',
-      height_cm:      cmigProduct.height_cm || '',
-      width_cm:       cmigProduct.width_cm  || '',
-      length_cm:      cmigProduct.length_cm || '',
-      weight_kg:      cmigProduct.weight_kg || '',
-      brand:          cmigProduct.brand     || '',
-    })
-    // openPublishModal já seta cmigProductId = null e busca imagens do PG
-  } else {
-    // Sem vínculo PG → publica diretamente pelo produto CMIG (estoque real na CMIG)
-    const thumb = getCmigThumb(cmigProduct)
-    modal.product = {
-      id:             null,
-      title:          cmigProduct.title,
-      sku:            cmigProduct.sku_cmig,
-      cost_price:     cmigProduct.cost_price,
-      image_url:      thumb,
-      stock_quantity: cmigProduct.stock_quantity,
-      model:          cmigProduct.model     || '',
-      height_cm:      cmigProduct.height_cm || '',
-      width_cm:       cmigProduct.width_cm  || '',
-      length_cm:      cmigProduct.length_cm || '',
-      weight_kg:      cmigProduct.weight_kg || '',
-    }
-    modal.cmigProductId = cmigProduct.id
-    modal.productImages = cmigProduct.images || []
-    modal.loadingImages = false
-    modal.show          = true
-    modal.saving        = false
-    modal.error         = ''
-    modal.success       = ''
-
-    form.title            = cmigProduct.title?.slice(0, 60) || ''
-    form.pictures         = (cmigProduct.images || []).map(i => i.url).filter(Boolean)
-    if (!form.pictures.length && thumb) form.pictures = [thumb]
-    form.sale_price       = ''
-    form.listing_type     = 'gold_special'
-    form.free_shipping    = false
-    form.stock_mode       = 'product'
-    form.fixed_quantity   = 1
-    form.keep_stock_fixed = false
-    form.model            = cmigProduct.model     || ''
-    form.height_cm        = cmigProduct.height_cm || ''
-    form.width_cm         = cmigProduct.width_cm  || ''
-    form.length_cm        = cmigProduct.length_cm || ''
-    form.weight_kg        = cmigProduct.weight_kg || ''
-    newPhotoUrl.value     = ''
-    resetCategorySel()
+  // Publicação a partir do Catálogo CMIG SEMPRE vincula o anúncio ao CMIGProduct,
+  // mesmo quando o CMIG tem PG vinculado (cálculo de estoque já é dinâmico e
+  // considera o PG vinculado via replay event-sourced em stock_calculator).
+  // Antes: se tivesse pg_product_id, virava anúncio PG — confundia o usuário
+  // que via badge "PG" mesmo tendo publicado pelo Catálogo CMIG.
+  const thumb = getCmigThumb(cmigProduct)
+  modal.product = {
+    id:             cmigProduct.pg_product_id || null, // só pra modal pegar imagens extras do PG quando vazio
+    title:          cmigProduct.title,
+    sku:            cmigProduct.sku_cmig,
+    cost_price:     cmigProduct.cost_price,
+    image_url:      thumb,
+    stock_quantity: cmigProduct.stock_quantity,
+    model:          cmigProduct.model     || '',
+    height_cm:      cmigProduct.height_cm || '',
+    width_cm:       cmigProduct.width_cm  || '',
+    length_cm:      cmigProduct.length_cm || '',
+    weight_kg:      cmigProduct.weight_kg || '',
+    brand:          cmigProduct.brand     || '',
   }
+  modal.cmigProductId = cmigProduct.id  // <- sempre vincula ao CMIG no anúncio salvo
+  modal.productImages = cmigProduct.images || []
+  modal.loadingImages = false
+  modal.show          = true
+  modal.saving        = false
+  modal.error         = ''
+  modal.success       = ''
+
+  form.title            = cmigProduct.title?.slice(0, 60) || ''
+  form.pictures         = (cmigProduct.images || []).map(i => i.url).filter(Boolean)
+  if (!form.pictures.length && thumb) form.pictures = [thumb]
+  form.sale_price       = ''
+  form.listing_type     = 'gold_special'
+  form.free_shipping    = false
+  form.stock_mode       = 'product'
+  form.fixed_quantity   = 1
+  form.keep_stock_fixed = false
+  form.model            = cmigProduct.model     || ''
+  form.height_cm        = cmigProduct.height_cm || ''
+  form.width_cm         = cmigProduct.width_cm  || ''
+  form.length_cm        = cmigProduct.length_cm || ''
+  form.weight_kg        = cmigProduct.weight_kg || ''
+  newPhotoUrl.value     = ''
+  resetCategorySel()
 }
 
 onMounted(() => {
