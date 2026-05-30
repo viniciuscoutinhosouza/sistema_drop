@@ -786,6 +786,31 @@ async def update_item_variations(
     return resp.json()
 
 
+async def set_item_family_name(
+    access_token: str, item_id: str, family_name: str | None
+) -> dict:
+    """PUT /items/{id} setando family_name — agrupa item em uma família ML.
+
+    Em categorias User Products, vários itens com a mesma `family_name` aparecem
+    como variações (pickers de cor/tamanho/voltagem) na VIP do produto.
+
+    Passar family_name=None desagrupa o item (remove a associação à família).
+    """
+    payload: dict = {"family_name": family_name}
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=payload,
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Erro ao definir family_name do item {item_id}: {resp.text}",
+        )
+    return resp.json()
+
+
 async def update_item_status(access_token: str, item_id: str, status: str) -> dict:
     """Atualiza apenas o status de um item ML (active|paused|closed)."""
     async with httpx.AsyncClient(timeout=15) as client:

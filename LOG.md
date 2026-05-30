@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-05-30 — feat(catalog): Fase 2 — agrupar anúncios existentes por family_name (User Products)
+
+**Pedido:** Para categorias User Products (que rejeitam o campo `variations` no POST /items), implementar o caminho oficial do ML: publicar cada cor/tamanho como anúncio individual normal e depois **agrupar** N anúncios pela mesma `family_name`. O ML renderiza eles como variações (pickers) na VIP. Refatoração validada com a doc oficial (https://global-selling.mercadolibre.com/devsite/variations-global-selling).
+
+**SQL (`Scripts SQL/78_listings_variation_groups.sql`):**
+- `ALTER TABLE product_listings ADD variation_group_id VARCHAR2(36)` (UUID local).
+- `ALTER TABLE product_listings ADD family_name_ml VARCHAR2(200)` (valor enviado ao ML).
+- Index `ix_listings_variation_group`. Migrations idempotentes via `DECLARE ... EXCEPTION`.
+
+**Backend:**
+- `models/product.py` — `ProductListing.variation_group_id` e `.family_name_ml`.
+- `services/ml_service.py:set_item_family_name(token, item_id, family_name)` — PUT `/items/{id}` setando ou limpando (`None` desagrupa).
+- `routers/anuncios.py` — 6 endpoints novos:
+  - `POST   /anuncios/groups` — cria grupo a partir de `[listing_ids]`, valida (mesma conta, mesma categoria, mín 2 listings, sem listings já agrupados), gera UUID, calcula `family_name` automático ou usa o informado, aplica PUT em cada item ML (com rollback se falhar no meio).
+  - `GET    /anuncios/groups?account_id=X` — lista grupos da conta.
+  - `GET    /anuncios/groups/{group_id}` — detalhes do grupo.
+  - `POST   /anuncios/groups/{id}/add` — adiciona listing ao grupo (revalida compat).
+  - `POST   /anuncios/groups/{id}/remove` — remove listing do grupo; se sobrar só 1 listing, desagrupa todo o grupo (grupo de 1 = ruído).
+  - `DELETE /anuncios/groups/{id}` — desagrupa todos (limpa `family_name` no ML).
+- `_serialize_listing` expõe `variation_group_id`, `family_name_ml`, `is_variation_grouped`.
+
+**Frontend (`CatalogVariationsFormView.vue`):**
+- Novo toggle "Como quer publicar?" com 2 cards: **Criar com variações** (categorias tradicionais — fluxo atual) e **Agrupar anúncios existentes** (User Products — fluxo novo).
+- Modo agrupar:
+  - Seção 1: seleciona conta ML.
+  - Seção 2: tabela de anúncios selecionados + botão "Adicionar anúncio" que abre modal com filtro por título/MLB, lista todos os anúncios `status=published` da conta, oculta os já selecionados ou já agrupados.
+  - Seção 3: input de `family_name` (placeholder com sugestão automática derivada do prefixo comum dos títulos) + validações em tempo real (mesma categoria, mín 2 listings).
+  - Botão "Criar grupo de variações" → `POST /anuncios/groups`.
+- `AnunciosView.vue` — badge verde "🟢 Variação" quando `a.is_variation_grouped`, tooltip mostra `family_name` ou `variation_group_id`.
+
+**Decisão arquitetural:**
+A abordagem original da Fase 1 (criar 1 anúncio com array `variations`) continua funcionando para categorias **não** User Products. A nova Fase 2 cobre o restante (maioria das categorias modernas do ML) com fluxo nativo do modelo Pendings User Products. Trade-off explícito ao usuário: precisa publicar cada cor individualmente primeiro, depois agrupar. Em troca: chamadas ao ML 3× menores, sem risco de UserProductRepeatedError, sync de estoque já funciona (cada anúncio é independente), reversibilidade trivial (`family_name=null`).
+
+---
+
 ## 2026-05-30 — fix(catalog): detectar categorias User Products que rejeitam variações via POST /items
 
 **Pedido:** Ao publicar anúncio com variações na categoria MLB123037 (Bolas de Pilates), o ML retornou:

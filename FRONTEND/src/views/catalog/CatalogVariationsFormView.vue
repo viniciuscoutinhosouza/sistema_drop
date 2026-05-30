@@ -25,6 +25,194 @@
       </div>
 
       <template v-else>
+        <!-- Modo: Criar com variações (categoria tradicional) ou Agrupar (User Products) -->
+        <div v-if="!isEdit" class="card card-outline card-secondary mb-3">
+          <div class="card-body py-2">
+            <label class="font-weight-bold d-block mb-2">Como quer publicar?</label>
+            <div class="d-flex flex-wrap" style="gap:12px">
+              <div
+                class="card flex-fill p-3"
+                style="cursor:pointer;border-width:2px;min-width:280px"
+                :style="mode === 'create' ? 'border-color:#007bff;background:#f0f7ff' : 'border-color:#dee2e6'"
+                @click="setMode('create')"
+              >
+                <div class="font-weight-bold"><i class="fas fa-plus-circle mr-1"></i> Criar com variações</div>
+                <div class="text-muted small mt-1">
+                  Cria <strong>1 anúncio novo</strong> agrupando produtos PG/CMIG como variações
+                  (array <code>variations</code>). Para <strong>categorias tradicionais</strong>.
+                </div>
+              </div>
+              <div
+                class="card flex-fill p-3"
+                style="cursor:pointer;border-width:2px;min-width:280px"
+                :style="mode === 'group' ? 'border-color:#28a745;background:#f0fff4' : 'border-color:#dee2e6'"
+                @click="setMode('group')"
+              >
+                <div class="font-weight-bold"><i class="fas fa-object-group mr-1"></i> Agrupar anúncios existentes</div>
+                <div class="text-muted small mt-1">
+                  Agrupa <strong>N anúncios já publicados</strong> via <code>family_name</code> compartilhada.
+                  Para <strong>categorias User Products</strong> (o ML renderiza como pickers na VIP).
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <!-- MODO AGRUPAR (User Products): tela completamente diferente       -->
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <template v-if="mode === 'group'">
+
+          <div class="card card-outline card-success mb-3">
+            <div class="card-header py-2"><strong>1. Conta do Mercado Livre</strong></div>
+            <div class="card-body">
+              <div class="form-group mb-0">
+                <select v-model="group.account_id" class="form-control" @change="onGroupAccountChange">
+                  <option value="">Selecione uma conta...</option>
+                  <option v-for="a in mlAccounts" :key="a.id" :value="a.id">
+                    {{ a.platform_label }} — {{ a.description || a.platform_username || a.email }}
+                  </option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="group.account_id" class="card card-outline card-success mb-3">
+            <div class="card-header py-2 d-flex justify-content-between align-items-center">
+              <strong>2. Anúncios para agrupar ({{ group.selected.length }})</strong>
+              <button class="btn btn-sm btn-success" @click="openAdsPicker">
+                <i class="fas fa-plus mr-1"></i> Adicionar anúncio
+              </button>
+            </div>
+            <div class="card-body p-2">
+              <div v-if="!group.selected.length" class="text-center text-muted py-3">
+                Selecione ao menos 2 anúncios já publicados que serão variações entre si.
+              </div>
+              <table v-else class="table table-sm table-bordered mb-0" style="font-size:12px">
+                <thead class="thead-light">
+                  <tr>
+                    <th style="width:60px">Foto</th>
+                    <th>Título</th>
+                    <th style="width:120px">MLB</th>
+                    <th style="width:80px">Estoque</th>
+                    <th style="width:100px">Preço</th>
+                    <th style="width:140px">Categoria</th>
+                    <th style="width:40px"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(l, i) in group.selected" :key="l.id"
+                      :class="{ 'table-warning': i > 0 && incompatibilityWarnings[l.id] }">
+                    <td>
+                      <img v-if="l.thumbnail" :src="l.thumbnail" style="width:40px;height:40px;object-fit:cover;border-radius:3px" />
+                    </td>
+                    <td>{{ l.title_override }}</td>
+                    <td><code>{{ l.platform_item_id }}</code></td>
+                    <td class="text-right">{{ l.available_quantity }}</td>
+                    <td class="text-right">{{ formatCurrency(l.sale_price) }}</td>
+                    <td class="text-truncate" :title="l.category_name">{{ l.category_name || l.category_id }}</td>
+                    <td>
+                      <button class="btn btn-sm btn-link text-danger p-0" @click="removeFromGroup(i)" title="Remover">
+                        <i class="fas fa-times"></i>
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-if="group.selected.length >= 2" class="card card-outline card-success mb-3">
+            <div class="card-header py-2"><strong>3. Nome da família (visual na VIP)</strong></div>
+            <div class="card-body">
+              <div class="form-group mb-1">
+                <input v-model="group.family_name" type="text" class="form-control" maxlength="120"
+                       :placeholder="suggestedFamilyName" />
+                <small class="text-muted">
+                  Deixe em branco para usar a sugestão automática:
+                  <strong>{{ suggestedFamilyName }}</strong>
+                </small>
+              </div>
+              <div v-if="groupValidationError" class="alert alert-danger py-2 mb-0 mt-2 small">
+                <i class="fas fa-exclamation-triangle mr-1"></i>{{ groupValidationError }}
+              </div>
+              <div v-else class="alert alert-info py-2 mb-0 mt-2 small">
+                <i class="fas fa-info-circle mr-1"></i>
+                Validação: mesma conta, mesma categoria. O ML agrupa pelas atributos
+                <strong>BRAND</strong> e <strong>MODEL</strong> idênticos e diferencia pelos
+                atributos divergentes (cor/tamanho/voltagem).
+              </div>
+
+              <div v-if="groupError" class="alert alert-danger py-2 mt-2 small">{{ groupError }}</div>
+              <div v-if="groupSuccess" class="alert alert-success py-2 mt-2 small">
+                <i class="fas fa-check-circle mr-1"></i>{{ groupSuccess }}
+              </div>
+
+              <div class="text-right mt-3">
+                <button class="btn btn-secondary mr-2" @click="$router.push('/catalog')" :disabled="groupSaving">
+                  Cancelar
+                </button>
+                <button class="btn btn-success" @click="submitGroup"
+                        :disabled="groupSaving || !!groupValidationError">
+                  <i :class="['fas', groupSaving ? 'fa-spinner fa-spin' : 'fa-object-group', 'mr-1']"></i>
+                  {{ groupSaving ? 'Agrupando...' : 'Criar grupo de variações' }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Modal: picker de anúncios -->
+          <div v-if="adsPickerOpen" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.55);z-index:1080">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+              <div class="modal-content">
+                <div class="modal-header">
+                  <h5 class="modal-title"><i class="fas fa-search mr-2"></i>Selecione um anúncio</h5>
+                  <button type="button" class="close" @click="adsPickerOpen = false"><span>&times;</span></button>
+                </div>
+                <div class="modal-body">
+                  <input v-model="adsSearch" type="text" class="form-control mb-2"
+                         placeholder="Filtrar por título ou MLB..." />
+                  <div v-if="loadingAds" class="text-center py-3">
+                    <i class="fas fa-spinner fa-spin"></i>
+                  </div>
+                  <div v-else class="list-group">
+                    <button v-for="ad in filteredAds" :key="ad.id" type="button"
+                            class="list-group-item list-group-item-action py-2"
+                            @click="addToGroup(ad)">
+                      <div class="d-flex align-items-center" style="gap:10px">
+                        <img v-if="ad.thumbnail" :src="ad.thumbnail"
+                             style="width:48px;height:48px;object-fit:cover;border-radius:3px;flex-shrink:0" />
+                        <div class="flex-grow-1" style="min-width:0">
+                          <div class="text-truncate" style="font-size:13px">{{ ad.title_override }}</div>
+                          <div class="text-muted small">
+                            <code>{{ ad.platform_item_id }}</code> ·
+                            {{ ad.category_name || ad.category_id }} ·
+                            Estoque {{ ad.available_quantity }} ·
+                            {{ formatCurrency(ad.sale_price) }}
+                            <span v-if="ad.is_variation_grouped" class="badge badge-warning ml-1">já em outro grupo</span>
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                    <div v-if="!filteredAds.length" class="text-center text-muted py-3">
+                      Nenhum anúncio elegível encontrado.
+                    </div>
+                  </div>
+                </div>
+                <div class="modal-footer">
+                  <button class="btn btn-secondary" @click="adsPickerOpen = false">Fechar</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </template>
+
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <!-- MODO CRIAR (categoria tradicional) — fluxo original              -->
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <template v-else>
+
         <!-- Seção 1: Conta + Origem + Tipo -->
         <div class="card card-outline card-primary mb-3">
           <div class="card-header py-2"><strong>1. Conta, Origem e Tipo</strong></div>
@@ -383,6 +571,8 @@
           </div>
         </div>
 
+        </template><!-- /MODO CRIAR -->
+
       </template>
     </div>
   </section>
@@ -392,6 +582,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '@/composables/useApi'
+import { formatCurrency } from '@/utils/formatters'
 import VariationProductPicker from '@/components/catalog/VariationProductPicker.vue'
 import VariationPicturesEditor from '@/components/catalog/VariationPicturesEditor.vue'
 
@@ -407,6 +598,128 @@ const error   = ref('')
 const success = ref('')
 
 const accounts = ref([])
+const mlAccounts = computed(() => accounts.value.filter(a => a.platform === 'mercadolivre'))
+
+// Modo: 'create' (criar 1 anúncio com variations array) | 'group' (agrupar N anúncios via family_name)
+const mode = ref('create')
+function setMode(m) { mode.value = m }
+
+// ── Estado do modo 'group' ──────────────────────────────────────────────────
+const group = reactive({
+  account_id: '',
+  selected: [],         // [ProductListing, ...]
+  family_name: '',
+})
+const accountAds = ref([])           // todos os anúncios da conta selecionada
+const loadingAds = ref(false)
+const adsPickerOpen = ref(false)
+const adsSearch = ref('')
+const groupSaving = ref(false)
+const groupError = ref('')
+const groupSuccess = ref('')
+
+const suggestedFamilyName = computed(() => {
+  const titles = group.selected.map(l => (l.title_override || '').trim()).filter(Boolean)
+  if (!titles.length) return 'Família'
+  let prefix = titles[0]
+  for (const t of titles.slice(1)) {
+    let i = 0
+    while (i < prefix.length && i < t.length && prefix[i].toLowerCase() === t[i].toLowerCase()) i++
+    prefix = prefix.slice(0, i)
+  }
+  prefix = prefix.replace(/[\s\-–—·,\/]+$/g, '')
+  return prefix.slice(0, 60) || titles[0].slice(0, 60)
+})
+
+const incompatibilityWarnings = computed(() => {
+  // Marca listings que divergem do primeiro em categoria (visualização)
+  const map = {}
+  const first = group.selected[0]
+  if (!first) return map
+  for (const l of group.selected.slice(1)) {
+    if ((l.category_id || '') !== (first.category_id || '')) map[l.id] = true
+  }
+  return map
+})
+
+const groupValidationError = computed(() => {
+  if (group.selected.length < 2) return 'Selecione ao menos 2 anúncios para agrupar.'
+  const first = group.selected[0]
+  for (const l of group.selected.slice(1)) {
+    if (l.account_id !== first.account_id)
+      return `Anúncio #${l.id} é de outra conta — não pode ser agrupado.`
+    if (!l.platform_item_id)
+      return `Anúncio #${l.id} não está publicado no Mercado Livre.`
+    if ((l.category_id || '') !== (first.category_id || ''))
+      return `Anúncio #${l.id} está em categoria diferente do primeiro (${first.category_name || first.category_id}).`
+  }
+  return ''
+})
+
+const filteredAds = computed(() => {
+  const selectedIds = new Set(group.selected.map(l => l.id))
+  const q = adsSearch.value.trim().toLowerCase()
+  return accountAds.value
+    .filter(a => !selectedIds.has(a.id))
+    .filter(a => !q || (a.title_override || '').toLowerCase().includes(q) || (a.platform_item_id || '').toLowerCase().includes(q))
+    .slice(0, 50)
+})
+
+async function onGroupAccountChange() {
+  group.selected = []
+  group.family_name = ''
+  accountAds.value = []
+  if (!group.account_id) return
+  loadingAds.value = true
+  try {
+    const { data } = await api.get('/anuncios', {
+      params: { account_id: group.account_id, status: 'published' },
+    })
+    accountAds.value = Array.isArray(data) ? data : []
+  } finally {
+    loadingAds.value = false
+  }
+}
+
+function openAdsPicker() {
+  adsSearch.value = ''
+  adsPickerOpen.value = true
+}
+
+function addToGroup(ad) {
+  if (group.selected.find(l => l.id === ad.id)) return
+  group.selected.push(ad)
+  adsPickerOpen.value = false
+}
+
+function removeFromGroup(idx) {
+  group.selected.splice(idx, 1)
+}
+
+async function submitGroup() {
+  groupError.value = ''
+  groupSuccess.value = ''
+  if (groupValidationError.value) {
+    groupError.value = groupValidationError.value
+    return
+  }
+  groupSaving.value = true
+  try {
+    const payload = {
+      listing_ids: group.selected.map(l => l.id),
+      family_name: group.family_name.trim() || suggestedFamilyName.value,
+    }
+    const { data } = await api.post('/anuncios/groups', payload)
+    groupSuccess.value = `Grupo criado: ${data.listings.length} anúncios agrupados como "${data.family_name}".`
+    setTimeout(() => router.push('/catalog'), 1800)
+  } catch (e) {
+    const det = e.response?.data?.detail
+    groupError.value = typeof det === 'string' ? det : (det?.message || 'Erro ao criar grupo.')
+  } finally {
+    groupSaving.value = false
+  }
+}
+
 
 const form = reactive({
   account_id: '',

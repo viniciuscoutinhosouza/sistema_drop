@@ -588,6 +588,10 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "has_auto_price_adj": bool(listing.has_auto_price_adj)
         if listing.has_auto_price_adj is not None
         else False,
+        # Agrupamento de variações (User Products)
+        "variation_group_id": listing.variation_group_id,
+        "family_name_ml": listing.family_name_ml,
+        "is_variation_grouped": bool(listing.variation_group_id),
         "cmig_product": cmig_product,
         "catalog_product": catalog_product,
         "is_linked": cmig_product is not None or catalog_product is not None,
@@ -2208,6 +2212,421 @@ async def update_anuncio_variations(
     await db.commit()
     await db.refresh(listing)
     return _serialize_listing(listing)
+
+
+# ── Grupos de Variação (User Products) ────────────────────────────────────────
+# Fluxo: o usuário publica cada cor/tamanho como anúncio individual normal e
+# depois cria um "grupo" agrupando os N anúncios via mesma family_name. O ML
+# (em categorias User Products) renderiza eles como variações na VIP do produto.
+
+
+async def _load_listings_for_group(
+    listing_ids: list[int], user: User, db: AsyncSession
+) -> list[ProductListing]:
+    """Carrega N ProductListings garantindo acesso do usuário a todos eles."""
+    if not listing_ids:
+        raise HTTPException(status_code=422, detail="listing_ids não pode ser vazio")
+    seen = set()
+    unique_ids = []
+    for lid in listing_ids:
+        if lid not in seen:
+            seen.add(lid)
+            unique_ids.append(lid)
+
+    result = await db.execute(
+        select(ProductListing)
+        .options(
+            selectinload(ProductListing.account).selectinload(MarketplaceAccount.administrators),
+            selectinload(ProductListing.cmig_product).selectinload(CMIGProduct.images),
+            selectinload(ProductListing.catalog_product).selectinload(CatalogProduct.images),
+        )
+        .where(ProductListing.id.in_(unique_ids))
+    )
+    listings = result.scalars().all()
+    found_ids = {l.id for l in listings}
+    missing = [lid for lid in unique_ids if lid not in found_ids]
+    if missing:
+        raise HTTPException(
+            status_code=404, detail=f"Anúncios não encontrados: {missing}"
+        )
+
+    # Valida acesso para cada listing — replica regra de _get_listing_or_404
+    for listing in listings:
+        if user.role in ("admin", "ugo"):
+            continue
+        admin_ids = {a.user_id for a in listing.account.administrators}
+        if user.id in admin_ids:
+            continue
+        if listing.account.cmig_id:
+            r = await db.execute(
+                select(CMIGAdministrator).where(
+                    CMIGAdministrator.user_id == user.id,
+                    CMIGAdministrator.cmig_id == listing.account.cmig_id,
+                )
+            )
+            if r.scalar_one_or_none():
+                continue
+        raise HTTPException(
+            status_code=403, detail=f"Sem acesso ao anúncio #{listing.id}"
+        )
+
+    return listings
+
+
+def _validate_grouping_compatibility(listings: list[ProductListing]) -> None:
+    """Valida que os listings podem ser agrupados em uma family no ML.
+
+    Regras:
+      - Mesma conta (account_id)
+      - Plataforma Mercado Livre (Shopee não tem family_name)
+      - Mesma categoria
+      - Todos têm platform_item_id (publicados no ML)
+      - Status published (não bloqueia paused, mas avisa via warning depois)
+    """
+    if len(listings) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="Um grupo de variações precisa ter pelo menos 2 anúncios",
+        )
+    first = listings[0]
+    if first.account.platform != "mercadolivre":
+        raise HTTPException(
+            status_code=422,
+            detail="Agrupamento por family_name só funciona para Mercado Livre",
+        )
+    for l in listings:
+        if l.account_id != first.account_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Todos os anúncios devem ser da mesma conta (#{l.id} está em conta diferente)",
+            )
+        if not l.platform_item_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Anúncio #{l.id} não está publicado no Mercado Livre",
+            )
+        if (l.category_id or "") != (first.category_id or ""):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Categorias divergem: #{first.id}={first.category_id} vs "
+                    f"#{l.id}={l.category_id}. Todos precisam estar na mesma categoria."
+                ),
+            )
+
+
+def _default_family_name(listings: list[ProductListing]) -> str:
+    """Calcula um family_name padrão removendo a parte variável (cor, voltagem)
+    e pegando o prefixo comum dos títulos."""
+    titles = [(l.title_override or "").strip() for l in listings if l.title_override]
+    if not titles:
+        return "Família"
+    # prefixo comum char-a-char
+    prefix = titles[0]
+    for t in titles[1:]:
+        i = 0
+        while i < len(prefix) and i < len(t) and prefix[i].lower() == t[i].lower():
+            i += 1
+        prefix = prefix[:i]
+    prefix = prefix.strip(" -–—·,/")
+    return prefix[:60] or titles[0][:60]
+
+
+@router.post("/groups", status_code=201)
+async def create_variation_group(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cria um grupo de variações agrupando N anúncios já publicados via family_name.
+
+    Body:
+      - listing_ids: list[int]      — anúncios a agrupar (mín 2, mesma conta+categoria)
+      - family_name: str (opcional) — se omitido, usa prefixo comum dos títulos
+    """
+    import uuid as _uuid
+
+    listing_ids = body.get("listing_ids") or []
+    listings = await _load_listings_for_group(listing_ids, current_user, db)
+    _validate_grouping_compatibility(listings)
+
+    family_name = (body.get("family_name") or "").strip() or _default_family_name(listings)
+    family_name = family_name[:120]  # cap defensivo (ML aceita até max_title_length da categoria)
+
+    # Bloqueia se algum listing já estiver em outro grupo (precisa desagrupar antes)
+    already_grouped = [l for l in listings if l.variation_group_id]
+    if already_grouped:
+        groups = {l.variation_group_id for l in already_grouped}
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Anúncios {[l.id for l in already_grouped]} já pertencem a outro grupo "
+                f"({groups}). Desagrupe-os antes de criar um novo grupo."
+            ),
+        )
+
+    group_id = str(_uuid.uuid4())
+    access_token = await _get_valid_token(listings[0].account, db)
+
+    # Aplica family_name em cada anúncio no ML — best-effort por anúncio,
+    # interrompe no primeiro erro para não deixar grupo parcial
+    errors: list[dict] = []
+    for l in listings:
+        try:
+            await ml_service.set_item_family_name(
+                access_token, l.platform_item_id, family_name
+            )
+            l.variation_group_id = group_id
+            l.family_name_ml = family_name
+            l.last_sync_at = datetime.now(UTC)
+        except HTTPException as exc:
+            errors.append({"listing_id": l.id, "error": str(exc.detail)})
+            # Rollback dos que já foram aplicados
+            for prev in listings:
+                if prev.id == l.id:
+                    break
+                try:
+                    await ml_service.set_item_family_name(
+                        access_token, prev.platform_item_id, None
+                    )
+                except Exception:
+                    pass
+                prev.variation_group_id = None
+                prev.family_name_ml = None
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": f"Falha ao agrupar anúncio #{l.id} — grupo não criado",
+                    "ml_errors": errors,
+                },
+            ) from exc
+
+    await db.commit()
+    for l in listings:
+        await db.refresh(l)
+
+    return {
+        "variation_group_id": group_id,
+        "family_name": family_name,
+        "account_id": listings[0].account_id,
+        "category_id": listings[0].category_id,
+        "listings": [_serialize_listing(l) for l in listings],
+    }
+
+
+@router.get("/groups")
+async def list_variation_groups(
+    account_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lista grupos de variação da conta agregando os listings que compartilham
+    variation_group_id."""
+    await _get_account_or_403(account_id, current_user, db)
+
+    result = await db.execute(
+        select(ProductListing)
+        .options(
+            selectinload(ProductListing.cmig_product).selectinload(CMIGProduct.images),
+            selectinload(ProductListing.catalog_product).selectinload(CatalogProduct.images),
+        )
+        .where(
+            ProductListing.account_id == account_id,
+            ProductListing.variation_group_id.isnot(None),
+        )
+        .order_by(ProductListing.variation_group_id, ProductListing.id)
+    )
+    listings = result.scalars().all()
+
+    groups: dict[str, dict] = {}
+    for l in listings:
+        gid = l.variation_group_id
+        if gid not in groups:
+            groups[gid] = {
+                "variation_group_id": gid,
+                "family_name": l.family_name_ml,
+                "account_id": l.account_id,
+                "category_id": l.category_id,
+                "category_name": l.category_name,
+                "listings": [],
+            }
+        groups[gid]["listings"].append(_serialize_listing(l))
+
+    return list(groups.values())
+
+
+@router.get("/groups/{group_id}")
+async def get_variation_group(
+    group_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retorna detalhes de um grupo: listings + family_name + categoria."""
+    result = await db.execute(
+        select(ProductListing)
+        .options(
+            selectinload(ProductListing.account).selectinload(MarketplaceAccount.administrators),
+            selectinload(ProductListing.cmig_product).selectinload(CMIGProduct.images),
+            selectinload(ProductListing.catalog_product).selectinload(CatalogProduct.images),
+        )
+        .where(ProductListing.variation_group_id == group_id)
+        .order_by(ProductListing.id)
+    )
+    listings = result.scalars().all()
+    if not listings:
+        raise HTTPException(status_code=404, detail="Grupo de variações não encontrado")
+
+    # Verifica acesso via primeira listing (todas da mesma conta)
+    await _get_account_or_403(listings[0].account_id, current_user, db)
+
+    return {
+        "variation_group_id": group_id,
+        "family_name": listings[0].family_name_ml,
+        "account_id": listings[0].account_id,
+        "category_id": listings[0].category_id,
+        "category_name": listings[0].category_name,
+        "listings": [_serialize_listing(l) for l in listings],
+    }
+
+
+@router.post("/groups/{group_id}/add")
+async def add_listing_to_variation_group(
+    group_id: str,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Adiciona um anúncio existente ao grupo (aplica family_name do grupo nele)."""
+    listing_id = body.get("listing_id")
+    if not listing_id:
+        raise HTTPException(status_code=422, detail="listing_id é obrigatório")
+
+    # Carrega grupo existente
+    existing = (await db.execute(
+        select(ProductListing)
+        .options(
+            selectinload(ProductListing.account).selectinload(MarketplaceAccount.administrators),
+        )
+        .where(ProductListing.variation_group_id == group_id)
+    )).scalars().all()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Grupo de variações não encontrado")
+
+    # Carrega o novo listing e valida compatibilidade com os do grupo
+    new_listings = await _load_listings_for_group([listing_id], current_user, db)
+    new_listing = new_listings[0]
+    if new_listing.variation_group_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Anúncio #{listing_id} já pertence ao grupo {new_listing.variation_group_id}",
+        )
+
+    _validate_grouping_compatibility(existing + [new_listing])
+
+    family_name = existing[0].family_name_ml or ""
+    access_token = await _get_valid_token(new_listing.account, db)
+    await ml_service.set_item_family_name(
+        access_token, new_listing.platform_item_id, family_name
+    )
+    new_listing.variation_group_id = group_id
+    new_listing.family_name_ml = family_name
+    new_listing.last_sync_at = datetime.now(UTC)
+
+    await db.commit()
+    await db.refresh(new_listing)
+    return _serialize_listing(new_listing)
+
+
+@router.post("/groups/{group_id}/remove")
+async def remove_listing_from_variation_group(
+    group_id: str,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove um anúncio do grupo (limpa family_name dele no ML)."""
+    listing_id = body.get("listing_id")
+    if not listing_id:
+        raise HTTPException(status_code=422, detail="listing_id é obrigatório")
+
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+    if listing.variation_group_id != group_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Anúncio #{listing_id} não pertence ao grupo {group_id}",
+        )
+
+    # Se for o penúltimo, desagrupa tudo (grupo de 1 não faz sentido)
+    remaining = (await db.execute(
+        select(ProductListing).where(ProductListing.variation_group_id == group_id)
+    )).scalars().all()
+
+    access_token = await _get_valid_token(listing.account, db)
+    try:
+        await ml_service.set_item_family_name(
+            access_token, listing.platform_item_id, None
+        )
+    except HTTPException as exc:
+        # Não bloqueia desagrupamento local se o ML falhar — log e segue
+        logger.warning(
+            "Falha ao limpar family_name do item %s no ML: %s",
+            listing.platform_item_id, exc.detail,
+        )
+    listing.variation_group_id = None
+    listing.family_name_ml = None
+    listing.last_sync_at = datetime.now(UTC)
+
+    # Se restar só 1 listing no grupo, desagrupa ele também (grupo de 1 = ruído)
+    leftover = [l for l in remaining if l.id != listing.id]
+    if len(leftover) == 1:
+        solo = leftover[0]
+        try:
+            await ml_service.set_item_family_name(
+                access_token, solo.platform_item_id, None
+            )
+        except HTTPException:
+            pass
+        solo.variation_group_id = None
+        solo.family_name_ml = None
+        solo.last_sync_at = datetime.now(UTC)
+
+    await db.commit()
+    return {"ok": True, "group_dissolved": len(leftover) <= 1}
+
+
+@router.delete("/groups/{group_id}", status_code=204)
+async def delete_variation_group(
+    group_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Desagrupa todos os anúncios do grupo (limpa family_name de cada um no ML)."""
+    listings = (await db.execute(
+        select(ProductListing)
+        .options(selectinload(ProductListing.account).selectinload(MarketplaceAccount.administrators))
+        .where(ProductListing.variation_group_id == group_id)
+    )).scalars().all()
+    if not listings:
+        raise HTTPException(status_code=404, detail="Grupo de variações não encontrado")
+
+    await _get_account_or_403(listings[0].account_id, current_user, db)
+
+    access_token = await _get_valid_token(listings[0].account, db)
+    for l in listings:
+        try:
+            await ml_service.set_item_family_name(
+                access_token, l.platform_item_id, None
+            )
+        except HTTPException as exc:
+            logger.warning(
+                "Falha ao limpar family_name do item %s: %s",
+                l.platform_item_id, exc.detail,
+            )
+        l.variation_group_id = None
+        l.family_name_ml = None
+        l.last_sync_at = datetime.now(UTC)
+
+    await db.commit()
 
 
 @router.post("/publish")

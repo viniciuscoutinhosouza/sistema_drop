@@ -240,6 +240,12 @@ class ProductListing(Base):
         Boolean, default=False
     )  # se True, sync restaura fixed_quantity após vendas
 
+    # Agrupamento de variações (User Products) — N listings irmãos compartilham
+    # um variation_group_id local e a mesma family_name_ml; o ML renderiza eles
+    # como variações de um único produto na VIP (pickers de cor/tamanho).
+    variation_group_id = Column(String(36), nullable=True)
+    family_name_ml = Column(String(200), nullable=True)
+
     # Preço regular e promoção
     regular_price = Column(Numeric(12, 2), nullable=True)  # preço sem promoção
     promo_type = Column(String(50), nullable=True)  # ex: PRICE_DISCOUNT

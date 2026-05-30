@@ -198,6 +198,7 @@
                       <span v-if="a.is_flex && !a.is_full" class="badge" :style="{background: smStyle('flex').bg, color: smStyle('flex').fg, fontSize:'10px'}" :title="smStyle('flex').title"><i :class="smStyle('flex').icon" class="mr-1"></i>{{ smStyle('flex').label }}</span>
                       <span v-if="a.catalog_listing && a.ml_catalog_id" class="badge badge-primary" style="font-size:10px" :title="'Produto: ' + a.ml_catalog_id"><i class="fas fa-bookmark mr-1"></i>Anúncio de Catálogo</span>
                       <span v-else-if="!a.catalog_listing && a.ml_catalog_id" class="badge badge-secondary" style="font-size:10px" :title="'Vinculado: ' + a.ml_catalog_id"><i class="fas fa-link mr-1"></i>Vinculado ao Catálogo</span>
+                      <span v-if="a.is_variation_grouped" class="badge badge-success" style="font-size:10px" :title="'Família: ' + (a.family_name_ml || a.variation_group_id)"><i class="fas fa-layer-group mr-1"></i>Variação</span>
                       <span :class="'badge ' + listingQuality(a).cls" style="font-size:10px;cursor:help"
                             :title="listingQuality(a).issues.length ? listingQuality(a).issues.join('\n') : 'Anúncio completo'">
                         <i class="fas fa-star mr-1"></i>{{ listingQuality(a).label }}
