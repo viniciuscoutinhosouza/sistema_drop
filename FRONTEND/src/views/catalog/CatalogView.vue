@@ -111,12 +111,20 @@
                 </div>
               </RouterLink>
               <div class="card-body p-2">
-                <p class="text-muted mb-0" style="font-size:10px">({{ product.sku }})</p>
-                <p class="card-title mb-1 font-weight-bold" style="font-size:12px;line-height:1.3">
-                  {{ product.title.slice(0, 50) }}{{ product.title.length > 50 ? '...' : '' }}
-                </p>
-                <p class="text-success font-weight-bold mb-0" style="font-size:13px">{{ formatCurrency(product.cost_price) }}</p>
-                <p class="text-muted mb-0" style="font-size:11px">Estoque: {{ product.stock_quantity }}</p>
+                <div class="text-muted mb-1" style="font-size:10px">({{ product.sku }})</div>
+                <div
+                  class="font-weight-bold mb-2"
+                  style="font-size:12px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em"
+                  :title="product.title"
+                >
+                  {{ product.title }}
+                </div>
+                <div class="text-success font-weight-bold mb-1 text-left" style="font-size:14px">
+                  {{ formatCurrency(product.cost_price) }}
+                </div>
+                <div class="text-muted text-left" style="font-size:11px">
+                  Estoque: {{ product.stock_quantity }}
+                </div>
               </div>
               <div class="card-footer p-1">
                 <button
@@ -207,15 +215,23 @@
                     />
                   </div>
                   <div class="card-body p-2">
-                    <p class="text-muted mb-0" style="font-size:10px">
+                    <div class="text-muted mb-1" style="font-size:10px">
                       <span v-if="product.is_composite" class="badge badge-warning mr-1" style="font-size:9px">KIT</span>
-                      {{ product.sku_cmig }}
-                    </p>
-                    <p class="card-title mb-1 font-weight-bold" style="font-size:12px;line-height:1.3">
-                      {{ product.title.slice(0, 50) }}{{ product.title.length > 50 ? '...' : '' }}
-                    </p>
-                    <p class="text-success font-weight-bold mb-0" style="font-size:13px">{{ formatCurrency(product.cost_price) }}</p>
-                    <p class="text-muted mb-0" style="font-size:11px">Estoque: {{ product.stock_quantity }}</p>
+                      ({{ product.sku_cmig }})
+                    </div>
+                    <div
+                      class="font-weight-bold mb-2"
+                      style="font-size:12px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em"
+                      :title="product.title"
+                    >
+                      {{ product.title }}
+                    </div>
+                    <div class="text-success font-weight-bold mb-1 text-left" style="font-size:14px">
+                      {{ formatCurrency(product.cost_price) }}
+                    </div>
+                    <div class="text-muted text-left" style="font-size:11px">
+                      Estoque: {{ product.stock_quantity }}
+                    </div>
                   </div>
                   <div class="card-footer p-1">
                     <button
