@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-05-30 — fix(fiscal): NFe entrada CMIG sem recalcular estoque + excluir finalized + bug catalog_product_id
+
+**Pedido:** (1) Entrada manual com produtos CMIG não atualizava estoque automaticamente e não aparecia opção de "recalcular estoque". (2) Permitir excluir NFe não-transmitida à SEFAZ revertendo estoque (para PG e CMIG).
+
+**Diagnóstico:**
+- Botão "Reaplicar estoque PG" (`InvoiceDetailView.vue`) tinha `v-if="hasPgItems"` — não aparecia para NFes com itens apenas CMIG. O backend `reapply-stock` já cobria CMIG E PG via `recompute_after_invoice_change`, mas a UI estava enganosa.
+- Resposta do backend usa `cmig_recomputed`/`pg_recomputed`, mas o frontend lia `matched_pg`/`unmatched` — toast sempre mostrava "nenhum item PG nesta nota" mesmo em sucesso.
+- `delete_invoice` aceitava só `status='draft'`. NFe `finalized` (sem SEFAZ) não podia ser excluída.
+- **Bug colateral**: `InvoiceFormView.vue` não passava `catalog_product_id` no payload do item (mesmo o `selectProduct` setando) — itens PG ficavam sem o FK e o `affected_products_from_invoice` precisava cair em fallback de SKU/EAN.
+
+**Backend (`BACKEND/routers/invoices.py:delete_invoice`):**
+- Permite excluir `draft` (sem efeito colateral) e `finalized` (reverte estoque).
+- Para `finalized` + `direction='in'`: captura `affected_products_from_invoice` ANTES do `db.delete()`, depois roda `recompute_cmig_product_stock` e `recompute_pg_product_stock` em cada produto — o replay event-sourced para de enxergar os eventos da NFe deletada e zera/reverte o cache de `stock_quantity`.
+- `authorized` e demais status continuam bloqueados (precisam cancelar via SEFAZ).
+
+**Frontend (`InvoiceDetailView.vue`):**
+- Botão "Reaplicar estoque PG" → renomeado para **"Recalcular Estoque"**, sem condição de origem (sempre aparece em `finalized`/`authorized`). Toast agora usa `cmig_recomputed`/`pg_recomputed`.
+- `canDelete` cobre `draft` + `finalized`. Label dinâmico ("Excluir Rascunho" / "Excluir NFe"). Modal de confirmação avisa que o estoque será revertido em entradas finalized.
+
+**Frontend (`InvoiceFormView.vue` — bug-fix):**
+- `itemForm` reativo agora tem `catalog_product_id: null` no estado inicial.
+- `openItemModal` carrega `catalog_product_id` ao editar.
+- `saveItem` envia `catalog_product_id` no payload — garante que itens PG persistem o FK e o recompute encontra o produto sem fallback.
+
+---
+
 ## 2026-05-30 — feat(catalog): anúncios com variações (ML) — publicar, editar e sincronizar estoque por variação
 
 **Pedido:** Botão "Anúncio com Variações" na tela Catálogo. Cada anúncio agrupa N variações (cor/tamanho/voltagem) com produtos simples vinculados (PG **ou** CMIG, origem única por anúncio). Sistema valida se a categoria do ML aceita variações, lê os atributos de combinação e popula SKU/EAN/estoque/preço sugerido a partir do produto vinculado. Usuário pode editar preço e fotos por variação. Estoque sempre = estoque disponível do produto vinculado; quando zera, variação fica "sem estoque" na VIP e volta sozinha quando o estoque cresce.

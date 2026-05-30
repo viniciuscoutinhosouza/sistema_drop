@@ -655,6 +655,7 @@ const form = reactive({
 const itemForm = reactive({
   id: null,
   cmig_product_id: null,
+  catalog_product_id: null,
   sku: '',
   source_type: null,
   description: '',
@@ -1016,6 +1017,7 @@ function openItemModal(it) {
     Object.assign(itemForm, {
       id: it.id,
       cmig_product_id: it.cmig_product_id || null,
+      catalog_product_id: it.catalog_product_id || null,
       sku: it.sku || '',
       source_type: it.source_type || null,
       description: it.description,
@@ -1042,6 +1044,7 @@ async function saveItem() {
   try {
     const payload = {
       cmig_product_id: itemForm.cmig_product_id || null,
+      catalog_product_id: itemForm.catalog_product_id || null,
       sku: itemForm.sku || null,
       source_type: itemForm.source_type || null,
       description: itemForm.description,

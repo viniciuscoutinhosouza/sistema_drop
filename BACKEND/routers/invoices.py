@@ -1003,15 +1003,59 @@ async def delete_invoice(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    inv = (await db.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one_or_none()
+    """Exclui NFe.
+
+    Permitido em:
+    - `draft` — nunca tocou em estoque, exclui direto.
+    - `finalized` — finalizada SEM SEFAZ. Captura produtos afetados antes,
+      exclui a NFe, e recalcula estoque dos produtos (o evento "vai embora"
+      do replay automaticamente — `_fetch_*_events` para de retornar).
+
+    BLOQUEADO em:
+    - `authorized` — foi transmitida à SEFAZ; precisa CANCELAR (botão dedicado).
+    - Demais status (queued, processing, rejected, cancelled).
+    """
+    from services.fiscal.stock_calculator import (
+        affected_products_from_invoice,
+        recompute_cmig_product_stock,
+        recompute_pg_product_stock,
+    )
+
+    inv = (
+        await db.execute(
+            select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice_id)
+        )
+    ).scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, current_user, db)
-    if inv.status not in ("draft",):
+
+    if inv.status not in ("draft", "finalized"):
         raise HTTPException(
-            status_code=400, detail=f"Não é possível excluir NFe com status '{inv.status}'"
+            status_code=400,
+            detail=(
+                f"Não é possível excluir NFe com status '{inv.status}'. "
+                "NFes transmitidas à SEFAZ precisam ser canceladas, não excluídas."
+            ),
         )
+
+    # Captura produtos afetados ANTES de deletar a NFe — após o delete, o
+    # replay não enxerga mais esses eventos e o recompute vai zerar/reverter.
+    cmig_ids: set[int] = set()
+    pg_ids: set[int] = set()
+    needs_recompute = inv.status == "finalized" and inv.direction == "in"
+    if needs_recompute:
+        cmig_ids, pg_ids = await affected_products_from_invoice(inv, db)
+
     db.delete(inv)
+    await db.flush()
+
+    if needs_recompute:
+        for cp_id in cmig_ids:
+            await recompute_cmig_product_stock(cp_id, db)
+        for pg_id in pg_ids:
+            await recompute_pg_product_stock(pg_id, db)
+
     await db.commit()
 
 

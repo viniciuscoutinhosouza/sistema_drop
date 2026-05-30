@@ -215,16 +215,16 @@
                       class="badge badge-success mr-2 mb-2 align-self-center">
                   <i class="fas fa-check mr-1"></i>Estoque atualizado
                 </span>
-                <button v-if="['finalized','authorized'].includes(invoice.status) && hasPgItems"
+                <button v-if="['finalized','authorized'].includes(invoice.status)"
                         class="btn btn-outline-warning mr-2 mb-2"
                         :disabled="reapplyingStock"
-                        :title="'Reaplica estoque APENAS dos itens com origem PG. Útil para corrigir NFes finalizadas antes do fix de roteamento CMIG/PG. CMIG não é reaplicado (evita dupla contagem).'"
-                        @click="reapplyStockPg">
+                        title="Recalcula o estoque dos produtos CMIG e PG referenciados nesta NFe. Operação idempotente — pode ser executada várias vezes sem acumular."
+                        @click="reapplyStock">
                   <i :class="['fas', reapplyingStock ? 'fa-spinner fa-spin' : 'fa-sync-alt']"></i>
-                  Reaplicar estoque PG
+                  Recalcular Estoque
                 </button>
-                <button v-if="canEdit" class="btn btn-outline-danger mb-2" @click="deleteInvoice">
-                  <i class="fas fa-trash mr-1"></i> Excluir Rascunho
+                <button v-if="canDelete" class="btn btn-outline-danger mb-2" @click="deleteInvoice">
+                  <i class="fas fa-trash mr-1"></i> {{ deleteButtonLabel }}
                 </button>
 
                 <div v-if="invoice.focus_message" class="alert alert-info mt-2 small mb-0">
@@ -398,8 +398,9 @@ const directionIcon = computed(() => invoice.value?.direction === 'in' ? 'fa-arr
 const directionLabel = computed(() => invoice.value?.direction === 'in' ? 'Entrada' : 'Saída')
 const backUrl = computed(() => invoice.value?.direction === 'in' ? '/fiscal/entradas' : '/fiscal/saidas')
 const canEdit = computed(() => invoice.value?.status === 'draft')
-const hasPgItems = computed(() =>
-  (invoice.value?.items || []).some(it => (it.source_type || '').toLowerCase() === 'pg')
+const canDelete = computed(() => ['draft', 'finalized'].includes(invoice.value?.status))
+const deleteButtonLabel = computed(() =>
+  invoice.value?.status === 'draft' ? 'Excluir Rascunho' : 'Excluir NFe'
 )
 
 const formatDate = fmt.date
@@ -437,10 +438,22 @@ async function load() {
 }
 
 async function deleteInvoice() {
-  if (!confirm('Excluir este rascunho? Esta ação não pode ser desfeita.')) return
+  const isFinalized = invoice.value?.status === 'finalized'
+  const direction = invoice.value?.direction
+  let msg = 'Excluir este rascunho? Esta ação não pode ser desfeita.'
+  if (isFinalized) {
+    msg = (
+      'Excluir esta NFe?\n\n' +
+      (direction === 'in'
+        ? '• O estoque dos produtos CMIG/PG será revertido automaticamente.\n'
+        : '• Esta NFe será removida dos totalizadores.\n') +
+      '• Esta ação não pode ser desfeita.'
+    )
+  }
+  if (!confirm(msg)) return
   try {
     await fiscalStore.deleteInvoice(invoice.value.id)
-    toast.success('Rascunho excluído')
+    toast.success(isFinalized ? 'NFe excluída e estoque recalculado' : 'Rascunho excluído')
     router.push(backUrl.value)
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao excluir')
@@ -517,24 +530,24 @@ async function refreshStatus() {
   }
 }
 
-async function reapplyStockPg() {
+async function reapplyStock() {
   const msg = (
-    'Reaplica APENAS os itens com origem PG (que foram ignorados antes do fix).\n\n' +
-    'Itens CMIG NÃO serão reaplicados (já contaram na 1ª vez — evita dupla contagem).\n\n' +
-    'Continuar?'
+    'Recalcular o estoque dos produtos referenciados nesta NFe?\n\n' +
+    '• Cobre tanto produtos CMIG quanto PG.\n' +
+    '• Operação idempotente — pode ser executada várias vezes sem acumular.'
   )
   if (!confirm(msg)) return
   reapplyingStock.value = true
   try {
     const { data } = await api.post(`/invoices/${invoice.value.id}/reapply-stock`)
     const parts = []
-    if (data.matched_pg) parts.push(`${data.matched_pg} item(ns) PG atualizados`)
-    if (data.unmatched) parts.push(`${data.unmatched} sem match`)
-    if (parts.length === 0) parts.push('nenhum item PG nesta nota')
-    toast.success(`Reaplicado: ${parts.join(', ')}.`)
+    if (data.cmig_recomputed) parts.push(`${data.cmig_recomputed} CMIG`)
+    if (data.pg_recomputed)   parts.push(`${data.pg_recomputed} PG`)
+    if (parts.length === 0)   parts.push('nenhum produto vinculado')
+    toast.success(`Estoque recalculado: ${parts.join(', ')}.`)
     await load()
   } catch (e) {
-    toast.error(e.response?.data?.detail || 'Erro ao reaplicar estoque.')
+    toast.error(e.response?.data?.detail || 'Erro ao recalcular estoque.')
   } finally {
     reapplyingStock.value = false
   }
