@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-05-30 — fix(catalog): detectar categorias User Products que rejeitam variações via POST /items
+
+**Pedido:** Ao publicar anúncio com variações na categoria MLB123037 (Bolas de Pilates), o ML retornou:
+```
+"The field variations is invalid with family name"
+"The body does not contains some or none of the following properties [family_name, price, available_quantity]"
+```
+
+**Diagnóstico:** A categoria está sob o modelo **User Products** do ML (`settings.catalog_domain = MLB-PILATES_BALLS` + atributos BRAND/MODEL com tag `catalog_required`). Nesse modelo:
+- O ML exige `family_name` no item-pai (não `title`)
+- Variações **não podem** ser enviadas via `POST /items` — só via API de catálogo (`catalog_product_id`)
+- Esta limitação é documentada pelo próprio ML mas não estava sendo detectada
+
+**Fix (`BACKEND/routers/anuncios.py:get_category_variation_support`):**
+- Detecta categoria sob User Products: `settings.catalog_domain != null` E pelo menos um atributo com tag `catalog_required`.
+- Quando detectado, `supports_variations = false` + novos campos na resposta: `requires_family_name: true`, `catalog_domain: "..."`, `block_reason: "..."`.
+
+**Fix (`FRONTEND/src/views/catalog/CatalogVariationsFormView.vue`):**
+- Mensagem vermelha específica para categorias User Products explicando o motivo do bloqueio e direcionando o usuário para a publicação padrão do Catálogo.
+
+**Consequência:** A feature de Anúncios com Variações fica limitada às categorias que **ainda não migraram** para User Products. Categorias modernas do ML (a maioria) estão sob esse modelo e só aceitam variações via fluxo de catálogo (`catalog_product_id`) — fora do escopo desta feature na fase 1.
+
+---
+
 ## 2026-05-30 — fix(fiscal): NFe entrada CMIG sem recalcular estoque + excluir finalized + bug catalog_product_id
 
 **Pedido:** (1) Entrada manual com produtos CMIG não atualizava estoque automaticamente e não aparecia opção de "recalcular estoque". (2) Permitir excluir NFe não-transmitida à SEFAZ revertendo estoque (para PG e CMIG).

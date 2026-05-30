@@ -199,6 +199,15 @@
             <div v-if="catSupportLoading" class="text-muted small">
               <i class="fas fa-spinner fa-spin mr-1"></i>Verificando suporte a variações...
             </div>
+            <div v-else-if="form.category_id && catSupport && catSupport.requires_family_name"
+                 class="alert alert-danger py-2">
+              <i class="fas fa-exclamation-triangle mr-1"></i>
+              Esta categoria está sob o <strong>modelo User Products</strong> do Mercado Livre
+              (<code>{{ catSupport.catalog_domain }}</code>). Nesse modelo o ML exige o campo
+              <code>family_name</code> no item-pai e <strong>não permite variações via API de itens</strong>.
+              Use a publicação padrão do Catálogo (1 produto = 1 anúncio) ou publique como
+              anúncio de catálogo associado a um <code>catalog_product_id</code>.
+            </div>
             <div v-else-if="form.category_id && catSupport && !catSupport.supports_variations"
                  class="alert alert-danger py-2">
               <i class="fas fa-exclamation-triangle mr-1"></i>

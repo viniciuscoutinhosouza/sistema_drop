@@ -2781,17 +2781,17 @@ async def get_category_variation_support(
 ):
     """Retorna informações sobre suporte a variações de uma categoria ML.
 
-    Critério de detecção (em ordem de prioridade):
-      1. Algum atributo da categoria com tag `allow_variations` → aceita variações
-         por atributo da categoria (ex.: COLOR, SIZE, VOLTAGE).
-      2. `settings.attribute_types == "variations"` → aceita variações também.
-      3. Caso contrário, aceita pelo menos variações **personalizadas**
-         (name + value_name) quando o ML permite — sinalizamos via flag dedicada.
-
-    Por que não confiar só em `settings.attribute_types`: algumas categorias
-    permitem variações sem esse setting estar como "variations" (caso típico
-    de categorias antigas). O sinal forte é a presença de atributos com a tag
-    `allow_variations` na lista de /categories/{id}/attributes.
+    Critério de detecção:
+      1. **Bloqueador**: categoria sob modelo User Products / catalog domain
+         (`settings.catalog_domain` não-nulo + atributos com tag `catalog_required`).
+         Essas categorias exigem `family_name` no item-pai e o ML **não aceita**
+         o campo `variations` junto — retorna 400 `body.invalid_fields`. Sinalizamos
+         `supports_variations: false` com `requires_family_name: true` para a UI
+         orientar o usuário a usar a publicação normal (1 produto = 1 anúncio).
+      2. Algum atributo com tag `allow_variations` → aceita variações por atributo
+         da categoria (ex.: COLOR, SIZE, VOLTAGE).
+      3. `settings.attribute_types == "variations"` → aceita variações também.
+      4. Sem nenhum sinal acima → categoria não aceita variações.
     """
     import httpx
 
@@ -2800,21 +2800,25 @@ async def get_category_variation_support(
     cat_data = cat_resp.json() if cat_resp.status_code == 200 else {}
     settings = cat_data.get("settings") or {}
     attribute_types = settings.get("attribute_types") or ""
+    catalog_domain = settings.get("catalog_domain") or None
 
-    # Sempre carrega atributos para detectar allow_variations / variation_attribute
     attrs = await ml_service.get_category_attributes(category_id)
 
     combination_attrs: list[dict] = []
     own_attrs: list[dict] = []
     variations_required = False
+    has_catalog_required_attr = False
 
     for attr in attrs:
         tags = attr.get("tags") or {}
-        # ML retorna tags ora como lista, ora como dict — normaliza
         if isinstance(tags, dict):
             tag_keys = set(tags.keys())
         else:
             tag_keys = set(tags or [])
+
+        if "catalog_required" in tag_keys:
+            has_catalog_required_attr = True
+
         allow_variations = "allow_variations" in tag_keys
         variation_attribute = "variation_attribute" in tag_keys
         if not (allow_variations or variation_attribute):
@@ -2837,13 +2841,33 @@ async def get_category_variation_support(
         if variation_attribute:
             own_attrs.append(entry)
 
+    # Modelo User Products: categoria com catalog_domain + atributos catalog_required
+    # exige family_name no POST /items e rejeita o campo `variations` (erro 374
+    # "The field variations is invalid with family name"). Não dá pra publicar
+    # variações por essa via — apenas via API de catálogo (catalog_product_id).
+    requires_family_name = bool(catalog_domain) and has_catalog_required_attr
+
     has_allow_variations_attr = bool(combination_attrs)
     supports_via_setting = attribute_types == "variations"
-    # Variações personalizadas: categorias que aceitam variações mas não têm
-    # atributos `allow_variations` (raro). Aí o usuário inventa um nome livre.
-    allows_custom_variations = supports_via_setting and not has_allow_variations_attr
+    allows_custom_variations = (
+        supports_via_setting
+        and not has_allow_variations_attr
+        and not requires_family_name
+    )
 
-    supports_variations = has_allow_variations_attr or supports_via_setting
+    supports_variations = (
+        not requires_family_name
+        and (has_allow_variations_attr or supports_via_setting)
+    )
+
+    block_reason = None
+    if requires_family_name:
+        block_reason = (
+            "Esta categoria está sob o modelo User Products do Mercado Livre "
+            "(catalog_domain={}). Nesse modelo, o ML exige family_name no item-pai "
+            "e não permite o campo variations no POST /items. Para publicar nesta "
+            "categoria, use a publicação padrão do Catálogo (1 produto = 1 anúncio)."
+        ).format(catalog_domain)
 
     return {
         "category_id": category_id,
@@ -2851,6 +2875,9 @@ async def get_category_variation_support(
         "supports_variations": supports_variations,
         "variations_required": variations_required,
         "allows_custom_variations": allows_custom_variations,
+        "requires_family_name": requires_family_name,
+        "catalog_domain": catalog_domain,
+        "block_reason": block_reason,
         "attribute_types": attribute_types or None,
         "max_variations_allowed": settings.get("max_variations_allowed"),
         "max_pictures_per_item_var": settings.get("max_pictures_per_item_var")
