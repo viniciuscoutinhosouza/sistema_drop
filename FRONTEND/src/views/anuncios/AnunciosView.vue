@@ -1320,7 +1320,16 @@
                 </div>
                 <div class="col-md-4 form-group">
                   <label>EAN / GTIN</label>
-                  <input v-model="createCmigForm.ean" class="form-control" maxlength="14" placeholder="0000000000000" />
+                  <div class="input-group">
+                    <input v-model="createCmigForm.ean" class="form-control" maxlength="14" placeholder="0000000000000" />
+                    <div class="input-group-append">
+                      <button type="button" class="btn btn-outline-secondary"
+                              title="Gerar EAN-13 valido (prefixo 789 GS1 Brasil)"
+                              @click="createCmigForm.ean = generateEan13()">
+                        <i class="fas fa-magic mr-1"></i>Gerar
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="row">
@@ -1357,8 +1366,8 @@
                 </div>
               </div>
 
-              <!-- Variantes -->
-              <template v-if="createCmigModal.variants.length">
+              <!-- Variantes (apenas no fluxo legado — sem variation_id explicito) -->
+              <template v-if="createCmigModal.variants.length && !createCmigModal.variation_id">
                 <hr class="my-2" />
                 <p class="font-weight-bold small text-uppercase text-muted mb-2">
                   <i class="fas fa-layer-group mr-1"></i>
@@ -1678,7 +1687,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import { shippingModeStyle as smStyle } from '@/utils/constants'
-import { isValidEan13 } from '@/utils/ean'
+import { isValidEan13, generateEan13 } from '@/utils/ean'
 import PublishCategoryPicker from '@/components/catalog/PublishCategoryPicker.vue'
 import { persistCategoryToProduct } from '@/composables/usePublishCategory'
 
