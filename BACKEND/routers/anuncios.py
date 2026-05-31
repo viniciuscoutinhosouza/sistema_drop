@@ -1642,6 +1642,7 @@ async def create_cmig_product_from_listing(
     ncm = _norm_ncm(body.get("ncm") or fiscal_dict.get("ncm"))
     cest = _norm_cest(body.get("cest") or fiscal_dict.get("cest"))
     ean = body.get("ean") or fiscal_dict.get("ean") or fiscal_dict.get("gtin")
+    csosn = body.get("csosn") or fiscal_dict.get("csosn")
 
     product = CMIGProduct(
         cmig_id=cmig_id,
@@ -1660,6 +1661,7 @@ async def create_cmig_product_from_listing(
         cest=cest,
         ean=ean,
         origin=body.get("origin", 0),
+        csosn=csosn,
         suggested_price=body.get("suggested_price") or body.get("sale_price") or listing.sale_price,
         video_id=body.get("video_id") or listing.video_id,
         attributes_json=listing.attributes_json,

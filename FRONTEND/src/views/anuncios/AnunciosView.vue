@@ -1236,6 +1236,39 @@
                   <input v-model="createCmigForm.ean" class="form-control" maxlength="14" placeholder="0000000000000" />
                 </div>
               </div>
+              <div class="row">
+                <div class="col-md-4 form-group">
+                  <label>Origem da Mercadoria</label>
+                  <select v-model.number="createCmigForm.origin" class="form-control">
+                    <option :value="0">0 — Nacional</option>
+                    <option :value="1">1 — Estrangeira (Importação direta)</option>
+                    <option :value="2">2 — Estrangeira (Mercado interno)</option>
+                    <option :value="3">3 — Nacional (40-70% conteúdo importado)</option>
+                    <option :value="4">4 — Nacional (processo produtivo PPB)</option>
+                    <option :value="5">5 — Nacional (≤40% conteúdo importado)</option>
+                    <option :value="6">6 — Estrangeira (Importação direta, sem similar)</option>
+                    <option :value="7">7 — Estrangeira (Mercado interno, sem similar)</option>
+                    <option :value="8">8 — Nacional (>70% conteúdo importado)</option>
+                  </select>
+                </div>
+                <div class="col-md-8 form-group">
+                  <label>CSOSN do ICMS</label>
+                  <select v-model="createCmigForm.csosn" class="form-control">
+                    <option :value="null">— Usar padrão da CMIG —</option>
+                    <option value="101">101 — Tributada com permissão de crédito</option>
+                    <option value="102">102 — Tributada sem permissão de crédito</option>
+                    <option value="103">103 — Isenção do ICMS (faixa receita bruta)</option>
+                    <option value="201">201 — Trib. com permissão + cobrança ST</option>
+                    <option value="202">202 — Trib. sem permissão + cobrança ST</option>
+                    <option value="203">203 — Isenção + cobrança ST</option>
+                    <option value="300">300 — Imune</option>
+                    <option value="400">400 — Não tributada</option>
+                    <option value="500">500 — ICMS cobrado anteriormente por ST</option>
+                    <option value="900">900 — Outros</option>
+                  </select>
+                  <small class="text-muted">Usado pelo Faturador ML ao emitir NFe. Deixe em branco para usar o padrão configurado na CMIG.</small>
+                </div>
+              </div>
 
               <!-- Variantes -->
               <template v-if="createCmigModal.variants.length">
@@ -2567,6 +2600,8 @@ function openCreateCmigModal(listing) {
     ncm:            normNcm(fiscal.ncm),
     cest:           normCest(fiscal.cest),
     ean:            fiscal.ean || fiscal.gtin || '',
+    origin:         fiscal.origin != null && fiscal.origin !== '' ? Number(fiscal.origin) : 0,
+    csosn:          fiscal.csosn || fiscal.icms_csosn || null,
   }
 }
 
