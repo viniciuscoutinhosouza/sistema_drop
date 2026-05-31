@@ -2291,6 +2291,11 @@ let _progressTimer = null
 function friendlyMlError(detail, httpStatus) {
   const txt = typeof detail === 'string' ? detail : JSON.stringify(detail || {})
   const low = txt.toLowerCase()
+  if (httpStatus === 504 || low.includes('504') || low.includes('gateway timeout'))
+    return {
+      title: 'Importação demorou demais (timeout)',
+      hint: 'A importação está rodando em segundo plano no servidor — aguarde 1–2 minutos e clique em "Importar" novamente. Anúncios já salvos não são perdidos e aparecem na lista automaticamente.',
+    }
   if (httpStatus === 401 || low.includes('invalid_token') || low.includes('invalid access token'))
     return {
       title: 'Token do Mercado Livre expirado',
@@ -2306,15 +2311,20 @@ function friendlyMlError(detail, httpStatus) {
       title: 'Conta incorreta',
       hint: 'O token conectado pertence a outro vendedor. Reconecte a conta correta em Integrações.',
     }
-  if (low.includes('cancelled') || low.includes('network') || low.includes('timeout'))
+  if (low.includes('cancelled') || low.includes('network') || low.includes('timeout') || low.includes('econnaborted'))
     return {
-      title: 'Importação interrompida',
-      hint: 'A conexão foi interrompida (você fechou a página, perdeu internet ou o servidor demorou). Tente novamente — anúncios já importados não são perdidos.',
+      title: 'Conexão interrompida',
+      hint: 'A conexão caiu (você fechou a página, perdeu internet ou o servidor demorou). Tente novamente — anúncios já importados não são perdidos.',
     }
-  if (low.includes('429') || low.includes('rate limit'))
+  if (httpStatus === 429 || low.includes('429') || low.includes('rate limit'))
     return {
       title: 'Mercado Livre limitou a taxa de requisições',
       hint: 'Aguarde 1–2 minutos e tente de novo. Contas grandes podem precisar fracionar a importação.',
+    }
+  if (httpStatus >= 500)
+    return {
+      title: 'Erro no servidor',
+      hint: 'Algo inesperado aconteceu no servidor. Tente de novo em alguns segundos. Se persistir, avise o administrador.',
     }
   return {
     title: 'Erro ao importar anúncios',
@@ -2346,11 +2356,13 @@ async function importAnuncios(statuses = null) {
   }, 1000)
   try {
     const url = `/anuncios/import/${selectedAccountId.value}` + (statuses ? `?statuses=${encodeURIComponent(statuses)}` : '')
-    const { data } = await api.post(url)
+    // Timeout de 10min — alinhado ao nginx proxy_read_timeout 600s para contas grandes (500+ items)
+    const { data } = await api.post(url, undefined, { timeout: 600000 })
     importResult.value = { ...data, _statuses: statuses || 'active,paused,closed,under_review' }
     await loadAnuncios()
   } catch (e) {
-    const friendly = friendlyMlError(e.response?.data?.detail || e.message, e.response?.status)
+    const detailRaw = e.response?.data?.detail || e.response?.data || e.message || ''
+    const friendly = friendlyMlError(detailRaw, e.response?.status)
     importProgress.value = {
       ...importProgress.value,
       phase: 'error',
