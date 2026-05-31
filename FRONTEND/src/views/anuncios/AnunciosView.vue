@@ -77,7 +77,7 @@
                     </li>
                   </ul>
                 </div>
-                <button class="btn btn-sm btn-secondary" @click="importAnuncios" :disabled="!selectedAccountId || importing">
+                <button class="btn btn-sm btn-secondary" @click="importAnuncios()" :disabled="!selectedAccountId || importing">
                   <i :class="['fas', importing ? 'fa-spinner fa-spin' : 'fa-download', 'mr-1']"></i>Importar
                 </button>
               </div>
@@ -132,7 +132,7 @@
             <div v-else-if="filteredAnuncios.length === 0" class="text-center text-muted py-5">
               <i class="fas fa-tag fa-2x mb-2 d-block"></i>Nenhum anúncio encontrado.
               <div class="mt-2">
-                <button class="btn btn-sm btn-secondary mr-2" @click="importAnuncios" :disabled="importing">
+                <button class="btn btn-sm btn-secondary mr-2" @click="importAnuncios()" :disabled="importing">
                   <i class="fas fa-download mr-1"></i>Importar do Marketplace
                 </button>
                 <button class="btn btn-sm btn-success" @click="openWizard(null)">
@@ -906,6 +906,46 @@
       </div>
     </div>
 
+    <!-- Modal: Progresso da Importação -->
+    <div v-if="importProgress" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.55);z-index:1090">
+      <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title">
+              <i v-if="importProgress.phase === 'error'" class="fas fa-exclamation-triangle text-danger mr-2"></i>
+              <i v-else class="fas fa-cloud-download-alt text-primary mr-2"></i>
+              {{ importProgress.phase === 'error' ? 'Falha na importação' : 'Importando anúncios' }}
+            </h6>
+            <button v-if="importProgress.phase === 'error'" type="button" class="close" @click="closeImportProgress"><span>&times;</span></button>
+          </div>
+          <div class="modal-body text-center py-3">
+            <template v-if="importProgress.phase !== 'error'">
+              <div class="mb-3">
+                <i class="fas fa-spinner fa-spin fa-2x text-primary"></i>
+              </div>
+              <div class="font-weight-bold small">{{ importProgress.message }}</div>
+              <div class="text-muted small mt-1">{{ importProgress.sub }}</div>
+              <div class="text-muted mt-2" style="font-size:11px">
+                <i class="far fa-clock mr-1"></i>{{ importProgress.elapsed }}s decorridos
+              </div>
+              <div v-if="importProgress.elapsed > 30" class="alert alert-info py-1 mt-2 small mb-0">
+                Contas com muitos anúncios podem levar até <strong>2 minutos</strong>.
+                Não feche esta janela.
+              </div>
+            </template>
+            <template v-else>
+              <div class="text-danger mb-2"><i class="fas fa-times-circle fa-2x"></i></div>
+              <div class="font-weight-bold">{{ importProgress.error.title }}</div>
+              <div class="text-muted small mt-2">{{ importProgress.error.hint }}</div>
+            </template>
+          </div>
+          <div v-if="importProgress.phase === 'error'" class="modal-footer py-2">
+            <button class="btn btn-sm btn-secondary" @click="closeImportProgress">Fechar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal: Resultado de Importação -->
     <div v-if="importResult" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
       <div class="modal-dialog">
@@ -932,7 +972,28 @@
               <li class="list-group-item d-flex justify-content-between">
                 <span>Sem vínculo</span><span class="badge badge-warning badge-pill">{{ importResult.unlinked }}</span>
               </li>
+              <li v-if="importResult.failed" class="list-group-item d-flex justify-content-between">
+                <span><i class="fas fa-exclamation-triangle text-danger mr-1"></i>Falharam</span>
+                <span class="badge badge-danger badge-pill">{{ importResult.failed }}</span>
+              </li>
+              <li v-if="importResult.total_seen_in_ml" class="list-group-item d-flex justify-content-between text-muted small">
+                <span>Total no ML (antes do filtro)</span><span>{{ importResult.total_seen_in_ml }}</span>
+              </li>
             </ul>
+
+            <!-- Erros por item (amigável) -->
+            <div v-if="importResult.item_errors && importResult.item_errors.length" class="mt-3">
+              <div class="text-danger small font-weight-bold mb-1">
+                <i class="fas fa-exclamation-circle mr-1"></i>Anúncios que não puderam ser importados:
+              </div>
+              <div class="border rounded p-2" style="max-height:160px;overflow-y:auto;background:#fff5f5">
+                <div v-for="(err, i) in importResult.item_errors" :key="i" class="small mb-1">
+                  <code v-if="err.platform_item_id" style="font-size:10px">{{ err.platform_item_id }}</code>
+                  <span v-else class="text-muted">(sem ID)</span>
+                  <span class="text-muted ml-1">— {{ err.error }}</span>
+                </div>
+              </div>
+            </div>
 
             <div v-if="importResult._statuses !== 'all'"
                  class="alert alert-warning py-2 small mt-3 mb-0">
@@ -2224,29 +2285,96 @@ async function loadStats() {
   finally { loadingStats.value = false }
 }
 
+const importProgress = ref(null)  // { phase, message, elapsed } enquanto a importação roda
+let _progressTimer = null
+
+function friendlyMlError(detail, httpStatus) {
+  const txt = typeof detail === 'string' ? detail : JSON.stringify(detail || {})
+  const low = txt.toLowerCase()
+  if (httpStatus === 401 || low.includes('invalid_token') || low.includes('invalid access token'))
+    return {
+      title: 'Token do Mercado Livre expirado',
+      hint: 'Vá em Integrações → editar a conta → reconectar com o Mercado Livre. Depois tente importar de novo.',
+    }
+  if (httpStatus === 403)
+    return {
+      title: 'Acesso negado pelo Mercado Livre',
+      hint: 'O token não tem permissão para listar os anúncios desta conta. Reconecte em Integrações.',
+    }
+  if (httpStatus === 409 || low.includes('identity mismatch') || low.includes('conta incorreta'))
+    return {
+      title: 'Conta incorreta',
+      hint: 'O token conectado pertence a outro vendedor. Reconecte a conta correta em Integrações.',
+    }
+  if (low.includes('cancelled') || low.includes('network') || low.includes('timeout'))
+    return {
+      title: 'Importação interrompida',
+      hint: 'A conexão foi interrompida (você fechou a página, perdeu internet ou o servidor demorou). Tente novamente — anúncios já importados não são perdidos.',
+    }
+  if (low.includes('429') || low.includes('rate limit'))
+    return {
+      title: 'Mercado Livre limitou a taxa de requisições',
+      hint: 'Aguarde 1–2 minutos e tente de novo. Contas grandes podem precisar fracionar a importação.',
+    }
+  return {
+    title: 'Erro ao importar anúncios',
+    hint: txt.length > 300 ? (txt.slice(0, 300) + '...') : txt,
+  }
+}
+
 async function importAnuncios(statuses = null) {
   if (!selectedAccountId.value) return
   importing.value = true
+  // statuses pode vir como evento DOM se chamado errado (@click="importAnuncios" sem ()) — proteger
+  if (statuses && typeof statuses === 'object') statuses = null
+  // Estado inicial do progresso
+  importProgress.value = {
+    phase: 'fetching',
+    message: 'Buscando anúncios no Mercado Livre…',
+    sub: statuses === 'all'
+      ? 'Modo "Importar TUDO" — pode levar 1–2 minutos para contas grandes (>500 anúncios).'
+      : 'Status padrão: active, paused, closed, under_review.',
+    started_at: Date.now(),
+    elapsed: 0,
+    error: null,
+  }
+  clearInterval(_progressTimer)
+  _progressTimer = setInterval(() => {
+    if (importProgress.value) {
+      importProgress.value = { ...importProgress.value, elapsed: Math.floor((Date.now() - importProgress.value.started_at) / 1000) }
+    }
+  }, 1000)
   try {
-    const url = `/anuncios/import/${selectedAccountId.value}` + (statuses ? `?statuses=${statuses}` : '')
+    const url = `/anuncios/import/${selectedAccountId.value}` + (statuses ? `?statuses=${encodeURIComponent(statuses)}` : '')
     const { data } = await api.post(url)
     importResult.value = { ...data, _statuses: statuses || 'active,paused,closed,under_review' }
     await loadAnuncios()
   } catch (e) {
-    const detail = e.response?.data?.detail || 'Erro ao importar anúncios'
-    if (e.response?.status === 409) {
-      alert(`Conta incorreta!\n\n${detail}`)
-    } else {
-      toast.error(detail)
+    const friendly = friendlyMlError(e.response?.data?.detail || e.message, e.response?.status)
+    importProgress.value = {
+      ...importProgress.value,
+      phase: 'error',
+      error: friendly,
     }
+    // Mantém o modal de progresso aberto pra mostrar erro; usuário fecha manualmente
+    return
   } finally {
     importing.value = false
+    clearInterval(_progressTimer)
+    // Se houve sucesso ou erro foi mostrado no modal de resultado, fecha o progresso
+    if (importResult.value) {
+      importProgress.value = null
+    }
   }
 }
 
 async function importAllAnuncios() {
   importResult.value = null
   await importAnuncios('all')
+}
+
+function closeImportProgress() {
+  importProgress.value = null
 }
 
 const showDiagnostics = ref(false)

@@ -956,7 +956,9 @@ async def import_anuncios(
     await _fetch_extra()
 
     imported = updated = auto_matched = unlinked = 0
+    failed = 0
     saved_listings: list[ProductListing] = []
+    item_errors: list[dict] = []  # erros não-fatais coletados durante o loop
 
     # Carrega produtos CMIG da CMIG vinculada à conta (para auto-match)
     cmig_products: list[CMIGProduct] = []
@@ -971,6 +973,12 @@ async def import_anuncios(
     for item in items:
         platform_item_id = item.get("id", "")
         if not platform_item_id:
+            failed += 1
+            item_errors.append({
+                "platform_item_id": None,
+                "title": None,
+                "error": "Item sem ID retornado pelo ML",
+            })
             continue
 
         # Bulk API retorna price=preço atual e original_price=preço sem desconto (se houver promoção)
@@ -1358,6 +1366,9 @@ async def import_anuncios(
         "updated": updated,
         "auto_matched": auto_matched,
         "unlinked": unlinked,
+        "failed": failed,
+        "item_errors": item_errors[:50],  # cap pra não inflar response
+        "total_seen_in_ml": len(items) + failed,
         "diagnostics": diagnostics,
     }
 
