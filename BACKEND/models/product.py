@@ -261,7 +261,9 @@ class ProductListing(Base):
 
     product = relationship("DropshipperProduct", back_populates="listings")
     account = relationship("MarketplaceAccount")
-    cmig_product = relationship("CMIGProduct")
+    # foreign_keys explicito porque CMIGProduct.source_listing_id cria um 2o FK
+    # (cmig_products → product_listings, no sentido oposto) que ambigua a inferencia.
+    cmig_product = relationship("CMIGProduct", foreign_keys=[cmig_product_id])
     catalog_product = relationship("CatalogProduct")
 
 
