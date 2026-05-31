@@ -872,20 +872,53 @@ async def import_anuncios(
 ):
     """Importa anúncios do marketplace e faz auto-match por similaridade de título.
 
-    `statuses`: lista separada por vírgula de status ML a importar (ex: 'inactive'
-    ou 'active,paused'). Default importa active/paused/closed/under_review.
-    Para importar inativos especificamente, passe `?statuses=inactive`.
+    `statuses`: lista separada por vírgula de status ML a importar.
+    - omitido (default) → importa active/paused/closed/under_review do body
+    - 'all' ou 'tudo'   → importa TODOS (inclui under_review com sub_status
+                          suspended_for_prevention, paused com sub_status raros, etc.)
+    - 'active,paused'   → filtra apenas esses status (no body do item, não no params)
+
+    A busca no ML usa search_type=scan SEM filtro de status (mais confiável —
+    o filtro `?status=X` da search retorna 0 em casos onde deveria retornar
+    resultados, visto em testes com tokens reais).
     """
     account = await _get_account_or_403(account_id, current_user, db)
     access_token = await _get_valid_token(account, db)
     seller_id = await _validate_token_owner(account, access_token)
 
-    status_list: list[str] | None = None
-    if statuses:
-        status_list = [s.strip() for s in statuses.split(",") if s.strip()]
+    # Filtragem por status: aplicada no body retornado, NÃO no params da search
+    status_filter: set[str] | None = None
+    if statuses and statuses.lower() not in ("all", "tudo", "*"):
+        status_filter = {s.strip() for s in statuses.split(",") if s.strip()}
+    elif not statuses:
+        status_filter = set(ml_service.DEFAULT_IMPORT_STATUSES)
+    # statuses == 'all' → status_filter fica None = sem filtro
 
-    item_ids = await ml_service.get_seller_item_ids(access_token, seller_id, statuses=status_list)
+    diagnostics: list = []
+    item_ids = await ml_service.get_seller_item_ids(
+        access_token, seller_id, statuses=list(status_filter or []), diagnostics=diagnostics
+    )
     items = await ml_service.get_items_bulk(access_token, item_ids)
+
+    # Conta status real visto no ML antes do filtro
+    status_counts_before_filter: dict[str, int] = {}
+    for it in items:
+        st = (it.get("status") or "unknown").lower()
+        status_counts_before_filter[st] = status_counts_before_filter.get(st, 0) + 1
+
+    # Aplica filtro pelo body
+    total_from_ml = len(items)
+    if status_filter is not None:
+        items = [it for it in items if (it.get("status") or "").lower() in status_filter]
+
+    # Anexa diagnostics resumido — devolvido no response final pra UI exibir
+    diagnostics.append({
+        "phase": "filter",
+        "total_from_ml": total_from_ml,
+        "after_filter": len(items),
+        "status_filter": sorted(status_filter) if status_filter else "all",
+        "status_counts_in_ml": status_counts_before_filter,
+    })
 
     # Busca descrições em paralelo para todos os itens
     descriptions: dict[str, str] = {}
@@ -1325,6 +1358,7 @@ async def import_anuncios(
         "updated": updated,
         "auto_matched": auto_matched,
         "unlinked": unlinked,
+        "diagnostics": diagnostics,
     }
 
 

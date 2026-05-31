@@ -838,6 +838,10 @@ async def update_item_price(access_token: str, item_id: str, price: float) -> No
         raise HTTPException(status_code=400, detail=f"Erro ao atualizar preço ML: {resp.text}")
 
 
+# Status ML que consideramos "ativos" no contexto da app (importação padrão).
+# Anúncios em outros status (inactive raro, paused com sub_status especiais,
+# under_review com sub_status=suspended_for_prevention) caem fora desse default
+# e só entram quando o usuário pede explicitamente "importar tudo".
 DEFAULT_IMPORT_STATUSES = ["active", "paused", "closed", "under_review"]
 
 
@@ -845,39 +849,100 @@ async def get_seller_item_ids(
     access_token: str,
     seller_id: str,
     statuses: list[str] | None = None,
+    *,
+    diagnostics: list | None = None,
 ) -> list[str]:
-    """Return all item IDs for a seller across given statuses (paginated), deduped.
+    """Lista TODOS os item_ids do vendedor via /items/search com search_type=scan.
 
-    `statuses=None` usa DEFAULT_IMPORT_STATUSES (exclui 'inactive' por padrão —
-    são anúncios pausados há muito tempo no ML, geralmente ruído). Para importar
-    inativos especificamente, passe `statuses=['inactive']`.
+    NÃO filtra por status no params — testes com tokens reais mostraram que o
+    ML retorna 0 results em alguns casos onde o filtro `status=X` deveria
+    retornar resultados (visto na conta CA FITNESS: 555 items totais, mas
+    `status=active|paused|closed|under_review|inactive` todos retornam 0;
+    apenas a busca sem filtro retorna os 555 — todos com status under_review +
+    sub_status=suspended_for_prevention).
+
+    Filtragem por status, se desejada, deve ser feita PELO CALLER após o bulk
+    fetch dos items (que retorna o `status` real no body de cada item). Por
+    isso o parâmetro `statuses` aqui é mantido apenas para registrar a intenção
+    no diagnostics — não é enviado ao ML.
+
+    `diagnostics=list` quando passado acumula o que aconteceu em cada iteração
+    (HTTP status, contagem, scroll_id) — útil para a UI quando o resultado for 0.
+
+    Usa search_type=scan + scroll_id (até 100 iterações de 50 = 5000 items;
+    contas maiores precisariam de paginação adicional).
     """
+    base_url = f"{ML_API_BASE}/users/{seller_id}/items/search"
+    headers = {"Authorization": f"Bearer {access_token}"}
     seen: set[str] = set()
     all_ids: list[str] = []
-    ml_statuses = statuses if statuses else list(DEFAULT_IMPORT_STATUSES)
-    async with httpx.AsyncClient() as client:
-        for status in ml_statuses:
-            offset, limit = 0, 50
-            while True:
-                resp = await client.get(
-                    f"{ML_API_BASE}/users/{seller_id}/items/search",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    params={"status": status, "limit": limit, "offset": offset},
+
+    params: dict = {"search_type": "scan", "limit": 50}
+    scroll_id: str | None = None
+    max_iterations = 100  # cap defensivo (~5000 items com limit=50)
+
+    if diagnostics is not None:
+        diagnostics.append({
+            "phase": "scan_start",
+            "url": base_url,
+            "statuses_requested": statuses,
+            "note": "Buscando TODOS os items via scan (sem filtro de status)",
+        })
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for it in range(1, max_iterations + 1):
+            if scroll_id:
+                params["scroll_id"] = scroll_id
+            resp = await client.get(base_url, headers=headers, params=params)
+
+            if diagnostics is not None and (it == 1 or resp.status_code != 200):
+                diagnostics.append({
+                    "iter": it,
+                    "http_status": resp.status_code,
+                    "body_preview": resp.text[:300] if resp.status_code != 200 else None,
+                })
+
+            if resp.status_code != 200:
+                logging.getLogger(__name__).warning(
+                    "ML items/search [scan] falhou: HTTP %s body=%s",
+                    resp.status_code, resp.text[:300],
                 )
-                if resp.status_code != 200:
-                    break
-                data = resp.json()
-                batch = data.get("results", [])
-                for item_id in batch:
-                    if item_id not in seen:
-                        seen.add(item_id)
-                        all_ids.append(item_id)
-                if len(batch) < limit:
-                    break
-                offset += limit
-                # Cap defensivo: ML limita offset+limit a 1000 na busca normal
-                if offset >= 1000:
-                    break
+                break
+
+            data = resp.json()
+            batch = data.get("results") or []
+            for iid in batch:
+                if iid not in seen:
+                    seen.add(iid)
+                    all_ids.append(iid)
+
+            scroll_id = data.get("scroll_id") or None
+            total = data.get("paging", {}).get("total")
+            if diagnostics is not None and it == 1:
+                diagnostics[-1]["paging_total"] = total
+                diagnostics[-1]["first_batch_size"] = len(batch)
+
+            # Loop sai quando: sem scroll_id retornado, ou batch vazio (acabou)
+            if not scroll_id or not batch:
+                if diagnostics is not None:
+                    diagnostics.append({
+                        "phase": "scan_end",
+                        "iterations": it,
+                        "total_ids": len(all_ids),
+                        "reason": "no_scroll_id" if not scroll_id else "empty_batch",
+                    })
+                break
+        else:
+            # max_iterations atingido sem terminar — log de warning
+            if diagnostics is not None:
+                diagnostics.append({
+                    "phase": "scan_end",
+                    "iterations": max_iterations,
+                    "total_ids": len(all_ids),
+                    "reason": "max_iterations_hit",
+                    "note": "Conta tem mais items que o cap de scan — alguns ficaram fora.",
+                })
+
     return all_ids
 
 

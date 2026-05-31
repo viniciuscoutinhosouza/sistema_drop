@@ -934,20 +934,40 @@
               </li>
             </ul>
 
-            <div v-if="importResult._statuses !== 'inactive'"
+            <div v-if="importResult._statuses !== 'all'"
                  class="alert alert-warning py-2 small mt-3 mb-0">
               <i class="fas fa-archive mr-1"></i>
-              <strong>Anúncios INATIVOS</strong> (pausados há muito tempo pelo ML) não são importados por padrão.
-              Clique no botão abaixo para importá-los separadamente.
+              Por padrão importamos apenas <strong>active, paused, closed, under_review</strong>.
+              Anúncios em status raros (suspended_for_prevention, etc.) ficam de fora.
+              Clique no botão abaixo para importar <strong>TUDO</strong>.
+            </div>
+            <div v-else class="alert alert-success py-2 small mt-3 mb-0">
+              <i class="fas fa-check mr-1"></i>
+              Modo <strong>"Importar Tudo"</strong>: trouxe todos os anúncios do vendedor sem filtro de status.
+            </div>
+
+            <!-- Diagnóstico expansível -->
+            <div v-if="importResult.diagnostics" class="mt-3">
+              <button class="btn btn-sm btn-link p-0" @click="showDiagnostics = !showDiagnostics">
+                <i :class="['fas', showDiagnostics ? 'fa-caret-down' : 'fa-caret-right']"></i>
+                {{ showDiagnostics ? 'Ocultar' : 'Mostrar' }} diagnóstico técnico
+              </button>
+              <div v-if="showDiagnostics" class="small mt-2 p-2 rounded" style="background:#f8f9fa;font-family:monospace;font-size:11px;max-height:240px;overflow-y:auto">
+                <div v-for="(entry, i) in importResult.diagnostics" :key="i" class="mb-1">
+                  <strong v-if="entry.phase">[{{ entry.phase }}]</strong>
+                  <strong v-else-if="entry.iter">iter #{{ entry.iter }}:</strong>
+                  <span class="text-muted">{{ JSON.stringify(entry, null, 0) }}</span>
+                </div>
+              </div>
             </div>
           </div>
           <div class="modal-footer">
-            <button v-if="importResult._statuses !== 'inactive'"
+            <button v-if="importResult._statuses !== 'all'"
                     class="btn btn-warning btn-sm"
                     :disabled="importing"
-                    @click="importInactiveAnuncios">
-              <i :class="['fas', importing ? 'fa-spinner fa-spin' : 'fa-archive', 'mr-1']"></i>
-              {{ importing ? 'Importando...' : 'Importar Inativos' }}
+                    @click="importAllAnuncios">
+              <i :class="['fas', importing ? 'fa-spinner fa-spin' : 'fa-download', 'mr-1']"></i>
+              {{ importing ? 'Importando...' : 'Importar TUDO (todos os status)' }}
             </button>
             <button v-if="importResult.unlinked > 0" class="btn btn-info btn-sm" @click="setFilter('unlinked'); importResult = null">Ver sem vínculo</button>
             <button class="btn btn-secondary" @click="importResult = null" :disabled="importing">Fechar</button>
@@ -2224,10 +2244,12 @@ async function importAnuncios(statuses = null) {
   }
 }
 
-async function importInactiveAnuncios() {
+async function importAllAnuncios() {
   importResult.value = null
-  await importAnuncios('inactive')
+  await importAnuncios('all')
 }
+
+const showDiagnostics = ref(false)
 
 async function deleteAnuncioSistema(listing) {
   if (!confirm(`Excluir "${listing.title_override}" apenas do sistema?\n\nO anúncio continuará publicado no Marketplace.`)) return
