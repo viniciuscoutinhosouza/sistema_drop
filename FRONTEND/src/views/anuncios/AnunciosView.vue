@@ -1170,21 +1170,22 @@
 
               <hr class="my-2" />
 
-              <!-- Preço e Estoque -->
-              <p class="font-weight-bold small text-uppercase text-muted mb-2">Preço e Estoque</p>
+              <!-- Preço -->
+              <p class="font-weight-bold small text-uppercase text-muted mb-2">Preço</p>
               <div class="row">
-                <div class="col-md-4 form-group">
+                <div class="col-md-6 form-group">
                   <label>Preço de Venda (R$)</label>
                   <input v-model="createCmigForm.sale_price" type="number" step="0.01" min="0" class="form-control" />
                 </div>
-                <div class="col-md-4 form-group">
+                <div class="col-md-6 form-group">
                   <label>Custo (R$)</label>
                   <input v-model="createCmigForm.cost_price" type="number" step="0.01" min="0" class="form-control" />
                 </div>
-                <div class="col-md-4 form-group">
-                  <label>Qtd. Estoque</label>
-                  <input v-model="createCmigForm.stock_quantity" type="number" min="0" class="form-control" />
-                </div>
+              </div>
+              <div class="alert alert-info py-2 small mb-3">
+                <i class="fas fa-warehouse mr-1"></i>
+                <strong>Estoque:</strong> {{ createCmigModal.listing?.available_quantity ?? 0 }} unidade(s) —
+                copiado automaticamente do anúncio. Para ajustar, edite o produto depois ou registre uma entrada/saída.
               </div>
 
               <hr class="my-2" />
@@ -2592,7 +2593,6 @@ function openCreateCmigModal(listing) {
     video_id:       listing.video_id || '',
     sale_price:     listing.sale_price || '',
     cost_price:     '',
-    stock_quantity: listing.available_quantity ?? 0,
     weight_kg:      listing.weight_kg || '',
     height_cm:      listing.height_cm || '',
     width_cm:       listing.width_cm || '',
@@ -2614,7 +2614,7 @@ async function doCreateCmigProduct() {
       ...f,
       sale_price:     f.sale_price     ? parseFloat(f.sale_price)     : null,
       cost_price:     f.cost_price     ? parseFloat(f.cost_price)     : null,
-      stock_quantity: f.stock_quantity !== '' ? parseInt(f.stock_quantity) : null,
+      // stock_quantity NÃO enviado — backend usa direto listing.available_quantity
       weight_kg:      f.weight_kg      ? parseFloat(f.weight_kg)      : null,
       height_cm:      f.height_cm      ? parseFloat(f.height_cm)      : null,
       width_cm:       f.width_cm       ? parseFloat(f.width_cm)       : null,
