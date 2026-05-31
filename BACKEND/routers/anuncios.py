@@ -1011,7 +1011,11 @@ async def import_anuncios(
             "under_review": "draft",
             "inactive": "paused",
         }.get(_ml_status, "published")
-        available_qty = item.get("available_quantity") or item.get("initial_quantity") or 1
+        # Preserva estoque 0 — antes `or 1` transformava "sem estoque" em "1 unidade"
+        _aq = item.get("available_quantity")
+        if _aq is None:
+            _aq = item.get("initial_quantity")
+        available_qty = int(_aq) if _aq is not None else 0
         sold_qty = item.get("sold_quantity") or 0
         item_condition = item.get("condition") or "new"
         listing_type = item.get("listing_type_id") or ""
@@ -3621,7 +3625,11 @@ def _apply_ml_item_to_listing(
     }
     item_status = status_map.get(ml_status, "published")
 
-    available_qty = int(item.get("available_quantity") or item.get("initial_quantity") or 1)
+    # Preserva estoque 0 — antes `or 1` virava 1 quando o anuncio estava sem estoque
+    _aq = item.get("available_quantity")
+    if _aq is None:
+        _aq = item.get("initial_quantity")
+    available_qty = int(_aq) if _aq is not None else 0
     sold_qty = int(item.get("sold_quantity") or 0)
     item_condition = item.get("condition") or "new"
     listing_type = item.get("listing_type_id") or ""
