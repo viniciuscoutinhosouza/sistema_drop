@@ -838,11 +838,23 @@ async def update_item_price(access_token: str, item_id: str, price: float) -> No
         raise HTTPException(status_code=400, detail=f"Erro ao atualizar preço ML: {resp.text}")
 
 
-async def get_seller_item_ids(access_token: str, seller_id: str) -> list[str]:
-    """Return all item IDs for a seller across all statuses (paginated), deduped."""
+DEFAULT_IMPORT_STATUSES = ["active", "paused", "closed", "under_review"]
+
+
+async def get_seller_item_ids(
+    access_token: str,
+    seller_id: str,
+    statuses: list[str] | None = None,
+) -> list[str]:
+    """Return all item IDs for a seller across given statuses (paginated), deduped.
+
+    `statuses=None` usa DEFAULT_IMPORT_STATUSES (exclui 'inactive' por padrão —
+    são anúncios pausados há muito tempo no ML, geralmente ruído). Para importar
+    inativos especificamente, passe `statuses=['inactive']`.
+    """
     seen: set[str] = set()
     all_ids: list[str] = []
-    ml_statuses = ["active", "paused", "closed", "under_review", "inactive"]
+    ml_statuses = statuses if statuses else list(DEFAULT_IMPORT_STATUSES)
     async with httpx.AsyncClient() as client:
         for status in ml_statuses:
             offset, limit = 0, 50
@@ -863,6 +875,9 @@ async def get_seller_item_ids(access_token: str, seller_id: str) -> list[str]:
                 if len(batch) < limit:
                     break
                 offset += limit
+                # Cap defensivo: ML limita offset+limit a 1000 na busca normal
+                if offset >= 1000:
+                    break
     return all_ids
 
 

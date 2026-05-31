@@ -915,6 +915,10 @@
             <button type="button" class="close" @click="importResult = null"><span>&times;</span></button>
           </div>
           <div class="modal-body">
+            <div v-if="importResult._statuses" class="alert alert-info py-2 small mb-3">
+              <i class="fas fa-info-circle mr-1"></i>
+              Status importados: <strong>{{ importResult._statuses }}</strong>
+            </div>
             <ul class="list-group list-group-flush">
               <li class="list-group-item d-flex justify-content-between">
                 <span>Novos anúncios importados</span><span class="badge badge-success badge-pill">{{ importResult.imported }}</span>
@@ -929,10 +933,24 @@
                 <span>Sem vínculo</span><span class="badge badge-warning badge-pill">{{ importResult.unlinked }}</span>
               </li>
             </ul>
+
+            <div v-if="importResult._statuses !== 'inactive'"
+                 class="alert alert-warning py-2 small mt-3 mb-0">
+              <i class="fas fa-archive mr-1"></i>
+              <strong>Anúncios INATIVOS</strong> (pausados há muito tempo pelo ML) não são importados por padrão.
+              Clique no botão abaixo para importá-los separadamente.
+            </div>
           </div>
           <div class="modal-footer">
-            <button v-if="importResult.unlinked > 0" class="btn btn-warning btn-sm" @click="setFilter('unlinked'); importResult = null">Ver sem vínculo</button>
-            <button class="btn btn-secondary" @click="importResult = null">Fechar</button>
+            <button v-if="importResult._statuses !== 'inactive'"
+                    class="btn btn-warning btn-sm"
+                    :disabled="importing"
+                    @click="importInactiveAnuncios">
+              <i :class="['fas', importing ? 'fa-spinner fa-spin' : 'fa-archive', 'mr-1']"></i>
+              {{ importing ? 'Importando...' : 'Importar Inativos' }}
+            </button>
+            <button v-if="importResult.unlinked > 0" class="btn btn-info btn-sm" @click="setFilter('unlinked'); importResult = null">Ver sem vínculo</button>
+            <button class="btn btn-secondary" @click="importResult = null" :disabled="importing">Fechar</button>
           </div>
         </div>
       </div>
@@ -2186,12 +2204,13 @@ async function loadStats() {
   finally { loadingStats.value = false }
 }
 
-async function importAnuncios() {
+async function importAnuncios(statuses = null) {
   if (!selectedAccountId.value) return
   importing.value = true
   try {
-    const { data } = await api.post(`/anuncios/import/${selectedAccountId.value}`)
-    importResult.value = data
+    const url = `/anuncios/import/${selectedAccountId.value}` + (statuses ? `?statuses=${statuses}` : '')
+    const { data } = await api.post(url)
+    importResult.value = { ...data, _statuses: statuses || 'active,paused,closed,under_review' }
     await loadAnuncios()
   } catch (e) {
     const detail = e.response?.data?.detail || 'Erro ao importar anúncios'
@@ -2203,6 +2222,11 @@ async function importAnuncios() {
   } finally {
     importing.value = false
   }
+}
+
+async function importInactiveAnuncios() {
+  importResult.value = null
+  await importAnuncios('inactive')
 }
 
 async function deleteAnuncioSistema(listing) {

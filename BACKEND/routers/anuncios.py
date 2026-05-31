@@ -866,15 +866,25 @@ async def get_anuncio(
 @router.post("/import/{account_id}")
 async def import_anuncios(
     account_id: int,
+    statuses: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Importa anúncios do marketplace e faz auto-match por similaridade de título."""
+    """Importa anúncios do marketplace e faz auto-match por similaridade de título.
+
+    `statuses`: lista separada por vírgula de status ML a importar (ex: 'inactive'
+    ou 'active,paused'). Default importa active/paused/closed/under_review.
+    Para importar inativos especificamente, passe `?statuses=inactive`.
+    """
     account = await _get_account_or_403(account_id, current_user, db)
     access_token = await _get_valid_token(account, db)
     seller_id = await _validate_token_owner(account, access_token)
 
-    item_ids = await ml_service.get_seller_item_ids(access_token, seller_id)
+    status_list: list[str] | None = None
+    if statuses:
+        status_list = [s.strip() for s in statuses.split(",") if s.strip()]
+
+    item_ids = await ml_service.get_seller_item_ids(access_token, seller_id, statuses=status_list)
     items = await ml_service.get_items_bulk(access_token, item_ids)
 
     # Busca descrições em paralelo para todos os itens
