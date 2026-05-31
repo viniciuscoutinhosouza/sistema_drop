@@ -842,7 +842,33 @@ async def list_anuncios(
     result = await db.execute(q.order_by(ProductListing.created_at.desc()))
     listings = result.scalars().all()
 
-    serialized = [_serialize_listing(l) for l in listings]
+    # 1 query agregada: quantas variações de cada listing já foram importadas como CMIGProduct
+    listing_ids = [l.id for l in listings]
+    imported_counts: dict[int, int] = {}
+    if listing_ids:
+        from sqlalchemy import func as _func
+        r2 = await db.execute(
+            select(CMIGProduct.source_listing_id, _func.count(CMIGProduct.id))
+            .where(CMIGProduct.source_listing_id.in_(listing_ids))
+            .group_by(CMIGProduct.source_listing_id)
+        )
+        imported_counts = {row[0]: row[1] for row in r2.all()}
+
+    serialized = []
+    for l in listings:
+        item = _serialize_listing(l)
+        # Conta variações no JSON local (independente do ML)
+        total_vars = 0
+        if l.variations_json:
+            try:
+                total_vars = len(_json.loads(l.variations_json) or [])
+            except Exception:
+                total_vars = 0
+        imp = imported_counts.get(l.id, 0)
+        item["variations_total"] = total_vars
+        item["variations_imported_count"] = imp
+        item["all_variations_imported"] = bool(total_vars > 0 and imp >= total_vars)
+        serialized.append(item)
 
     if vinculo == "linked":
         serialized = [l for l in serialized if l["is_linked"]]
@@ -1573,6 +1599,79 @@ async def unlink_product(
     return _serialize_listing(listing)
 
 
+@router.get("/{listing_id}/variation-import-status")
+async def get_variation_import_status(
+    listing_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lista as variações do anúncio + status de importação de cada uma.
+
+    Retorna `{ has_variations: bool, all_imported: bool, variations: [...] }`
+    onde cada item da lista tem:
+      - id (variation_id do ML)
+      - sku (SELLER_SKU da variação)
+      - price, available_quantity
+      - attributes_label (ex: "Cor: Vermelho · Tamanho: M")
+      - imported: bool
+      - cmig_product (se imported): { id, sku_cmig, title }
+    """
+    listing = await _get_listing_or_404(listing_id, current_user, db)
+
+    variations = []
+    if listing.variations_json:
+        try:
+            variations = _json.loads(listing.variations_json) or []
+        except Exception:
+            variations = []
+
+    if not variations:
+        return {"has_variations": False, "all_imported": False, "variations": []}
+
+    # Carrega CMIGProducts já importados deste listing
+    r = await db.execute(
+        select(CMIGProduct).where(CMIGProduct.source_listing_id == listing_id)
+    )
+    imported_by_var: dict[str, CMIGProduct] = {}
+    for cp in r.scalars().all():
+        if cp.source_variation_id:
+            imported_by_var[str(cp.source_variation_id)] = cp
+
+    out = []
+    for v in variations:
+        var_id = str(v.get("id") or "")
+        attrs = v.get("attributes") or v.get("attribute_combinations") or []
+        sku = next((a.get("value") or a.get("value_name") for a in attrs if (a.get("id") or "").upper() == "SELLER_SKU"), None)
+        # Label dos diferenciadores (cor, tamanho, etc) — pula SELLER_SKU
+        diff = [
+            f"{a.get('name') or a.get('id')}: {a.get('value') or a.get('value_name')}"
+            for a in attrs
+            if (a.get("id") or "").upper() != "SELLER_SKU"
+            and (a.get("value") or a.get("value_name"))
+        ]
+        cmig_prod = imported_by_var.get(var_id)
+        out.append({
+            "id": var_id,
+            "sku": sku,
+            "price": v.get("price"),
+            "available_quantity": v.get("available_quantity"),
+            "attributes_label": " · ".join(diff) if diff else "(sem diferenciador)",
+            "picture_ids": v.get("picture_ids") or [],
+            "imported": cmig_prod is not None,
+            "cmig_product": (
+                {"id": cmig_prod.id, "sku_cmig": cmig_prod.sku_cmig, "title": cmig_prod.title}
+                if cmig_prod else None
+            ),
+        })
+
+    all_imported = all(x["imported"] for x in out) if out else False
+    return {
+        "has_variations": True,
+        "all_imported": all_imported,
+        "variations": out,
+    }
+
+
 @router.post("/{listing_id}/create-cmig-product")
 async def create_cmig_product_from_listing(
     listing_id: int,
@@ -1580,7 +1679,12 @@ async def create_cmig_product_from_listing(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Cria um CMIGProduct a partir dos dados do anúncio e vincula automaticamente."""
+    """Cria um CMIGProduct a partir dos dados do anúncio e vincula automaticamente.
+
+    Se `body.variation_id` for fornecido, cria um CMIGProduct para AQUELA variação
+    específica (1 produto por variação, com SKU/EAN/estoque/fotos da variação).
+    Caso contrário, comportamento legado: cria 1 produto pai + N CMIGProductVariant.
+    """
     listing = await _get_listing_or_404(listing_id, current_user, db)
 
     cmig_id = body.get("cmig_id")
@@ -1598,7 +1702,55 @@ async def create_cmig_product_from_listing(
         if not r.scalar_one_or_none():
             raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
 
-    sku_cmig = (body.get("sku_cmig") or "").strip() or (listing.sku or "").strip()
+    # ─── Modo importação por variação ──────────────────────────────────────
+    # Quando o anúncio tem variations_json e o caller passa `variation_id`,
+    # criamos 1 CMIGProduct específico daquela variação (SKU/EAN/estoque/fotos
+    # vindos da variação, não do nível-pai do anúncio).
+    variation_id = body.get("variation_id")
+    chosen_variation: dict | None = None
+    variation_picture_urls: list[str] = []
+    if variation_id and listing.variations_json:
+        try:
+            all_vars = _json.loads(listing.variations_json) or []
+        except Exception:
+            all_vars = []
+        chosen_variation = next(
+            (v for v in all_vars if str(v.get("id")) == str(variation_id)), None
+        )
+        if not chosen_variation:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Variação {variation_id} não encontrada no anúncio",
+            )
+        # Bloqueia duplicação — não pode importar a mesma variação 2x
+        dup = (await db.execute(
+            select(CMIGProduct).where(
+                CMIGProduct.source_listing_id == listing_id,
+                CMIGProduct.source_variation_id == str(variation_id),
+            )
+        )).scalar_one_or_none()
+        if dup:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Variação já importada como CMIGProduct #{dup.id} ({dup.sku_cmig})",
+            )
+        # Resolve picture_ids → URLs via pictures_json do listing pai
+        try:
+            pj = _json.loads(listing.pictures_json or "[]")
+            url_by_id = {str(p.get("id")): p.get("url") for p in pj if p.get("id") and p.get("url")}
+        except Exception:
+            url_by_id = {}
+        variation_picture_urls = [url_by_id[str(pid)] for pid in (chosen_variation.get("picture_ids") or []) if str(pid) in url_by_id]
+
+    # SKU: prioridade body → SELLER_SKU da variação → sku do listing
+    var_seller_sku = None
+    if chosen_variation:
+        for a in (chosen_variation.get("attributes") or []):
+            if (a.get("id") or "").upper() == "SELLER_SKU":
+                var_seller_sku = a.get("value") or a.get("value_name")
+                break
+
+    sku_cmig = (body.get("sku_cmig") or "").strip() or (var_seller_sku or "").strip() or (listing.sku or "").strip()
     if not sku_cmig:
         raise HTTPException(status_code=400, detail="sku_cmig é obrigatório")
 
@@ -1648,15 +1800,42 @@ async def create_cmig_product_from_listing(
     ean = body.get("ean") or fiscal_dict.get("ean") or fiscal_dict.get("gtin")
     csosn = body.get("csosn") or fiscal_dict.get("csosn")
 
+    # Quando vem por variação, ean/estoque/preço da variação tem prioridade
+    if chosen_variation:
+        var_ean = next(
+            (a.get("value") or a.get("value_name") for a in (chosen_variation.get("attributes") or [])
+             if (a.get("id") or "").upper() in ("GTIN", "EAN")),
+            None,
+        )
+        if not body.get("ean") and var_ean:
+            ean = var_ean
+        var_stock = chosen_variation.get("available_quantity")
+        var_price = chosen_variation.get("price")
+        # Título: adiciona o diferenciador da variação ao título do listing (ex: " - Vermelho M")
+        diff_label = " · ".join(
+            f"{a.get('name') or a.get('id')}: {a.get('value') or a.get('value_name')}"
+            for a in (chosen_variation.get("attributes") or [])
+            if (a.get("id") or "").upper() != "SELLER_SKU"
+            and (a.get("value") or a.get("value_name"))
+        )
+        base_title = body.get("title") or listing.title_override or ""
+        product_title = base_title if diff_label and diff_label.lower() in base_title.lower() else (
+            f"{base_title} - {diff_label}" if diff_label else base_title
+        )
+    else:
+        var_stock = None
+        var_price = None
+        product_title = body.get("title") or listing.title_override or ""
+
     product = CMIGProduct(
         cmig_id=cmig_id,
         sku_cmig=sku_cmig,
-        title=body.get("title") or listing.title_override or "",
+        title=product_title[:255],
         description=body.get("description") or listing.description_override,
         brand=body.get("brand") or brand_from_attrs,
         model=body.get("model") or model_from_attrs,
         cost_price=body.get("cost_price"),
-        stock_quantity=listing.available_quantity or 0,
+        stock_quantity=(var_stock if var_stock is not None else (listing.available_quantity or 0)),
         weight_kg=body.get("weight_kg") or listing.weight_kg,
         height_cm=body.get("height_cm") or listing.height_cm,
         width_cm=body.get("width_cm") or listing.width_cm,
@@ -1666,34 +1845,44 @@ async def create_cmig_product_from_listing(
         ean=ean,
         origin=body.get("origin", 0),
         csosn=csosn,
-        suggested_price=body.get("suggested_price") or body.get("sale_price") or listing.sale_price,
+        suggested_price=body.get("suggested_price") or body.get("sale_price") or var_price or listing.sale_price,
         video_id=body.get("video_id") or listing.video_id,
         attributes_json=listing.attributes_json,
         fiscal_json=listing.fiscal_json,
+        source_listing_id=listing_id,
+        source_variation_id=str(variation_id) if variation_id else None,
     )
     db.add(product)
     await db.flush()  # gera o ID
 
-    # Importar fotos do anúncio (pictures_json) → cmig_product_images
-    if listing.pictures_json:
+    # Importar fotos — variação tem suas próprias fotos (resolved acima); senão usa do listing-pai
+    pic_source: list = []
+    if chosen_variation and variation_picture_urls:
+        pic_source = [{"url": u} for u in variation_picture_urls]
+    elif listing.pictures_json:
         try:
-            for i, pic in enumerate(_json.loads(listing.pictures_json)):
-                url = pic.get("url") if isinstance(pic, dict) else str(pic)
-                if url:
-                    db.add(
-                        CMIGProductImage(
-                            cmig_product_id=product.id,
-                            url=url,
-                            sort_order=i,
-                            is_primary=(i == 0),
-                        )
-                    )
+            pic_source = _json.loads(listing.pictures_json) or []
         except Exception:
-            pass
+            pic_source = []
 
-    # Cria variantes a partir do variations_json do anúncio
+    for i, pic in enumerate(pic_source):
+        url = pic.get("url") if isinstance(pic, dict) else str(pic)
+        if url:
+            db.add(
+                CMIGProductImage(
+                    cmig_product_id=product.id,
+                    url=url,
+                    sort_order=i,
+                    is_primary=(i == 0),
+                )
+            )
+
+    # Cria CMIGProductVariant legado SOMENTE no fluxo antigo
+    # (sem variation_id explícito + listing com variations_json).
+    # Quando o caller passa variation_id, cada variação ML vira UM CMIGProduct
+    # separado — não criamos variants internas.
     variants_created = 0
-    if listing.variations_json:
+    if not chosen_variation and listing.variations_json:
         try:
             variations = _json.loads(listing.variations_json)
             for idx, var in enumerate(variations):
@@ -1725,8 +1914,12 @@ async def create_cmig_product_from_listing(
         except Exception:
             pass
 
-    listing.cmig_product_id = product.id
-    listing.catalog_product_id = None
+    # Vínculo do listing: só faz sentido no fluxo legado (1 listing = 1 produto).
+    # Em fluxo por variação (N variações → N CMIGProducts) o listing-pai não tem
+    # 1 produto único; o vínculo é por variação via source_listing_id + source_variation_id.
+    if not chosen_variation:
+        listing.cmig_product_id = product.id
+        listing.catalog_product_id = None
     await db.commit()
     await db.refresh(product)
 
@@ -1737,6 +1930,7 @@ async def create_cmig_product_from_listing(
             "title": product.title,
             "cmig_id": product.cmig_id,
             "variants_created": variants_created,
+            "source_variation_id": product.source_variation_id,
         },
         "listing": _serialize_listing(listing),
     }

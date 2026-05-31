@@ -15,7 +15,6 @@
 UPDATE product_listings
 SET available_quantity = 0,
     qty_local = 0
-WHERE account_id = 61
-  AND available_quantity = 1;
+WHERE account_id = 61;
 
 COMMIT;

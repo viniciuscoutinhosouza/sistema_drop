@@ -89,6 +89,12 @@ class CMIGProduct(Base):
     pictures_json = Column(Text)
     fiscal_json = Column(String(2000))
     pg_product_id = Column(Integer, ForeignKey("catalog_products.id"), nullable=True)
+    # Rastreabilidade da origem quando criado a partir de uma variacao de anuncio ML.
+    # `source_listing_id` aponta pro ProductListing pai e `source_variation_id` para
+    # o `id` da variacao especifica (em variations_json). Permite marcar na UI quais
+    # variacoes ja foram importadas e bloquear duplicacao.
+    source_listing_id = Column(Integer, ForeignKey("product_listings.id"), nullable=True)
+    source_variation_id = Column(String(100), nullable=True)
     is_composite = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))

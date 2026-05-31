@@ -410,7 +410,21 @@
                     <div class="btn-group btn-group-sm">
                       <button class="btn btn-outline-secondary" title="Editar" @click="openWizard(a)"><i class="fas fa-edit"></i></button>
                       <button class="btn btn-outline-primary" title="Vincular produto" @click="openLinkModal(a)"><i class="fas fa-link"></i></button>
-                      <button v-if="!a.is_linked" class="btn btn-outline-dark" title="Criar produto CMIG" @click="openCreateCmigModal(a)"><i class="fas fa-plus"></i></button>
+                      <button
+                        v-if="!a.is_linked || (a.variations_total > 0)"
+                        class="btn btn-outline-dark"
+                        :title="a.all_variations_imported
+                          ? 'Todas as variações já foram importadas como produtos CMIG'
+                          : (a.variations_total > 0
+                              ? `Criar produto CMIG (${a.variations_imported_count}/${a.variations_total} variantes já importadas)`
+                              : 'Criar produto CMIG')"
+                        :disabled="a.all_variations_imported"
+                        @click="openCreateCmigModal(a)">
+                        <i class="fas fa-plus"></i>
+                        <span v-if="a.variations_total > 0" class="ml-1" style="font-size:10px">
+                          ({{ a.variations_imported_count }}/{{ a.variations_total }})
+                        </span>
+                      </button>
                       <button v-if="a.is_linked" class="btn btn-outline-warning" title="Desvincular produto" @click="unlinkAnuncio(a)"><i class="fas fa-unlink"></i></button>
                     </div>
                     <!-- Linha 2: status e marketplace -->
@@ -1097,18 +1111,90 @@
       </div>
     </div>
 
+    <!-- Modal: Selecionar Variação para importar (anúncio com variações) -->
+    <div v-if="variantSelectModal.show" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.55);z-index:1080">
+      <div class="modal-dialog modal-md modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title">
+              <i class="fas fa-layer-group mr-2 text-info"></i>
+              Selecione a variação para importar
+            </h6>
+            <button type="button" class="close" @click="variantSelectModal.show = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body py-2">
+            <p class="text-muted small mb-2">
+              Anúncio: <strong>{{ variantSelectModal.listing?.title_override }}</strong>
+            </p>
+            <div v-if="variantSelectModal.loading" class="text-center py-3">
+              <i class="fas fa-spinner fa-spin"></i>
+            </div>
+            <div v-else-if="variantSelectModal.status">
+              <div v-if="variantSelectModal.status.all_imported" class="alert alert-success py-2 small">
+                <i class="fas fa-check-circle mr-1"></i>
+                Todas as variações deste anúncio já foram importadas.
+              </div>
+              <div class="list-group">
+                <div v-for="v in variantSelectModal.status.variations" :key="v.id"
+                     class="list-group-item p-2">
+                  <div class="d-flex align-items-center" style="gap:8px">
+                    <div class="flex-grow-1" style="min-width:0">
+                      <div class="font-weight-bold" style="font-size:13px">{{ v.attributes_label }}</div>
+                      <div class="text-muted" style="font-size:11px">
+                        <span v-if="v.sku">SKU: <code>{{ v.sku }}</code> · </span>
+                        Estoque: {{ v.available_quantity ?? 0 }} ·
+                        {{ formatCurrency(v.price) }}
+                      </div>
+                      <div v-if="v.imported && v.cmig_product" class="text-success" style="font-size:11px">
+                        <i class="fas fa-check mr-1"></i>
+                        Já importado como <strong>{{ v.cmig_product.sku_cmig }}</strong>
+                      </div>
+                    </div>
+                    <button
+                      v-if="!v.imported"
+                      type="button"
+                      class="btn btn-sm btn-success"
+                      @click="pickVariantToImport(v)">
+                      <i class="fas fa-plus mr-1"></i>Importar
+                    </button>
+                    <span v-else class="badge badge-secondary" style="font-size:10px">
+                      <i class="fas fa-check mr-1"></i>Importada
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer py-2">
+            <button class="btn btn-sm btn-secondary" @click="variantSelectModal.show = false">Fechar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal: Criar Produto CMIG -->
     <div v-if="createCmigModal.show" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
       <div class="modal-dialog modal-xl">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title"><i class="fas fa-plus mr-2"></i>Criar Produto CMIG</h5>
+            <h5 class="modal-title">
+              <i class="fas fa-plus mr-2"></i>Criar Produto CMIG
+              <span v-if="createCmigModal.variation_label" class="badge badge-info ml-2" style="font-size:11px">
+                <i class="fas fa-layer-group mr-1"></i>{{ createCmigModal.variation_label }}
+              </span>
+            </h5>
             <button type="button" class="close" @click="createCmigModal.show = false"><span>&times;</span></button>
           </div>
           <form @submit.prevent="doCreateCmigProduct">
             <div class="modal-body" style="max-height:75vh;overflow-y:auto">
               <div v-if="createCmigModal.error" class="alert alert-danger py-2">{{ createCmigModal.error }}</div>
-              <p class="text-muted small mb-3">A partir do anúncio: <strong>{{ createCmigModal.listing?.title_override }}</strong></p>
+              <p class="text-muted small mb-3">
+                A partir do anúncio: <strong>{{ createCmigModal.listing?.title_override }}</strong>
+                <span v-if="createCmigModal.variation_label" class="d-block mt-1">
+                  <i class="fas fa-arrow-right text-info mr-1"></i>
+                  Variação: <strong>{{ createCmigModal.variation_label }}</strong>
+                </span>
+              </p>
 
               <!-- Fotos importadas -->
               <div v-if="createCmigModal.pictures.length" class="mb-3">
@@ -2544,7 +2630,42 @@ async function unlinkAnuncio(listing) {
   } catch { toast.error('Erro ao remover vínculo') }
 }
 
-function openCreateCmigModal(listing) {
+// Modal pequeno de seleção de variante (quando o anúncio tem variations_json)
+const variantSelectModal = ref({ show: false, listing: null, status: null, loading: false })
+
+async function openCreateCmigModal(listing) {
+  // Anúncios sem variações vão direto pro modal de criação
+  const hasVars = !!listing.variations_total
+  if (!hasVars) {
+    return _openCreateCmigModalImpl(listing, null)
+  }
+  // Bloqueia se todas as variações já foram importadas
+  if (listing.all_variations_imported) {
+    toast.info('Todas as variações deste anúncio já foram importadas como produtos CMIG.')
+    return
+  }
+  // Carrega status atualizado do servidor e abre modal de seleção
+  variantSelectModal.value = { show: true, listing, status: null, loading: true }
+  try {
+    const { data } = await api.get(`/anuncios/${listing.id}/variation-import-status`)
+    variantSelectModal.value.status = data
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao carregar variações')
+    variantSelectModal.value.show = false
+    return
+  } finally {
+    variantSelectModal.value.loading = false
+  }
+}
+
+function pickVariantToImport(variation) {
+  const listing = variantSelectModal.value.listing
+  variantSelectModal.value.show = false
+  _openCreateCmigModalImpl(listing, variation)
+}
+
+function _openCreateCmigModalImpl(listing, variation) {
+  // variation (opcional): { id, sku, price, available_quantity, attributes_label, picture_ids, ... }
   // Dados fiscais: tenta fiscal_json primeiro, depois attributes_json como fallback
   const _FISCAL_MAP = { NCM: 'ncm', CEST: 'cest', GTIN: 'gtin', EAN: 'ean' }
   let fiscal = {}
@@ -2581,17 +2702,51 @@ function openCreateCmigModal(listing) {
     })
   } catch {}
 
-  createCmigModal.value = { show: true, listing, saving: false, error: '', pictures, variants }
+  // Quando importando por variação: sobrescreve SKU, EAN, preço e estoque
+  // com os da variação; ajusta título adicionando o diferenciador.
+  let formSku = listing.sku || ''
+  let formEan = fiscal.ean || fiscal.gtin || ''
+  let formTitle = listing.title_override || ''
+  let formPrice = listing.sale_price || ''
+  let stockOverride = listing.available_quantity ?? 0
+  let variationId = null
+  if (variation) {
+    variationId = variation.id
+    formSku = variation.sku || formSku
+    formPrice = variation.price ?? formPrice
+    stockOverride = variation.available_quantity ?? 0
+    // Adiciona diferenciador ao título se ainda não estiver presente
+    const diff = variation.attributes_label || ''
+    if (diff && !formTitle.toLowerCase().includes(diff.toLowerCase())) {
+      formTitle = `${formTitle} - ${diff}`.slice(0, 255)
+    }
+    // EAN específico da variação (vem do GTIN nos attributes)
+    // Se já tem EAN, mantém; a backend tb resolve via chosen_variation
+  }
+
+  // Para o modal: força available_quantity exibida vir da variação selecionada
+  const listingWithVarStock = { ...listing, available_quantity: stockOverride }
+
+  createCmigModal.value = {
+    show: true,
+    listing: listingWithVarStock,
+    saving: false,
+    error: '',
+    pictures,
+    variants,
+    variation_id: variationId,
+    variation_label: variation?.attributes_label || null,
+  }
   createCmigForm.value = {
     cmig_id:        selectedAccount.value?.cmig_id || '',
-    sku_cmig:       listing.sku || '',
-    title:          listing.title_override || '',
+    sku_cmig:       formSku,
+    title:          formTitle,
     brand:          brand,
     model:          model,
     category_name:  listing.category_name || '',
     description:    listing.description_override || '',
     video_id:       listing.video_id || '',
-    sale_price:     listing.sale_price || '',
+    sale_price:     formPrice,
     cost_price:     '',
     weight_kg:      listing.weight_kg || '',
     height_cm:      listing.height_cm || '',
@@ -2599,7 +2754,7 @@ function openCreateCmigModal(listing) {
     length_cm:      listing.length_cm || '',
     ncm:            normNcm(fiscal.ncm),
     cest:           normCest(fiscal.cest),
-    ean:            fiscal.ean || fiscal.gtin || '',
+    ean:            formEan,
     origin:         fiscal.origin != null && fiscal.origin !== '' ? Number(fiscal.origin) : 0,
     csosn:          fiscal.csosn || fiscal.icms_csosn || null,
   }
@@ -2614,11 +2769,12 @@ async function doCreateCmigProduct() {
       ...f,
       sale_price:     f.sale_price     ? parseFloat(f.sale_price)     : null,
       cost_price:     f.cost_price     ? parseFloat(f.cost_price)     : null,
-      // stock_quantity NÃO enviado — backend usa direto listing.available_quantity
+      // stock_quantity NÃO enviado — backend usa direto listing.available_quantity ou da variação
       weight_kg:      f.weight_kg      ? parseFloat(f.weight_kg)      : null,
       height_cm:      f.height_cm      ? parseFloat(f.height_cm)      : null,
       width_cm:       f.width_cm       ? parseFloat(f.width_cm)       : null,
       length_cm:      f.length_cm      ? parseFloat(f.length_cm)      : null,
+      variation_id:   createCmigModal.value.variation_id || null,
     })
     const vCount = res.data?.product?.variants_created
     const msg = vCount ? `Produto CMIG criado com ${vCount} variante(s)!` : 'Produto CMIG criado e vinculado!'
