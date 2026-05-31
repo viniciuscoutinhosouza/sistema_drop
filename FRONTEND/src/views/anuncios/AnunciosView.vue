@@ -83,7 +83,7 @@
               </div>
             </div>
             <div v-if="selectedAccountId" class="row mt-2">
-              <div class="col-12">
+              <div class="col-md-8">
                 <ul class="nav nav-pills" style="gap:2px">
                   <li v-for="tab in statusTabs" :key="tab.key" class="nav-item">
                     <a :class="['nav-link py-1 px-2 small', filterStatus === tab.key ? 'active' : '']"
@@ -94,6 +94,27 @@
                     </a>
                   </li>
                 </ul>
+              </div>
+              <div class="col-md-4">
+                <div class="input-group input-group-sm">
+                  <div class="input-group-prepend">
+                    <span class="input-group-text"><i class="fas fa-search"></i></span>
+                  </div>
+                  <input
+                    v-model="searchTerm"
+                    type="text"
+                    class="form-control"
+                    placeholder="Filtrar por título, SKU, MLB ou categoria..."
+                  />
+                  <div v-if="searchTerm" class="input-group-append">
+                    <button class="btn btn-outline-secondary" type="button" @click="searchTerm = ''" title="Limpar">
+                      <i class="fas fa-times"></i>
+                    </button>
+                  </div>
+                </div>
+                <small v-if="searchTerm" class="text-muted">
+                  {{ filteredAnuncios.length }} de {{ filteredBeforeSearch.length }} anúncio(s) visível(is)
+                </small>
               </div>
             </div>
           </div>
@@ -1592,12 +1613,38 @@ const statusTabs = [
 const selectedAccount = computed(() => accounts.value.find(a => a.id === selectedAccountId.value))
 const selectedAccountPlatform = computed(() => selectedAccount.value?.platform || '')
 
-const filteredAnuncios = computed(() => {
+// Filtros aplicados em ordem: vínculo → status → busca textual.
+// `filteredBeforeSearch` é exposto pra UI mostrar "X de Y anúncios" no header da busca.
+const filteredBeforeSearch = computed(() => {
   let list = anuncios.value
   if (filterVinculo.value === 'linked')   list = list.filter(a => a.is_linked)
   if (filterVinculo.value === 'unlinked') list = list.filter(a => !a.is_linked)
   if (filterStatus.value !== 'all')       list = list.filter(a => a.status === filterStatus.value)
   return list
+})
+
+const searchTerm = ref('')
+
+const filteredAnuncios = computed(() => {
+  const term = (searchTerm.value || '').trim().toLowerCase()
+  if (!term) return filteredBeforeSearch.value
+  // Suporta múltiplos termos separados por espaço (AND) — cada termo casa em qualquer campo
+  const tokens = term.split(/\s+/).filter(Boolean)
+  return filteredBeforeSearch.value.filter(a => {
+    const haystack = [
+      a.title_override,
+      a.sku,
+      a.platform_item_id,
+      a.category_id,
+      a.category_name,
+      a.ml_catalog_id,
+      a.family_name_ml,
+      a.cmig_product?.sku,
+      a.cmig_product?.sku_cmig,
+      a.catalog_product?.sku,
+    ].filter(Boolean).join(' ').toLowerCase()
+    return tokens.every(t => haystack.includes(t))
+  })
 })
 
 // ══════════════════════════════════════════════════
