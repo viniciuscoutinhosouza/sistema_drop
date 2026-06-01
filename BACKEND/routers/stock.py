@@ -27,7 +27,7 @@ async def stock_summary(
 
     q_pg = select(
         CatalogProduct.id,
-        CatalogProduct.name,
+        CatalogProduct.title,
         CatalogProduct.stock_quantity,
         CatalogProduct.reserved_quantity,
         CatalogProduct.awaiting_return_quantity,
@@ -41,7 +41,7 @@ async def stock_summary(
         | (CatalogProduct.unfit_quantity > 0)
     )
     if search:
-        q_pg = q_pg.where(CatalogProduct.name.ilike(f"%{search}%"))
+        q_pg = q_pg.where(CatalogProduct.title.ilike(f"%{search}%"))
 
     for row in (await db.execute(q_pg)).all():
         physical = int(row.stock_quantity or 0)
@@ -49,7 +49,7 @@ async def stock_summary(
         items.append({
             "product_type": "pg",
             "product_id": row.id,
-            "name": row.name,
+            "name": row.title,
             "physical": physical,
             "reserved": reserved,
             "available": max(0, physical - reserved),
@@ -60,7 +60,7 @@ async def stock_summary(
 
     q_cmig = select(
         CMIGProduct.id,
-        CMIGProduct.name,
+        CMIGProduct.title,
         CMIGProduct.stock_quantity,
         CMIGProduct.reserved_quantity,
         CMIGProduct.awaiting_return_quantity,
@@ -74,7 +74,7 @@ async def stock_summary(
         | (CMIGProduct.unfit_quantity > 0)
     )
     if search:
-        q_cmig = q_cmig.where(CMIGProduct.name.ilike(f"%{search}%"))
+        q_cmig = q_cmig.where(CMIGProduct.title.ilike(f"%{search}%"))
 
     for row in (await db.execute(q_cmig)).all():
         physical = int(row.stock_quantity or 0)
@@ -82,7 +82,7 @@ async def stock_summary(
         items.append({
             "product_type": "cmig",
             "product_id": row.id,
-            "name": row.name,
+            "name": row.title,
             "physical": physical,
             "reserved": reserved,
             "available": max(0, physical - reserved),
