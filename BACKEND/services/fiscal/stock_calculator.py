@@ -391,7 +391,12 @@ async def recompute_after_invoice_change(
         await recompute_cmig_product_stock(cp_id, db)
     for pg_id in pg_ids:
         await recompute_pg_product_stock(pg_id, db)
-    return {"cmig_recomputed": len(cmig_ids), "pg_recomputed": len(pg_ids)}
+    return {
+        "cmig_recomputed": len(cmig_ids),
+        "pg_recomputed": len(pg_ids),
+        "cmig_ids": cmig_ids,
+        "pg_ids": pg_ids,
+    }
 
 
 async def recompute_after_order_change(
@@ -489,6 +494,12 @@ async def trigger_stock_recompute_on_order_created(
                 kits_recomputed += 1
 
         await db.commit()
+
+        try:
+            from services.stock_sync_service import schedule_push
+            schedule_push(cmig_ids, pg_ids)
+        except Exception:
+            pass
 
         payload = {
             "order_id": order.id,

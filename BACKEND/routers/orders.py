@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
-from dependencies import get_active_ac, get_current_user
+from dependencies import get_active_ac, get_current_user, require_role
 from models.cmig import CMIGProduct
 from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
@@ -993,6 +993,15 @@ async def update_order_status(
     if new_status == "shipped":
         order.shipped_at = datetime.now(UTC)
     await db.commit()
+
+    if new_status == "shipped":
+        try:
+            from services.stock_reservation_service import confirm_dispatch
+            await confirm_dispatch(db, order)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("confirm_dispatch order=%s: %s", order.id, exc)
+
     return {"status": order.status}
 
 
@@ -1098,10 +1107,6 @@ async def emit_order_nfe(
             status_code=400,
             detail="Emissão via Faturador ML disponível apenas para pedidos do Mercado Livre",
         )
-    if order.nfe_status in ("authorized", "pending", "in_process"):
-        raise HTTPException(
-            status_code=400, detail=f"NF-e já em processamento (status: {order.nfe_status})"
-        )
 
     acc_result = await db.execute(
         select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
@@ -1110,33 +1115,54 @@ async def emit_order_nfe(
     if not account:
         raise HTTPException(status_code=404, detail="Conta de marketplace não encontrada")
 
+    # Se o status local já indica nota autorizada/em processo, sincroniza o estado
+    # real do ML antes de bloquear — o banco pode estar desatualizado.
+    if order.nfe_status in ("authorized", "pending", "in_process"):
+        try:
+            await fetch_and_cache_order_invoices(db, order, account)
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "already_existed": True,
+            "nfe_status": order.nfe_status,
+            "nfe_key": order.nfe_key,
+            "nfe_url": _ml_nfe_url(order),
+        }
+
     try:
         ml_order_id = int(order.platform_order_id)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="ID do pedido inválido para emissão de NF-e")
 
-    await _ml.emit_nfe(account.access_token, account.platform_user_id, [ml_order_id])
+    emit_result = await _ml.emit_nfe(account.access_token, account.platform_user_id, [ml_order_id])
+    already_processing = emit_result.get("already_processing", False)
 
     # Mark as pending immediately so re-clicks are blocked even if fiscal fetch fails
     order.nfe_status = "pending"
     await db.commit()
 
-    # Fetch updated fiscal data — best-effort, failure leaves status as "pending"
+    # Sync fiscal data: when already_processing use full invoice fetch (most reliable);
+    # otherwise best-effort via get_order_fiscal_data.
     try:
-        invoice = await _ml.get_order_fiscal_data(
-            account.access_token,
-            order.platform_order_id,
-            seller_id=account.platform_user_id,
-            shipment_id=order.shipment_id,
-        )
-        if invoice:
-            order.nfe_key, order.nfe_status, order.nfe_url = _extract_nfe_fields(invoice)
-            await db.commit()
+        if already_processing:
+            await fetch_and_cache_order_invoices(db, order, account)
+        else:
+            invoice = await _ml.get_order_fiscal_data(
+                account.access_token,
+                order.platform_order_id,
+                seller_id=account.platform_user_id,
+                shipment_id=order.shipment_id,
+            )
+            if invoice:
+                order.nfe_key, order.nfe_status, order.nfe_url = _extract_nfe_fields(invoice)
+                await db.commit()
     except Exception:
-        pass  # User can sync manually
+        pass
 
     return {
         "ok": True,
+        "already_existed": already_processing,
         "nfe_status": order.nfe_status,
         "nfe_key": order.nfe_key,
         "nfe_url": _ml_nfe_url(order),
@@ -1185,6 +1211,66 @@ async def sync_order_nfe(
         "nfe_status": order.nfe_status,
         "nfe_key": order.nfe_key,
         "nfe_url": _ml_nfe_url(order),
+    }
+
+
+@router.post("/{order_id}/confirm-return")
+async def confirm_order_return(
+    order_id: int,
+    current_user: User = Depends(require_role("ugo", "admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """UGO confirma que o produto físico retornou ao galpão (pedido cancelado pós-despacho).
+    O produto sai de awaiting_return_quantity e volta ao estoque disponível.
+    """
+    result = await db.execute(select(Order).where(Order.id == order_id))
+    order = result.scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if order.return_status != "awaiting_return":
+        raise HTTPException(
+            status_code=400,
+            detail="Pedido não está aguardando retorno de produto.",
+        )
+
+    from services.stock_reservation_service import confirm_pending_return
+    await confirm_pending_return(db, order)
+    return {"ok": True, "return_status": order.return_status}
+
+
+@router.get("/awaiting-return")
+async def list_orders_awaiting_return(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(require_role("ugo", "admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lista pedidos cancelados após despacho que ainda não tiveram o produto confirmado no galpão."""
+    from sqlalchemy import func
+    query = (
+        select(Order)
+        .where(Order.return_status == "awaiting_return")
+        .order_by(Order.updated_at.desc())
+    )
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
+    rows = (await db.execute(query.offset((page - 1) * page_size).limit(page_size))).scalars().all()
+
+    return {
+        "items": [
+            {
+                "id": o.id,
+                "platform_order_id": o.platform_order_id,
+                "buyer_name": o.buyer_name,
+                "shipment_status": o.shipment_status,
+                "tracking_code": o.tracking_code,
+                "shipped_at": o.shipped_at.isoformat() if o.shipped_at else None,
+                "updated_at": o.updated_at.isoformat() if o.updated_at else None,
+            }
+            for o in rows
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
 
 
@@ -1780,6 +1866,7 @@ async def debug_shipping_mode(
     apply=true tambem aplica e commita a primeira variante que funcionou.
     """
     import httpx
+
     from services.ml_service import ML_API_BASE
     from services.webhook_service import _apply_shipment_to_order
 

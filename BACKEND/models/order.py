@@ -49,6 +49,7 @@ class Order(Base):
     seller_shipping_cost = Column(Numeric(15, 2))  # frete deduzido do vendedor (list_cost - cost)
     ml_fee_pct = Column(Numeric(8, 4))  # % da tarifa ML sobre o valor da venda
     total_debit = Column(Numeric(15, 2))
+    return_status = Column(String(30), nullable=True)  # None | 'awaiting_return' | 'returned'
     is_hidden = Column(Boolean, default=False)
     notes = Column(String)
     paid_at = Column(TIMESTAMP(timezone=True))

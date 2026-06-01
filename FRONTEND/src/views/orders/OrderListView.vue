@@ -1152,7 +1152,13 @@ async function emitNfe(order) {
     order.nfe_status = data.nfe_status
     order.nfe_key = data.nfe_key
     order.nfe_url = data.nfe_url
-    toast.success('NF-e emitida com sucesso!')
+    if (data.nfe_status === 'authorized') {
+      toast.success('NF-e já autorizada — clique em Imprimir DANFE.')
+    } else if (data.already_existed) {
+      toast.info('NF-e já estava em processamento no ML — aguarde a autorização.')
+    } else {
+      toast.success('NF-e enviada para o Faturador ML. Aguarde a autorização.')
+    }
   } catch (err) {
     toast.error(err.response?.data?.detail || 'Erro ao emitir NF-e')
   } finally {

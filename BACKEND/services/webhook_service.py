@@ -7,9 +7,12 @@ against duplicate processing when marketplaces retry webhooks.
 """
 
 import json
+import logging
 from datetime import UTC, datetime
 from datetime import date as date_type
 from decimal import Decimal
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -316,6 +319,19 @@ async def process_ml_order(
         if ml_order_data.get("status") == "cancelled" and existing_order.status != "cancelled":
             existing_order.status = "cancelled"
             existing_order.platform_status = "cancelled"
+            # Libera ou marca aguardando retorno dependendo se já foi despachado
+            try:
+                from services.stock_reservation_service import (
+                    _order_was_dispatched,
+                    mark_awaiting_return,
+                    release_reservation,
+                )
+                if _order_was_dispatched(existing_order):
+                    await mark_awaiting_return(db, existing_order)
+                else:
+                    await release_reservation(db, existing_order)
+            except Exception as exc:
+                logger.warning("stock cancel hook order=%s: %s", existing_order.id, exc)
         # Backfill created_at with ML date_created if currently wrong (same day = sync artifact)
         raw_created = ml_order_data.get("date_created")
         if raw_created:
@@ -361,6 +377,13 @@ async def process_ml_order(
                             await recompute_after_order_change(existing_order, db)
                         except Exception:
                             pass
+                        # Se o pedido foi despachado, debita estoque físico
+                        if (existing_order.shipment_status or "") in {"shipped", "delivered"}:
+                            try:
+                                from services.stock_reservation_service import confirm_dispatch
+                                await confirm_dispatch(db, existing_order)
+                            except Exception as exc:
+                                logger.warning("confirm_dispatch order=%s: %s", existing_order.id, exc)
             except Exception:
                 pass
 
@@ -626,6 +649,14 @@ async def process_ml_order(
         order.product_cost = total_cost
 
     await db.commit()
+
+    # Reserva o estoque dos produtos vinculados ao pedido
+    if order.status != "cancelled":
+        try:
+            from services.stock_reservation_service import reserve_stock
+            await reserve_stock(db, order)
+        except Exception as exc:
+            logger.warning("reserve_stock order=%s: %s", order.id, exc)
 
     # Trigger recálculo de estoque (cobre kits via explosão de componentes)
     try:

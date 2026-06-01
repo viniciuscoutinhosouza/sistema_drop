@@ -240,6 +240,13 @@ async def emit_nfe(access_token: str, seller_id: str, order_ids: list) -> dict:
             json={"orders": order_ids},
         )
     if resp.status_code not in (200, 201):
+        # 10040 = NF-e already being processed by ML — treat as pending, not an error
+        try:
+            body = resp.json()
+            if body.get("error_code") == "10040":
+                return {"already_processing": True}
+        except Exception:
+            pass
         raise HTTPException(
             status_code=resp.status_code,
             detail=f"Erro ao emitir NF-e: {resp.text[:400]}",

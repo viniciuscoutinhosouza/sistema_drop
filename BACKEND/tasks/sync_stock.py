@@ -107,23 +107,33 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
 
 
 async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) -> int:
-    """Calcula o estoque real do produto vinculado ao listing."""
+    """Calcula o estoque disponível (físico - reservado) do produto vinculado ao listing."""
 
     if listing.catalog_product_id and not listing.product_id:
         result = await db.execute(
-            select(CatalogProduct.stock_quantity).where(
-                CatalogProduct.id == listing.catalog_product_id
-            )
+            select(
+                CatalogProduct.stock_quantity,
+                CatalogProduct.reserved_quantity,
+            ).where(CatalogProduct.id == listing.catalog_product_id)
         )
-        qty = result.scalar_one_or_none()
-        return int(qty) if qty is not None else 0
+        row = result.one_or_none()
+        if row is None:
+            return 0
+        physical, reserved = row
+        return max(0, int(physical or 0) - int(reserved or 0))
 
     if listing.cmig_product_id and not listing.product_id:
         result = await db.execute(
-            select(CMIGProduct.stock_quantity).where(CMIGProduct.id == listing.cmig_product_id)
+            select(
+                CMIGProduct.stock_quantity,
+                CMIGProduct.reserved_quantity,
+            ).where(CMIGProduct.id == listing.cmig_product_id)
         )
-        qty = result.scalar_one_or_none()
-        return int(qty) if qty is not None else 0
+        row = result.one_or_none()
+        if row is None:
+            return 0
+        physical, reserved = row
+        return max(0, int(physical or 0) - int(reserved or 0))
 
     if listing.product_id:
         result = await db.execute(
@@ -134,11 +144,15 @@ async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) 
             return 0
         if product.catalog_product_id:
             result = await db.execute(
-                select(CatalogProduct.stock_quantity).where(
-                    CatalogProduct.id == product.catalog_product_id
-                )
+                select(
+                    CatalogProduct.stock_quantity,
+                    CatalogProduct.reserved_quantity,
+                ).where(CatalogProduct.id == product.catalog_product_id)
             )
-            qty = result.scalar_one_or_none()
-            return int(qty) if qty is not None else 0
+            row = result.one_or_none()
+            if row is None:
+                return 0
+            physical, reserved = row
+            return max(0, int(physical or 0) - int(reserved or 0))
 
     return 0

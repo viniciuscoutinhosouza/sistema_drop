@@ -16,7 +16,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.orm import selectinload
 
 from database import task_db
-from models.cmig import CMIG, CMIGProduct
+from models.cmig import CMIG
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceItem
 from models.notification import Notification
 from models.person import Person
@@ -305,4 +305,9 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
         result = await recompute_after_invoice_change(inv, db)
         inv.stock_updated = True
         await db.commit()
-        return {**result, "already_updated": False}
+        try:
+            from services.stock_sync_service import schedule_push
+            schedule_push(result.get("cmig_ids", set()), result.get("pg_ids", set()))
+        except Exception:
+            pass
+        return {k: v for k, v in result.items() if k not in ("cmig_ids", "pg_ids")} | {"already_updated": False}

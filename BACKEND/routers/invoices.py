@@ -1470,6 +1470,11 @@ async def finalize_invoice_no_sefaz(
 
     _recompute_totals(inv)
     await db.commit()
+    try:
+        from services.stock_sync_service import schedule_push
+        schedule_push(stock.get("cmig_ids", set()), stock.get("pg_ids", set()))
+    except Exception:
+        pass
     await db.refresh(inv, attribute_names=["items"])
     return {
         **_serialize(inv, with_items=True),
@@ -1515,7 +1520,12 @@ async def reapply_stock_for_pg_items(
         )
     )
     await db.commit()
-    return result
+    try:
+        from services.stock_sync_service import schedule_push
+        schedule_push(result.get("cmig_ids", set()), result.get("pg_ids", set()))
+    except Exception:
+        pass
+    return {k: v for k, v in result.items() if k not in ("cmig_ids", "pg_ids")}
 
 
 @router.post("/{invoice_id}/refresh-status")

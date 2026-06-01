@@ -76,6 +76,7 @@ from routers import (
     returns,
     scheduler_monitoring,
     simulator,
+    stock,
     supplier_products,
     users,
     warehouse,
@@ -98,6 +99,7 @@ app.include_router(
     listings.router, prefix=f"{PREFIX}/products/{{product_id}}/listings", tags=["Listings"]
 )
 app.include_router(returns.router, prefix=f"{PREFIX}/returns", tags=["Returns"])
+app.include_router(stock.router, prefix=f"{PREFIX}/stock", tags=["Stock"])
 app.include_router(notifications.router, prefix=f"{PREFIX}/notifications", tags=["Notifications"])
 app.include_router(webhooks.router, prefix=f"{PREFIX}/webhooks", tags=["Webhooks"])
 app.include_router(warehouse.router, prefix=f"{PREFIX}/warehouse", tags=["Warehouse"])

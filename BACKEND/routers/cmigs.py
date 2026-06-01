@@ -1,7 +1,7 @@
 import os as _os
 import shutil as _shutil
 import uuid as _uuid_mod
-from datetime import date as _date, datetime as _datetime, time as _time
+from datetime import date as _date
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import and_, func, or_, select
@@ -20,10 +20,8 @@ from models.cmig import (
     CMIGProductImage,
     CMIGProductVariant,
 )
-from models.fiscal import Invoice, InvoiceItem
 from models.nfe_config import NFeConfig
 from models.order import OrderItem
-from models.person import Person
 from models.product import (
     CatalogProduct,
     CatalogProductImage,
@@ -33,7 +31,6 @@ from models.product import (
 )
 from models.user import User
 from models.warehouse import Warehouse
-from services.stock_history import replay_stock_events_for_cmig_product
 from schemas.cmig import (
     CMIGAdminAdd,
     CMIGCreate,
@@ -1039,7 +1036,6 @@ async def import_cmig_product_to_pg(
 ):
     """UGO importa um Produto CMIG para o PG do seu Galpão (um a um)."""
     import json as _json_imp
-    import secrets as _secrets
 
     if current_user.role not in ("ugo", "admin"):
         raise HTTPException(
@@ -1061,7 +1057,16 @@ async def import_cmig_product_to_pg(
     if cp.pg_product_id:
         raise HTTPException(status_code=409, detail="Produto CMIG já está vinculado a um PG")
 
-    sku_pg = f"PG-{cp.sku_cmig}-{_secrets.token_hex(3).upper()}"
+    sku_pg = cp.sku_cmig
+
+    existing_pg = (
+        await db.execute(select(CatalogProduct).where(CatalogProduct.sku == sku_pg))
+    ).scalar_one_or_none()
+    if existing_pg:
+        raise HTTPException(
+            status_code=409,
+            detail=f"SKU '{sku_pg}' já existe no catálogo PG (produto #{existing_pg.id})",
+        )
 
     pg = CatalogProduct(
         warehouse_id=current_user.warehouse_id,
@@ -1124,7 +1129,7 @@ async def import_cmig_product_to_pg(
     # Importar variantes → CatalogProductVariant
     variants_imported = 0
     for _i, v in enumerate(cp.variants or []):
-        var_sku = f"PG-{v.sku}-{_secrets.token_hex(2).upper()}"
+        var_sku = v.sku
         db.add(
             CatalogProductVariant(
                 product_id=pg.id,

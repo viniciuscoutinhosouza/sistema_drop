@@ -38,6 +38,11 @@ const IntegrationsView = () => import('@/views/integrations/IntegrationsView.vue
 // Returns
 const ReturnListView = () => import('@/views/returns/ReturnListView.vue')
 const ReturnCreateView = () => import('@/views/returns/ReturnCreateView.vue')
+const ReturnValidationView = () => import('@/views/returns/ReturnValidationView.vue')
+const AwaitingReturnView = () => import('@/views/returns/AwaitingReturnView.vue')
+
+// Stock
+const StockControlView = () => import('@/views/stock/StockControlView.vue')
 
 // Notifications
 const NotificationsView = () => import('@/views/notifications/NotificationsView.vue')
@@ -142,6 +147,11 @@ const routes = [
 
       { path: 'returns', component: ReturnListView, meta: { title: 'Devoluções' } },
       { path: 'returns/new', component: ReturnCreateView, meta: { title: 'Nova Devolução' } },
+      { path: 'returns/aguardando-validacao', component: ReturnListView, meta: { title: 'Ag. Validação', role: 'ugo' } },
+      { path: 'returns/aguardando-retorno', component: AwaitingReturnView, meta: { title: 'Ag. Retorno Físico', role: 'ugo' } },
+      { path: 'returns/validar/:id', component: ReturnValidationView, meta: { title: 'Validar Devolução', role: 'ugo' } },
+
+      { path: 'estoque', component: StockControlView, meta: { title: 'Controle de Estoque', role: 'ugo' } },
 
       { path: 'notifications', component: NotificationsView, meta: { title: 'Notificações' } },
 

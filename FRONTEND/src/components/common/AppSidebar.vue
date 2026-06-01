@@ -163,6 +163,29 @@
               </RouterLink>
             </li>
 
+            <li class="nav-header">ESTOQUE</li>
+
+            <li class="nav-item">
+              <RouterLink to="/estoque" class="nav-link" :class="{ active: route.path === '/estoque' }">
+                <i class="nav-icon fas fa-boxes"></i>
+                <p>Controle de Estoque</p>
+              </RouterLink>
+            </li>
+
+            <li class="nav-item">
+              <RouterLink to="/returns/aguardando-retorno" class="nav-link" :class="{ active: route.path === '/returns/aguardando-retorno' }">
+                <i class="nav-icon fas fa-undo-alt text-info"></i>
+                <p>Ag. Retorno Físico</p>
+              </RouterLink>
+            </li>
+
+            <li class="nav-item">
+              <RouterLink to="/returns" class="nav-link" :class="{ active: route.path.startsWith('/returns') && route.path !== '/returns/aguardando-retorno' }">
+                <i class="nav-icon fas fa-undo"></i>
+                <p>Devoluções</p>
+              </RouterLink>
+            </li>
+
             <li class="nav-header">FISCAL</li>
 
             <li class="nav-item">

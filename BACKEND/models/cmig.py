@@ -73,7 +73,11 @@ class CMIGProduct(Base):
     model = Column(String(200))
     ean = Column(String(14))
     cost_price = Column(Numeric(10, 2))
-    stock_quantity = Column(Integer, nullable=False, default=0)
+    stock_quantity = Column(Integer, nullable=False, default=0)           # estoque físico
+    reserved_quantity = Column(Integer, nullable=False, default=0)        # reservado por pedidos ativos
+    awaiting_return_quantity = Column(Integer, nullable=False, default=0)
+    pending_validation_quantity = Column(Integer, nullable=False, default=0)
+    unfit_quantity = Column(Integer, nullable=False, default=0)
     weight_kg = Column(Numeric(8, 3))
     height_cm = Column(Numeric(8, 2))
     width_cm = Column(Numeric(8, 2))
@@ -126,6 +130,14 @@ class CMIGProduct(Base):
     )
 
     @property
+    def available_quantity(self) -> int:
+        return max(0, (self.stock_quantity or 0) - (self.reserved_quantity or 0))
+
+    @property
+    def physical_quantity(self) -> int:
+        return self.stock_quantity or 0
+
+    @property
     def category_name(self):
         return self.category.name if self.category else None
 
@@ -153,9 +165,17 @@ class CMIGProductVariant(Base):
     size_label = Column(String(100))
     voltage = Column(String(50))
     stock_quantity = Column(Integer, nullable=False, default=0)
+    reserved_quantity = Column(Integer, nullable=False, default=0)
+    awaiting_return_quantity = Column(Integer, nullable=False, default=0)
+    pending_validation_quantity = Column(Integer, nullable=False, default=0)
+    unfit_quantity = Column(Integer, nullable=False, default=0)
     price_modifier = Column(Numeric(15, 2), default=0)
     suggested_price = Column(Numeric(15, 2))
     attributes_json = Column(String(2000))
+
+    @property
+    def available_quantity(self) -> int:
+        return max(0, (self.stock_quantity or 0) - (self.reserved_quantity or 0))
 
     product = relationship("CMIGProduct", back_populates="variants")
 
