@@ -8,6 +8,7 @@ from database import get_db, task_db
 from dependencies import require_role
 from models.cmig import CMIGProduct
 from models.fiscal import Invoice
+from models.full_stock import FullStock
 from models.product import CatalogProduct
 from models.stock_movement import StockMovement
 from models.user import User
@@ -91,6 +92,30 @@ async def stock_summary(
             "pending_validation": int(row.pending_validation_quantity or 0),
             "unfit": int(row.unfit_quantity or 0),
         })
+
+    # Agrupa full_stock por (product_type, product_id)
+    full_rows = (
+        await db.execute(
+            select(
+                FullStock.product_type,
+                FullStock.product_id,
+                FullStock.marketplace_account_id,
+                FullStock.qty,
+            )
+        )
+    ).all()
+    full_map: dict[tuple, dict] = {}
+    for fr in full_rows:
+        key = (fr.product_type, fr.product_id)
+        if key not in full_map:
+            full_map[key] = {}
+        full_map[key][fr.marketplace_account_id] = int(fr.qty or 0)
+
+    for item in items:
+        key = (item["product_type"], item["product_id"])
+        acct_map = full_map.get(key, {})
+        item["full_stock"] = acct_map
+        item["full_stock_total"] = sum(acct_map.values())
 
     total = len(items)
     start = (page - 1) * page_size

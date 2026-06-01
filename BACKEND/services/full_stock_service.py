@@ -1,0 +1,217 @@
+"""Controle de estoque FULL (ML Fulfillment).
+
+Fluxo:
+- NF-e saída para CNPJ FULL → galpão já diminui via stock_calculator (nfe_out),
+  aqui apenas creditamos full_stock.qty para a conta correspondente.
+- NF-e entrada de CNPJ FULL → galpão já aumenta via stock_calculator (nfe_in),
+  aqui apenas debitamos full_stock.qty.
+- Pedido FULL shipped → debitamos full_stock.qty (galpão NÃO é tocado).
+"""
+
+import logging
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from models.fiscal import Invoice, InvoiceItem
+from models.full_stock import FullCnpj, FullStock
+from models.order import Order, OrderItem
+from models.stock_movement import StockMovement
+
+logger = logging.getLogger(__name__)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+async def is_full_cnpj(db: AsyncSession, cnpj: str, cmig_id: int) -> FullCnpj | None:
+    """Retorna o FullCnpj se o CNPJ está cadastrado como FULL para a CMIG."""
+    if not cnpj:
+        return None
+    return (
+        await db.execute(
+            select(FullCnpj).where(
+                FullCnpj.cnpj == cnpj,
+                FullCnpj.cmig_id == cmig_id,
+                FullCnpj.is_active == 1,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def _load_items(db: AsyncSession, invoice_id: int) -> list:
+    return (
+        await db.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == invoice_id))
+    ).scalars().all()
+
+
+async def _get_order_items(db: AsyncSession, order_id: int) -> list:
+    return (
+        await db.execute(select(OrderItem).where(OrderItem.order_id == order_id))
+    ).scalars().all()
+
+
+async def _adjust_full_stock(
+    db: AsyncSession,
+    product_type: str,
+    product_id: int,
+    marketplace_account_id: int,
+    delta: int,
+) -> None:
+    row = (
+        await db.execute(
+            select(FullStock).where(
+                FullStock.product_type == product_type,
+                FullStock.product_id == product_id,
+                FullStock.marketplace_account_id == marketplace_account_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row:
+        row.qty = max(0, row.qty + delta)
+    else:
+        db.add(
+            FullStock(
+                product_type=product_type,
+                product_id=product_id,
+                marketplace_account_id=marketplace_account_id,
+                qty=max(0, delta),
+            )
+        )
+
+
+async def _already_has_full_movement(
+    db: AsyncSession, invoice_id: int, movement_type: str
+) -> bool:
+    result = await db.execute(
+        select(StockMovement).where(
+            StockMovement.invoice_id == invoice_id,
+            StockMovement.movement_type == movement_type,
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
+def _log(
+    db: AsyncSession,
+    *,
+    product_type: str,
+    product_id: int,
+    movement_type: str,
+    qty: int,
+    delta: int,
+    order_id: int | None = None,
+    invoice_id: int | None = None,
+) -> None:
+    db.add(
+        StockMovement(
+            product_type=product_type,
+            product_id=product_id,
+            order_id=order_id,
+            invoice_id=invoice_id,
+            movement_type=movement_type,
+            qty=qty,
+            field_affected="full_stock",
+            delta=delta,
+        )
+    )
+
+
+# ── Funções públicas ───────────────────────────────────────────────────────────
+
+
+async def apply_nfe_saida_to_full(
+    db: AsyncSession,
+    invoice: Invoice,
+    marketplace_account_id: int,
+) -> dict:
+    """NF-e saída para CNPJ FULL: credita full_stock para a conta correspondente.
+
+    O decremento de galpão já é feito pelo stock_calculator via evento nfe_out.
+    Idempotente: verifica stock_movements por invoice_id antes de agir.
+    """
+    if await _already_has_full_movement(db, invoice.id, "full_in"):
+        return {"full_in_items": 0, "already_applied": True}
+
+    items = getattr(invoice, "items", None) or await _load_items(db, invoice.id)
+    count = 0
+    for item in items:
+        qty = int(item.quantity or 0)
+        if qty <= 0:
+            continue
+        if item.cmig_product_id:
+            await _adjust_full_stock(db, "cmig", item.cmig_product_id, marketplace_account_id, qty)
+            _log(db, product_type="cmig", product_id=item.cmig_product_id,
+                 movement_type="full_in", qty=qty, delta=qty, invoice_id=invoice.id)
+            count += 1
+        elif item.catalog_product_id:
+            await _adjust_full_stock(db, "pg", item.catalog_product_id, marketplace_account_id, qty)
+            _log(db, product_type="pg", product_id=item.catalog_product_id,
+                 movement_type="full_in", qty=qty, delta=qty, invoice_id=invoice.id)
+            count += 1
+    return {"full_in_items": count, "marketplace_account_id": marketplace_account_id}
+
+
+async def apply_nfe_entrada_from_full(
+    db: AsyncSession,
+    invoice: Invoice,
+    marketplace_account_id: int,
+) -> dict:
+    """NF-e entrada de CNPJ FULL (retorno): debita full_stock.
+
+    O incremento de galpão já é feito pelo stock_calculator via evento nfe_in.
+    Idempotente: verifica stock_movements por invoice_id antes de agir.
+    """
+    if await _already_has_full_movement(db, invoice.id, "full_return_out"):
+        return {"full_return_items": 0, "already_applied": True}
+
+    items = getattr(invoice, "items", None) or await _load_items(db, invoice.id)
+    count = 0
+    for item in items:
+        qty = int(item.quantity or 0)
+        if qty <= 0:
+            continue
+        if item.cmig_product_id:
+            await _adjust_full_stock(db, "cmig", item.cmig_product_id, marketplace_account_id, -qty)
+            _log(db, product_type="cmig", product_id=item.cmig_product_id,
+                 movement_type="full_return_out", qty=qty, delta=-qty, invoice_id=invoice.id)
+            count += 1
+        elif item.catalog_product_id:
+            await _adjust_full_stock(db, "pg", item.catalog_product_id, marketplace_account_id, -qty)
+            _log(db, product_type="pg", product_id=item.catalog_product_id,
+                 movement_type="full_return_out", qty=qty, delta=-qty, invoice_id=invoice.id)
+            count += 1
+    return {"full_return_items": count, "marketplace_account_id": marketplace_account_id}
+
+
+async def apply_full_order_shipped(db: AsyncSession, order: Order) -> None:
+    """Pedido FULL enviado: debita full_stock da conta correspondente.
+
+    NÃO toca stock_quantity do galpão.
+    Idempotente: verifica stock_movements por order_id antes de agir.
+    """
+    existing = await db.execute(
+        select(StockMovement).where(
+            StockMovement.order_id == order.id,
+            StockMovement.movement_type == "full_out",
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return
+
+    account_id = order.account_id
+    if not account_id:
+        logger.warning("apply_full_order_shipped: order %s sem account_id", order.id)
+        return
+
+    items = await _get_order_items(db, order.id)
+    for item in items:
+        qty = item.quantity or 1
+        if item.catalog_product_id:
+            await _adjust_full_stock(db, "pg", item.catalog_product_id, account_id, -qty)
+            _log(db, product_type="pg", product_id=item.catalog_product_id,
+                 movement_type="full_out", qty=qty, delta=-qty, order_id=order.id)
+        elif item.cmig_product_id:
+            await _adjust_full_stock(db, "cmig", item.cmig_product_id, account_id, -qty)
+            _log(db, product_type="cmig", product_id=item.cmig_product_id,
+                 movement_type="full_out", qty=qty, delta=-qty, order_id=order.id)

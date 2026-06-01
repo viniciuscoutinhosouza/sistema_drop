@@ -305,6 +305,18 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
         result = await recompute_after_invoice_change(inv, db)
         inv.stock_updated = True
         await db.commit()
+        # Se a NF-e de entrada veio de um CNPJ FULL, debita o full_stock
+        try:
+            from models.person import Person as _Person
+            from services.full_stock_service import apply_nfe_entrada_from_full, is_full_cnpj
+            _person = (await db.execute(select(_Person).where(_Person.id == inv.person_id))).scalar_one_or_none()
+            if _person and _person.document:
+                _full_cnpj = await is_full_cnpj(db, _person.document, inv.cmig_id)
+                if _full_cnpj:
+                    await apply_nfe_entrada_from_full(db, inv, _full_cnpj.marketplace_account_id)
+                    await db.commit()
+        except Exception:
+            log.exception("update_stock_from_invoice: erro ao processar full_stock para invoice %s", inv.id)
         try:
             from services.stock_sync_service import schedule_push
             schedule_push(result.get("cmig_ids", set()), result.get("pg_ids", set()))

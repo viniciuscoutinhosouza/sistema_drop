@@ -62,6 +62,13 @@
               </RouterLink>
             </li>
 
+            <li class="nav-item">
+              <RouterLink to="/full-cnpjs" class="nav-link" :class="{ active: route.path.startsWith('/full-cnpjs') }">
+                <i class="nav-icon fas fa-warehouse"></i>
+                <p>CNPJs FULL</p>
+              </RouterLink>
+            </li>
+
             <li class="nav-header">OPERAÇÕES</li>
 
             <li class="nav-item">

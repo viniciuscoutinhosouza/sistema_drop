@@ -8,6 +8,7 @@ from models.cmig import (  # noqa: F401
 )
 from models.financial import FinancialTransaction  # noqa: F401
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem  # noqa: F401
+from models.full_stock import FullCnpj, FullStock  # noqa: F401
 from models.go import GO  # noqa: F401
 from models.integration import (  # noqa: F401
     AccountBalance,

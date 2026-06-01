@@ -1470,6 +1470,24 @@ async def finalize_invoice_no_sefaz(
 
     _recompute_totals(inv)
     await db.commit()
+    if inv.person_id:
+        try:
+            from services.full_stock_service import (
+                apply_nfe_entrada_from_full,
+                apply_nfe_saida_to_full,
+                is_full_cnpj,
+            )
+            _person = (await db.execute(select(Person).where(Person.id == inv.person_id))).scalar_one_or_none()
+            if _person and _person.document:
+                _full_cnpj = await is_full_cnpj(db, _person.document, inv.cmig_id)
+                if _full_cnpj:
+                    if inv.direction == "out":
+                        await apply_nfe_saida_to_full(db, inv, _full_cnpj.marketplace_account_id)
+                    elif inv.direction == "in":
+                        await apply_nfe_entrada_from_full(db, inv, _full_cnpj.marketplace_account_id)
+                    await db.commit()
+        except Exception:
+            pass
     try:
         from services.stock_sync_service import schedule_push
         schedule_push(stock.get("cmig_ids", set()), stock.get("pg_ids", set()))

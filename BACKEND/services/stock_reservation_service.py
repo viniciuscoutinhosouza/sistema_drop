@@ -87,6 +87,8 @@ async def _get_order_items(db: AsyncSession, order: Order) -> list[OrderItem]:
 
 async def reserve_stock(db: AsyncSession, order: Order) -> None:
     """Pedido baixado (downloaded) → reserva o estoque dos produtos vinculados."""
+    if order.shipping_mode == "full":
+        return  # FULL orders não reservam galpão
     if order.status == "cancelled":
         return
     if await _already_has_movement(db, order.id, "reserve"):
@@ -148,6 +150,8 @@ async def reserve_stock(db: AsyncSession, order: Order) -> None:
 
 async def release_reservation(db: AsyncSession, order: Order) -> None:
     """Pedido cancelado ANTES de ser despachado → libera a reserva de volta ao disponível."""
+    if order.shipping_mode == "full":
+        return  # FULL orders não têm reserva de galpão para liberar
     if await _already_has_movement(db, order.id, "unreserve"):
         return
 
@@ -207,6 +211,14 @@ async def release_reservation(db: AsyncSession, order: Order) -> None:
 
 async def confirm_dispatch(db: AsyncSession, order: Order) -> None:
     """Pedido despachado/shipped → debita estoque físico e libera reserva."""
+    if order.shipping_mode == "full":
+        from services.full_stock_service import apply_full_order_shipped
+        try:
+            await apply_full_order_shipped(db, order)
+            await db.commit()
+        except Exception as exc:
+            logger.error("confirm_dispatch FULL order=%s: %s", order.id, exc)
+        return
     if await _already_has_movement(db, order.id, "dispatch"):
         return
 
@@ -285,6 +297,8 @@ async def confirm_dispatch(db: AsyncSession, order: Order) -> None:
 
 async def mark_awaiting_return(db: AsyncSession, order: Order) -> None:
     """Pedido cancelado APÓS despacho → libera reserva e marca produto como aguardando retorno."""
+    if order.shipping_mode == "full":
+        return  # Retorno de FULL é via NF-e entrada — não usa awaiting_return do galpão
     if await _already_has_movement(db, order.id, "await_return"):
         return
 

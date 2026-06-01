@@ -29,17 +29,18 @@
               <th class="text-center text-info" title="Produto em trânsito de volta">Ag. Retorno</th>
               <th class="text-center" title="Devolução recebida, aguardando inspeção">Ag. Validação</th>
               <th class="text-center text-danger" title="Reprovado na inspeção">Inapto</th>
+              <th class="text-center text-purple" title="Estoque no ML Fulfillment (FULL)">FULL</th>
               <th style="width:30px"></th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="9" class="text-center py-4">
+              <td colspan="10" class="text-center py-4">
                 <i class="fas fa-spinner fa-spin"></i>
               </td>
             </tr>
             <tr v-else-if="!items.length">
-              <td colspan="9" class="text-center py-4 text-muted">
+              <td colspan="10" class="text-center py-4 text-muted">
                 Nenhum produto com estoque encontrado
               </td>
             </tr>
@@ -81,12 +82,23 @@
                     {{ item.unfit }}
                   </span>
                 </td>
+                <td class="text-center">
+                  <span
+                    v-if="item.full_stock_total > 0"
+                    class="font-weight-bold"
+                    style="color:#6f42c1"
+                    :title="fullStockTooltip(item.full_stock)"
+                  >
+                    {{ item.full_stock_total }}
+                  </span>
+                  <span v-else class="text-muted">—</span>
+                </td>
                 <td class="text-center text-muted">
                   <i :class="expandedKey === itemKey(item) ? 'fas fa-chevron-up' : 'fas fa-chevron-down'" style="font-size:11px"></i>
                 </td>
               </tr>
               <tr v-if="expandedKey === itemKey(item)">
-                <td colspan="9" class="p-0 bg-light border-top-0">
+                <td colspan="10" class="p-0 bg-light border-top-0">
                   <div class="px-4 py-3">
                     <h6 class="mb-2 text-muted">
                       <i class="fas fa-history mr-1"></i> Histórico de Movimentos
@@ -217,6 +229,13 @@ async function toggleExpand(item) {
   }
 }
 
+function fullStockTooltip(fullStock) {
+  if (!fullStock || !Object.keys(fullStock).length) return 'Sem estoque FULL'
+  return Object.entries(fullStock)
+    .map(([acctId, qty]) => `Conta ${acctId}: ${qty} un`)
+    .join('\n')
+}
+
 const MOVEMENT_COLORS = {
   reserve: 'warning',
   unreserve: 'info',
@@ -226,6 +245,9 @@ const MOVEMENT_COLORS = {
   receive_return: 'primary',
   validate_ok: 'success',
   validate_unfit: 'danger',
+  full_in: 'purple',
+  full_out: 'danger',
+  full_return_out: 'info',
   manual: 'light',
 }
 const MOVEMENT_LABELS = {
@@ -237,6 +259,9 @@ const MOVEMENT_LABELS = {
   receive_return: 'Devolução recebida',
   validate_ok: 'Validado OK',
   validate_unfit: 'Reprovado',
+  full_in: 'Enviado ao FULL',
+  full_out: 'Pedido FULL',
+  full_return_out: 'Retorno do FULL',
   manual: 'Manual',
 }
 
