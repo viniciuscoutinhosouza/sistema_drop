@@ -504,9 +504,13 @@
           </div>
           <div class="modal-body">
             <div class="row">
-              <div class="col-md-12">
+              <div class="col-md-9">
                 <label class="small mb-1">Descrição <span class="text-danger">*</span></label>
                 <input v-model="itemForm.description" class="form-control">
+              </div>
+              <div class="col-md-3">
+                <label class="small mb-1">SKU</label>
+                <input :value="itemForm.sku || '—'" class="form-control bg-light" readonly>
               </div>
             </div>
             <div class="row mt-2">
@@ -815,7 +819,9 @@ function selectProduct(p, source) {
     ean: p.ean || '',
     unit: 'UN',
     quantity: 1,
-    unit_value: p.suggested_price ?? p.cost_price ?? 0,
+    unit_value: form.direction === 'in'
+      ? (p.cost_price ?? p.suggested_price ?? 0)
+      : (p.suggested_price ?? p.cost_price ?? 0),
     origin: p.origin ?? 0,
   })
   showProductPicker.value = false
