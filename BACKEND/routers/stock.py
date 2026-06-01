@@ -1,12 +1,13 @@
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db, task_db
 from dependencies import require_role
 from models.cmig import CMIGProduct
+from models.fiscal import Invoice
 from models.product import CatalogProduct
 from models.stock_movement import StockMovement
 from models.user import User
@@ -114,6 +115,17 @@ async def recompute_all_stock_endpoint(
     async def _run():
         from services.fiscal.stock_calculator import recompute_all_stock
         async with task_db() as db:
+            # Reativa stock_updated nas NF-e de entrada já finalizadas/autorizadas,
+            # pois o replay usa essa flag para incluir a NF-e nos eventos de estoque.
+            await db.execute(
+                update(Invoice)
+                .where(
+                    Invoice.direction == "in",
+                    Invoice.status.in_(("finalized", "authorized")),
+                )
+                .values(stock_updated=True)
+            )
+            await db.commit()
             result = await recompute_all_stock(db)
             await db.commit()
             logger.info("recompute_all_stock: %s", result)
