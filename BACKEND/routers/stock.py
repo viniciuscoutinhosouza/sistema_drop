@@ -139,6 +139,7 @@ async def recompute_all_stock_endpoint(
     """
     async def _run():
         from services.fiscal.stock_calculator import recompute_all_stock
+        from services.stock_reservation_service import recompute_reservations_from_movements
         async with task_db() as db:
             # Reativa stock_updated nas NF-e de entrada já finalizadas/autorizadas,
             # pois o replay usa essa flag para incluir a NF-e nos eventos de estoque.
@@ -154,9 +155,28 @@ async def recompute_all_stock_endpoint(
             result = await recompute_all_stock(db)
             await db.commit()
             logger.info("recompute_all_stock: %s", result)
+        # Recomputa reserved_quantity em sessão separada (após commit do stock_quantity)
+        async with task_db() as db2:
+            res_result = await recompute_reservations_from_movements(db2)
+            logger.info("recompute_reservations: %s", res_result)
 
     background_tasks.add_task(_run)
     return {"ok": True, "message": "Recompute iniciado em background"}
+
+
+@router.post("/recompute-reservations")
+async def recompute_reservations_endpoint(
+    current_user: User = Depends(require_role("ugo", "admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reconstrói reserved_quantity de todos os produtos a partir dos stock_movements.
+
+    Use após executar SQL 74 (zero_all_stock) para restaurar as reservas ativas
+    sem precisar refazer o recompute completo de estoque físico.
+    """
+    from services.stock_reservation_service import recompute_reservations_from_movements
+    result = await recompute_reservations_from_movements(db)
+    return {"ok": True, **result}
 
 
 @router.get("/{product_type}/{product_id}/movements")

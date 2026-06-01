@@ -15,8 +15,9 @@ available_quantity (computed) = stock_quantity - reserved_quantity
 
 import logging
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from models.cmig import CMIGProduct, CMIGProductVariant
 from models.order import Order, OrderItem
@@ -534,3 +535,73 @@ async def validate_return(
             schedule_push(_cmig_ids, _pg_ids)
     except Exception as exc:
         logger.error("validate_return return=%s approved=%s: %s", return_obj.id, approved, exc)
+
+
+# ─── Recompute de reservas a partir da trilha de auditoria ───────────────────
+
+async def recompute_reservations_from_movements(db) -> dict:
+    """Reconstrói reserved_quantity de todos os produtos a partir dos stock_movements.
+
+    Necessário após executar SQL 74 (que zera reserved_quantity): replay das reservas
+    ativas (pedidos com movimento 'reserve' mas sem 'unreserve', 'dispatch' ou 'await_return').
+    """
+    cancel = aliased(StockMovement, name="sm_cancel")
+
+    # Reservas ativas: tem movimento 'reserve' sem movimento de encerramento correspondente
+    result = await db.execute(
+        select(
+            StockMovement.product_type,
+            StockMovement.product_id,
+            func.sum(StockMovement.qty).label("active_reserved"),
+        )
+        .where(
+            StockMovement.movement_type == "reserve",
+            StockMovement.product_type.in_(["pg", "cmig"]),
+            StockMovement.order_id.is_not(None),
+            ~exists(
+                select(cancel.id).where(
+                    cancel.order_id == StockMovement.order_id,
+                    cancel.movement_type.in_(["unreserve", "dispatch", "await_return"]),
+                    cancel.product_type == StockMovement.product_type,
+                    cancel.product_id == StockMovement.product_id,
+                )
+            ),
+        )
+        .group_by(StockMovement.product_type, StockMovement.product_id)
+    )
+    rows = result.all()
+
+    pg_updates: dict[int, int] = {}
+    cmig_updates: dict[int, int] = {}
+    for row in rows:
+        qty = max(0, int(row.active_reserved or 0))
+        if row.product_type == "pg":
+            pg_updates[row.product_id] = qty
+        elif row.product_type == "cmig":
+            cmig_updates[row.product_id] = qty
+
+    # Zera todos (cobre produtos cujas reservas foram integralmente encerradas)
+    await db.execute(update(CatalogProduct).values(reserved_quantity=0))
+    await db.execute(update(CMIGProduct).values(reserved_quantity=0))
+
+    for product_id, qty in pg_updates.items():
+        if qty > 0:
+            await db.execute(
+                update(CatalogProduct)
+                .where(CatalogProduct.id == product_id)
+                .values(reserved_quantity=qty)
+            )
+
+    for product_id, qty in cmig_updates.items():
+        if qty > 0:
+            await db.execute(
+                update(CMIGProduct)
+                .where(CMIGProduct.id == product_id)
+                .values(reserved_quantity=qty)
+            )
+
+    await db.commit()
+    return {
+        "pg_products_updated": len(pg_updates),
+        "cmig_products_updated": len(cmig_updates),
+    }
