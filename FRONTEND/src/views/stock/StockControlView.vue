@@ -1,18 +1,68 @@
 <template>
   <div>
     <div class="card">
-      <div class="card-header d-flex align-items-center justify-content-between">
+      <div class="card-header d-flex flex-wrap align-items-center justify-content-between">
         <h3 class="card-title mb-0">Controle de Estoque</h3>
-        <div class="d-flex align-items-center gap-2">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <!-- Seletor de Tipo: Galpão (PG) ou CMIG. AC só vê CMIG. -->
+          <div v-if="!isAC" class="btn-group btn-group-sm" role="group">
+            <button
+              type="button"
+              class="btn"
+              :class="scope === '' ? 'btn-primary' : 'btn-outline-primary'"
+              @click="setScope('')"
+            >Todos</button>
+            <button
+              type="button"
+              class="btn"
+              :class="scope === 'pg' ? 'btn-primary' : 'btn-outline-primary'"
+              @click="setScope('pg')"
+            >Galpão (PG)</button>
+            <button
+              type="button"
+              class="btn"
+              :class="scope === 'cmig' ? 'btn-primary' : 'btn-outline-primary'"
+              @click="setScope('cmig')"
+            >CMIG</button>
+          </div>
+
+          <!-- Dropdown de Galpão (PG) -->
+          <select
+            v-if="!isAC && (scope === '' || scope === 'pg')"
+            v-model.number="warehouseId"
+            @change="applyFilters"
+            class="form-control form-control-sm"
+            style="width: 200px"
+          >
+            <option :value="null">Todos os Galpões</option>
+            <option v-for="w in warehouses" :key="w.id" :value="w.id">
+              {{ w.name }}
+            </option>
+          </select>
+
+          <!-- Dropdown de CMIG -->
+          <select
+            v-if="scope === '' || scope === 'cmig'"
+            v-model.number="cmigId"
+            @change="applyFilters"
+            class="form-control form-control-sm"
+            style="width: 220px"
+          >
+            <option :value="null">{{ isAC ? 'Todas as minhas CMIGs' : 'Todas as CMIGs' }}</option>
+            <option v-for="c in cmigs" :key="c.id" :value="c.id">
+              {{ cmigLabel(c) }}
+            </option>
+          </select>
+
           <input
             v-model="search"
             @input="debouncedLoad"
             type="text"
-            placeholder="Buscar produto..."
+            placeholder="SKU, EAN ou nome..."
             class="form-control form-control-sm"
             style="width: 220px"
           />
-          <button class="btn btn-sm btn-outline-secondary" @click="load">
+          <button class="btn btn-sm btn-outline-secondary" @click="load" title="Atualizar">
             <i class="fas fa-sync-alt"></i>
           </button>
         </div>
@@ -21,11 +71,21 @@
         <table class="table table-sm table-hover mb-0">
           <thead class="thead-light">
             <tr>
-              <th>Produto</th>
+              <th class="cursor-pointer" @click="setSort('sku')" style="width:140px">
+                SKU <i :class="sortIcon('sku')"></i>
+              </th>
+              <th class="cursor-pointer" @click="setSort('name')">
+                Produto <i :class="sortIcon('name')"></i>
+              </th>
+              <th style="width:140px">EAN</th>
               <th class="text-center" style="width:60px">Tipo</th>
-              <th class="text-center" title="Estoque físico no galpão">Físico</th>
+              <th class="text-center cursor-pointer" @click="setSort('physical')" title="Estoque físico no galpão">
+                Físico <i :class="sortIcon('physical')"></i>
+              </th>
               <th class="text-center" title="Reservado por pedidos ativos">Reservado</th>
-              <th class="text-center text-success" title="Disponível para venda">Disponível</th>
+              <th class="text-center text-success cursor-pointer" @click="setSort('available')" title="Disponível para venda">
+                Disponível <i :class="sortIcon('available')"></i>
+              </th>
               <th class="text-center text-info" title="Produto em trânsito de volta">Ag. Retorno</th>
               <th class="text-center" title="Devolução recebida, aguardando inspeção">Ag. Validação</th>
               <th class="text-center text-danger" title="Reprovado na inspeção">Inapto</th>
@@ -35,12 +95,12 @@
           </thead>
           <tbody>
             <tr v-if="loading">
-              <td colspan="10" class="text-center py-4">
+              <td colspan="12" class="text-center py-4">
                 <i class="fas fa-spinner fa-spin"></i>
               </td>
             </tr>
             <tr v-else-if="!items.length">
-              <td colspan="10" class="text-center py-4 text-muted">
+              <td colspan="12" class="text-center py-4 text-muted">
                 Nenhum produto com estoque encontrado
               </td>
             </tr>
@@ -50,7 +110,9 @@
                 @click="toggleExpand(item)"
                 :class="{ 'table-active': expandedKey === itemKey(item) }"
               >
+                <td><code>{{ item.sku || '—' }}</code></td>
                 <td>{{ item.name }}</td>
+                <td><small class="text-muted">{{ item.ean || '—' }}</small></td>
                 <td class="text-center">
                   <span :class="item.product_type === 'pg' ? 'badge badge-primary' : 'badge badge-info'">
                     {{ item.product_type === 'pg' ? 'PG' : 'CMIG' }}
@@ -98,7 +160,7 @@
                 </td>
               </tr>
               <tr v-if="expandedKey === itemKey(item)">
-                <td colspan="10" class="p-0 bg-light border-top-0">
+                <td colspan="12" class="p-0 bg-light border-top-0">
                   <div class="px-4 py-3">
                     <h6 class="mb-2 text-muted">
                       <i class="fas fa-history mr-1"></i> Histórico de Movimentos
@@ -164,9 +226,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '@/composables/useApi'
+import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/formatters'
+
+const authStore = useAuthStore()
+const role = computed(() => authStore.user?.role)
+const isAC = computed(() => role.value === 'ac')
 
 const items = ref([])
 const loading = ref(true)
@@ -174,6 +241,15 @@ const search = ref('')
 const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
+
+const scope = ref(isAC.value ? 'cmig' : '')   // '' | 'pg' | 'cmig'
+const warehouseId = ref(null)
+const cmigId = ref(null)
+const sortBy = ref('name')
+const sortDir = ref('asc')
+
+const warehouses = ref([])
+const cmigs = ref([])
 
 const expandedKey = ref(null)
 const movements = ref([])
@@ -186,10 +262,68 @@ function itemKey(item) {
   return `${item.product_type}-${item.product_id}`
 }
 
+function cmigLabel(c) {
+  return c.trade_name || c.company_name || `CMIG #${c.id}`
+}
+
+async function loadWarehouses() {
+  try {
+    const { data } = await api.get('/warehouse')
+    warehouses.value = data || []
+  } catch {
+    warehouses.value = []
+  }
+}
+
+async function loadCmigs() {
+  try {
+    const { data } = await api.get('/cmigs')
+    cmigs.value = data || []
+  } catch {
+    cmigs.value = []
+  }
+}
+
+function setScope(value) {
+  scope.value = value
+  if (value === 'pg') cmigId.value = null
+  if (value === 'cmig') warehouseId.value = null
+  page.value = 1
+  load()
+}
+
+function setSort(column) {
+  if (sortBy.value === column) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortBy.value = column
+    sortDir.value = 'asc'
+  }
+  load()
+}
+
+function sortIcon(column) {
+  if (sortBy.value !== column) return 'fas fa-sort text-muted'
+  return sortDir.value === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down'
+}
+
+function applyFilters() {
+  page.value = 1
+  load()
+}
+
 async function load() {
   loading.value = true
-  const params = { page: page.value, page_size: pageSize.value }
+  const params = {
+    page: page.value,
+    page_size: pageSize.value,
+    sort_by: sortBy.value,
+    sort_dir: sortDir.value,
+  }
   if (search.value) params.search = search.value
+  if (scope.value) params.scope = scope.value
+  if (warehouseId.value) params.warehouse_id = warehouseId.value
+  if (cmigId.value) params.cmig_id = cmigId.value
   try {
     const { data } = await api.get('/stock/summary', { params })
     items.value = data.items
@@ -268,7 +402,11 @@ const MOVEMENT_LABELS = {
 function movementColor(type) { return MOVEMENT_COLORS[type] || 'secondary' }
 function movementLabel(type) { return MOVEMENT_LABELS[type] || type }
 
-onMounted(load)
+onMounted(async () => {
+  if (!isAC.value) await loadWarehouses()
+  await loadCmigs()
+  await load()
+})
 </script>
 
 <style scoped>

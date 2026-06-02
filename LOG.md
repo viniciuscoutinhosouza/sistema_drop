@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-01 — feat(stock): seletor de Galpão/CMIG, colunas SKU/EAN e ordenação no Controle de Estoque
+
+**Pedido:** Na tela de Controle de Estoque, permitir filtrar por Galpão (produtos PG) ou Conta CMIG, exibir SKU e EAN dos produtos, ordenar por SKU, Nome, Físico ou Disponível. AC só pode ver suas CMIGs.
+
+**Backend (`BACKEND/routers/stock.py`):**
+- `/stock/summary` agora aceita `scope` (`pg|cmig`), `warehouse_id`, `cmig_id`, `sort_by` (`sku|name|physical|available`) e `sort_dir` (`asc|desc`).
+- Resposta inclui `sku`, `ean`, `warehouse_id`, `cmig_id` por item. Para CMIG, `sku` = `sku_cmig` e `warehouse_id` vem do join com `cmigs`.
+- Busca expandida para casar título, SKU e EAN.
+- RBAC: AC entra com `scope="cmig"` forçado e filtro `cmig_administrators.user_id = current_user.id`. Tentar `cmig_id` fora do escopo → 403; sem CMIGs administradas → lista vazia.
+- `/stock/{type}/{id}/movements` liberado para AC com check de scope (somente CMIGs administradas).
+
+**Frontend:**
+- `views/stock/StockControlView.vue`: botões de scope (Todos / Galpão (PG) / CMIG), dropdowns de Galpão (`/warehouse`) e CMIG (`/cmigs`), colunas SKU e EAN, headers clicáveis em SKU/Produto/Físico/Disponível com indicador asc/desc. AC vê apenas o dropdown de CMIG (sem botão de scope nem Galpão).
+- `router/index.js`: rota `/estoque` agora aceita `role: ['ugo', 'ac']`.
+- `components/common/AppSidebar.vue`: item "Controle de Estoque" adicionado também na seção do AC.
+
+---
+
 ## 2026-06-01 — fix(orders): exclusão de pedido falhava com 500 (FK Oracle não cascateava)
 
 **Pedido:** Excluir pedidos manuais 541 e 542 retornava `500 Internal Server Error`.

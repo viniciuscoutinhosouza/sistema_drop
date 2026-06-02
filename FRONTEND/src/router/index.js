@@ -154,7 +154,7 @@ const routes = [
       { path: 'returns/aguardando-retorno', component: AwaitingReturnView, meta: { title: 'Ag. Retorno Físico', role: 'ugo' } },
       { path: 'returns/validar/:id', component: ReturnValidationView, meta: { title: 'Validar Devolução', role: 'ugo' } },
 
-      { path: 'estoque', component: StockControlView, meta: { title: 'Controle de Estoque', role: 'ugo' } },
+      { path: 'estoque', component: StockControlView, meta: { title: 'Controle de Estoque', role: ['ugo', 'ac'] } },
       { path: 'full-cnpjs', component: FullCnpjsView, meta: { title: 'CNPJs FULL', role: 'ac' } },
 
       { path: 'notifications', component: NotificationsView, meta: { title: 'Notificações' } },

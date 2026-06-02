@@ -123,6 +123,13 @@
               </RouterLink>
             </li>
 
+            <li class="nav-item">
+              <RouterLink to="/estoque" class="nav-link" :class="{ active: route.path === '/estoque' }">
+                <i class="nav-icon fas fa-boxes"></i>
+                <p>Controle de Estoque</p>
+              </RouterLink>
+            </li>
+
             <li class="nav-header">FISCAL</li>
 
             <li class="nav-item">
