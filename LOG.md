@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-01 — feat(stock): botão "Atualizar Estoque FULL" para AC na tela de Controle de Estoque
+
+**Pedido:** Na tela de Controle de Estoque, no acesso AC, ter um botão que atualize o estoque do FULL da CMIG selecionada lendo do Mercado Livre.
+
+**Backend (`BACKEND/routers/stock.py`):**
+- Novo endpoint `POST /stock/cmig/{cmig_id}/sync-full`.
+- RBAC: AC só pode chamar para CMIGs em que é administrador; UGO/admin/GO liberados.
+- Para cada `MarketplaceAccount` ML ativa da CMIG, pega listings publicados com `logistic_type='fulfillment'` ou `is_full=true`, faz refresh do token quando necessário, busca em lote em `/items` via `ml_service.get_items_bulk`.
+- Zera `full_stock.qty` das contas da CMIG antes de reconstruir (evita resíduo de anúncios despublicados).
+- Atualiza `listing.qty_full` com `available_quantity` do ML e agrega em `full_stock` por (`product_type`, `product_id`, `account_id`).
+- Retorna `{cmig_id, accounts_processed, accounts_skipped, listings_synced, listings_errors, errors[]}`.
+
+**Frontend (`views/stock/StockControlView.vue`):**
+- Botão "Atualizar Estoque FULL" (amarelo, ícone `fa-cloud-download-alt`) aparece apenas quando há CMIG selecionada.
+- Chama o endpoint, mostra spinner durante a chamada, exibe toast com resumo e recarrega a lista. Erros logam no console e disparam toast de aviso.
+
+---
+
 ## 2026-06-01 — feat(stock): seletor de Galpão/CMIG, colunas SKU/EAN e ordenação no Controle de Estoque
 
 **Pedido:** Na tela de Controle de Estoque, permitir filtrar por Galpão (produtos PG) ou Conta CMIG, exibir SKU e EAN dos produtos, ordenar por SKU, Nome, Físico ou Disponível. AC só pode ver suas CMIGs.

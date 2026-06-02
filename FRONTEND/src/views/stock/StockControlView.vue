@@ -65,6 +65,18 @@
           <button class="btn btn-sm btn-outline-secondary" @click="load" title="Atualizar">
             <i class="fas fa-sync-alt"></i>
           </button>
+
+          <!-- Atualiza FULL no ML para a CMIG selecionada (AC, UGO, admin) -->
+          <button
+            v-if="cmigId"
+            class="btn btn-sm btn-warning"
+            :disabled="syncingFull"
+            @click="syncFullStock"
+            title="Lê o estoque FULL atual no Mercado Livre para todos os anúncios fulfillment desta CMIG"
+          >
+            <i :class="syncingFull ? 'fas fa-spinner fa-spin' : 'fas fa-cloud-download-alt'" class="mr-1"></i>
+            {{ syncingFull ? 'Atualizando…' : 'Atualizar Estoque FULL' }}
+          </button>
         </div>
       </div>
       <div class="card-body p-0">
@@ -229,9 +241,11 @@
 import { ref, computed, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
 import { formatDateTime } from '@/utils/formatters'
 
 const authStore = useAuthStore()
+const toast = useToast()
 const role = computed(() => authStore.user?.role)
 const isAC = computed(() => role.value === 'ac')
 
@@ -255,6 +269,8 @@ const expandedKey = ref(null)
 const movements = ref([])
 const movementsTotal = ref(0)
 const loadingMovements = ref(false)
+
+const syncingFull = ref(false)
 
 let searchTimer = null
 
@@ -281,6 +297,30 @@ async function loadCmigs() {
     cmigs.value = data || []
   } catch {
     cmigs.value = []
+  }
+}
+
+async function syncFullStock() {
+  if (!cmigId.value || syncingFull.value) return
+  syncingFull.value = true
+  try {
+    const { data } = await api.post(`/stock/cmig/${cmigId.value}/sync-full`)
+    const synced = data.listings_synced || 0
+    const errs = (data.errors || []).length
+    const accts = data.accounts_processed || 0
+    let msg = `${synced} anúncio(s) FULL atualizado(s) em ${accts} conta(s).`
+    if (errs > 0) msg += ` ${errs} erro(s) — veja o console para detalhes.`
+    if (errs > 0) {
+      console.warn('[sync-full] erros:', data.errors)
+      toast.warning(msg)
+    } else {
+      toast.success(msg)
+    }
+    await load()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao atualizar estoque FULL.')
+  } finally {
+    syncingFull.value = false
   }
 }
 

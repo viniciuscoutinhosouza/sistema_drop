@@ -203,6 +203,204 @@ async def stock_summary(
     }
 
 
+@router.post("/cmig/{cmig_id}/sync-full")
+async def sync_full_stock_for_cmig(
+    cmig_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-lê o estoque FULL no Mercado Livre para todos os anúncios fulfillment da CMIG
+    e regrava `full_stock` (e `listing.qty_full`) com o valor canônico do ML.
+
+    - AC: precisa ser administrador da CMIG.
+    - UGO/admin/GO: liberado.
+    - Itera as contas ML da CMIG. Para cada conta, pega listings publicados com
+      `logistic_type='fulfillment'` ou `is_full=true`, busca em lote em /items
+      e usa `available_quantity` como verdade absoluta do ML.
+    - `full_stock` é zerado antes para essa CMIG (linhas das contas dela) e
+      reconstruído com a soma por (product_type, product_id, account_id).
+    """
+    from services import ml_service
+    from models.integration import MarketplaceAccount
+    from models.product import ProductListing
+
+    if current_user.role not in ("ugo", "admin", "ac", "go"):
+        raise HTTPException(status_code=403, detail="Permissão insuficiente")
+
+    cmig = (
+        await db.execute(select(CMIG).where(CMIG.id == cmig_id))
+    ).scalar_one_or_none()
+    if not cmig:
+        raise HTTPException(status_code=404, detail="CMIG não encontrada")
+
+    if current_user.role == "ac":
+        allowed = await db.execute(
+            select(CMIGAdministrator.id).where(
+                CMIGAdministrator.user_id == current_user.id,
+                CMIGAdministrator.cmig_id == cmig_id,
+            )
+        )
+        if allowed.scalar_one_or_none() is None:
+            raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
+
+    accounts = (
+        await db.execute(
+            select(MarketplaceAccount).where(
+                MarketplaceAccount.cmig_id == cmig_id,
+                MarketplaceAccount.platform == "mercadolivre",
+                MarketplaceAccount.is_active == True,
+            )
+        )
+    ).scalars().all()
+
+    summary = {
+        "cmig_id": cmig_id,
+        "accounts_processed": 0,
+        "accounts_skipped": 0,
+        "listings_synced": 0,
+        "listings_errors": 0,
+        "errors": [],
+    }
+
+    # Reseta full_stock das contas da CMIG (mantemos só as linhas que reconstruirmos)
+    account_ids = [a.id for a in accounts]
+    if account_ids:
+        await db.execute(
+            update(FullStock)
+            .where(FullStock.marketplace_account_id.in_(account_ids))
+            .values(qty=0)
+        )
+
+    for account in accounts:
+        try:
+            access_token = await _ensure_token(account, db)
+        except HTTPException as exc:
+            summary["accounts_skipped"] += 1
+            summary["errors"].append({
+                "account_id": account.id,
+                "stage": "token",
+                "error": exc.detail,
+            })
+            continue
+
+        listings = (
+            await db.execute(
+                select(ProductListing).where(
+                    ProductListing.account_id == account.id,
+                    ProductListing.status == "published",
+                    ProductListing.platform_item_id.isnot(None),
+                    or_(
+                        ProductListing.logistic_type == "fulfillment",
+                        ProductListing.is_full == True,
+                    ),
+                )
+            )
+        ).scalars().all()
+
+        if not listings:
+            summary["accounts_processed"] += 1
+            continue
+
+        item_ids = [lst.platform_item_id for lst in listings if lst.platform_item_id]
+        try:
+            ml_items = await ml_service.get_items_bulk(access_token, item_ids)
+        except Exception as exc:
+            summary["accounts_skipped"] += 1
+            summary["errors"].append({
+                "account_id": account.id,
+                "stage": "ml_fetch",
+                "error": str(exc),
+            })
+            continue
+
+        ml_by_id = {it.get("id"): it for it in ml_items if it.get("id")}
+
+        # Agrega quantidade por (product_type, product_id) dentro da conta
+        agg: dict[tuple[str, int], int] = {}
+
+        for lst in listings:
+            ml_item = ml_by_id.get(lst.platform_item_id)
+            if not ml_item:
+                summary["listings_errors"] += 1
+                summary["errors"].append({
+                    "account_id": account.id,
+                    "listing_id": lst.id,
+                    "platform_item_id": lst.platform_item_id,
+                    "stage": "ml_item_missing",
+                    "error": "Item não retornou em /items (pode ter sido pausado/removido).",
+                })
+                continue
+
+            available_qty = int(ml_item.get("available_quantity") or 0)
+            lst.qty_full = available_qty
+
+            if lst.cmig_product_id:
+                key = ("cmig", lst.cmig_product_id)
+                agg[key] = agg.get(key, 0) + available_qty
+            elif lst.catalog_product_id:
+                key = ("pg", lst.catalog_product_id)
+                agg[key] = agg.get(key, 0) + available_qty
+            # listing sem produto vinculado: qty_full atualizado mas não soma em full_stock
+            summary["listings_synced"] += 1
+
+        # Upsert full_stock para essa conta
+        for (ptype, pid), qty in agg.items():
+            existing = (
+                await db.execute(
+                    select(FullStock).where(
+                        FullStock.product_type == ptype,
+                        FullStock.product_id == pid,
+                        FullStock.marketplace_account_id == account.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing:
+                existing.qty = qty
+            else:
+                db.add(
+                    FullStock(
+                        product_type=ptype,
+                        product_id=pid,
+                        marketplace_account_id=account.id,
+                        qty=qty,
+                    )
+                )
+
+        summary["accounts_processed"] += 1
+
+    await db.commit()
+    return summary
+
+
+async def _ensure_token(account, db: AsyncSession) -> str:
+    """Retorna access_token válido, fazendo refresh se necessário."""
+    from datetime import datetime, timedelta, timezone
+    from services import ml_service
+
+    now = datetime.now(timezone.utc)
+    expires = account.token_expires_at
+    if expires and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires and expires <= now:
+        if not account.refresh_token:
+            raise HTTPException(
+                status_code=401,
+                detail=f"Conta {account.id} sem refresh_token — reconecte em Integrações.",
+            )
+        try:
+            token_data = await ml_service.refresh_ml_token(account.refresh_token)
+        except HTTPException as exc:
+            if exc.status_code == 401 and "invalid_grant" in (exc.detail or "").lower():
+                account.requires_reauth = True
+                await db.commit()
+            raise
+        account.access_token = token_data["access_token"]
+        account.refresh_token = token_data.get("refresh_token", account.refresh_token)
+        account.token_expires_at = now + timedelta(seconds=token_data.get("expires_in", 21600))
+        await db.commit()
+    return account.access_token
+
+
 @router.post("/recompute-all")
 async def recompute_all_stock_endpoint(
     background_tasks: BackgroundTasks,
