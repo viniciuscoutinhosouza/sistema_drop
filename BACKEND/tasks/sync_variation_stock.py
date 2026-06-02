@@ -6,12 +6,25 @@ Sincroniza estoque por variação para anúncios ML com `variations_json` não-v
 Regras:
 - Para cada variação no JSON, lê stock do PG ou CMIG vinculado (via `_source`,
   `_catalog_product_id`, `_cmig_product_id`) e envia `available_quantity = max(stock, 0)`.
+- Estoque = stock_quantity - reserved_quantity (igual ao sync_stock padrão).
 - Variações com estoque ≤ 0 são enviadas com qty=0 (ficam "Sem estoque" na VIP,
   não vendem; voltam sozinhas quando o estoque cresce — preservam histórico).
 - Se TODAS as variações ficam com qty=0, pausa o item inteiro no ML.
 - Se o item estava pausado e alguma variação volta a ter estoque > 0, reativa.
 
-NÃO sobrescreve `available_quantity` em anúncios com `stock_mode='fixed'`.
+Skips:
+- `is_full=True`: estoque FULL gerenciado pelo ML, não tocar.
+- `stock_mode='fixed'` sem keep_stock_fixed: gerenciado por vendas, não tocar.
+- Todas as variações sem vínculo (_source/ids ausentes): listing não mapeado,
+  pula para evitar pausar itens erroneamente (conta em listings_skipped_no_source).
+
+Contadores no result_json:
+  listings_processed         – total iterado
+  listings_updated           – atualização enviada ao ML com sucesso
+  listings_paused            – pausados por total_stock=0
+  listings_reactivated       – reativados após estoque voltar
+  listings_skipped_no_source – variações sem _source/_ids → não é possível calcular estoque
+  errors                     – exceções inesperadas (token, rede, etc.)
 """
 
 import json
@@ -38,16 +51,19 @@ async def sync_all_variation_stock() -> None:
             "listings_updated": 0,
             "listings_paused": 0,
             "listings_reactivated": 0,
+            "listings_skipped_no_source": 0,
             "errors": 0,
         }
         async with task_db() as db:
             await _sync(db, stats)
         logger.info(
-            "sync_variation_stock_job: concluído (processed=%s updated=%s paused=%s reactivated=%s errors=%s)",
+            "sync_variation_stock_job: concluído (processed=%s updated=%s paused=%s "
+            "reactivated=%s skipped_no_source=%s errors=%s)",
             stats["listings_processed"],
             stats["listings_updated"],
             stats["listings_paused"],
             stats["listings_reactivated"],
+            stats["listings_skipped_no_source"],
             stats["errors"],
         )
         job_result.set(stats)
@@ -88,6 +104,24 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
             continue
 
         if not isinstance(vars_data, list) or not vars_data:
+            continue
+
+        # Pula se nenhuma variação tem vínculo de produto.
+        # Sem _source/_catalog_product_id/_cmig_product_id o estoque seria forçado para 0,
+        # o que pausaria o item erroneamente no ML.
+        has_any_linked = any(
+            (v.get("_source") == "pg" and v.get("_catalog_product_id"))
+            or (v.get("_source") == "cmig" and v.get("_cmig_product_id"))
+            for v in vars_data
+        )
+        if not has_any_linked:
+            stats["listings_skipped_no_source"] += 1
+            logger.warning(
+                "sync_variation_stock: listing_id=%s item=%s sem vínculo de produto "
+                "nas variações — vincule via painel antes de sincronizar",
+                listing.id,
+                listing.platform_item_id,
+            )
             continue
 
         try:
@@ -145,7 +179,7 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
 
             # Atualiza variations_json local refletindo os novos available_quantity
             updated_vars = []
-            for i, v in enumerate(vars_data):
+            for v in vars_data:
                 payload_match = next(
                     (p for p in ml_payload if str(p.get("id")) == str(v.get("id"))), None
                 )
@@ -172,7 +206,12 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
 async def _build_variation_stock_payload(
     db: AsyncSyncSession, vars_data: list[dict]
 ) -> tuple[list[dict], int]:
-    """Compõe a lista completa de variações para o PUT do ML (regra de ouro: enviar tudo)."""
+    """Compõe a lista completa de variações para o PUT do ML (regra de ouro: enviar tudo).
+
+    Usa stock_quantity - reserved_quantity (estoque disponível real), igual ao sync_stock.
+    Variações sem _source/_ids contribuem com 0 mas ainda são incluídas no payload
+    com available_quantity=0 (ML exige o array completo).
+    """
     payload: list[dict] = []
     total = 0
     for v in vars_data:
@@ -184,22 +223,27 @@ async def _build_variation_stock_payload(
         stock = 0
         if source == "pg" and v.get("_catalog_product_id"):
             r = await db.execute(
-                select(CatalogProduct.stock_quantity).where(
-                    CatalogProduct.id == v["_catalog_product_id"]
-                )
+                select(
+                    CatalogProduct.stock_quantity,
+                    CatalogProduct.reserved_quantity,
+                ).where(CatalogProduct.id == v["_catalog_product_id"])
             )
-            qty = r.scalar_one_or_none()
-            stock = int(qty) if qty is not None else 0
+            row = r.one_or_none()
+            if row is not None:
+                physical, reserved = row
+                stock = max(0, int(physical or 0) - int(reserved or 0))
         elif source == "cmig" and v.get("_cmig_product_id"):
             r = await db.execute(
-                select(CMIGProduct.stock_quantity).where(
-                    CMIGProduct.id == v["_cmig_product_id"]
-                )
+                select(
+                    CMIGProduct.stock_quantity,
+                    CMIGProduct.reserved_quantity,
+                ).where(CMIGProduct.id == v["_cmig_product_id"])
             )
-            qty = r.scalar_one_or_none()
-            stock = int(qty) if qty is not None else 0
+            row = r.one_or_none()
+            if row is not None:
+                physical, reserved = row
+                stock = max(0, int(physical or 0) - int(reserved or 0))
 
-        stock = max(stock, 0)
         total += stock
         payload.append({"id": ml_id, "available_quantity": stock})
 
