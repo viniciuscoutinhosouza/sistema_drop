@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-01 — fix(orders): exclusão de pedido falhava com 500 (FK Oracle não cascateava)
+
+**Pedido:** Excluir pedidos manuais 541 e 542 retornava `500 Internal Server Error`.
+
+**Causa raiz:** `_delete_order` em `routers/orders.py` só limpava `webhook_events` e chamava `db.delete(order)`. A cascade ORM `cascade="all, delete-orphan"` no `Order.items` não é confiável no `AsyncSyncSession` (não eager-load), e várias FKs apontam pra `orders` sem `ON DELETE CASCADE` no Oracle: `order_items.order_id`, `stock_movements.order_id`, `invoices.order_id`, `returns.order_id`.
+
+**Fix em `BACKEND/routers/orders.py:_delete_order`:**
+- DELETE explícito em `order_items` e `stock_movements`.
+- UPDATE setando `invoices.order_id = NULL` e `returns.order_id = NULL` (preserva NF-e e devolução, só desconecta).
+- DELETE explícito do `Order` via SQL (evita ORM cascade).
+- `WebhookEvents` só é limpo quando `platform_order_id` existe (skip para pedidos manuais).
+
+Cobre tanto `DELETE /orders/{id}` quanto `POST /orders/bulk-delete` (ambos usam `_delete_order`).
+
+---
+
 ## 2026-05-30 — feat(catalog): Fase 2 — agrupar anúncios existentes por family_name (User Products)
 
 **Pedido:** Para categorias User Products (que rejeitam o campo `variations` no POST /items), implementar o caminho oficial do ML: publicar cada cor/tamanho como anúncio individual normal e depois **agrupar** N anúncios pela mesma `family_name`. O ML renderiza eles como variações (pickers) na VIP. Refatoração validada com a doc oficial (https://global-selling.mercadolibre.com/devsite/variations-global-selling).

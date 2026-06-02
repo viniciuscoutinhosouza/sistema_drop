@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, or_, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -1497,15 +1498,34 @@ async def get_shipment_tracking(
 
 
 async def _delete_order(db: AsyncSession, order: Order):
-    """Delete an order and its items, and clear WebhookEvents so it can be re-downloaded."""
-    # Clear WebhookEvents for this order so the next sync re-downloads it
-    await db.execute(
-        sa_delete(WebhookEvent).where(
-            WebhookEvent.platform == order.platform,
-            WebhookEvent.event_id.like(f"%:{order.platform_order_id}"),
+    """Delete an order and all dependent rows, clearing WebhookEvents so marketplace
+    pedidos possam ser re-baixados na próxima sincronização.
+
+    Limpa explicitamente o que FKs Oracle não cascateiam:
+      - order_items   → DELETE (ORM cascade não é confiável no AsyncSyncSession)
+      - stock_movements → DELETE (auditoria do pedido sai junto)
+      - invoices.order_id / returns.order_id → SET NULL (preserva NF-e/devolução)
+    """
+    from models.fiscal import Invoice
+    from models.return_ import Return
+    from models.stock_movement import StockMovement
+
+    if order.platform_order_id:
+        await db.execute(
+            sa_delete(WebhookEvent).where(
+                WebhookEvent.platform == order.platform,
+                WebhookEvent.event_id.like(f"%:{order.platform_order_id}"),
+            )
         )
+    await db.execute(
+        sa_update(Invoice).where(Invoice.order_id == order.id).values(order_id=None)
     )
-    db.delete(order)
+    await db.execute(
+        sa_update(Return).where(Return.order_id == order.id).values(order_id=None)
+    )
+    await db.execute(sa_delete(StockMovement).where(StockMovement.order_id == order.id))
+    await db.execute(sa_delete(OrderItem).where(OrderItem.order_id == order.id))
+    await db.execute(sa_delete(Order).where(Order.id == order.id))
     await db.commit()
 
 
