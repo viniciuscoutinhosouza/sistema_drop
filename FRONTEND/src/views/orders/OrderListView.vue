@@ -329,8 +329,14 @@
                   <!-- Preço + disponível + frete -->
                   <div class="d-flex align-items-center" style="gap:.5rem;font-size:.78rem">
                     <strong>{{ formatCurrency(item.unit_price) }}</strong>
-                    <span v-if="item.available_quantity != null" class="text-muted">
-                      | {{ item.available_quantity }} disponíveis após esta venda
+                    <span
+                      v-if="item.available_quantity != null"
+                      class="text-muted"
+                      :title="item.is_full
+                        ? 'Disponível no Fulfillment do Mercado Livre (live)'
+                        : 'Disponível no galpão MIG: físico − reservado (live)'"
+                    >
+                      | {{ item.available_quantity }} disp. {{ item.is_full ? 'no Full' : 'no galpão' }}
                     </span>
                     <span class="text-muted">|</span>
                     <span

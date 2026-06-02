@@ -596,19 +596,22 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "net_revenue": float(listing.net_revenue) if listing.net_revenue is not None else None,
         "margin_pct": float(listing.margin_pct) if listing.margin_pct is not None else None,
         "costs_cached_at": listing.costs_cached_at.isoformat() if listing.costs_cached_at else None,
-        # Stock by type
+        # Stock by type — qty_full/qty_local são snapshots do último sync ML (cache).
+        # Para EXIBIR estoque na UI, preferir local_stock_* (live, calculados do produto vinculado).
         "qty_full": listing.qty_full or 0,
         "qty_local": listing.qty_local or 0,
-        # Seller warehouse stock (from linked product — independent of qty_full for Full items)
-        "product_stock": (
-            int(listing.cmig_product.stock_quantity or 0)
-            if listing.cmig_product
-            else (
-                int(listing.catalog_product.stock_quantity or 0)
-                if listing.catalog_product
-                else None
-            )
-        ),
+        # Seller warehouse stock (live): físico, reservado e DISPONÍVEL.
+        # Fonte da verdade: CMIGProduct/CatalogProduct vinculado.
+        **(lambda p: {
+            "local_stock_physical": int(p.stock_quantity or 0) if p else None,
+            "local_stock_reserved": int(p.reserved_quantity or 0) if p else None,
+            "local_stock_available": (
+                max(0, int(p.stock_quantity or 0) - int(p.reserved_quantity or 0))
+                if p else None
+            ),
+            # Alias legado mantido para compatibilidade com código antigo.
+            "product_stock": int(p.stock_quantity or 0) if p else None,
+        })(listing.cmig_product or listing.catalog_product),
         # Promotion fields
         "regular_price": float(listing.regular_price)
         if listing.regular_price is not None

@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-06-01 — fix(stock): Fase 0 — disponível LIVE em Anúncios e Pedidos (não mais snapshot)
+
+**Sintoma:**
+- Card de Anúncio mostrava "Local: 13 un." e "13 disp." para produto com 4 disponíveis reais (resto reservado).
+- Card de pedido mostrava "X disponíveis após esta venda" estático, não atualizando após vendas FULL.
+
+**Causa raiz:** `ProductListing.qty_local`, `qty_full` e `available_quantity` são snapshots gravados no último sync ML — não refletem estoque atual. UI lia direto deles.
+
+**Backend (`anuncios.py:_serialize_listing`):**
+- Adicionados 3 campos calculados live a partir do produto vinculado (`cmig_product` ou `catalog_product`):
+  - `local_stock_physical` = `stock_quantity`
+  - `local_stock_reserved` = `reserved_quantity`
+  - `local_stock_available` = `max(0, físico − reservado)`
+- `qty_full`/`qty_local`/`product_stock` mantidos por compat (deprecados na UI).
+
+**Backend (`orders.py`):**
+- Pré-carrega `local_stock_map[(product_type, product_id)]` em batch (`stock_quantity`, `reserved_quantity` de CatalogProduct/CMIGProduct vinculados aos listings dos itens).
+- Pré-carrega `full_stock_map[(product_type, product_id, account_id)]` em batch da tabela `full_stock`.
+- `_serialize_order_list` agora calcula `available_quantity` live por item:
+  - FULL → `FullStock.qty` da conta ML do pedido.
+  - Local → `max(0, stock - reserved)` do produto vinculado.
+  - Fallback para snapshot do listing apenas se sem vínculo de produto.
+- Novos campos no payload do item: `available_local`, `available_full`.
+
+**Frontend (`AnunciosView.vue`):**
+- Badge "X disp." passa a usar `qty_full` (FULL) ou `local_stock_available` (live, local).
+- Badges "Galpão" / "Local" mostram `X físico (Y disp.)` com tooltip detalhando físico/reservado/disp.
+- `qty_local` e `available_quantity` snapshots não são mais lidos.
+
+**Frontend (`OrderListView.vue`):**
+- "X disponíveis após esta venda" → "X disp. no Full" ou "X disp. no galpão", com tooltip explicando a fonte do cálculo.
+
+**Limitação consciente (tratada em Fase 1):**
+- FULL ainda não tem conceito de reservado — após uma venda FULL ser baixada e antes do shipping confirmar, `FullStock.qty` ainda mostra o saldo pré-venda. Fase 1 adicionará `FullStock.reserved_qty` + movement_types `full_reserve`/`full_unreserve` para resolver isso.
+
+---
+
 ## 2026-06-01 — fix(stock): listar produtos que só têm estoque FULL (sem unidade local)
 
 **Sintoma:** Após `/sync-full` gravar 4 linhas em `full_stock` para uma CMIG, a tabela de Controle de Estoque continuava vazia.

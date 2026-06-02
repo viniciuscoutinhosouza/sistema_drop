@@ -149,10 +149,14 @@ def _serialize_order_list(
     catalog_cost_map: dict | None = None,
     cmig_cost_map: dict | None = None,
     cmig_product_cost_map: dict | None = None,
+    local_stock_map: dict | None = None,
+    full_stock_map: dict | None = None,
 ) -> dict:
     catalog_cost_map = catalog_cost_map or {}
     cmig_cost_map = cmig_cost_map or {}
     cmig_product_cost_map = cmig_product_cost_map or {}
+    local_stock_map = local_stock_map or {}
+    full_stock_map = full_stock_map or {}
     items = []
     for i in o.items:
         dp = dp_map.get(i.dropshipper_product_id) if i.dropshipper_product_id else None
@@ -192,6 +196,27 @@ def _serialize_order_list(
             bool(listing.is_full) if listing is not None and not o.shipping_method else False
         )
 
+        # Estoque disponível LIVE para o card "disponíveis após esta venda".
+        # FULL → FullStock.qty da conta ML (não desconta venda — Fase 1 trará reserva FULL).
+        # Local → max(0, stock_quantity - reserved_quantity) do produto vinculado.
+        # Quando reserva local já foi aplicada (status downloaded/paid), o número já
+        # reflete o pós-venda; quando não há reserva ainda, este é o estado atual.
+        available_local = None
+        available_full = None
+        if listing is not None:
+            ptype = "cmig" if listing.cmig_product_id else (
+                "pg" if listing.catalog_product_id else None
+            )
+            pid = listing.cmig_product_id or listing.catalog_product_id
+            if ptype and pid:
+                ps, rs = local_stock_map.get((ptype, pid), (None, None))
+                if ps is not None:
+                    available_local = max(0, ps - (rs or 0))
+                if o.account_id:
+                    fq = full_stock_map.get((ptype, pid, o.account_id))
+                    if fq is not None:
+                        available_full = fq
+
         items.append(
             {
                 "id": i.id,
@@ -207,7 +232,17 @@ def _serialize_order_list(
                 "is_full": is_full,
                 "catalog_listing": bool(listing.catalog_listing) if listing else False,
                 "free_shipping": bool(listing.free_shipping) if listing else False,
-                "available_quantity": listing.available_quantity if listing else None,
+                # available_quantity LIVE: FULL usa FullStock; local usa stock - reserved.
+                # Fallback no snapshot do listing apenas se não houver vínculo de produto.
+                "available_quantity": (
+                    available_full if is_full and available_full is not None
+                    else (
+                        available_local if available_local is not None
+                        else (listing.available_quantity if listing else None)
+                    )
+                ),
+                "available_local": available_local,
+                "available_full": available_full,
             }
         )
 
@@ -614,6 +649,64 @@ async def list_orders(
         )
         cmig_product_cost_map = {cid: cost for cid, cost in cpc_result.all() if cost is not None}
 
+    # Stock map (live): (product_type, product_id) → (physical, reserved). Usado pra calcular
+    # "disponível" no card do item no lugar do snapshot cacheado em ProductListing.available_quantity.
+    local_catalog_ids = {
+        lst.catalog_product_id
+        for lst in (
+            *listing_map.values(),
+            *sku_listing_map.values(),
+            *ml_item_listing_map.values(),
+        )
+        if lst.catalog_product_id and not lst.cmig_product_id
+    }
+    local_stock_map: dict = {}
+    if cmig_product_ids:
+        sq_result = await db.execute(
+            select(
+                CMIGProduct.id,
+                CMIGProduct.stock_quantity,
+                CMIGProduct.reserved_quantity,
+            ).where(CMIGProduct.id.in_(cmig_product_ids))
+        )
+        for pid, sq, rq in sq_result.all():
+            local_stock_map[("cmig", pid)] = (int(sq or 0), int(rq or 0))
+    if local_catalog_ids:
+        sq_result = await db.execute(
+            select(
+                CatalogProduct.id,
+                CatalogProduct.stock_quantity,
+                CatalogProduct.reserved_quantity,
+            ).where(CatalogProduct.id.in_(local_catalog_ids))
+        )
+        for pid, sq, rq in sq_result.all():
+            local_stock_map[("pg", pid)] = (int(sq or 0), int(rq or 0))
+
+    # Full stock map (live): (product_type, product_id, account_id) → qty.
+    from models.full_stock import FullStock
+    full_stock_map: dict = {}
+    if (cmig_product_ids or local_catalog_ids) and account_ids_set:
+        fs_clauses = []
+        if cmig_product_ids:
+            fs_clauses.append(
+                (FullStock.product_type == "cmig") & FullStock.product_id.in_(cmig_product_ids)
+            )
+        if local_catalog_ids:
+            fs_clauses.append(
+                (FullStock.product_type == "pg") & FullStock.product_id.in_(local_catalog_ids)
+            )
+        fs_filter = fs_clauses[0] if len(fs_clauses) == 1 else or_(*fs_clauses)
+        fs_result = await db.execute(
+            select(
+                FullStock.product_type,
+                FullStock.product_id,
+                FullStock.marketplace_account_id,
+                FullStock.qty,
+            ).where(fs_filter, FullStock.marketplace_account_id.in_(account_ids_set))
+        )
+        for ptype, pid, acct, qty in fs_result.all():
+            full_stock_map[(ptype, pid, acct)] = int(qty or 0)
+
     return {
         "items": [
             _serialize_order_list(
@@ -628,6 +721,8 @@ async def list_orders(
                 catalog_cost_map,
                 cmig_cost_map,
                 cmig_product_cost_map,
+                local_stock_map,
+                full_stock_map,
             )
             for o in orders
         ],
