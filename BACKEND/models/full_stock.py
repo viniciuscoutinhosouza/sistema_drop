@@ -22,5 +22,11 @@ class FullStock(Base):
     product_type = Column(String(10), nullable=False)   # 'cmig' | 'pg'
     product_id = Column(Integer, nullable=False)
     marketplace_account_id = Column(Integer, ForeignKey("marketplace_accounts.id"), nullable=False)
-    qty = Column(Integer, default=0, nullable=False)
+    qty = Column(Integer, default=0, nullable=False)             # estoque físico FULL
+    reserved_qty = Column(Integer, default=0, nullable=False)    # vendas FULL baixadas, não shipped
     updated_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+
+    @property
+    def available_qty(self) -> int:
+        """Disponível para venda = físico - reservado (nunca < 0)."""
+        return max(0, int(self.qty or 0) - int(self.reserved_qty or 0))

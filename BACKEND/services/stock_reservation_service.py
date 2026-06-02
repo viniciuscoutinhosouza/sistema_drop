@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from models.cmig import CMIGProduct, CMIGProductVariant
+from models.full_stock import FullStock
 from models.order import Order, OrderItem
 from models.product import CatalogProduct, CatalogProductVariant
 from models.return_ import Return
@@ -84,13 +85,101 @@ async def _get_order_items(db: AsyncSession, order: Order) -> list[OrderItem]:
     return result.scalars().all()
 
 
+# ─── Reserva FULL (Fase 1) ────────────────────────────────────────────────────
+# Pedido FULL baixado: debita full_stock.reserved_qty da conta correspondente.
+# NÃO toca galpão local. Liberado quando shipped/cancelled.
+
+async def _adjust_full_reserved(
+    db: AsyncSession,
+    *,
+    product_type: str,
+    product_id: int,
+    account_id: int,
+    delta: int,
+) -> bool:
+    """Ajusta full_stock.reserved_qty. Cria linha com qty=0 se delta>0 e não existir."""
+    row = (
+        await db.execute(
+            select(FullStock).where(
+                FullStock.product_type == product_type,
+                FullStock.product_id == product_id,
+                FullStock.marketplace_account_id == account_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row:
+        row.reserved_qty = max(0, int(row.reserved_qty or 0) + delta)
+        return True
+    if delta > 0:
+        db.add(
+            FullStock(
+                product_type=product_type,
+                product_id=product_id,
+                marketplace_account_id=account_id,
+                qty=0,
+                reserved_qty=delta,
+            )
+        )
+        return True
+    return False
+
+
+async def _apply_full_reservation(
+    db: AsyncSession, order: Order, movement_type: str, sign: int
+) -> None:
+    """Loop comum pra reservar (sign=+1) ou liberar (sign=-1) FULL por pedido."""
+    if not order.account_id:
+        logger.warning("FULL %s: order %s sem account_id", movement_type, order.id)
+        return
+    items = await _get_order_items(db, order)
+    for item in items:
+        qty = item.quantity or 1
+        if item.cmig_product_id:
+            ptype, pid = "cmig", item.cmig_product_id
+        elif item.catalog_product_id:
+            ptype, pid = "pg", item.catalog_product_id
+        else:
+            continue
+        delta = sign * qty
+        ok = await _adjust_full_reserved(
+            db,
+            product_type=ptype,
+            product_id=pid,
+            account_id=order.account_id,
+            delta=delta,
+        )
+        if ok:
+            _log(
+                db,
+                product_type=ptype,
+                product_id=pid,
+                order_id=order.id,
+                movement_type=movement_type,
+                qty=qty,
+                field="full_stock_reserved",
+                delta=delta,
+            )
+
+
 # ─── Reserva ──────────────────────────────────────────────────────────────────
 
 async def reserve_stock(db: AsyncSession, order: Order) -> None:
-    """Pedido baixado (downloaded) → reserva o estoque dos produtos vinculados."""
-    if order.shipping_mode == "full":
-        return  # FULL orders não reservam galpão
+    """Pedido baixado (downloaded) → reserva o estoque dos produtos vinculados.
+
+    - shipping_mode='full': reserva full_stock.reserved_qty da conta ML.
+    - demais modos: reserva CatalogProduct/CMIGProduct.reserved_quantity local.
+    Idempotente: skip se já há movimento 'reserve' ou 'full_reserve' para o order.
+    """
     if order.status == "cancelled":
+        return
+    if order.shipping_mode == "full":
+        if await _already_has_movement(db, order.id, "full_reserve"):
+            return
+        await _apply_full_reservation(db, order, movement_type="full_reserve", sign=+1)
+        try:
+            await db.commit()
+        except Exception as exc:
+            logger.error("reserve_stock FULL order=%s: %s", order.id, exc)
         return
     if await _already_has_movement(db, order.id, "reserve"):
         return
@@ -150,9 +239,20 @@ async def reserve_stock(db: AsyncSession, order: Order) -> None:
 # ─── Liberação de reserva (cancelamento antes do despacho) ───────────────────
 
 async def release_reservation(db: AsyncSession, order: Order) -> None:
-    """Pedido cancelado ANTES de ser despachado → libera a reserva de volta ao disponível."""
+    """Pedido cancelado ANTES de ser despachado → libera a reserva.
+
+    - shipping_mode='full': libera full_stock.reserved_qty da conta ML.
+    - demais modos: libera reserved_quantity local (galpão).
+    """
     if order.shipping_mode == "full":
-        return  # FULL orders não têm reserva de galpão para liberar
+        if await _already_has_movement(db, order.id, "full_unreserve"):
+            return
+        await _apply_full_reservation(db, order, movement_type="full_unreserve", sign=-1)
+        try:
+            await db.commit()
+        except Exception as exc:
+            logger.error("release_reservation FULL order=%s: %s", order.id, exc)
+        return
     if await _already_has_movement(db, order.id, "unreserve"):
         return
 

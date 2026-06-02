@@ -524,6 +524,133 @@ async def recompute_reservations_endpoint(
     return {"ok": True, **result}
 
 
+@router.get("/snapshots")
+async def stock_snapshots(
+    product_type: str | None = Query(None, regex="^(pg|cmig)$"),
+    product_id: int | None = Query(None),
+    cmig_id: int | None = Query(None),
+    from_date: str | None = Query(None, description="YYYY-MM-DD inclusive"),
+    to_date: str | None = Query(None, description="YYYY-MM-DD inclusive"),
+    limit: int = Query(500, ge=1, le=2000),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Histórico diário de estoque (Fase 2 — trilha contábil).
+
+    Lê de `stock_snapshots`, populado por job APScheduler 02:30 UTC.
+    Filtros opcionais por produto, CMIG, e janela de datas. Permite responder
+    'qual era meu estoque em 31/12?' para fechamento contábil.
+    """
+    from datetime import date as _date
+    from models.stock_snapshot import StockSnapshot
+
+    if current_user.role not in ("ugo", "admin", "ac", "go"):
+        raise HTTPException(status_code=403, detail="Permissão insuficiente")
+
+    q = select(StockSnapshot).order_by(
+        StockSnapshot.snapshot_date.desc(), StockSnapshot.id.desc()
+    )
+
+    # AC só vê snapshots de produtos CMIG das CMIGs que administra
+    if current_user.role == "ac":
+        ac_cmig_rows = await db.execute(
+            select(CMIGAdministrator.cmig_id).where(
+                CMIGAdministrator.user_id == current_user.id
+            )
+        )
+        ac_cmig_ids = [r[0] for r in ac_cmig_rows.all()]
+        if not ac_cmig_ids:
+            return {"items": [], "count": 0}
+        q = q.where(StockSnapshot.cmig_id.in_(ac_cmig_ids))
+        q = q.where(StockSnapshot.product_type == "cmig")
+
+    if product_type:
+        q = q.where(StockSnapshot.product_type == product_type)
+    if product_id:
+        q = q.where(StockSnapshot.product_id == product_id)
+    if cmig_id is not None:
+        q = q.where(StockSnapshot.cmig_id == cmig_id)
+    if from_date:
+        try:
+            q = q.where(StockSnapshot.snapshot_date >= _date.fromisoformat(from_date))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="from_date inválido (use YYYY-MM-DD)")
+    if to_date:
+        try:
+            q = q.where(StockSnapshot.snapshot_date <= _date.fromisoformat(to_date))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="to_date inválido (use YYYY-MM-DD)")
+
+    q = q.limit(limit)
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "items": [
+            {
+                "id": s.id,
+                "snapshot_date": s.snapshot_date.isoformat() if s.snapshot_date else None,
+                "product_type": s.product_type,
+                "product_id": s.product_id,
+                "cmig_id": s.cmig_id,
+                "sku": s.sku,
+                "physical": int(s.physical or 0),
+                "reserved": int(s.reserved or 0),
+                "available": int(s.available or 0),
+                "awaiting_return": int(s.awaiting_return or 0),
+                "pending_validation": int(s.pending_validation or 0),
+                "unfit": int(s.unfit or 0),
+                "full_qty": int(s.full_qty or 0),
+                "full_reserved": int(s.full_reserved or 0),
+                "drift_detected": bool(s.drift_detected),
+                "drift_details": s.drift_details,
+            }
+            for s in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@router.get("/card/{product_type}/{product_id}")
+async def stock_card(
+    product_type: str,
+    product_id: int,
+    account_id: int | None = Query(None, description="Filtra FULL por conta ML; None agrega todas"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Card canônico LIVE de estoque para um produto.
+
+    Fonte da verdade única usada por todas as telas (Anúncios, Pedidos, Controle de
+    Estoque). Retorna físico, reservado, disponível tanto Local quanto FULL, e
+    detalhamento FULL por conta ML.
+    """
+    if product_type not in ("pg", "cmig"):
+        raise HTTPException(status_code=400, detail="product_type deve ser 'pg' ou 'cmig'")
+    if current_user.role not in ("ugo", "admin", "ac", "go"):
+        raise HTTPException(status_code=403, detail="Permissão insuficiente")
+
+    # AC só vê produtos CMIG das CMIGs que administra
+    if current_user.role == "ac":
+        if product_type == "pg":
+            raise HTTPException(status_code=403, detail="AC acessa apenas produtos CMIG")
+        cmig_row = await db.execute(
+            select(CMIGProduct.cmig_id).where(CMIGProduct.id == product_id)
+        )
+        owner_cmig_id = cmig_row.scalar_one_or_none()
+        if owner_cmig_id is None:
+            raise HTTPException(status_code=404, detail="Produto não encontrado")
+        allowed = await db.execute(
+            select(CMIGAdministrator.id).where(
+                CMIGAdministrator.user_id == current_user.id,
+                CMIGAdministrator.cmig_id == owner_cmig_id,
+            )
+        )
+        if allowed.scalar_one_or_none() is None:
+            raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
+
+    from services.stock_view import get_stock_card
+    return await get_stock_card(db, product_type, product_id, account_id=account_id)
+
+
 @router.get("/{product_type}/{product_id}/movements")
 async def product_movements(
     product_type: str,

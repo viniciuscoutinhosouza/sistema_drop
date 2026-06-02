@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-06-01 — feat(stock): Fases 1 e 2 — SSOT + reserva FULL + snapshots diários
+
+Ver [ADR-0004](docs/decisions/ADR-0004-stock-ssot-fases.md) para o panorama.
+
+**Fase 1 — SSOT canônico e reserva FULL:**
+
+Migração SQL:
+- `Scripts SQL/81_full_stock_reserved.sql` — adiciona `reserved_qty` em `full_stock` (idempotente, captura ORA-01430).
+
+Backend:
+- `models/full_stock.py` — `FullStock.reserved_qty` + property `available_qty` = `max(0, qty − reserved_qty)`.
+- `services/stock_view.py` (novo) — `get_stock_card()` retorna dict canônico (físico/reservado/disponível Local + FULL por conta); `load_full_per_account_map()` para batch sem N+1.
+- `services/stock_reservation_service.py` — `reserve_stock`/`release_reservation` deixam de fazer `return` cedo no FULL: agora debitam `full_stock.reserved_qty` da conta ML do pedido e geram movement_type `full_reserve`/`full_unreserve` (field `full_stock_reserved`).
+- `services/full_stock_service.py:apply_full_order_shipped` — ao debitar `qty` (shipped), também libera `reserved_qty` no mesmo movimento (`_adjust_full_stock(release_reserved=True)`).
+- `routers/stock.py` — endpoint `GET /stock/card/{product_type}/{product_id}?account_id=` expõe SSOT pra UI.
+- `routers/anuncios.py:_serialize_listing` — campos LIVE `full_stock_physical/reserved/available` em paralelo com `qty_full` legado; rota `GET /anuncios` pré-carrega `full_per_account_map` em batch e passa pro serializer.
+- `routers/orders.py:_serialize_order_list` — `available_quantity` por item passa a usar `qty − reserved_qty` do FullStock (não mais snapshot).
+
+Frontend:
+- `AnunciosView.vue` — badge "X disp." prioriza `full_stock_available` (live) com fallback no cache `qty_full`. Tooltip Full ML mostra físico/reservado/disponível.
+
+**Fase 2 — Trilha contábil + reconciliação diária:**
+
+Migração SQL:
+- `Scripts SQL/82_stock_snapshots.sql` — cria `stock_snapshots` com índice único por (snapshot_date, product_type, product_id) + índices por produto e CMIG (idempotente, captura ORA-00955).
+
+Backend:
+- `models/stock_snapshot.py` (novo) — modelo da trilha histórica.
+- `tasks/daily_stock_reconcile.py` (novo) — job APScheduler: (a) `recompute_reservations_from_movements` (reconciliação rápida) e (b) UPSERT em `stock_snapshots` para cada produto com saldo não-zero.
+- `tasks/scheduler.py` — registra `daily_stock_reconcile` no cron 02:30 UTC (~23:30 BRT).
+- `routers/stock.py` — endpoint `GET /stock/snapshots` com filtros por produto/CMIG/janela.
+
+**Fase 2.4 (Custo Médio Ponderado) — em standby.**
+Documentado em ADR-0004 como decisão contábil que precisa de alinhamento com contador antes de implementar (escolher entre Médio Ponderado, PEPS, UEPS; reprocessar histórico; coexistir com `cost_price` opt-in por CMIG).
+
+**Verificações:**
+- `ast.parse` em 10 arquivos Python: OK.
+- Import test (`stock_view`, `daily_stock_reconcile`, `FullStock.reserved_qty`, `StockSnapshot`): OK.
+- `npm run build`: OK (24s).
+- `pytest tests/ -m "not integration"`: 10 passed; 2 falhas pré-existentes em `test_orders.py` (mocks incompletos no conftest, idênticas antes/depois — confirmado via `git stash`).
+
+---
+
 ## 2026-06-01 — fix(stock): contagem FULL somava listings duplicados que compartilham pool no ML
 
 **Sintoma:** Após `/sync-full`, a contagem da coluna FULL estava inflada — somava o `available_quantity` de cada anúncio. Quando N MLBs apontam pro mesmo produto via catálogo/family/optin (mesmo `user_product_id`), eles compartilham UM pool de estoque no galpão do ML, mas estávamos somando N vezes.

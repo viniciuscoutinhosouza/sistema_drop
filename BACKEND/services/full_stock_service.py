@@ -57,7 +57,12 @@ async def _adjust_full_stock(
     product_id: int,
     marketplace_account_id: int,
     delta: int,
+    *,
+    release_reserved: bool = False,
 ) -> None:
+    """Ajusta full_stock.qty. Quando `release_reserved=True` e delta<0 (saída),
+    também debita reserved_qty pelo mesmo valor (caso de pedido FULL shipped:
+    a venda já estava reservada, agora vira saída física)."""
     row = (
         await db.execute(
             select(FullStock).where(
@@ -68,7 +73,9 @@ async def _adjust_full_stock(
         )
     ).scalar_one_or_none()
     if row:
-        row.qty = max(0, row.qty + delta)
+        row.qty = max(0, int(row.qty or 0) + delta)
+        if release_reserved and delta < 0:
+            row.reserved_qty = max(0, int(row.reserved_qty or 0) + delta)
     else:
         db.add(
             FullStock(
@@ -76,6 +83,7 @@ async def _adjust_full_stock(
                 product_id=product_id,
                 marketplace_account_id=marketplace_account_id,
                 qty=max(0, delta),
+                reserved_qty=0,
             )
         )
 
@@ -207,11 +215,18 @@ async def apply_full_order_shipped(db: AsyncSession, order: Order) -> None:
     items = await _get_order_items(db, order.id)
     for item in items:
         qty = item.quantity or 1
+        # release_reserved=True: ao debitar qty, também libera a reserva FULL feita
+        # quando o pedido foi baixado (movement_type full_reserve em
+        # stock_reservation_service). Mantém reserved_qty consistente.
         if item.catalog_product_id:
-            await _adjust_full_stock(db, "pg", item.catalog_product_id, account_id, -qty)
+            await _adjust_full_stock(
+                db, "pg", item.catalog_product_id, account_id, -qty, release_reserved=True
+            )
             _log(db, product_type="pg", product_id=item.catalog_product_id,
                  movement_type="full_out", qty=qty, delta=-qty, order_id=order.id)
         elif item.cmig_product_id:
-            await _adjust_full_stock(db, "cmig", item.cmig_product_id, account_id, -qty)
+            await _adjust_full_stock(
+                db, "cmig", item.cmig_product_id, account_id, -qty, release_reserved=True
+            )
             _log(db, product_type="cmig", product_id=item.cmig_product_id,
                  movement_type="full_out", qty=qty, delta=-qty, order_id=order.id)

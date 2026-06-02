@@ -111,6 +111,18 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Fase 2 — Reconciliação + snapshot diário de estoque (trilha contábil).
+    # 02:30 UTC = ~23:30 BRT (fim do dia útil contábil).
+    from tasks.daily_stock_reconcile import daily_stock_reconcile_and_snapshot
+
+    scheduler.add_job(
+        daily_stock_reconcile_and_snapshot,
+        CronTrigger(hour=2, minute=30),
+        id="daily_stock_reconcile",
+        name="Reconciliação + Snapshot Diário de Estoque",
+        replace_existing=True,
+    )
+
     scheduler.start()
     print("Background scheduler started")
 

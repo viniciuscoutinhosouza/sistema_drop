@@ -150,13 +150,13 @@ def _serialize_order_list(
     cmig_cost_map: dict | None = None,
     cmig_product_cost_map: dict | None = None,
     local_stock_map: dict | None = None,
-    full_stock_map: dict | None = None,
+    full_per_account_map: dict | None = None,
 ) -> dict:
     catalog_cost_map = catalog_cost_map or {}
     cmig_cost_map = cmig_cost_map or {}
     cmig_product_cost_map = cmig_product_cost_map or {}
     local_stock_map = local_stock_map or {}
-    full_stock_map = full_stock_map or {}
+    full_per_account_map = full_per_account_map or {}
     items = []
     for i in o.items:
         dp = dp_map.get(i.dropshipper_product_id) if i.dropshipper_product_id else None
@@ -197,10 +197,10 @@ def _serialize_order_list(
         )
 
         # Estoque disponível LIVE para o card "disponíveis após esta venda".
-        # FULL → FullStock.qty da conta ML (não desconta venda — Fase 1 trará reserva FULL).
+        # FULL → FullStock.qty - reserved_qty da conta ML (Fase 1 SSOT).
         # Local → max(0, stock_quantity - reserved_quantity) do produto vinculado.
-        # Quando reserva local já foi aplicada (status downloaded/paid), o número já
-        # reflete o pós-venda; quando não há reserva ainda, este é o estado atual.
+        # Quando reserva já foi aplicada (status downloaded/paid), o número já reflete
+        # o pós-venda; quando não há reserva ainda, este é o estado atual.
         available_local = None
         available_full = None
         if listing is not None:
@@ -213,9 +213,11 @@ def _serialize_order_list(
                 if ps is not None:
                     available_local = max(0, ps - (rs or 0))
                 if o.account_id:
-                    fq = full_stock_map.get((ptype, pid, o.account_id))
-                    if fq is not None:
-                        available_full = fq
+                    fd = full_per_account_map.get((ptype, pid), {}).get(o.account_id)
+                    if fd is not None:
+                        available_full = max(
+                            0, int(fd.get("qty", 0) or 0) - int(fd.get("reserved_qty", 0) or 0)
+                        )
 
         items.append(
             {
@@ -682,30 +684,15 @@ async def list_orders(
         for pid, sq, rq in sq_result.all():
             local_stock_map[("pg", pid)] = (int(sq or 0), int(rq or 0))
 
-    # Full stock map (live): (product_type, product_id, account_id) → qty.
-    from models.full_stock import FullStock
-    full_stock_map: dict = {}
-    if (cmig_product_ids or local_catalog_ids) and account_ids_set:
-        fs_clauses = []
-        if cmig_product_ids:
-            fs_clauses.append(
-                (FullStock.product_type == "cmig") & FullStock.product_id.in_(cmig_product_ids)
-            )
-        if local_catalog_ids:
-            fs_clauses.append(
-                (FullStock.product_type == "pg") & FullStock.product_id.in_(local_catalog_ids)
-            )
-        fs_filter = fs_clauses[0] if len(fs_clauses) == 1 else or_(*fs_clauses)
-        fs_result = await db.execute(
-            select(
-                FullStock.product_type,
-                FullStock.product_id,
-                FullStock.marketplace_account_id,
-                FullStock.qty,
-            ).where(fs_filter, FullStock.marketplace_account_id.in_(account_ids_set))
-        )
-        for ptype, pid, acct, qty in fs_result.all():
-            full_stock_map[(ptype, pid, acct)] = int(qty or 0)
+    # Full stock map (live, Fase 1): {(product_type, product_id): {account_id: {qty, reserved_qty}}}.
+    # Fonte canônica: FullStock (tabela). Disponível FULL = qty - reserved_qty.
+    from services.stock_view import load_full_per_account_map
+    full_per_account_map = await load_full_per_account_map(
+        db,
+        cmig_ids=cmig_product_ids,
+        pg_ids=local_catalog_ids,
+        account_ids=account_ids_set,
+    )
 
     return {
         "items": [
@@ -722,7 +709,7 @@ async def list_orders(
                 cmig_cost_map,
                 cmig_product_cost_map,
                 local_stock_map,
-                full_stock_map,
+                full_per_account_map,
             )
             for o in orders
         ],

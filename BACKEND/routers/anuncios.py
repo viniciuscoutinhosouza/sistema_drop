@@ -500,7 +500,17 @@ async def _create_ml_item_with_retry(access_token: str, prod, ml_form: dict) -> 
     raise HTTPException(status_code=400, detail=f"Erro ao criar anúncio ML: {resp.text}")
 
 
-def _serialize_listing(listing: ProductListing) -> dict:
+def _serialize_listing(
+    listing: ProductListing,
+    full_per_account_map: dict | None = None,
+) -> dict:
+    """Serializa um listing.
+
+    `full_per_account_map`: opcional, formato {(product_type, product_id): {account_id: {qty, reserved_qty}}}.
+    Quando fornecido, expõe campos LIVE de FULL (`full_physical_live`, `full_reserved_live`,
+    `full_available_live`); caso contrário, esses campos ficam como None (UI cai no
+    snapshot `qty_full` legado).
+    """
     cmig_product = None
     if listing.cmig_product:
         cmig_product = {
@@ -597,7 +607,7 @@ def _serialize_listing(listing: ProductListing) -> dict:
         "margin_pct": float(listing.margin_pct) if listing.margin_pct is not None else None,
         "costs_cached_at": listing.costs_cached_at.isoformat() if listing.costs_cached_at else None,
         # Stock by type — qty_full/qty_local são snapshots do último sync ML (cache).
-        # Para EXIBIR estoque na UI, preferir local_stock_* (live, calculados do produto vinculado).
+        # Para EXIBIR estoque na UI, preferir *_stock_* (live, calculados do produto vinculado).
         "qty_full": listing.qty_full or 0,
         "qty_local": listing.qty_local or 0,
         # Seller warehouse stock (live): físico, reservado e DISPONÍVEL.
@@ -612,6 +622,33 @@ def _serialize_listing(listing: ProductListing) -> dict:
             # Alias legado mantido para compatibilidade com código antigo.
             "product_stock": int(p.stock_quantity or 0) if p else None,
         })(listing.cmig_product or listing.catalog_product),
+        # FULL stock LIVE (Fase 1): físico, reservado e disponível no Fulfillment ML
+        # para a CONTA deste listing. Fonte: FullStock (canônica). None quando
+        # full_per_account_map não foi fornecido pelo caller.
+        **(lambda: (
+            (lambda d: {
+                "full_stock_physical": int(d.get("qty", 0) or 0),
+                "full_stock_reserved": int(d.get("reserved_qty", 0) or 0),
+                "full_stock_available": max(
+                    0, int(d.get("qty", 0) or 0) - int(d.get("reserved_qty", 0) or 0)
+                ),
+            })(
+                (full_per_account_map or {})
+                .get(
+                    ("cmig", listing.cmig_product_id) if listing.cmig_product_id
+                    else (("pg", listing.catalog_product_id) if listing.catalog_product_id else (None, None)),
+                    {},
+                )
+                .get(listing.account_id, {})
+            )
+            if full_per_account_map is not None
+            and (listing.cmig_product_id or listing.catalog_product_id)
+            else {
+                "full_stock_physical": None,
+                "full_stock_reserved": None,
+                "full_stock_available": None,
+            }
+        ))(),
         # Promotion fields
         "regular_price": float(listing.regular_price)
         if listing.regular_price is not None
@@ -857,9 +894,18 @@ async def list_anuncios(
         )
         imported_counts = {row[0]: row[1] for row in r2.all()}
 
+    # Pré-carrega FULL stock LIVE (Fase 1 SSOT) em batch para todos os listings da conta.
+    from services.stock_view import load_full_per_account_map
+    full_per_account_map = await load_full_per_account_map(
+        db,
+        cmig_ids=[l.cmig_product_id for l in listings if l.cmig_product_id],
+        pg_ids=[l.catalog_product_id for l in listings if l.catalog_product_id and not l.cmig_product_id],
+        account_ids=[account_id],
+    )
+
     serialized = []
     for l in listings:
-        item = _serialize_listing(l)
+        item = _serialize_listing(l, full_per_account_map=full_per_account_map)
         # Conta variações no JSON local (independente do ML)
         total_vars = 0
         if l.variations_json:
