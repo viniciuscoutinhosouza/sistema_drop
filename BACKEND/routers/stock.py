@@ -9,6 +9,7 @@ from dependencies import get_current_user, require_role
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.fiscal import Invoice
 from models.full_stock import FullStock
+from models.integration import MarketplaceAccount
 from models.product import CatalogProduct
 from models.stock_movement import StockMovement
 from models.user import User
@@ -50,6 +51,34 @@ async def stock_summary(
 
     items: list[dict] = []
 
+    # Pré-computa IDs de produtos com estoque FULL > 0 dentro do escopo da view.
+    # Necessário para incluir produtos que só vivem no Full (sem nenhuma unidade
+    # local) — sem isto eles seriam filtrados pelo WHERE de stock local abaixo.
+    full_pg_ids: set[int] = set()
+    full_cmig_ids: set[int] = set()
+    full_scope_account_ids: list[int] | None = None  # restringe full_stock por escopo
+
+    full_id_q = (
+        select(FullStock.product_type, FullStock.product_id, MarketplaceAccount.id)
+        .join(MarketplaceAccount, MarketplaceAccount.id == FullStock.marketplace_account_id)
+        .where(FullStock.qty > 0)
+    )
+    if cmig_id is not None:
+        full_id_q = full_id_q.where(MarketplaceAccount.cmig_id == cmig_id)
+    elif ac_cmig_ids:
+        full_id_q = full_id_q.where(MarketplaceAccount.cmig_id.in_(ac_cmig_ids))
+
+    full_id_rows = (await db.execute(full_id_q)).all()
+    scoped_accts: set[int] = set()
+    for r in full_id_rows:
+        scoped_accts.add(r.id)
+        if r.product_type == "pg":
+            full_pg_ids.add(r.product_id)
+        elif r.product_type == "cmig":
+            full_cmig_ids.add(r.product_id)
+    if cmig_id is not None or ac_cmig_ids:
+        full_scope_account_ids = list(scoped_accts)
+
     # ----- PG -----
     if scope in (None, "pg"):
         q_pg = select(
@@ -63,13 +92,18 @@ async def stock_summary(
             CatalogProduct.awaiting_return_quantity,
             CatalogProduct.pending_validation_quantity,
             CatalogProduct.unfit_quantity,
-        ).where(
+        )
+        local_pg_filter = (
             (CatalogProduct.stock_quantity > 0)
             | (CatalogProduct.reserved_quantity > 0)
             | (CatalogProduct.awaiting_return_quantity > 0)
             | (CatalogProduct.pending_validation_quantity > 0)
             | (CatalogProduct.unfit_quantity > 0)
         )
+        if full_pg_ids:
+            q_pg = q_pg.where(local_pg_filter | CatalogProduct.id.in_(full_pg_ids))
+        else:
+            q_pg = q_pg.where(local_pg_filter)
         if search:
             term = f"%{search}%"
             q_pg = q_pg.where(
@@ -118,14 +152,18 @@ async def stock_summary(
                 CMIGProduct.unfit_quantity,
             )
             .join(CMIG, CMIG.id == CMIGProduct.cmig_id)
-            .where(
-                (CMIGProduct.stock_quantity > 0)
-                | (CMIGProduct.reserved_quantity > 0)
-                | (CMIGProduct.awaiting_return_quantity > 0)
-                | (CMIGProduct.pending_validation_quantity > 0)
-                | (CMIGProduct.unfit_quantity > 0)
-            )
         )
+        local_cmig_filter = (
+            (CMIGProduct.stock_quantity > 0)
+            | (CMIGProduct.reserved_quantity > 0)
+            | (CMIGProduct.awaiting_return_quantity > 0)
+            | (CMIGProduct.pending_validation_quantity > 0)
+            | (CMIGProduct.unfit_quantity > 0)
+        )
+        if full_cmig_ids:
+            q_cmig = q_cmig.where(local_cmig_filter | CMIGProduct.id.in_(full_cmig_ids))
+        else:
+            q_cmig = q_cmig.where(local_cmig_filter)
         if search:
             term = f"%{search}%"
             q_cmig = q_cmig.where(
@@ -161,17 +199,24 @@ async def stock_summary(
                 "unfit": int(row.unfit_quantity or 0),
             })
 
-    # Agrupa full_stock por (product_type, product_id)
-    full_rows = (
-        await db.execute(
-            select(
-                FullStock.product_type,
-                FullStock.product_id,
-                FullStock.marketplace_account_id,
-                FullStock.qty,
+    # Agrupa full_stock por (product_type, product_id), respeitando o escopo
+    # de CMIG do usuário/filtro (evita vazar FULL de outras CMIGs).
+    full_q = select(
+        FullStock.product_type,
+        FullStock.product_id,
+        FullStock.marketplace_account_id,
+        FullStock.qty,
+    )
+    if full_scope_account_ids is not None:
+        if not full_scope_account_ids:
+            full_rows = []
+        else:
+            full_q = full_q.where(
+                FullStock.marketplace_account_id.in_(full_scope_account_ids)
             )
-        )
-    ).all()
+            full_rows = (await db.execute(full_q)).all()
+    else:
+        full_rows = (await db.execute(full_q)).all()
     full_map: dict[tuple, dict] = {}
     for fr in full_rows:
         key = (fr.product_type, fr.product_id)

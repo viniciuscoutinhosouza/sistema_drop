@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-01 — fix(stock): listar produtos que só têm estoque FULL (sem unidade local)
+
+**Sintoma:** Após `/sync-full` gravar 4 linhas em `full_stock` para uma CMIG, a tabela de Controle de Estoque continuava vazia.
+
+**Causa raiz:** `/stock/summary` filtrava apenas produtos com `stock_quantity/reserved/awaiting_return/pending_validation/unfit > 0` (estoque local). Produtos vendidos exclusivamente via Full (sem unidades no galpão) não passavam pelo WHERE — então mesmo com `full_stock.qty > 0`, eles eram filtrados ANTES do passo de agregação que preenche a coluna FULL.
+
+**Fix em `BACKEND/routers/stock.py:stock_summary`:**
+- Pré-computa `full_pg_ids` / `full_cmig_ids` (sets de IDs com `FullStock.qty > 0`) escopados por `account.cmig_id` (respeita `cmig_id`/`ac_cmig_ids`).
+- WHERE de PG/CMIG agora aceita `(filtro_local) OR id IN (ids_com_full)`.
+- Agregação de `full_rows` também passou a respeitar o escopo (`marketplace_account_id IN scoped_accts`) para não vazar FULL de outras CMIGs.
+
+---
+
 ## 2026-06-01 — feat(stock): botão "Atualizar Estoque FULL" para AC na tela de Controle de Estoque
 
 **Pedido:** Na tela de Controle de Estoque, no acesso AC, ter um botão que atualize o estoque do FULL da CMIG selecionada lendo do Mercado Livre.
