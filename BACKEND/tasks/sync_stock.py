@@ -44,6 +44,7 @@ async def sync_all_stock() -> None:
             "listings_unresolved": 0,
             "unresolved_by_reason": {},
             "errors": 0,
+            "error_details": [],  # até 20 entradas; cada uma explica o que falhou e o que fazer
         }
         async with task_db() as db:
             await _sync(db, stats)
@@ -100,6 +101,7 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
                 logger.warning(
                     "sync_stock: erro ao calcular estoque listing_id=%s: %s", listing.id, exc
                 )
+                _append_error(stats, listing, str(exc), "Verifique o vínculo do produto com este anúncio no painel")
                 continue
 
         try:
@@ -140,8 +142,27 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
                 listing.platform_item_id,
                 exc,
             )
+            _append_error(stats, listing, str(exc), "Acesse o Mercado Livre e verifique o status do anúncio")
 
     await db.commit()
+
+
+_MAX_ERROR_DETAILS = 20
+
+
+def _append_error(stats: dict, listing: ProductListing, error: str, action: str) -> None:
+    """Registra até _MAX_ERROR_DETAILS erros detalhados no result_json."""
+    details: list = stats["error_details"]
+    if len(details) >= _MAX_ERROR_DETAILS:
+        return
+    # Extrai mensagem limpa: retira traceback e prefixos técnicos longos
+    short_error = error.split("\n")[0][:300]
+    details.append({
+        "listing_id": listing.id,
+        "platform_item_id": listing.platform_item_id,
+        "error": short_error,
+        "acao": action,
+    })
 
 
 async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) -> int:
