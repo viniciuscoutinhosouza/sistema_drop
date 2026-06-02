@@ -283,7 +283,9 @@ def _build_ml_payload(
         "condition": form.get("item_condition") or "new",
     }
 
-    if use_family_name:
+    has_family_name = bool(form.get("family_name"))
+    use_fn = use_family_name or has_family_name
+    if use_fn:
         payload["family_name"] = (form.get("family_name") or title)[:60]
     else:
         payload["title"] = title
@@ -452,12 +454,28 @@ def _build_ml_payload(
 
 
 def _ml_requires_family_name(error_body: dict) -> bool:
-    """Retorna True se o erro do ML indica que family_name é obrigatório."""
-    for cause in error_body.get("cause", []):
+    """Retorna True se o erro do ML indica que family_name é obrigatório.
+
+    Detecta dois formatos que o ML usa:
+      1. cause[] com objetos contendo "family_name" no code/message.
+      2. error/message de topo indicando que "title" é inválido para a chamada
+         (ex: {"error": "The fields [title] are invalid for requested call."})
+         — significa que a categoria exige family_name em vez de title.
+    """
+    for cause in ml_service._cause_list(error_body):
         code = cause.get("code", "")
         msg = cause.get("message", "")
         if "family_name" in msg or "family_name" in code:
             return True
+
+    # ML retornou cause:[] mas o erro de topo indica que title é inválido
+    top_error = (error_body.get("error") or "").lower()
+    top_msg   = (error_body.get("message") or "").lower()
+    if "title" in top_error and "invalid" in top_error:
+        return True
+    if "title" in top_msg and "invalid" in top_msg:
+        return True
+
     return False
 
 
@@ -2388,7 +2406,6 @@ async def publish_anuncio_with_variations(
         parent_attrs_out.append({"id": "MODEL", "value_name": str(model)})
 
     # Dimensões: tira do primeiro produto carregado (todos da mesma família via variação)
-    first = loaded_list[0] if loaded_list else {}
 
     ml_payload: dict = {
         "title": title[:60],
@@ -2730,6 +2747,68 @@ def _validate_grouping_compatibility(listings: list[ProductListing]) -> None:
             )
 
 
+def _validate_brand_model_for_grouping(listings: list[ProductListing]) -> None:
+    """Valida que todos os listings têm BRAND e MODEL idênticos em attributes_json.
+
+    O ML exige esses atributos iguais para aceitar family_name entre itens.
+    Falhar aqui (422) é melhor que o ML rejeitar com erro opaco (502).
+    """
+    import json as _json
+
+    def _get_attr(listing: ProductListing, attr_id: str) -> str | None:
+        raw = listing.attributes_json
+        if not raw:
+            return None
+        try:
+            attrs = _json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return None
+        for a in attrs:
+            if (a.get("id") or "").upper() == attr_id.upper():
+                v = a.get("value_name") or a.get("value") or ""
+                return str(v).strip().lower() or None
+        return None
+
+    first = listings[0]
+    first_brand = _get_attr(first, "BRAND")
+    first_model = _get_attr(first, "MODEL")
+
+    missing_brand = [l.id for l in listings if not _get_attr(l, "BRAND")]
+    if missing_brand:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Anúncios {missing_brand} não têm o atributo BRAND (Marca). "
+                "O Mercado Livre exige Marca idêntica em todos os itens do grupo."
+            ),
+        )
+
+    brand_conflicts = [
+        l.id for l in listings if _get_attr(l, "BRAND") != first_brand
+    ]
+    if brand_conflicts:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Marcas divergem: anúncios {brand_conflicts} têm marcas diferentes de "
+                f"#{first.id} ('{first_brand}'). O ML exige a mesma marca em todos os itens do grupo."
+            ),
+        )
+
+    model_conflicts = [
+        l.id for l in listings
+        if first_model and _get_attr(l, "MODEL") != first_model
+    ]
+    if model_conflicts:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Modelos divergem: anúncios {model_conflicts} têm modelos diferentes de "
+                f"#{first.id} ('{first_model}'). O ML exige o mesmo modelo em todos os itens do grupo."
+            ),
+        )
+
+
 def _default_family_name(listings: list[ProductListing]) -> str:
     """Calcula um family_name padrão removendo a parte variável (cor, voltagem)
     e pegando o prefixo comum dos títulos."""
@@ -2745,6 +2824,46 @@ def _default_family_name(listings: list[ProductListing]) -> str:
         prefix = prefix[:i]
     prefix = prefix.strip(" -–—·,/")
     return prefix[:60] or titles[0][:60]
+
+
+async def _validate_category_supports_family_name(category_id: str) -> None:
+    """Verifica via ML API se a categoria aceita family_name (modelo User Products).
+
+    Categorias tradicionais (sem catalog_domain) usam o campo `variations` e rejeitam
+    family_name com BODY_INVALID_FIELDS. Falha silenciosa se a API ML estiver fora.
+    """
+    import httpx as _httpx
+
+    try:
+        async with _httpx.AsyncClient(timeout=8) as client:
+            resp = await client.get(f"https://api.mercadolibre.com/categories/{category_id}")
+    except Exception:
+        return  # sem conectividade: deixa tentar, o ML retornará erro claro
+
+    if resp.status_code != 200:
+        return
+
+    cat = resp.json()
+    settings = cat.get("settings") or {}
+    catalog_domain = settings.get("catalog_domain")
+
+    if not catalog_domain:
+        cat_name = cat.get("name") or category_id
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "type": "category_not_supported",
+                "message": (
+                    f"A categoria \"{cat_name}\" usa variações tradicionais — "
+                    "o Mercado Livre não aceita o campo family_name nela."
+                ),
+                "instruction": (
+                    "Para unir esses anúncios em uma única página com seletor de cor/tamanho, "
+                    "use o modo \"Criar com variações\" e crie um novo anúncio consolidado "
+                    "com todas as variações."
+                ),
+            },
+        )
 
 
 @router.post("/groups", status_code=201)
@@ -2764,6 +2883,11 @@ async def create_variation_group(
     listing_ids = body.get("listing_ids") or []
     listings = await _load_listings_for_group(listing_ids, current_user, db)
     _validate_grouping_compatibility(listings)
+    _validate_brand_model_for_grouping(listings)
+
+    category_id = listings[0].category_id or ""
+    if category_id:
+        await _validate_category_supports_family_name(category_id)
 
     family_name = (body.get("family_name") or "").strip() or _default_family_name(listings)
     family_name = family_name[:120]  # cap defensivo (ML aceita até max_title_length da categoria)
@@ -2794,8 +2918,10 @@ async def create_variation_group(
             l.variation_group_id = group_id
             l.family_name_ml = family_name
             l.last_sync_at = datetime.now(UTC)
-        except HTTPException as exc:
-            errors.append({"listing_id": l.id, "error": str(exc.detail)})
+        except Exception as exc:
+            err_msg = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+            errors.append({"listing_id": l.id, "error": err_msg})
+            logger.error("Falha ao aplicar family_name no anúncio #%s: %s", l.id, err_msg)
             # Rollback dos que já foram aplicados
             for prev in listings:
                 if prev.id == l.id:
@@ -2808,6 +2934,24 @@ async def create_variation_group(
                     pass
                 prev.variation_group_id = None
                 prev.family_name_ml = None
+            # ML rejeitou family_name → categoria não suporta User Products
+            if '"cause":374' in err_msg or "family name is invalid" in err_msg.lower():
+                cat_name = listings[0].category_name or listings[0].category_id or "desta categoria"
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "type": "category_not_supported",
+                        "message": (
+                            f"A categoria \"{cat_name}\" usa variações tradicionais — "
+                            "o Mercado Livre não aceita agrupamento por family_name nela."
+                        ),
+                        "instruction": (
+                            "Para unir esses anúncios em uma única página com seletor de cor/tamanho, "
+                            "use o modo \"Criar com variações\" e crie um novo anúncio consolidado "
+                            "com todas as variações."
+                        ),
+                    },
+                ) from exc
             raise HTTPException(
                 status_code=502,
                 detail={
@@ -3300,6 +3444,10 @@ async def update_anuncio(
         if field in body:
             setattr(listing, field, body[field])
 
+    # family_name_ml: atualiza no DB quando vier no body
+    if "family_name" in body:
+        listing.family_name_ml = body["family_name"] or None
+
     # Recalcula available_quantity de acordo com o modo de estoque
     new_mode = body.get("stock_mode", listing.stock_mode or "product")
     if new_mode == "fixed":
@@ -3393,6 +3541,9 @@ async def update_anuncio(
                 "weight_kg": body.get("weight_kg"),
                 "fiscal_json": body.get("fiscal_json") or listing.fiscal_json,
                 "cmig_crt": cmig_crt,
+                # family_name só pode ser enviado ao ML se o item já foi criado com ele;
+                # enviar para um item sem family_name causa cause:374 no PUT.
+                "family_name": body.get("family_name") if listing.family_name_ml else None,
             }
             # Se fotos não vieram no body, tenta parsear pictures_json do DB
             if not form["pictures"] and listing.pictures_json:
@@ -3700,11 +3851,11 @@ async def get_category_variation_support(
     block_reason = None
     if requires_family_name:
         block_reason = (
-            "Esta categoria está sob o modelo User Products do Mercado Livre "
-            "(catalog_domain={}). Nesse modelo, o ML exige family_name no item-pai "
-            "e não permite o campo variations no POST /items. Para publicar nesta "
-            "categoria, use a publicação padrão do Catálogo (1 produto = 1 anúncio)."
-        ).format(catalog_domain)
+            f"Esta categoria está sob o modelo User Products do Mercado Livre "
+            f"(catalog_domain={catalog_domain}). Nesse modelo, o ML exige family_name no item-pai "
+            f"e não permite o campo variations no POST /items. Para publicar nesta "
+            f"categoria, use a publicação padrão do Catálogo (1 produto = 1 anúncio)."
+        )
 
     return {
         "category_id": category_id,
@@ -4425,7 +4576,7 @@ async def switch_to_cross_docking(
     import httpx as _httpx
 
     def _has_cause_code(body: dict, code: str) -> bool:
-        return any((c or {}).get("code") == code for c in (body.get("cause") or []))
+        return any((c or {}).get("code") == code for c in ml_service._cause_list(body))
 
     headers = {"Authorization": f"Bearer {access_token}"}
     async with _httpx.AsyncClient(timeout=15.0) as client:

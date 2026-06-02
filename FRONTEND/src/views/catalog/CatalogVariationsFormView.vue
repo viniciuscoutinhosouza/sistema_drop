@@ -92,7 +92,7 @@
                 <thead class="thead-light">
                   <tr>
                     <th style="width:60px">Foto</th>
-                    <th>Título</th>
+                    <th>Título / SKU / Modelo</th>
                     <th style="width:120px">MLB</th>
                     <th style="width:80px">Estoque</th>
                     <th style="width:100px">Preço</th>
@@ -106,9 +106,17 @@
                     <td>
                       <img v-if="l.thumbnail" :src="l.thumbnail" style="width:40px;height:40px;object-fit:cover;border-radius:3px" />
                     </td>
-                    <td>{{ l.title_override }}</td>
+                    <td>
+                      <div>{{ l.title_override }}</div>
+                      <div class="text-muted mt-1" style="font-size:11px;line-height:1.4">
+                        <span v-if="getListingSku(l)"><strong>SKU:</strong> {{ getListingSku(l) }}</span>
+                        <span v-if="getListingSku(l) && getListingAttr(l, 'MODEL')" class="mx-1">·</span>
+                        <span v-if="getListingAttr(l, 'MODEL')"><strong>Modelo:</strong> {{ getListingAttr(l, 'MODEL') }}</span>
+                        <span v-if="!getListingSku(l) && !getListingAttr(l, 'MODEL')" class="text-danger">sem SKU / sem Modelo</span>
+                      </div>
+                    </td>
                     <td><code>{{ l.platform_item_id }}</code></td>
-                    <td class="text-right">{{ l.available_quantity }}</td>
+                    <td class="text-right">{{ getListingStock(l) }}</td>
                     <td class="text-right">{{ formatCurrency(l.sale_price) }}</td>
                     <td class="text-truncate" :title="l.category_name">{{ l.category_name || l.category_id }}</td>
                     <td>
@@ -143,7 +151,17 @@
                 atributos divergentes (cor/tamanho/voltagem).
               </div>
 
-              <div v-if="groupError" class="alert alert-danger py-2 mt-2 small">{{ groupError }}</div>
+              <div v-if="groupCategoryInfo" class="alert alert-info mt-2 small">
+                <p class="mb-1"><i class="fas fa-info-circle mr-1"></i><strong>{{ groupCategoryInfo.message }}</strong></p>
+                <p class="mb-0">{{ groupCategoryInfo.instruction }}</p>
+              </div>
+
+              <div v-if="groupError" class="alert alert-danger py-2 mt-2 small">
+                <div>{{ groupErrorMain }}</div>
+                <ul v-if="groupErrorDetails.length" class="mb-0 mt-1 pl-3">
+                  <li v-for="(d, i) in groupErrorDetails" :key="i" class="text-monospace" style="word-break:break-all">{{ d }}</li>
+                </ul>
+              </div>
               <div v-if="groupSuccess" class="alert alert-success py-2 mt-2 small">
                 <i class="fas fa-check-circle mr-1"></i>{{ groupSuccess }}
               </div>
@@ -388,13 +406,15 @@
               <i class="fas fa-spinner fa-spin mr-1"></i>Verificando suporte a variações...
             </div>
             <div v-else-if="form.category_id && catSupport && catSupport.requires_family_name"
-                 class="alert alert-danger py-2">
-              <i class="fas fa-exclamation-triangle mr-1"></i>
-              Esta categoria está sob o <strong>modelo User Products</strong> do Mercado Livre
-              (<code>{{ catSupport.catalog_domain }}</code>). Nesse modelo o ML exige o campo
-              <code>family_name</code> no item-pai e <strong>não permite variações via API de itens</strong>.
-              Use a publicação padrão do Catálogo (1 produto = 1 anúncio) ou publique como
-              anúncio de catálogo associado a um <code>catalog_product_id</code>.
+                 class="alert alert-info py-2">
+              <i class="fas fa-info-circle mr-1"></i>
+              <strong>Esta categoria usa o modelo User Products do Mercado Livre.</strong>
+              Nele, cada variação (cor, tamanho, voltagem) é um anúncio separado — não existe um
+              único anúncio com array de variações. Para exibir os anúncios como seletores na VIP:
+              <ol class="mb-0 mt-1 pl-3">
+                <li>Publique cada variação individualmente pelo Catálogo (fluxo normal de publicação).</li>
+                <li>Depois use <strong>"Agrupar anúncios existentes"</strong> para vincular todos pelo mesmo nome de família.</li>
+              </ol>
             </div>
             <div v-else-if="form.category_id && catSupport && !catSupport.supports_variations"
                  class="alert alert-danger py-2">
@@ -615,7 +635,10 @@ const loadingAds = ref(false)
 const adsPickerOpen = ref(false)
 const adsSearch = ref('')
 const groupSaving = ref(false)
-const groupError = ref('')
+const groupError = ref(false)
+const groupErrorMain = ref('')
+const groupErrorDetails = ref([])
+const groupCategoryInfo = ref(null)   // { message, instruction } quando categoria não suporta family_name
 const groupSuccess = ref('')
 
 const suggestedFamilyName = computed(() => {
@@ -696,11 +719,41 @@ function removeFromGroup(idx) {
   group.selected.splice(idx, 1)
 }
 
+function getListingAttr(listing, attrId) {
+  if (!listing.attributes_json) return ''
+  try {
+    const attrs = typeof listing.attributes_json === 'string'
+      ? JSON.parse(listing.attributes_json)
+      : listing.attributes_json
+    const found = attrs.find(a => (a.id || '').toUpperCase() === attrId.toUpperCase())
+    return found?.value_name || found?.value || ''
+  } catch {
+    return ''
+  }
+}
+
+function getListingSku(listing) {
+  // Prefere o campo direto; fallback para SELLER_SKU em attributes_json
+  return listing.sku || getListingAttr(listing, 'SELLER_SKU')
+}
+
+function getListingStock(listing) {
+  // Usa estoque live (calculado do produto vinculado); fallback para cache ML
+  if (listing.is_full) {
+    return listing.full_stock_available ?? listing.available_quantity ?? 0
+  }
+  return listing.local_stock_available ?? listing.available_quantity ?? 0
+}
+
 async function submitGroup() {
-  groupError.value = ''
+  groupError.value = false
+  groupErrorMain.value = ''
+  groupErrorDetails.value = []
+  groupCategoryInfo.value = null
   groupSuccess.value = ''
   if (groupValidationError.value) {
-    groupError.value = groupValidationError.value
+    groupErrorMain.value = groupValidationError.value
+    groupError.value = true
     return
   }
   groupSaving.value = true
@@ -714,7 +767,16 @@ async function submitGroup() {
     setTimeout(() => router.push('/catalog'), 1800)
   } catch (e) {
     const det = e.response?.data?.detail
-    groupError.value = typeof det === 'string' ? det : (det?.message || 'Erro ao criar grupo.')
+    if (det?.type === 'category_not_supported') {
+      groupCategoryInfo.value = { message: det.message, instruction: det.instruction }
+    } else if (det?.ml_errors?.length) {
+      groupErrorMain.value = det.message
+      groupErrorDetails.value = det.ml_errors.map(err => `#${err.listing_id}: ${err.error}`)
+      groupError.value = true
+    } else {
+      groupErrorMain.value = typeof det === 'string' ? det : (det?.message || 'Erro ao criar grupo.')
+      groupError.value = true
+    }
   } finally {
     groupSaving.value = false
   }

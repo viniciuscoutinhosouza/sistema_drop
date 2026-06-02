@@ -323,6 +323,20 @@
             <small class="text-muted">{{ form.title.length }}/60 caracteres</small>
           </div>
 
+          <!-- Nome da Família (User Products) — só aparece quando a categoria exige -->
+          <div v-if="catSupport && catSupport.requires_family_name" class="form-group">
+            <label class="font-weight-bold">
+              Nome da Família <span class="text-danger">*</span>
+              <span class="badge badge-info ml-1" style="font-size:10px">User Products</span>
+            </label>
+            <input v-model="form.family_name" type="text" class="form-control" maxlength="60"
+                   :placeholder="form.title || 'Ex: Rolo Massagem Foam Roller 30cm'" />
+            <small class="text-muted">
+              Todos os anúncios do mesmo grupo devem ter <strong>exatamente o mesmo nome</strong>.
+              O ML usa este campo para exibir os anúncios como seletores de variação (cor, tamanho) na VIP.
+            </small>
+          </div>
+
           <!-- Modelo -->
           <div class="form-group">
             <label class="font-weight-bold">Modelo</label>
@@ -631,6 +645,7 @@ const modal = reactive({
 
 const form = reactive({
   title:            '',
+  family_name:      '',
   pictures:         [],
   sale_price:       '',
   listing_type:     'gold_special',
@@ -645,10 +660,23 @@ const form = reactive({
   weight_kg:        '',
 })
 
+// Suporte a variações da categoria selecionada (carregado ao trocar de categoria)
+const catSupport = ref(null)
+
 // ── Categoria + atributos (gerenciado por PublishCategoryPicker) ──────────────
 const categorySel = ref({
   pmc_id: null, category_id: '', category_name: '',
   category_path_json: null, isNew: false, attributes: [],
+})
+
+watch(() => categorySel.value.category_id, async (catId) => {
+  catSupport.value = null
+  form.family_name = ''
+  if (!catId) return
+  try {
+    const { data } = await api.get(`/anuncios/categories/${catId}/variation-support`)
+    catSupport.value = data
+  } catch { /* silencioso — campo não aparece sem suporte confirmado */ }
 })
 
 // platform vem como 'mercadolivre' / 'shopee'; o backend espera 'mercado_livre' / 'shopee'
@@ -787,6 +815,7 @@ async function publishAnuncio() {
         ? { cmig_product_id: modal.cmigProductId }
         : { catalog_product_id: modal.product.id }),
       title_override:     form.title.trim(),
+      family_name:        form.family_name.trim() || null,
       category_id:        categorySel.value.category_id,
       sale_price:         Number(form.sale_price),
       pictures:           form.pictures,

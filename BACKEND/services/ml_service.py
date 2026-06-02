@@ -22,6 +22,13 @@ ML_AUTH_URL = "https://auth.mercadolivre.com.br/authorization"
 ML_TOKEN_URL = f"{ML_API_BASE}/oauth/token"
 
 
+def _cause_list(body: dict) -> list:
+    """ML returns 'cause' as a list of objects OR a bare int (error code like 374).
+    Always returns a list so callers can safely iterate."""
+    c = body.get("cause") if isinstance(body, dict) else None
+    return c if isinstance(c, list) else []
+
+
 class UserProductRepeatedError(Exception):
     """ML rejeitou o PUT porque o item resultante duplicaria outro User Product
     (mesmo name + catalog_product_id + attributes + thumbnail) na conta do seller.
@@ -693,9 +700,8 @@ async def update_item_stock(access_token: str, item_id: str, quantity: int) -> s
         if resp.status_code == 400:
             try:
                 body = resp.json()
-                cause = body.get("cause") or []
                 if any(
-                    (c or {}).get("code") == "item.available_quantity.not_modifiable" for c in cause
+                    (c or {}).get("code") == "item.available_quantity.not_modifiable" for c in _cause_list(body)
                 ):
                     is_not_modifiable = True
             except Exception:
@@ -811,6 +817,10 @@ async def set_item_family_name(
             json=payload,
         )
     if resp.status_code not in (200, 201):
+        logger.error(
+            "set_item_family_name falhou: item=%s status=%s body=%s",
+            item_id, resp.status_code, resp.text,
+        )
         raise HTTPException(
             status_code=400,
             detail=f"Erro ao definir family_name do item {item_id}: {resp.text}",
@@ -1305,7 +1315,7 @@ def _extract_user_product_conflict(body: dict) -> str | None:
     """
     if not isinstance(body, dict):
         return None
-    for cause in body.get("cause") or []:
+    for cause in _cause_list(body):
         if (cause or {}).get("code") == "item.user_product.repeated.conflict":
             msg = cause.get("message") or body.get("message") or ""
             for token in str(msg).split():
@@ -1421,8 +1431,11 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
                 raise UserProductRepeatedError(up_id, raw=resp.text)
 
             # Extrai campos imutáveis citados em causes[*].references
+            # ML pode retornar "cause" como int (ex: 374) ou como lista de objetos
+            causes = body.get("cause")
+            cause_list = causes if isinstance(causes, list) else []
             to_drop: list[str] = []
-            for cause in body.get("cause") or []:
+            for cause in cause_list:
                 if (cause or {}).get("code") == "field_not_updatable":
                     for ref in cause.get("references") or []:
                         # references vêm como "pictures" ou "item.catalog_listing" — usamos a 1ª chave
@@ -1432,9 +1445,23 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
 
             to_drop = list(dict.fromkeys(to_drop))  # dedup preservando ordem
             if not to_drop:
+                # cause:374 / "family name is invalid" — item foi criado sem family_name;
+                # o ML não permite adicioná-lo depois via PUT.
+                raw = resp.text
+                if (
+                    isinstance(body.get("cause"), int) and body.get("cause") == 374
+                    or "family name is invalid" in raw.lower()
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "O campo family_name não pode ser adicionado a um anúncio já publicado sem ele. "
+                            "Para usar family_name, feche este anúncio e republique-o com o campo preenchido."
+                        ),
+                    )
                 # 400 não relacionado a field_not_updatable — propaga
                 raise HTTPException(
-                    status_code=400, detail=f"Erro ao atualizar anúncio ML: {resp.text}"
+                    status_code=400, detail=f"Erro ao atualizar anúncio ML: {raw}"
                 )
 
             for k in to_drop:
@@ -1480,9 +1507,7 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
     qty = max(quantity, 1)
 
     def _has_cause(body: dict, code: str) -> bool:
-        return any(
-            (c or {}).get("code") == code for c in (body.get("cause") or [])
-        )
+        return any((c or {}).get("code") == code for c in _cause_list(body))
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.put(

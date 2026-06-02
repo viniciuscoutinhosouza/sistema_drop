@@ -680,6 +680,20 @@
                   <i class="fas fa-info-circle mr-1"></i>
                   Selecione um produto na Aba 1 para escolher a categoria.
                 </div>
+
+                <!-- Nome da Família — só aparece em categorias User Products -->
+                <div v-if="wizardCatSupport && wizardCatSupport.requires_family_name" class="form-group mt-3">
+                  <label class="font-weight-bold">
+                    Nome da Família <span class="text-danger">*</span>
+                    <span class="badge badge-info ml-1" style="font-size:10px">User Products</span>
+                  </label>
+                  <input v-model="wf.family_name" type="text" class="form-control" maxlength="60"
+                         :placeholder="wf.title_override || 'Ex: Rolo Massagem Foam Roller 30cm'" />
+                  <small class="text-muted">
+                    Todos os anúncios do mesmo grupo devem ter <strong>exatamente o mesmo nome</strong>.
+                    O ML usa este campo para exibir as variações (cor, tamanho) como seletores na VIP.
+                  </small>
+                </div>
               </div>
 
               <!-- ABA 4 — Fotos -->
@@ -1694,7 +1708,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import { shippingModeStyle as smStyle } from '@/utils/constants'
@@ -1803,6 +1817,7 @@ function defaultWizardForm() {
     product_id: null,
     selectedProduct: null,
     title_override: '',
+    family_name: '',
     sale_price: null,
     listing_type: 'gold_special',
     available_quantity: 1,
@@ -1925,12 +1940,25 @@ const wizardCategorySel = ref({
 // initialValue para o picker no modo edição (preenchido em openWizard com listing)
 const wizardCategoryInitialValue = ref(null)
 
+// Suporte a variações/family_name da categoria selecionada no wizard
+const wizardCatSupport = ref(null)
+
+watch(() => wizardCategorySel.value.category_id, async (catId) => {
+  wizardCatSupport.value = null
+  if (!catId) return
+  try {
+    const { data } = await api.get(`/anuncios/categories/${catId}/variation-support`)
+    wizardCatSupport.value = data
+  } catch { /* silencioso */ }
+})
+
 function resetWizardCategorySel() {
   wizardCategorySel.value = {
     pmc_id: null, category_id: '', category_name: '',
     category_path_json: null, isNew: false, attributes: [],
   }
   wizardCategoryInitialValue.value = null
+  wizardCatSupport.value = null
 }
 
 // Badge do logistic_type do listing em edição — reusa a mesma função da listagem
@@ -2026,6 +2054,7 @@ async function openWizard(listing) {
   if (listing) {
     // Pre-fill from existing listing
     wf.value.title_override = listing.title_override || ''
+    wf.value.family_name    = listing.family_name_ml || ''
     wf.value.sale_price = listing.sale_price
     wf.value.listing_type = listing.listing_type || 'gold_special'
     wf.value.available_quantity = listing.available_quantity || 1
@@ -2136,6 +2165,7 @@ async function saveWizard() {
     const payload = {
       account_id: selectedAccountId.value,
       title_override: wf.value.title_override,
+      family_name: wf.value.family_name.trim() || null,
       sale_price: parseFloat(wf.value.sale_price),
       listing_type: wf.value.listing_type,
       stock_mode:       wf.value.stock_mode,
