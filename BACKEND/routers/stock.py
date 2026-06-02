@@ -304,6 +304,8 @@ async def sync_full_stock_for_cmig(
         "accounts_skipped": 0,
         "listings_synced": 0,
         "listings_errors": 0,
+        "unique_pools": 0,        # N pools de estoque distintos no ML
+        "duplicate_listings": 0,  # listings que compartilham pool (não somam de novo)
         "errors": [],
     }
 
@@ -360,8 +362,13 @@ async def sync_full_stock_for_cmig(
 
         ml_by_id = {it.get("id"): it for it in ml_items if it.get("id")}
 
-        # Agrega quantidade por (product_type, product_id) dentro da conta
-        agg: dict[tuple[str, int], int] = {}
+        # Deduplica por pool de estoque do ML:
+        #   - listings com mesmo `user_product_id` compartilham o MESMO pool no galpão
+        #     ML (catálogo, family/optin) — devem ser contados UMA vez por pool.
+        #   - listings sem `user_product_id` (não-catálogo) são pools independentes,
+        #     cada MLB é seu próprio pool → chave fallback é o platform_item_id.
+        # seen_pools mapeia (product_type, product_id, pool_key) → qty
+        seen_pools: dict[tuple[str, int, str], int] = {}
 
         for lst in listings:
             ml_item = ml_by_id.get(lst.platform_item_id)
@@ -377,16 +384,35 @@ async def sync_full_stock_for_cmig(
                 continue
 
             available_qty = int(ml_item.get("available_quantity") or 0)
+            user_product_id = ml_item.get("user_product_id")
+            pool_key = (
+                f"UP:{user_product_id}" if user_product_id
+                else f"MLB:{lst.platform_item_id}"
+            )
+
             lst.qty_full = available_qty
 
             if lst.cmig_product_id:
-                key = ("cmig", lst.cmig_product_id)
-                agg[key] = agg.get(key, 0) + available_qty
+                ptype, pid = "cmig", lst.cmig_product_id
             elif lst.catalog_product_id:
-                key = ("pg", lst.catalog_product_id)
-                agg[key] = agg.get(key, 0) + available_qty
-            # listing sem produto vinculado: qty_full atualizado mas não soma em full_stock
+                ptype, pid = "pg", lst.catalog_product_id
+            else:
+                # listing sem produto vinculado: qty_full atualizado mas sem agregar
+                summary["listings_synced"] += 1
+                continue
+
+            k = (ptype, pid, pool_key)
+            if k in seen_pools:
+                summary["duplicate_listings"] += 1
+            else:
+                seen_pools[k] = available_qty
             summary["listings_synced"] += 1
+
+        # Soma pools únicos por (product_type, product_id) dentro da conta
+        agg: dict[tuple[str, int], int] = {}
+        for (ptype, pid, _pool_key), qty in seen_pools.items():
+            agg[(ptype, pid)] = agg.get((ptype, pid), 0) + qty
+        summary["unique_pools"] += len(seen_pools)
 
         # Upsert full_stock para essa conta
         for (ptype, pid), qty in agg.items():

@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-01 — fix(stock): contagem FULL somava listings duplicados que compartilham pool no ML
+
+**Sintoma:** Após `/sync-full`, a contagem da coluna FULL estava inflada — somava o `available_quantity` de cada anúncio. Quando N MLBs apontam pro mesmo produto via catálogo/family/optin (mesmo `user_product_id`), eles compartilham UM pool de estoque no galpão do ML, mas estávamos somando N vezes.
+
+**Fix em `BACKEND/routers/stock.py:sync_full_stock_for_cmig`:**
+- `services/ml_service.py:get_items_bulk`: passou a incluir `user_product_id` nos attributes.
+- Substituído `agg[key] += available_qty` por dedupe via `seen_pools[(ptype, pid, pool_key)] = qty`, onde `pool_key = "UP:{user_product_id}"` quando existe ou `"MLB:{platform_item_id}"` caso contrário.
+- Listings com o mesmo `user_product_id` somam **uma única vez** ao `full_stock`; anúncios não-catálogo (sem `user_product_id`) continuam como pools independentes (correto — cada MLB é um pool próprio).
+- Resposta agora retorna `unique_pools` e `duplicate_listings` para diagnóstico.
+- Frontend: toast agora mostra "N pool(s) de estoque distintos" e quantos anúncios compartilham pool.
+
+---
+
 ## 2026-06-01 — fix(stock): Fase 0 — disponível LIVE em Anúncios e Pedidos (não mais snapshot)
 
 **Sintoma:**

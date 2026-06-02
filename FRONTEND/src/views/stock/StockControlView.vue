@@ -306,9 +306,12 @@ async function syncFullStock() {
   try {
     const { data } = await api.post(`/stock/cmig/${cmigId.value}/sync-full`)
     const synced = data.listings_synced || 0
+    const pools = data.unique_pools || 0
+    const dups = data.duplicate_listings || 0
     const errs = (data.errors || []).length
     const accts = data.accounts_processed || 0
-    let msg = `${synced} anúncio(s) FULL atualizado(s) em ${accts} conta(s).`
+    let msg = `${synced} anúncio(s) FULL em ${accts} conta(s) → ${pools} pool(s) de estoque distintos.`
+    if (dups > 0) msg += ` ${dups} anúncio(s) compartilham pool (não somados de novo).`
     if (errs > 0) msg += ` ${errs} erro(s) — veja o console para detalhes.`
     if (errs > 0) {
       console.warn('[sync-full] erros:', data.errors)

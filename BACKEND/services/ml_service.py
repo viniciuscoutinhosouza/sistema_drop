@@ -962,7 +962,7 @@ async def get_items_bulk(access_token: str, item_ids: list[str]) -> list[dict]:
             resp = await client.get(
                 f"{ML_API_BASE}/items",
                 headers={"Authorization": f"Bearer {access_token}"},
-                params={"ids": ",".join(chunk), "attributes": "id,title,price,available_quantity,sold_quantity,status,listing_type_id,category_id,thumbnail,permalink,seller_sku,shipping,pictures,attributes,catalog_product_id,catalog_listing,item_condition,variations"},
+                params={"ids": ",".join(chunk), "attributes": "id,title,price,available_quantity,sold_quantity,status,listing_type_id,category_id,thumbnail,permalink,seller_sku,shipping,pictures,attributes,catalog_product_id,catalog_listing,item_condition,variations,user_product_id"},
             )
             if resp.status_code != 200:
                 continue
