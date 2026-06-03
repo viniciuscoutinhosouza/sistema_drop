@@ -133,7 +133,6 @@
                   <tr>
                     <th style="width:60px">Foto</th>
                     <th>Produto</th>
-                    <th style="width:110px">SKU</th>
                     <th style="width:170px">Atributos da categoria</th>
                     <th style="width:120px">Diferenciador</th>
                     <th style="width:110px">Preço (R$)</th>
@@ -153,9 +152,13 @@
                            style="width:40px;height:40px;object-fit:cover;border-radius:3px" />
                     </td>
                     <td>
-                      <div class="text-truncate" style="max-width:240px" :title="p._title">{{ p._title }}</div>
+                      <div class="text-truncate" style="max-width:260px" :title="p._title">{{ p._title }}</div>
+                      <div class="text-muted" style="font-size:11px;line-height:1.4">
+                        <span><strong>SKU:</strong> <code>{{ p._sku || '—' }}</code></span>
+                        <span class="mx-1">·</span>
+                        <span><strong>Estoque:</strong> {{ p._stock ?? 0 }}</span>
+                      </div>
                     </td>
-                    <td><code class="small">{{ p._sku }}</code></td>
                     <td>
                       <template v-if="!form.category_id">
                         <span class="text-muted small">Selecione a categoria acima</span>
@@ -441,6 +444,7 @@ async function hydrateProducts() {
       _title: p.title,
       _sku: isPg ? p.sku : p.sku_cmig,
       _thumb: isPg ? p.image_url : (p.images?.[0]?.url || p.thumbnail || null),
+      _stock: p.stock_quantity ?? 0,
       _product_images: [],
     }
 
@@ -457,6 +461,8 @@ async function hydrateProducts() {
       // Sugestão de preço inicial
       if (data.suggested_price) baseFields.sale_price = Number(data.suggested_price)
       else if (data.cost_price) baseFields.sale_price = Number(data.cost_price)
+      // Atualiza estoque com o valor mais fresco do endpoint detalhado
+      if (data.stock_quantity != null) baseFields._stock = data.stock_quantity
     } catch { /* segue com o que tinha */ }
 
     hydrated.push(baseFields)
