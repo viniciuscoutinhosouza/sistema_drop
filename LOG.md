@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-06-02 — fix(anuncios): MLB198238 (e similares) deixavam de aceitar variações
+
+**Problema:** ao tentar publicar anúncio com variações em MLB198238 (Foam Roller), os dois modos do wizard travavam com mensagens contraditórias — "Criar com Variações" alegava "categoria User Products" e "Agrupar anúncios existentes" alegava "categoria usa variações tradicionais". A categoria de fato aceita o array `variations` (atributo `attribute_types: "variations"` + `COLOR` com tag `allow_variations`), mas a heurística `requires_family_name = bool(catalog_domain) and has_catalog_required_attr` em `get_category_variation_support` ([routers/anuncios.py:3685](BACKEND/routers/anuncios.py#L3685)) marcava qualquer categoria com catálogo + atributos `catalog_required` como User Products only.
+
+**Fix:** endurecer a detecção para só marcar `requires_family_name=true` quando NÃO houver sinais de variação tradicional:
+```python
+requires_family_name = (
+    bool(catalog_domain)
+    and has_catalog_required_attr
+    and not supports_via_setting     # attribute_types != "variations"
+    and not has_allow_variations_attr  # sem atributos com tag allow_variations
+)
+```
+Reordenado o cálculo de `has_allow_variations_attr` e `supports_via_setting` para acima de `requires_family_name`.
+
+**Efeito:** MLB198238 e categorias similares (catálogo presente mas variações tradicionais aceitas) voltam a permitir publicação via `POST /anuncios/publish-with-variations`. Categorias puramente User Products (sem `allow_variations` nem `attribute_types: variations`) continuam bloqueadas corretamente.
+
+---
+
 ## 2026-06-01 — feat(stock): Fases 1 e 2 — SSOT + reserva FULL + snapshots diários
 
 Ver [ADR-0004](docs/decisions/ADR-0004-stock-ssot-fases.md) para o panorama.
