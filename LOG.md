@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-02 — fix(anuncios): remove interpretação enganosa de cause 374 no agrupamento
+
+**Contexto:** ao tentar agrupar os 6 anúncios MLB198238 (Foam Roller), o backend respondia "A categoria usa variações tradicionais — não aceita agrupamento por family_name", o que está errado: diagnóstico via API ML revelou que MLB198238 É User Products, os 6 anúncios já estavam agrupados via `family_id=6875168885521809`, e o motivo real da falha era que todos estão `status=closed` + `sub_status=deleted` no ML (DB local out-of-sync) — não permitem mais alteração de `family_name`.
+
+A mensagem enganosa vinha de duas heurísticas frágeis em `routers/anuncios.py`:
+
+1. **`_validate_category_supports_family_name`** (pré-flight): assumia que categoria sem `catalog_domain` ⇒ "tradicional rejeita family_name". Não é verdade — sem testar não dá pra saber.
+2. **Catch de `'"cause":374' in err_msg` no rollback de `create_variation_group`**: assumia que cause 374 do ML em `set_item_family_name` ⇒ "categoria tradicional". Mas cause 374 também acontece com item fechado/deletado, BRAND/MODEL divergentes, etc.
+
+**Fix:**
+
+- Removida a função `_validate_category_supports_family_name` e a chamada em `create_variation_group`.
+- Removido o branch que reescrevia o erro do ML como `type: "category_not_supported"`.
+- Agora os erros do ML por listing sobem direto para `ml_errors[]` e a UI mostra o motivo real (frontend já tem o tratamento via `groupErrorDetails`).
+
+**Efeito:** quando o agrupamento falhar, o usuário vê o erro específico por anúncio (ex.: "available_quantity is not modifiable ... status:closed") em vez da mensagem genérica e errada sobre "categoria tradicional".
+
+**Próximos passos sugeridos (não feitos aqui):**
+
+- Sincronizar status dos 6 listings MLB198238 — DB diz `published` mas ML diz `closed/deleted` (impacta estoque/relatórios).
+- Avaliar implementação de fluxo de publicação 1-a-1 para categorias User Products no wizard de variações.
+
+---
+
 ## 2026-06-02 — revert(anuncios): heurística de requires_family_name volta ao original
 
 **Contexto:** o fix anterior (commit `c97e54c`) afrouxou `requires_family_name` para excluir categorias com `attribute_types: "variations"` e atributos `allow_variations`. A teoria era que esses sinais indicavam suporte a variações tradicionais. **Validação em produção provou o contrário:** MLB198238 (Foam Roller) tem ambos os sinais, mas o ML rejeitou o POST `/items` com:
