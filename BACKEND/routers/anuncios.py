@@ -718,6 +718,17 @@ async def _get_valid_token(account: MarketplaceAccount, db: AsyncSession) -> str
             if exc.status_code == 401 and "invalid_grant" in (exc.detail or "").lower():
                 account.requires_reauth = True
                 await db.commit()
+                acc_label = account.description or account.platform_username or f"conta #{account.id}"
+                # Mantém a substring "invalid_grant" no detail (outros callers usam
+                # essa string como sinal — ex: stock.py).
+                raise HTTPException(
+                    status_code=401,
+                    detail=(
+                        f"A conta do Mercado Livre \"{acc_label}\" perdeu a autorização "
+                        "(invalid_grant). Vá em Integrações e reconecte a conta antes de "
+                        "publicar ou modificar anúncios."
+                    ),
+                ) from exc
             raise
         account.access_token = token_data["access_token"]
         account.refresh_token = token_data.get("refresh_token", account.refresh_token)
