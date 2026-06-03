@@ -3304,6 +3304,9 @@ async def publish_anuncio(
             "sku": body.get("sku"),
             "fiscal_json": body.get("fiscal_json"),
             "cmig_crt": cmig_crt,
+            # family_name é usado em categorias User Products. _build_ml_payload
+            # detecta sua presença e inclui no POST /items (substituindo title).
+            "family_name": body.get("family_name"),
         }
         ml_item = await _create_ml_item_with_retry(access_token, prod, ml_form)
         platform_item_id = ml_item.get("id")
@@ -3351,6 +3354,8 @@ async def publish_anuncio(
             thumbnail = thumbnail.replace("http://", "https://")
         # Persiste fotos no formato {id, url} para a tela de gestão exibir miniaturas
         pictures_json = _pictures_to_json(ml_item.get("pictures"), pictures)
+        # family_name_ml: fonte de verdade é o que o ML aceitou no create
+        family_name_ml = ml_item.get("family_name")
         status = "published"
         published_at = datetime.now(UTC)
     else:
@@ -3363,6 +3368,8 @@ async def publish_anuncio(
         if thumbnail:
             thumbnail = thumbnail.replace("http://", "https://")
         pictures_json = _pictures_to_json(ml_item_data.get("pictures"), pictures)
+        # No link mode, herda o family_name que já existir no item ML
+        family_name_ml = ml_item_data.get("family_name")
         status = "published"
         published_at = datetime.now(UTC)
 
@@ -3409,6 +3416,7 @@ async def publish_anuncio(
         status=status,
         published_at=published_at,
         pictures_json=pictures_json,
+        family_name_ml=family_name_ml,
         last_sync_at=datetime.now(UTC),
     )
     db.add(listing)
