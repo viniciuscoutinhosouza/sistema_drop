@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-06-02 — revert(anuncios): heurística de requires_family_name volta ao original
+
+**Contexto:** o fix anterior (commit `c97e54c`) afrouxou `requires_family_name` para excluir categorias com `attribute_types: "variations"` e atributos `allow_variations`. A teoria era que esses sinais indicavam suporte a variações tradicionais. **Validação em produção provou o contrário:** MLB198238 (Foam Roller) tem ambos os sinais, mas o ML rejeitou o POST `/items` com:
+- cause 369: `body.required_fields` — exige `family_name`, `price` OU `available_quantity` no nível raiz
+- cause 374: `The field variations is invalid with family name`
+
+Conclusão: o único sinal confiável de User Products é `catalog_domain + has_catalog_required_attr`. Os outros campos da API ML são enganosos para essa classe de categoria.
+
+**Fix:** restaurada a heurística original `requires_family_name = bool(catalog_domain) and has_catalog_required_attr`. Comentário ampliado documentando a armadilha para futuro.
+
+**Efeito:** MLB198238 volta a ser bloqueado em "Criar com Variações" com o alerta "Esta categoria usa o modelo User Products". O fluxo correto é publicação 1-a-1 via `catalog_product_id` e depois agrupamento por `family_name` em "Agrupar anúncios existentes".
+
+---
+
 ## 2026-06-02 — fix(catalog): EAN não aparecia ao selecionar produto PG no wizard de variações
 
 **Problema:** ao adicionar variações em "Criar com Variações" e selecionar um produto PG, a coluna EAN ficava vazia mesmo o produto tendo EAN cadastrado no DB. `onProductSelected` em [CatalogVariationsFormView.vue:971](FRONTEND/src/views/catalog/CatalogVariationsFormView.vue#L971) lê `product.ean`, mas `GET /catalog` ([routers/catalog.py:48-69](BACKEND/routers/catalog.py#L48-L69)) não incluía esse campo na resposta — só CMIG (`/cmigs/{id}/products`) já retornava.

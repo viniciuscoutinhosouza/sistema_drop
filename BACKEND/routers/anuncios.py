@@ -3833,19 +3833,18 @@ async def get_category_variation_support(
     supports_via_setting = attribute_types == "variations"
 
     # Modelo User Products: categoria com catalog_domain + atributos catalog_required
-    # exige family_name no POST /items e rejeita o campo `variations` (erro 374
-    # "The field variations is invalid with family name"). Não dá pra publicar
-    # variações por essa via — apenas via API de catálogo (catalog_product_id).
-    # Importante: catalog_domain truthy sozinho NÃO indica User Products only —
-    # muitas categorias tradicionais (ex.: MLB198238 Foam Roller) têm catalog_domain
-    # apenas porque há catálogo associado, mas continuam aceitando o array variations.
-    # Só consideramos User Products quando NÃO há sinal de variação tradicional.
-    requires_family_name = (
-        bool(catalog_domain)
-        and has_catalog_required_attr
-        and not supports_via_setting
-        and not has_allow_variations_attr
-    )
+    # exige family_name no POST /items e rejeita o campo `variations` (erros do ML:
+    # cause 369 "body needs family_name|price|available_quantity" + cause 374
+    # "The field variations is invalid with family name").
+    #
+    # ATENÇÃO: `attribute_types: "variations"` e atributos com tag `allow_variations`
+    # NÃO são sinais confiáveis de "aceita variações tradicionais". Categorias como
+    # MLB198238 (Foam Roller) expõem ambos os campos mas ainda assim rejeitam o
+    # array `variations` na prática (validado em 2026-06-02 com POST real).
+    # O único sinal seguro é a presença de catalog_domain + atributos catalog_required.
+    # Para essas categorias, o fluxo correto é publicação 1-a-1 via catalog_product_id
+    # + opcional agrupamento por family_name depois.
+    requires_family_name = bool(catalog_domain) and has_catalog_required_attr
     allows_custom_variations = (
         supports_via_setting
         and not has_allow_variations_attr
