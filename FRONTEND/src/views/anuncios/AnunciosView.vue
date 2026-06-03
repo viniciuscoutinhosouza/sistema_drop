@@ -715,12 +715,17 @@
                 <!-- Nome da Família — só aparece em categorias User Products -->
                 <div v-if="wizardCatSupport && wizardCatSupport.requires_family_name" class="form-group mt-3">
                   <label class="font-weight-bold">
-                    Nome da Família <span class="text-danger">*</span>
+                    Nome da Família
+                    <span v-if="!wizard.isEdit" class="text-danger">*</span>
                     <span class="badge badge-info ml-1" style="font-size:10px">User Products</span>
                   </label>
                   <input v-model="wf.family_name" type="text" class="form-control" maxlength="60"
-                         :placeholder="wf.title_override || 'Ex: Rolo Massagem Foam Roller 30cm'" />
-                  <small class="text-muted">
+                         :placeholder="wf.title_override || 'Ex: Rolo Massagem Foam Roller 30cm'"
+                         :disabled="wizard.isEdit" />
+                  <small v-if="wizard.isEdit" class="text-warning">
+                    <i class="fas fa-lock mr-1"></i>Definido na criação — o Mercado Livre não permite alterar o nome da família após publicação.
+                  </small>
+                  <small v-else class="text-muted">
                     Todos os anúncios do mesmo grupo devem ter <strong>exatamente o mesmo nome</strong>.
                     O ML usa este campo para exibir as variações (cor, tamanho) como seletores na VIP.
                   </small>
@@ -2284,7 +2289,8 @@ async function saveWizard() {
     const payload = {
       account_id: selectedAccountId.value,
       title_override: wf.value.title_override,
-      family_name: wf.value.family_name.trim() || null,
+      // family_name só vai no payload de criação — ML não permite alterar após publicação
+      ...(wizard.value.isEdit ? {} : { family_name: wf.value.family_name.trim() || null }),
       sale_price: parseFloat(wf.value.sale_price),
       listing_type: wf.value.listing_type,
       stock_mode:       wf.value.stock_mode,
@@ -2345,6 +2351,9 @@ async function saveWizard() {
         toast.warning(`Esses campos não foram alterados no ML (anúncio com vendas ou de catálogo): ${skipped}. Os demais foram salvos.`)
       } else {
         toast.success('Anúncio atualizado e enviado ao Mercado Livre!')
+      }
+      if (data?.fiscal_sync_warning) {
+        toast.warning(`Dados fiscais: ${data.fiscal_sync_warning}`)
       }
     } else {
       await api.post('/anuncios/publish', payload)

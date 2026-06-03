@@ -3886,13 +3886,21 @@ async def update_anuncio(
     ml_skipped: list[str] = []
     fiscal_sync_warning: str | None = None
 
+    # Variáveis compartilhadas entre o bloco ML e o bloco fiscal (declaradas fora
+    # para que o fiscal execute mesmo quando o update ML falhar).
+    _access_token: str | None = None
+    _product = None
+    _cmig_crt: int | None = None
+
     # Sincroniza ML com payload completo se listing tem platform_item_id
     if listing.platform_item_id and listing.account.platform == "mercadolivre":
         try:
-            access_token = await _get_valid_token(listing.account, db)
+            _access_token = await _get_valid_token(listing.account, db)
+            _cmig_crt = await _resolve_cmig_crt(listing.account, db)
+            _product = listing.cmig_product or listing.catalog_product
 
-            cmig_crt = await _resolve_cmig_crt(listing.account, db)
-            # Monta form consolidado com dados do body ou do DB como fallback
+            # Monta form consolidado com dados do body ou do DB como fallback.
+            # family_name NÃO é incluído — ML rejeita a alteração após criação (causa:374).
             form = {
                 "title_override": listing.title_override,
                 "sale_price": listing.sale_price,
@@ -3913,10 +3921,7 @@ async def update_anuncio(
                 "length_cm": body.get("length_cm"),
                 "weight_kg": body.get("weight_kg"),
                 "fiscal_json": body.get("fiscal_json") or listing.fiscal_json,
-                "cmig_crt": cmig_crt,
-                # family_name só pode ser enviado ao ML se o item já foi criado com ele;
-                # enviar para um item sem family_name causa cause:374 no PUT.
-                "family_name": body.get("family_name") if listing.family_name_ml else None,
+                "cmig_crt": _cmig_crt,
             }
             # Se fotos não vieram no body, tenta parsear pictures_json do DB
             if not form["pictures"] and listing.pictures_json:
@@ -3926,8 +3931,7 @@ async def update_anuncio(
                 except Exception:
                     pass
 
-            product = listing.cmig_product or listing.catalog_product
-            ml_payload = _build_ml_payload(product, form, for_update=True)
+            ml_payload = _build_ml_payload(_product, form, for_update=True)
             # ML rejeita mudança de categoria após criação
             ml_payload.pop("category_id", None)
             # ML rejeita title em contas com family_name (não Lojas Oficiais)
@@ -3956,49 +3960,21 @@ async def update_anuncio(
                     pass
 
             ml_resp = await ml_service.update_item(
-                access_token, listing.platform_item_id, ml_payload
+                _access_token, listing.platform_item_id, ml_payload
             )
             ml_skipped = ml_resp.get("_skipped_fields") or []
-
-            # Faturador: sincroniza fiscal_information do SKU (endpoint dedicado).
-            # Best-effort — não derruba o update se falhar.
-            sku_for_fiscal = body.get("sku") or listing.sku or getattr(product, "sku_cmig", None) or getattr(product, "sku", None)
-            if sku_for_fiscal:
-                fiscal_payload = _build_fiscal_payload_from_product(
-                    product,
-                    str(sku_for_fiscal),
-                    cmig_crt,
-                    fiscal_overrides=_parse_fiscal_json(body.get("fiscal_json") or listing.fiscal_json),
-                )
-                if fiscal_payload:
-                    try:
-                        fr = await ml_service.register_or_update_fiscal_information(
-                            access_token, str(sku_for_fiscal), fiscal_payload
-                        )
-                        if not fr.get("ok"):
-                            fiscal_sync_warning = fr.get("error") or "Erro ao sincronizar fiscal_information"
-                            logging.getLogger(__name__).warning(
-                                "fiscal_information sync falhou para SKU %s: %s",
-                                sku_for_fiscal, fr.get("body"),
-                            )
-                    except Exception as exc:
-                        fiscal_sync_warning = f"Exceção ao sincronizar fiscal: {exc}"
-                        logging.getLogger(__name__).warning(
-                            "Exceção em register_or_update_fiscal_information SKU %s: %s",
-                            sku_for_fiscal, exc,
-                        )
 
             description = listing.description_override
             if description:
                 desc_ok = True
                 try:
                     desc_ok = await ml_service.update_item_description(
-                        access_token, listing.platform_item_id, description
+                        _access_token, listing.platform_item_id, description
                     )
                 except Exception:
                     try:
                         desc_ok = await ml_service.post_item_description(
-                            access_token, listing.platform_item_id, description
+                            _access_token, listing.platform_item_id, description
                         )
                     except Exception:
                         desc_ok = False
@@ -4009,6 +3985,40 @@ async def update_anuncio(
             ml_error = exc.detail  # token inválido — salva no DB mas não sincroniza ML
         except Exception as exc:
             ml_error = str(exc)
+
+        # ── Fiscal sync ── independente do resultado do update ML acima.
+        # Roda mesmo quando o update falhou (ml_error setado), porque fiscal_information
+        # é um endpoint separado no ML e não depende do sucesso do PUT /items/{id}.
+        if _access_token and _product:
+            sku_for_fiscal = (
+                body.get("sku") or listing.sku
+                or getattr(_product, "sku_cmig", None)
+                or getattr(_product, "sku", None)
+            )
+            if sku_for_fiscal:
+                fiscal_payload = _build_fiscal_payload_from_product(
+                    _product,
+                    str(sku_for_fiscal),
+                    _cmig_crt,
+                    fiscal_overrides=_parse_fiscal_json(body.get("fiscal_json") or listing.fiscal_json),
+                )
+                if fiscal_payload:
+                    try:
+                        fr = await ml_service.register_or_update_fiscal_information(
+                            _access_token, str(sku_for_fiscal), fiscal_payload
+                        )
+                        if not fr.get("ok"):
+                            fiscal_sync_warning = fr.get("error") or "Erro ao sincronizar fiscal_information"
+                            logger.warning(
+                                "fiscal_information sync falhou para SKU %s: %s",
+                                sku_for_fiscal, fr.get("body"),
+                            )
+                    except Exception as exc:
+                        fiscal_sync_warning = f"Exceção ao sincronizar fiscal: {exc}"
+                        logger.warning(
+                            "Exceção em register_or_update_fiscal_information SKU %s: %s",
+                            sku_for_fiscal, exc,
+                        )
 
     await db.commit()
 
@@ -4701,10 +4711,30 @@ async def sync_listing_to_ml(
             status_code=400, detail="Anúncio sem produto vinculado para sincronizar"
         )
 
+    cmig_crt = await _resolve_cmig_crt(listing.account, db)
+
+    # Form completo — mesmo padrão do update_anuncio.
+    # family_name NÃO incluído: ML rejeita alteração após criação (causa:374).
+    pictures: list = []
+    if listing.pictures_json:
+        try:
+            pics = _json.loads(listing.pictures_json)
+            pictures = [p.get("url") or p for p in pics if p]
+        except Exception:
+            pass
+
+    attributes: list = []
+    if listing.attributes_json:
+        try:
+            raw_attrs = _json.loads(listing.attributes_json) if isinstance(listing.attributes_json, str) else listing.attributes_json
+            attributes = raw_attrs if isinstance(raw_attrs, list) else []
+        except Exception:
+            pass
+
     form = {
         "title_override": listing.title_override,
         "sale_price": listing.sale_price,
-        "listing_type": listing.listing_type,
+        "listing_type": listing.listing_type or "gold_special",
         "category_id": listing.category_id,
         "available_quantity": listing.available_quantity or 1,
         "item_condition": listing.item_condition or "new",
@@ -4712,36 +4742,38 @@ async def sync_listing_to_ml(
         "warranty_time": listing.warranty_time,
         "shipping_mode": listing.shipping_mode or "me2",
         "free_shipping": listing.free_shipping or False,
-        "attributes": [],
+        "sku": listing.sku,
+        "weight_kg": float(listing.weight_kg) if listing.weight_kg else None,
+        "height_cm": float(listing.height_cm) if listing.height_cm else None,
+        "width_cm": float(listing.width_cm) if listing.width_cm else None,
+        "length_cm": float(listing.length_cm) if listing.length_cm else None,
+        "fiscal_json": listing.fiscal_json,
+        "attributes": attributes,
+        "pictures": pictures,
+        "cmig_crt": cmig_crt,
     }
     ml_payload = _build_ml_payload(product, form, for_update=True)
-    # Remove category_id from update payload (ML rejects changing category after creation)
     ml_payload.pop("category_id", None)
-    # ML rejeita title em contas com family_name (não Lojas Oficiais)
     if not getattr(listing.account, "is_official_store", False):
         ml_payload.pop("title", None)
-    # Campos imutáveis após criação — ML rejeita com field_not_updatable
     for _f in ("buying_mode", "listing_type_id", "condition"):
         ml_payload.pop(_f, None)
-    # Itens de catálogo ML têm estoque gerenciado pelo ML — quantidade não editável
     if listing.ml_catalog_id:
         ml_payload.pop("available_quantity", None)
 
+    skipped: list[str] = []
     try:
         ml_resp = await ml_service.update_item(
             access_token, listing.platform_item_id, ml_payload
         )
+        skipped = ml_resp.get("_skipped_fields") or []
     except ml_service.UserProductRepeatedError as exc:
-        # ML rejeitou: o sync deixaria este anúncio idêntico a outro User Product
-        # já existente na conta. Devolve 409 com os candidatos para o usuário decidir
-        # qual MLB excluir antes de re-tentar.
         conflict = await _build_user_product_conflict_payload(
             access_token=access_token,
             listing=listing,
             user_product_id=exc.user_product_id,
         )
         raise HTTPException(status_code=409, detail=conflict) from exc
-    skipped = ml_resp.get("_skipped_fields") or []
 
     if listing.description_override:
         desc_ok = True
@@ -4759,13 +4791,45 @@ async def sync_listing_to_ml(
         if desc_ok is False and "description" not in skipped:
             skipped.append("description")
 
-    # Nota: a leitura de qty_full (Full) NÃO acontece aqui — foi movida para
-    # sync_stock_to_marketplace, que agora trata Full lendo o estoque do ML.
+    # ── Fiscal sync ── independente do resultado do update ML.
+    fiscal_sync_warning: str | None = None
+    sku_for_fiscal = (
+        listing.sku
+        or getattr(product, "sku_cmig", None)
+        or getattr(product, "sku", None)
+    )
+    if sku_for_fiscal:
+        fiscal_payload = _build_fiscal_payload_from_product(
+            product,
+            str(sku_for_fiscal),
+            cmig_crt,
+            fiscal_overrides=_parse_fiscal_json(listing.fiscal_json),
+        )
+        if fiscal_payload:
+            try:
+                fr = await ml_service.register_or_update_fiscal_information(
+                    access_token, str(sku_for_fiscal), fiscal_payload
+                )
+                if not fr.get("ok"):
+                    fiscal_sync_warning = fr.get("error") or "Erro ao sincronizar fiscal_information"
+                    logger.warning(
+                        "fiscal_information sync falhou (sync_listing) SKU %s: %s",
+                        sku_for_fiscal, fr.get("body"),
+                    )
+            except Exception as exc:
+                fiscal_sync_warning = f"Exceção ao sincronizar fiscal: {exc}"
+                logger.warning(
+                    "Exceção em register_or_update_fiscal_information SKU %s: %s",
+                    sku_for_fiscal, exc,
+                )
+
     listing.last_sync_at = datetime.now(UTC)
     await db.commit()
     result = _serialize_listing(listing)
     if skipped:
         result["ml_skipped_fields"] = skipped
+    if fiscal_sync_warning:
+        result["fiscal_sync_warning"] = fiscal_sync_warning
     return result
 
 
