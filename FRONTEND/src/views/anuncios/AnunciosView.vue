@@ -179,9 +179,37 @@
                   limpar seleção
                 </button>
               </div>
-              <div v-for="a in filteredAnuncios" :key="a.id"
-                   class="border-bottom"
-                   :style="!a.is_linked ? 'background:#fffbea' : ''">
+              <template v-for="item in displayedItems" :key="item.key">
+
+                <!-- Cabeçalho da família (User Products / variation group) -->
+                <div v-if="item.kind === 'group'"
+                     class="d-flex align-items-center px-3 py-2"
+                     style="background:#e8f5e9;border-left:4px solid #28a745;border-bottom:1px dashed #a5d6a7;font-size:12px">
+                  <input type="checkbox"
+                         class="form-check-input m-0 mr-2"
+                         style="width:18px;height:18px;cursor:pointer"
+                         :checked="groupAllSelected(item)"
+                         :indeterminate.prop="groupSomeSelected(item) && !groupAllSelected(item)"
+                         @change="toggleGroupSelection(item)"
+                         :title="'Selecionar/desmarcar todos da família ' + item.family_name" />
+                  <i class="fas fa-layer-group text-success mr-2"></i>
+                  <strong class="text-truncate" style="max-width:380px" :title="item.family_name">{{ item.family_name }}</strong>
+                  <span class="badge badge-success ml-2" style="font-size:10px">
+                    {{ item.listings.length }} {{ item.listings.length === 1 ? 'variação' : 'variações' }}
+                  </span>
+                  <span class="text-muted ml-3"><i class="fas fa-box mr-1"></i>{{ item.total_stock }} disp.</span>
+                  <span class="text-muted ml-2"><i class="fas fa-shopping-cart mr-1"></i>{{ item.total_sold }} vendidos</span>
+                  <span v-if="item.hidden_count" class="ml-3 text-warning" style="font-size:11px"
+                        :title="'A família tem ' + item.total_count + ' anúncios; ' + item.hidden_count + ' não casam com os filtros atuais'">
+                    <i class="fas fa-filter mr-1"></i>{{ item.listings.length }} de {{ item.total_count }} (limpe filtros pra ver tudo)
+                  </span>
+                </div>
+
+                <!-- Cada listing — para grupos, indenta com left border verde -->
+                <div v-for="a in item.listings" :key="a.id"
+                     class="border-bottom"
+                     :style="(item.kind === 'group' ? 'border-left:4px solid #28a745;' : '') +
+                             (!a.is_linked ? 'background:#fffbea;' : '')">
 
                 <!-- ── Linha única: checkbox | thumb | info | financeiro | ações ── -->
                 <div class="d-flex align-items-start p-2" style="gap:10px">
@@ -469,7 +497,10 @@
                 </div>
 
               </div>
-              <!-- /item v-for -->
+              <!-- /listing — fim do v-for interno de item.listings -->
+
+              </template>
+              <!-- /item v-for (displayedItems) -->
 
             </div>
           </div>
@@ -1800,6 +1831,94 @@ const filteredAnuncios = computed(() => {
     return tokens.every(t => haystack.includes(t))
   })
 })
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Agrupamento visual por family_name_ml / variation_group_id
+//
+// Constrói displayedItems = mistura de:
+//   { kind: 'group',  key, family_name, group_id, listings: [...], total_stock,
+//     total_sold, hidden_count, total_count, anchor_ts }
+//   { kind: 'single', key, listings: [a], anchor_ts }
+//
+// "anchor_ts" = max(published_at) entre os membros do grupo (ou published_at do
+// avulso). Usado pra ordenar grupos e avulsos juntos pelo mesmo critério (mais
+// recente primeiro), mantendo siblings contíguos.
+// ──────────────────────────────────────────────────────────────────────────────
+const displayedItems = computed(() => {
+  // Conta total de membros por grupo na lista global (não filtrada) — pra
+  // mostrar "X de Y na família" quando filtros escondem irmãos.
+  const totalByGroup = {}
+  for (const a of anuncios.value) {
+    if (a.variation_group_id) {
+      totalByGroup[a.variation_group_id] = (totalByGroup[a.variation_group_id] || 0) + 1
+    }
+  }
+
+  const groupsMap = new Map()   // gid → { listings: [], family_name, anchor_ts }
+  const singles = []
+  for (const a of filteredAnuncios.value) {
+    const ts = a.published_at ? Date.parse(a.published_at) : 0
+    if (a.variation_group_id) {
+      const gid = a.variation_group_id
+      if (!groupsMap.has(gid)) {
+        groupsMap.set(gid, { listings: [], family_name: a.family_name_ml || gid, anchor_ts: 0 })
+      }
+      const g = groupsMap.get(gid)
+      g.listings.push(a)
+      if (ts > g.anchor_ts) g.anchor_ts = ts
+    } else {
+      singles.push({ kind: 'single', key: `s-${a.id}`, listings: [a], anchor_ts: ts })
+    }
+  }
+
+  const groups = []
+  for (const [gid, g] of groupsMap.entries()) {
+    const total_count = totalByGroup[gid] || g.listings.length
+    const total_stock = g.listings.reduce((s, l) => {
+      const live = l.is_full ? (l.full_stock_available ?? l.qty_full ?? 0)
+                             : (l.local_stock_available ?? 0)
+      return s + Number(live || 0)
+    }, 0)
+    const total_sold = g.listings.reduce((s, l) => s + Number(l.sold_quantity || 0), 0)
+    groups.push({
+      kind: 'group',
+      key: `g-${gid}`,
+      group_id: gid,
+      family_name: g.family_name,
+      listings: g.listings,
+      total_stock,
+      total_sold,
+      total_count,
+      hidden_count: Math.max(0, total_count - g.listings.length),
+      anchor_ts: g.anchor_ts,
+    })
+  }
+
+  // Ordena tudo junto pelo anchor_ts decrescente (mais recente primeiro)
+  return [...groups, ...singles].sort((a, b) => b.anchor_ts - a.anchor_ts)
+})
+
+// ── Seleção em lote ao nível de família ───────────────────────────────────────
+function groupAllSelected(item) {
+  if (!item.listings.length) return false
+  const set = new Set(selectedIds.value)
+  return item.listings.every(l => set.has(l.id))
+}
+function groupSomeSelected(item) {
+  const set = new Set(selectedIds.value)
+  return item.listings.some(l => set.has(l.id))
+}
+function toggleGroupSelection(item) {
+  const ids = item.listings.map(l => l.id)
+  if (groupAllSelected(item)) {
+    const remove = new Set(ids)
+    selectedIds.value = selectedIds.value.filter(id => !remove.has(id))
+  } else {
+    const merged = new Set(selectedIds.value)
+    for (const id of ids) merged.add(id)
+    selectedIds.value = Array.from(merged)
+  }
+}
 
 // ══════════════════════════════════════════════════
 // WIZARD
