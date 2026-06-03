@@ -2860,8 +2860,61 @@ async def create_variation_group(
             ),
         )
 
-    group_id = str(_uuid.uuid4())
     access_token = await _get_valid_token(listings[0].account, db)
+
+    # Pré-flight: confere status real no ML antes de tentar setar family_name.
+    # Anúncios fechados/pausados/deletados rejeitam alterações com cause 374
+    # críptico ("The field family name is invalid"). Atualiza o status local
+    # quando divergente — o DB pode estar out-of-sync com o ML.
+    mlb_ids = [l.platform_item_id for l in listings if l.platform_item_id]
+    if mlb_ids:
+        try:
+            ml_items = await ml_service.get_items_bulk(access_token, mlb_ids)
+        except Exception:
+            ml_items = []  # falha silenciosa: deixa o PUT abaixo falhar com erro claro
+        status_by_id = {item.get("id"): item.get("status") for item in ml_items}
+
+        not_active: list[dict] = []
+        status_changed = False
+        for l in listings:
+            real_status = status_by_id.get(l.platform_item_id)
+            if real_status and real_status != "active":
+                if l.status != real_status:
+                    l.status = real_status
+                    status_changed = True
+                not_active.append({
+                    "listing_id": l.id,
+                    "platform_item_id": l.platform_item_id,
+                    "ml_status": real_status,
+                })
+
+        if not_active:
+            if status_changed:
+                await db.commit()
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "type": "listings_not_active",
+                    "message": (
+                        f"{len(not_active)} anúncio(s) não estão ativos no Mercado Livre "
+                        "e não podem ser agrupados. O status local foi atualizado para refletir "
+                        "o estado real do ML."
+                    ),
+                    "instruction": (
+                        "Remova-os da seleção (ou republique se necessário) e tente novamente "
+                        "com apenas anúncios em status 'active'."
+                    ),
+                    "ml_errors": [
+                        {
+                            "listing_id": e["listing_id"],
+                            "error": f"{e['platform_item_id']} está {e['ml_status']} no ML",
+                        }
+                        for e in not_active
+                    ],
+                },
+            )
+
+    group_id = str(_uuid.uuid4())
 
     # Aplica family_name em cada anúncio no ML — best-effort por anúncio,
     # interrompe no primeiro erro para não deixar grupo parcial

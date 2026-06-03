@@ -153,7 +153,10 @@
 
               <div v-if="groupCategoryInfo" class="alert alert-info mt-2 small">
                 <p class="mb-1"><i class="fas fa-info-circle mr-1"></i><strong>{{ groupCategoryInfo.message }}</strong></p>
-                <p class="mb-0">{{ groupCategoryInfo.instruction }}</p>
+                <p class="mb-1">{{ groupCategoryInfo.instruction }}</p>
+                <ul v-if="groupErrorDetails.length" class="mb-0 mt-1 pl-3">
+                  <li v-for="(d, i) in groupErrorDetails" :key="i" class="text-monospace" style="word-break:break-all">{{ d }}</li>
+                </ul>
               </div>
 
               <div v-if="groupError" class="alert alert-danger py-2 mt-2 small">
@@ -769,6 +772,11 @@ async function submitGroup() {
     const det = e.response?.data?.detail
     if (det?.type === 'category_not_supported') {
       groupCategoryInfo.value = { message: det.message, instruction: det.instruction }
+    } else if (det?.type === 'listings_not_active') {
+      // Status real no ML é != active; backend já atualizou o DB. Mostra como info
+      // (não como erro) e inclui a instrução de como prosseguir.
+      groupCategoryInfo.value = { message: det.message, instruction: det.instruction }
+      groupErrorDetails.value = (det.ml_errors || []).map(err => `#${err.listing_id}: ${err.error}`)
     } else if (det?.ml_errors?.length) {
       groupErrorMain.value = det.message
       groupErrorDetails.value = det.ml_errors.map(err => `#${err.listing_id}: ${err.error}`)

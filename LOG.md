@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-06-02 — feat(anuncios): pré-flight de status no ML antes de agrupar (+ sync DB)
+
+**Contexto:** depois de remover a interpretação enganosa de cause 374, o erro real do ML chegou ao frontend: `{"cause":374,"message":"BODY_INVALID_FIELDS","error":"The field family name is invalid","status":400}`. Tecnicamente correto, mas críptico — o usuário não sabe que a causa é "anúncio fechado/deletado no ML".
+
+**Mudança:** `create_variation_group` agora faz pré-flight via `ml_service.get_items_bulk` (1 chamada ao ML para até 20 anúncios) ANTES de tentar setar `family_name`. Se algum anúncio não está `active` no ML:
+
+1. **Atualiza `listing.status` no DB** com o status real (closed/paused/etc.) — corrige o out-of-sync local.
+2. **Retorna 422 `listings_not_active`** listando cada anúncio + status real, com mensagem clara e instrução "Remova-os da seleção ou republique".
+
+Frontend (`CatalogVariationsFormView.vue`):
+- Trata o novo `type: "listings_not_active"` exibindo a info-alert azul (não erro vermelho) com message + instruction + lista de anúncios.
+
+**Efeito:** ao tentar agrupar os 6 anúncios MLB198238 (todos closed/deleted no ML), o usuário verá:
+> 6 anúncio(s) não estão ativos no Mercado Livre e não podem ser agrupados. O status local foi atualizado para refletir o estado real do ML.
+> Remova-os da seleção (ou republique se necessário) e tente novamente com apenas anúncios em status 'active'.
+> #2906: MLB6889642226 está closed no ML
+> #2907: MLB6889665386 está closed no ML
+> ...
+
+E o DB fica sincronizado de quebra.
+
+---
+
 ## 2026-06-02 — fix(anuncios): remove interpretação enganosa de cause 374 no agrupamento
 
 **Contexto:** ao tentar agrupar os 6 anúncios MLB198238 (Foam Roller), o backend respondia "A categoria usa variações tradicionais — não aceita agrupamento por family_name", o que está errado: diagnóstico via API ML revelou que MLB198238 É User Products, os 6 anúncios já estavam agrupados via `family_id=6875168885521809`, e o motivo real da falha era que todos estão `status=closed` + `sub_status=deleted` no ML (DB local out-of-sync) — não permitem mais alteração de `family_name`.
