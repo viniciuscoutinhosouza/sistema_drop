@@ -20,7 +20,7 @@ from database import get_db
 from dependencies import get_current_user
 from models.cmig import CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
 from models.integration import MarketplaceAccount
-from models.product import CatalogProduct, ProductListing
+from models.product import CatalogProduct, ProductListing, ProductMarketplaceCategory
 from models.user import User
 from services import ml_service
 
@@ -3594,22 +3594,68 @@ async def publish_anuncios_as_family(
                 })
                 continue
 
+            # Carrega o ProductMarketplaceCategory (PMC) do produto para a categoria
+            # selecionada. É lá que ficam armazenados os atributos obrigatórios
+            # (Marca, Material, Cor, etc.) que o usuário preencheu na página do
+            # produto. Sem PMC, o ML rejeita o POST por falta de atributo obrigatório.
+            pmc_filter = (
+                ProductMarketplaceCategory.catalog_product_id == product_id
+                if source == "pg"
+                else ProductMarketplaceCategory.cmig_product_id == product_id
+            )
+            pmc = (await db.execute(
+                select(ProductMarketplaceCategory).where(
+                    pmc_filter,
+                    ProductMarketplaceCategory.marketplace == "mercado_livre",
+                    ProductMarketplaceCategory.category_id == str(category_id),
+                )
+            )).scalar_one_or_none()
+
+            if not pmc:
+                results.append({
+                    "product_id": product_id,
+                    "ok": False,
+                    "error": (
+                        f"Produto #{product_id} ({prod.title[:40]}) não tem a categoria "
+                        f"{category_id} cadastrada nas características. Abra a página do produto "
+                        "e cadastre a categoria + atributos obrigatórios antes de agrupar."
+                    ),
+                })
+                continue
+
             # Estoque: recalcula real ou usa fixo
             if stock_mode == "product":
                 available_quantity = await _refresh_product_stock(prod, db)
             else:
                 available_quantity = fixed_quantity
 
-            # Atributos: mescla atributos manuais + diferenciador inferido do produto
-            attrs = list(p_input.get("attributes") or [])
+            # Atributos: começa do PMC (Material, Marca, Cor, etc.) + sobrescreve
+            # MODEL pelo compartilhado + acrescenta diferenciador per-produto.
+            attrs = []
+            if pmc.attributes_json:
+                try:
+                    pmc_attrs = _json.loads(pmc.attributes_json)
+                    if isinstance(pmc_attrs, list):
+                        attrs.extend(pmc_attrs)
+                except Exception:
+                    pass
             attr_ids = {(a.get("id") or "").upper() for a in attrs}
-            if model and "MODEL" not in attr_ids:
+
+            # MODEL compartilhado tem precedência sobre o do PMC
+            if model:
+                attrs = [a for a in attrs if (a.get("id") or "").upper() != "MODEL"]
                 attrs.append({"id": "MODEL", "value_name": str(model)})
                 attr_ids.add("MODEL")
 
-            diff_id, diff_value = _extract_differentiator(prod)
-            if diff_id and diff_id not in attr_ids and diff_value:
-                attrs.append({"id": diff_id, "value_name": diff_value})
+            # Atributos passados no body (override per-produto pelo frontend, ex: diferenciador)
+            for a in (p_input.get("attributes") or []):
+                aid = (a.get("id") or "").upper()
+                if not aid:
+                    continue
+                # Override: remove se já existe no array
+                attrs = [x for x in attrs if (x.get("id") or "").upper() != aid]
+                attrs.append(a)
+                attr_ids.add(aid)
 
             ml_form = {
                 "title_override": (prod.title or "")[:60],

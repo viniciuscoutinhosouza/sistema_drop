@@ -133,9 +133,10 @@
                   <tr>
                     <th style="width:60px">Foto</th>
                     <th>Produto</th>
-                    <th style="width:120px">SKU</th>
-                    <th style="width:130px">Diferenciador</th>
-                    <th style="width:120px">Preço (R$)</th>
+                    <th style="width:110px">SKU</th>
+                    <th style="width:170px">Atributos da categoria</th>
+                    <th style="width:120px">Diferenciador</th>
+                    <th style="width:110px">Preço (R$)</th>
                     <th style="width:90px">Fotos</th>
                     <th style="width:90px">Resultado</th>
                   </tr>
@@ -145,6 +146,7 @@
                       :class="{
                         'table-success': resultByProductId[p.product_id]?.ok,
                         'table-danger': resultByProductId[p.product_id] && !resultByProductId[p.product_id].ok,
+                        'table-warning': !resultByProductId[p.product_id] && pmcStatusByProductId[p.product_id] === 'missing',
                       }">
                     <td>
                       <img v-if="p._thumb" :src="p._thumb"
@@ -154,6 +156,30 @@
                       <div class="text-truncate" style="max-width:240px" :title="p._title">{{ p._title }}</div>
                     </td>
                     <td><code class="small">{{ p._sku }}</code></td>
+                    <td>
+                      <template v-if="!form.category_id">
+                        <span class="text-muted small">Selecione a categoria acima</span>
+                      </template>
+                      <template v-else-if="pmcLoading">
+                        <i class="fas fa-spinner fa-spin text-muted small"></i>
+                      </template>
+                      <template v-else-if="pmcStatusByProductId[p.product_id] === 'present'">
+                        <span class="text-success small">
+                          <i class="fas fa-check-circle mr-1"></i>Cadastrada
+                        </span>
+                        <div v-if="pmcSummaryByProductId[p.product_id]" class="text-muted" style="font-size:10px;line-height:1.2">
+                          {{ pmcSummaryByProductId[p.product_id] }}
+                        </div>
+                      </template>
+                      <template v-else>
+                        <span class="text-danger small d-block">
+                          <i class="fas fa-exclamation-triangle mr-1"></i>Não cadastrada
+                        </span>
+                        <a :href="catalogPageUrl(p)" target="_blank" rel="noopener" class="small">
+                          <i class="fas fa-external-link-alt mr-1"></i>Cadastrar →
+                        </a>
+                      </template>
+                    </td>
                     <td>
                       <input v-model="p.differentiator" type="text" class="form-control form-control-sm"
                              placeholder="Cor, tamanho..." />
@@ -183,6 +209,14 @@
                   </tr>
                 </tbody>
               </table>
+
+              <div v-if="missingPmcCount" class="alert alert-warning py-2 mt-2 mb-0 small">
+                <i class="fas fa-exclamation-triangle mr-1"></i>
+                <strong>{{ missingPmcCount }} produto(s)</strong> sem a categoria cadastrada nas características.
+                Clique em "Cadastrar →" em cada linha para abrir a página do produto, escolher a categoria
+                <strong>{{ form.category_name || form.category_id }}</strong> e preencher os atributos obrigatórios.
+                Depois volte aqui e tente publicar novamente.
+              </div>
             </div>
           </div>
 
@@ -260,6 +294,28 @@ const error = ref('')
 const summary = ref(null)        // { total, success_count, failure_count }
 const resultByProductId = ref({})
 
+// PMC por produto: { [product_id]: 'present' | 'missing' }
+const pmcStatusByProductId = ref({})
+// Resumo human-readable dos attrs do PMC (ex: "Marca: MIG · Material: EVA · Cor: Violeta")
+const pmcSummaryByProductId = ref({})
+const pmcLoading = ref(false)
+// Atributo diferenciador (allow_variations) — qual ID buscar no PMC pra pré-preencher
+const differentiatorAttrId = ref(null)
+
+const missingPmcCount = computed(() =>
+  form.products.filter(p => pmcStatusByProductId.value[p.product_id] === 'missing').length
+)
+const allPmcPresent = computed(() =>
+  form.products.length > 0
+  && form.products.every(p => pmcStatusByProductId.value[p.product_id] === 'present')
+)
+
+function catalogPageUrl(p) {
+  return props.source === 'pg'
+    ? `/catalog/${p.product_id}`
+    : `/cmig-products/${p.product_id}/edit`
+}
+
 // Categoria search + suporte
 const catSearch = ref('')
 const catSearching = ref(false)
@@ -271,6 +327,7 @@ const supportLoading = ref(false)
 const canSubmit = computed(() =>
   !!form.category_id
   && form.family_name.trim().length > 0
+  && allPmcPresent.value
   && form.products.every(p => Number(p.sale_price) > 0 && p.pictures.length > 0)
 )
 
@@ -309,8 +366,65 @@ async function selectCategory(cat) {
   try {
     const { data } = await api.get(`/anuncios/categories/${cat.id}/variation-support`)
     support.value = data
+    // Define atributo diferenciador (primeiro com tag allow_variations)
+    const combAttrs = data?.variation_combination_attrs || []
+    differentiatorAttrId.value = combAttrs[0]?.id || 'COLOR'
   } catch { support.value = null }
   finally { supportLoading.value = false }
+  // Verifica em paralelo se cada produto tem PMC para essa categoria
+  await refreshPmcStatuses()
+}
+
+async function refreshPmcStatuses() {
+  if (!form.category_id || !form.products.length) {
+    pmcStatusByProductId.value = {}
+    pmcSummaryByProductId.value = {}
+    return
+  }
+  pmcLoading.value = true
+  const statusMap = {}
+  const summaryMap = {}
+  const owner = props.source === 'pg' ? 'catalog' : 'cmig'
+  try {
+    await Promise.all(form.products.map(async (p) => {
+      try {
+        const { data } = await api.get(`/product-categories/${owner}/${p.product_id}`, {
+          params: { marketplace: 'mercado_livre' },
+        })
+        const list = Array.isArray(data) ? data : []
+        const match = list.find(pmc => String(pmc.category_id) === String(form.category_id))
+        if (match) {
+          statusMap[p.product_id] = 'present'
+          // Parseia attributes_json para mostrar resumo + pré-preencher diferenciador
+          let parsed = []
+          try {
+            parsed = typeof match.attributes_json === 'string'
+              ? JSON.parse(match.attributes_json || '[]')
+              : (match.attributes_json || [])
+          } catch { parsed = [] }
+          const summary = parsed
+            .filter(a => a && a.value_name)
+            .slice(0, 4)
+            .map(a => `${a.name || a.id}: ${a.value_name}`)
+            .join(' · ')
+          summaryMap[p.product_id] = summary
+          // Pré-preenche diferenciador do produto se for vazio e o PMC tiver o atributo
+          if (!p.differentiator && differentiatorAttrId.value) {
+            const found = parsed.find(a => (a.id || '').toUpperCase() === differentiatorAttrId.value.toUpperCase())
+            if (found?.value_name) p.differentiator = found.value_name
+          }
+        } else {
+          statusMap[p.product_id] = 'missing'
+        }
+      } catch {
+        statusMap[p.product_id] = 'missing'
+      }
+    }))
+  } finally {
+    pmcStatusByProductId.value = statusMap
+    pmcSummaryByProductId.value = summaryMap
+    pmcLoading.value = false
+  }
 }
 
 // Pré-carrega cada produto com imagens (e diferenciador inferido)
