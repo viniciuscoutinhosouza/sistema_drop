@@ -220,6 +220,26 @@
                 <strong>{{ form.category_name || form.category_id }}</strong> e preencher os atributos obrigatórios.
                 Depois volte aqui e tente publicar novamente.
               </div>
+
+              <!-- Alerta de divergência em atributos catalog_required (BRAND/MODEL/MATERIAL...) -->
+              <div v-if="attrDivergences.length" class="alert alert-danger py-2 mt-2 mb-0 small">
+                <i class="fas fa-exclamation-triangle mr-1"></i>
+                <strong>Atributos divergentes entre os produtos.</strong>
+                O Mercado Livre exige valor <strong>idêntico</strong> (mesma grafia/caixa) nos
+                atributos obrigatórios do catálogo, senão coloca os anúncios em famílias separadas.
+                <ul class="mb-0 mt-1 pl-3">
+                  <li v-for="d in attrDivergences" :key="d.attr_id">
+                    <strong>{{ d.attr_name }}</strong> — valores encontrados:
+                    <span v-for="(v, i) in d.values" :key="i">
+                      <code>{{ v.value }}</code> em {{ v.product_titles.join(', ') }}<span v-if="i < d.values.length - 1">; </span>
+                    </span>
+                  </li>
+                </ul>
+                <div class="mt-1">
+                  Corrija na página de cada produto (link "Cadastrar →" na linha) — depois volte e
+                  troque a categoria de novo aqui pra revalidar.
+                </div>
+              </div>
             </div>
           </div>
 
@@ -302,8 +322,12 @@ const pmcStatusByProductId = ref({})
 // Resumo human-readable dos attrs do PMC (ex: "Marca: MIG · Material: EVA · Cor: Violeta")
 const pmcSummaryByProductId = ref({})
 const pmcLoading = ref(false)
+// PMC attrs (parseados) por produto para validação de divergência
+const pmcAttrsByProductId = ref({})
 // Atributo diferenciador (allow_variations) — qual ID buscar no PMC pra pré-preencher
 const differentiatorAttrId = ref(null)
+// Quais atributos são "catalog_required" da categoria escolhida (BRAND, MODEL, MATERIAL...)
+const catalogRequiredAttrs = ref([])   // [{ id, name }]
 
 const missingPmcCount = computed(() =>
   form.products.filter(p => pmcStatusByProductId.value[p.product_id] === 'missing').length
@@ -331,8 +355,44 @@ const canSubmit = computed(() =>
   !!form.category_id
   && form.family_name.trim().length > 0
   && allPmcPresent.value
+  && attrDivergences.value.length === 0
   && form.products.every(p => Number(p.sale_price) > 0 && p.pictures.length > 0)
 )
+
+// Detecta divergências em atributos catalog_required entre os produtos.
+// O ML é case-sensitive ao comparar — então 'PVC anti-estouro' != 'PVC Anti-Estouro'
+// e os anúncios caem em famílias separadas mesmo com o mesmo family_name.
+// Excluímos da comparação o atributo diferenciador (COLOR), que DEVE divergir.
+const attrDivergences = computed(() => {
+  if (!catalogRequiredAttrs.value.length || !form.products.length) return []
+  const diffId = (differentiatorAttrId.value || '').toUpperCase()
+  const divergences = []
+  for (const attr of catalogRequiredAttrs.value) {
+    if (attr.id.toUpperCase() === diffId) continue   // skip diferenciador
+    // Agrupa produtos pelo valor desse atributo
+    const buckets = {}
+    let anyMissing = false
+    for (const p of form.products) {
+      const pmcAttrs = pmcAttrsByProductId.value[p.product_id] || []
+      const found = pmcAttrs.find(a => (a.id || '').toUpperCase() === attr.id.toUpperCase())
+      const value = found?.value_name || found?.value_id || ''
+      if (!value) anyMissing = true
+      const key = String(value)
+      if (!buckets[key]) buckets[key] = []
+      buckets[key].push(p._title || `#${p.product_id}`)
+    }
+    if (anyMissing) continue   // falta de atributo já é tratado pelo PMC missing
+    const distinct = Object.keys(buckets)
+    if (distinct.length > 1) {
+      divergences.push({
+        attr_id: attr.id,
+        attr_name: attr.name,
+        values: distinct.map(value => ({ value, product_titles: buckets[value] })),
+      })
+    }
+  }
+  return divergences
+})
 
 const failedDetails = computed(() =>
   form.products
@@ -365,15 +425,28 @@ async function selectCategory(cat) {
   catSearch.value = ''
   catResults.value = []
   support.value = null
+  catalogRequiredAttrs.value = []
   supportLoading.value = true
   try {
-    const { data } = await api.get(`/anuncios/categories/${cat.id}/variation-support`)
-    support.value = data
-    // Define atributo diferenciador (primeiro com tag allow_variations)
-    const combAttrs = data?.variation_combination_attrs || []
+    const [{ data: sup }, { data: attrs }] = await Promise.all([
+      api.get(`/anuncios/categories/${cat.id}/variation-support`),
+      api.get(`/anuncios/categories/${cat.id}/attributes`),
+    ])
+    support.value = sup
+    const combAttrs = sup?.variation_combination_attrs || []
     differentiatorAttrId.value = combAttrs[0]?.id || 'COLOR'
-  } catch { support.value = null }
-  finally { supportLoading.value = false }
+    // Filtra atributos catalog_required (BRAND/MODEL/MATERIAL etc.)
+    catalogRequiredAttrs.value = (Array.isArray(attrs) ? attrs : [])
+      .filter(a => {
+        const tags = a.tags || {}
+        const tagKeys = Array.isArray(tags) ? tags : Object.keys(tags || {})
+        return tagKeys.includes('catalog_required')
+      })
+      .map(a => ({ id: a.id, name: a.name }))
+  } catch {
+    support.value = null
+    catalogRequiredAttrs.value = []
+  } finally { supportLoading.value = false }
   // Verifica em paralelo se cada produto tem PMC para essa categoria
   await refreshPmcStatuses()
 }
@@ -382,11 +455,13 @@ async function refreshPmcStatuses() {
   if (!form.category_id || !form.products.length) {
     pmcStatusByProductId.value = {}
     pmcSummaryByProductId.value = {}
+    pmcAttrsByProductId.value = {}
     return
   }
   pmcLoading.value = true
   const statusMap = {}
   const summaryMap = {}
+  const attrsMap = {}
   const owner = props.source === 'pg' ? 'catalog' : 'cmig'
   try {
     await Promise.all(form.products.map(async (p) => {
@@ -398,13 +473,14 @@ async function refreshPmcStatuses() {
         const match = list.find(pmc => String(pmc.category_id) === String(form.category_id))
         if (match) {
           statusMap[p.product_id] = 'present'
-          // Parseia attributes_json para mostrar resumo + pré-preencher diferenciador
+          // Parseia attributes_json para mostrar resumo + validar divergências
           let parsed = []
           try {
             parsed = typeof match.attributes_json === 'string'
               ? JSON.parse(match.attributes_json || '[]')
               : (match.attributes_json || [])
           } catch { parsed = [] }
+          attrsMap[p.product_id] = Array.isArray(parsed) ? parsed : []
           const summary = parsed
             .filter(a => a && a.value_name)
             .slice(0, 4)
@@ -418,14 +494,17 @@ async function refreshPmcStatuses() {
           }
         } else {
           statusMap[p.product_id] = 'missing'
+          attrsMap[p.product_id] = []
         }
       } catch {
         statusMap[p.product_id] = 'missing'
+        attrsMap[p.product_id] = []
       }
     }))
   } finally {
     pmcStatusByProductId.value = statusMap
     pmcSummaryByProductId.value = summaryMap
+    pmcAttrsByProductId.value = attrsMap
     pmcLoading.value = false
   }
 }
