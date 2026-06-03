@@ -63,6 +63,8 @@ async def list_catalog(
                 "suggested_price": float(p.suggested_price) if p.suggested_price else None,
                 "stock_quantity": p.stock_quantity,
                 "brand": p.brand,
+                "model": p.model,
+                "ean": p.ean,
                 "category_id": p.category_id,
                 "image_url": img.url if img else "",
             }

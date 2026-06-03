@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-06-02 — fix(catalog): EAN não aparecia ao selecionar produto PG no wizard de variações
+
+**Problema:** ao adicionar variações em "Criar com Variações" e selecionar um produto PG, a coluna EAN ficava vazia mesmo o produto tendo EAN cadastrado no DB. `onProductSelected` em [CatalogVariationsFormView.vue:971](FRONTEND/src/views/catalog/CatalogVariationsFormView.vue#L971) lê `product.ean`, mas `GET /catalog` ([routers/catalog.py:48-69](BACKEND/routers/catalog.py#L48-L69)) não incluía esse campo na resposta — só CMIG (`/cmigs/{id}/products`) já retornava.
+
+**Fix:** adicionados `ean` e `model` ao dict de cada item em `list_catalog` (campos já existem no modelo `CatalogProduct`). Mudança aditiva — não quebra os outros consumidores de `/catalog` (`AnunciosView`, `CatalogView`, `ManualOrderView`).
+
+---
+
 ## 2026-06-02 — fix(anuncios): MLB198238 (e similares) deixavam de aceitar variações
 
 **Problema:** ao tentar publicar anúncio com variações em MLB198238 (Foam Roller), os dois modos do wizard travavam com mensagens contraditórias — "Criar com Variações" alegava "categoria User Products" e "Agrupar anúncios existentes" alegava "categoria usa variações tradicionais". A categoria de fato aceita o array `variations` (atributo `attribute_types: "variations"` + `COLOR` com tag `allow_variations`), mas a heurística `requires_family_name = bool(catalog_domain) and has_catalog_required_attr` em `get_category_variation_support` ([routers/anuncios.py:3685](BACKEND/routers/anuncios.py#L3685)) marcava qualquer categoria com catálogo + atributos `catalog_required` como User Products only.
