@@ -81,27 +81,27 @@
           <div class="row align-items-center">
             <div class="col-md-4">
               <div class="input-group input-group-sm">
-                <input v-model="filters.search" type="text" class="form-control" placeholder="Buscar produto..." @keyup.enter="loadProducts" />
+                <input v-model="filters.search" type="text" class="form-control" placeholder="Buscar produto..." @keyup.enter="applyFilter" />
                 <div class="input-group-append">
-                  <button class="btn btn-primary" @click="loadProducts"><i class="fas fa-search"></i></button>
+                  <button class="btn btn-primary" @click="applyFilter"><i class="fas fa-search"></i></button>
                 </div>
               </div>
             </div>
             <div class="col-md-3">
-              <select v-model="filters.category_id" class="form-control form-control-sm" @change="loadProducts">
+              <select v-model="filters.category_id" class="form-control form-control-sm" @change="applyFilter">
                 <option value="">Todas as categorias</option>
                 <option v-for="cat in categories" :key="cat.id" :value="cat.id">{{ cat.name }}</option>
               </select>
             </div>
             <div class="col-md-3">
-              <select v-model="filters.sort" class="form-control form-control-sm" @change="loadProducts">
+              <select v-model="filters.sort" class="form-control form-control-sm" @change="applyFilter">
                 <option value="newest">Mais recentes</option>
                 <option value="cheapest">Menor preço</option>
                 <option value="expensive">Maior preço</option>
               </select>
             </div>
             <div class="col-md-2">
-              <select v-model="filters.page_size" class="form-control form-control-sm" @change="loadProducts">
+              <select v-model="filters.page_size" class="form-control form-control-sm" @change="applyFilter">
                 <option :value="12">12 por página</option>
                 <option :value="24">24 por página</option>
                 <option :value="48">48 por página</option>
@@ -726,6 +726,12 @@ const paginationRange = computed(() => {
   return range
 })
 
+// Chamado ao aplicar filtro — reseta para página 1 antes de buscar
+function applyFilter() {
+  currentPage.value = 1
+  loadProducts()
+}
+
 async function loadProducts() {
   loading.value = true
   try {
@@ -1130,10 +1136,13 @@ const agruparModal = reactive({ show: false, source: 'pg', products: [] })
 function openAgruparModal() {
   if (catalogTab.value === 'pg') {
     agruparModal.source = 'pg'
-    agruparModal.products = products.value.filter(p => selectedPgIds.value.has(p.id))
+    // Passa apenas os IDs — o modal hidrata cada produto via API, garantindo que
+    // produtos selecionados em páginas diferentes também sejam incluídos.
+    agruparModal.products = [...selectedPgIds.value].map(id => ({ id }))
   } else {
     agruparModal.source = 'cmig'
-    agruparModal.products = cmigProducts.value.filter(p => selectedCmigIds.value.has(p.id))
+    const cmigId = derivedCmigId.value
+    agruparModal.products = [...selectedCmigIds.value].map(id => ({ id, cmig_id: cmigId }))
   }
   agruparModal.show = true
 }

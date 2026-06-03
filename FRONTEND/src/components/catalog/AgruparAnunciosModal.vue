@@ -534,6 +534,10 @@ async function hydrateProducts() {
       const imgs = (data.images || []).map(i => ({ url: i.url || i }))
       baseFields._product_images = imgs
       if (imgs.length && !baseFields.pictures.length) baseFields.pictures = [imgs[0].url]
+      // Preenche campos que podem estar ausentes em stubs { id } vindos de seleção multi-página
+      if (!baseFields._title) baseFields._title = data.title || data.name || `Produto #${productId}`
+      if (!baseFields._sku)   baseFields._sku   = isPg ? (data.sku || '') : (data.sku_cmig || '')
+      if (!baseFields._thumb) baseFields._thumb  = imgs[0]?.url || null
       // Pré-preenche o diferenciador se houver hint nos atributos do produto
       const hint = (data.color || data.size || '')
       if (hint) baseFields.differentiator = hint
