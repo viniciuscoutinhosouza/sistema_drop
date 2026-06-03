@@ -193,6 +193,23 @@
             {{ summary.success_count }} publicado(s) / {{ summary.failure_count }} falha(s) de {{ summary.total }} total.
           </div>
 
+          <!-- Detalhes das falhas — não esconde no tooltip -->
+          <div v-if="failedDetails.length" class="card border-danger mt-3">
+            <div class="card-header py-2 bg-danger text-white">
+              <i class="fas fa-bug mr-1"></i>
+              <strong>Mensagens de erro do Mercado Livre</strong>
+            </div>
+            <div class="card-body p-2">
+              <div v-for="f in failedDetails" :key="f.product_id" class="mb-2 pb-2 border-bottom" style="font-size:12px">
+                <div class="font-weight-bold mb-1">
+                  <i class="fas fa-times-circle text-danger mr-1"></i>
+                  {{ f.title }} <span class="text-muted">(produto #{{ f.product_id }})</span>
+                </div>
+                <pre class="bg-light p-2 mb-0" style="white-space:pre-wrap;word-break:break-all;font-size:11px;max-height:200px;overflow:auto">{{ f.error }}</pre>
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <div class="modal-footer">
@@ -255,6 +272,17 @@ const canSubmit = computed(() =>
   !!form.category_id
   && form.family_name.trim().length > 0
   && form.products.every(p => Number(p.sale_price) > 0 && p.pictures.length > 0)
+)
+
+const failedDetails = computed(() =>
+  form.products
+    .map(p => {
+      const r = resultByProductId.value[p.product_id]
+      return r && !r.ok
+        ? { product_id: p.product_id, title: p._title, error: r.error || 'Erro sem mensagem do backend' }
+        : null
+    })
+    .filter(Boolean)
 )
 
 function onCatSearch() {

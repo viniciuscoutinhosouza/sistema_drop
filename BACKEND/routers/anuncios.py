@@ -3688,10 +3688,15 @@ async def publish_anuncios_as_family(
                 "platform_item_id": platform_item_id,
             })
         except HTTPException as exc:
+            err_msg = str(exc.detail)
+            logger.error(
+                "publish_anuncios_as_family: produto %s falhou (HTTP %s): %s",
+                product_id, exc.status_code, err_msg,
+            )
             results.append({
                 "product_id": product_id,
                 "ok": False,
-                "error": str(exc.detail),
+                "error": err_msg,
             })
         except Exception as exc:
             logger.exception(
