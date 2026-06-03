@@ -772,9 +772,9 @@ async function submitGroup() {
     const det = e.response?.data?.detail
     if (det?.type === 'category_not_supported') {
       groupCategoryInfo.value = { message: det.message, instruction: det.instruction }
-    } else if (det?.type === 'listings_not_active') {
-      // Status real no ML é != active; backend já atualizou o DB. Mostra como info
-      // (não como erro) e inclui a instrução de como prosseguir.
+    } else if (det?.type === 'listings_not_active' || det?.type === 'family_name_mismatch') {
+      // Status real no ML diverge OU family_name diverge. Mostra como info
+      // (não como erro) com instrução de como prosseguir.
       groupCategoryInfo.value = { message: det.message, instruction: det.instruction }
       groupErrorDetails.value = (det.ml_errors || []).map(err => `#${err.listing_id}: ${err.error}`)
     } else if (det?.ml_errors?.length) {

@@ -2878,12 +2878,14 @@ async def create_variation_group(
         "under_review": "paused",
     }
     mlb_ids = [l.platform_item_id for l in listings if l.platform_item_id]
+    ml_family_by_id: dict[str, str | None] = {}
     if mlb_ids:
         try:
             ml_items = await ml_service.get_items_bulk(access_token, mlb_ids)
         except Exception:
             ml_items = []  # falha silenciosa: deixa o PUT abaixo falhar com erro claro
         status_by_id = {item.get("id"): item.get("status") for item in ml_items}
+        ml_family_by_id = {item.get("id"): item.get("family_name") for item in ml_items}
 
         not_active: list[dict] = []
         status_changed = False
@@ -2934,16 +2936,64 @@ async def create_variation_group(
                 },
             )
 
+    # Detecta se os anúncios já têm family_name setado no ML. Categorias
+    # User Products auto-agrupam itens publicados com mesmo family_name e
+    # rejeitam reset/alteração via PUT (cause 374 "family name is invalid").
+    # Se todos já compartilham o mesmo family_name → registra grupo localmente
+    # sem PUT. Se divergem → erro claro.
+    existing_families = {
+        ml_family_by_id.get(l.platform_item_id)
+        for l in listings
+        if ml_family_by_id.get(l.platform_item_id)
+    }
+    all_already_grouped = (
+        len(existing_families) == 1
+        and all(ml_family_by_id.get(l.platform_item_id) for l in listings)
+    )
+
+    if len(existing_families) > 1:
+        # Family_names divergentes — não dá pra unificar sem republicar
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "type": "family_name_mismatch",
+                "message": (
+                    "Os anúncios selecionados têm nomes de família diferentes no Mercado "
+                    "Livre — não é possível agrupá-los sem republicar."
+                ),
+                "instruction": (
+                    "Selecione anúncios que ainda não foram agrupados, ou anúncios que "
+                    "compartilhem o mesmo nome de família no ML."
+                ),
+                "ml_errors": [
+                    {
+                        "listing_id": l.id,
+                        "error": (
+                            f"{l.platform_item_id} → family_name no ML: "
+                            f"'{ml_family_by_id.get(l.platform_item_id) or '(vazio)'}'"
+                        ),
+                    }
+                    for l in listings
+                ],
+            },
+        )
+
+    if all_already_grouped:
+        # Honra o family_name que o ML já atribuiu (não o que o usuário digitou)
+        family_name = next(iter(existing_families))
+
     group_id = str(_uuid.uuid4())
 
     # Aplica family_name em cada anúncio no ML — best-effort por anúncio,
-    # interrompe no primeiro erro para não deixar grupo parcial
+    # interrompe no primeiro erro para não deixar grupo parcial.
+    # Se all_already_grouped, pula o PUT (ML já agrupou na publicação).
     errors: list[dict] = []
     for l in listings:
         try:
-            await ml_service.set_item_family_name(
-                access_token, l.platform_item_id, family_name
-            )
+            if not all_already_grouped:
+                await ml_service.set_item_family_name(
+                    access_token, l.platform_item_id, family_name
+                )
             l.variation_group_id = group_id
             l.family_name_ml = family_name
             l.last_sync_at = datetime.now(UTC)
