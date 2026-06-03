@@ -44,13 +44,33 @@
             <i class="fas fa-id-card mr-1"></i> Catálogo CMIG
           </button>
         </div>
-        <RouterLink
-          :to="variationsRouteTarget"
+        <button
           class="btn btn-outline-success ml-auto"
+          :disabled="!selectedAccountId || !isMercadoLivre"
           :title="variationsTooltip"
+          @click="openVariationsCategoryPicker"
         >
           <i class="fas fa-layer-group mr-1"></i> Anúncio com Variações
-        </RouterLink>
+        </button>
+      </div>
+
+      <!-- Barra de seleção múltipla (aparece quando >= 2 produtos selecionados) -->
+      <div
+        v-if="currentSelectionCount >= 2"
+        class="alert alert-success py-2 mb-3 d-flex flex-wrap align-items-center"
+        style="gap:12px"
+      >
+        <i class="fas fa-check-square mr-1"></i>
+        <strong>{{ currentSelectionCount }} produto(s) selecionado(s)</strong>
+        <span class="text-muted small">
+          · publicar como família (categorias User Products do ML)
+        </span>
+        <button class="btn btn-sm btn-success ml-auto" @click="openAgruparModal">
+          <i class="fas fa-object-group mr-1"></i> Agrupar Anúncios
+        </button>
+        <button class="btn btn-sm btn-outline-secondary" @click="clearCurrentSelection">
+          <i class="fas fa-times mr-1"></i> Limpar seleção
+        </button>
       </div>
 
       <template v-if="catalogTab === 'pg'">
@@ -100,7 +120,24 @@
       <div v-else>
         <div class="row">
           <div v-for="product in products" :key="product.id" class="col-xl-2 col-lg-3 col-md-4 col-sm-6 mb-3">
-            <div class="card h-100 shadow-sm">
+            <div
+              class="card h-100 shadow-sm position-relative"
+              :class="{ 'border-success': selectedPgIds.has(product.id) }"
+              :style="selectedPgIds.has(product.id) ? 'border-width:2px' : ''"
+            >
+              <!-- Checkbox de seleção múltipla -->
+              <div
+                class="position-absolute"
+                style="top:6px;left:6px;z-index:2;background:rgba(255,255,255,.9);border-radius:4px;padding:2px 6px"
+                @click.stop="togglePgSelection(product.id)"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedPgIds.has(product.id)"
+                  @click.stop="togglePgSelection(product.id)"
+                  :title="selectedPgIds.has(product.id) ? 'Desselecionar' : 'Selecionar para agrupar'"
+                />
+              </div>
               <RouterLink :to="`/catalog/${product.id}`">
                 <div style="height:130px;background:#f8f9fa;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px 4px 0 0">
                   <img
@@ -206,7 +243,23 @@
           <div v-else>
             <div class="row">
               <div v-for="product in filteredCmigProducts" :key="product.id" class="col-xl-2 col-lg-3 col-md-4 col-sm-6 mb-3">
-                <div class="card h-100 shadow-sm">
+                <div
+                  class="card h-100 shadow-sm position-relative"
+                  :class="{ 'border-success': selectedCmigIds.has(product.id) }"
+                  :style="selectedCmigIds.has(product.id) ? 'border-width:2px' : ''"
+                >
+                  <div
+                    class="position-absolute"
+                    style="top:6px;left:6px;z-index:2;background:rgba(255,255,255,.9);border-radius:4px;padding:2px 6px"
+                    @click.stop="toggleCmigSelection(product.id)"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="selectedCmigIds.has(product.id)"
+                      @click.stop="toggleCmigSelection(product.id)"
+                      :title="selectedCmigIds.has(product.id) ? 'Desselecionar' : 'Selecionar para agrupar'"
+                    />
+                  </div>
                   <div style="height:130px;background:#f8f9fa;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px 4px 0 0">
                     <img
                       :src="getCmigThumb(product) || 'https://via.placeholder.com/300x200?text=Sem+Foto'"
@@ -259,6 +312,106 @@
 
     </div>
   </section>
+
+  <!-- ── Modal: Agrupar Anúncios (User Products) ── -->
+  <AgruparAnunciosModal
+    v-if="agruparModal.show"
+    :account-id="selectedAccountId"
+    :account-label="selectedAccountLabel"
+    :source="agruparModal.source"
+    :products="agruparModal.products"
+    @close="onAgruparClose"
+  />
+
+  <!-- ── Modal: Pré-validação de categoria para 'Anúncio com Variações' ── -->
+  <div v-if="variationsCategoryModal.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.55);z-index:1060">
+    <div class="modal-dialog modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">
+            <i class="fas fa-layer-group mr-2 text-success"></i>Anúncio com Variações
+          </h5>
+          <button type="button" class="close" @click="closeVariationsCategoryPicker"><span>&times;</span></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-muted small mb-2">
+            Selecione a categoria do Mercado Livre. Vamos validar se ela aceita variações tradicionais
+            (1 anúncio com array de variações) antes de abrir o assistente.
+          </p>
+          <div class="input-group input-group-sm mb-2">
+            <input
+              v-model="variationsCategoryModal.catSearch"
+              type="text" class="form-control"
+              placeholder="Buscar categoria ML..."
+              @input="onVarCatSearchInput"
+            />
+            <div class="input-group-append">
+              <span class="input-group-text"><i class="fas fa-search"></i></span>
+            </div>
+          </div>
+          <div v-if="variationsCategoryModal.catSearching" class="text-muted small">
+            <i class="fas fa-spinner fa-spin mr-1"></i>Buscando...
+          </div>
+          <div v-if="variationsCategoryModal.catResults.length" class="list-group mb-2" style="max-height:280px;overflow-y:auto">
+            <button
+              v-for="cat in variationsCategoryModal.catResults" :key="cat.id" type="button"
+              class="list-group-item list-group-item-action py-2"
+              @click="selectVarCategory(cat)"
+            >
+              <div v-if="cat.path_from_root && cat.path_from_root.length" class="d-flex flex-wrap" style="gap:3px;font-size:12px">
+                <template v-for="(p,i) in cat.path_from_root" :key="p.id || i">
+                  <span :class="i === cat.path_from_root.length - 1 ? 'font-weight-bold text-dark' : 'text-muted'">{{ p.name }}</span>
+                  <i v-if="i < cat.path_from_root.length - 1" class="fas fa-angle-right text-muted" style="font-size:10px"></i>
+                </template>
+              </div>
+              <code class="text-muted d-block" style="font-size:10px">{{ cat.id }}</code>
+            </button>
+          </div>
+
+          <div v-if="variationsCategoryModal.selected" class="p-2 border rounded bg-light mb-2">
+            <div class="font-weight-bold" style="font-size:13px">{{ variationsCategoryModal.selected.name }}</div>
+            <code class="text-muted" style="font-size:11px">ID: {{ variationsCategoryModal.selected.id }}</code>
+          </div>
+
+          <div v-if="variationsCategoryModal.supportLoading" class="text-muted small">
+            <i class="fas fa-spinner fa-spin mr-1"></i>Validando categoria...
+          </div>
+
+          <div v-else-if="variationsCategoryModal.support" class="mt-2">
+            <div v-if="variationsCategoryModal.support.requires_family_name" class="alert alert-warning py-2 small mb-0">
+              <i class="fas fa-info-circle mr-1"></i>
+              <strong>Categoria User Products.</strong> Cada variação é um anúncio separado — não dá pra usar
+              array de variações. Use a opção <strong>"Agrupar Anúncios"</strong> selecionando vários produtos
+              do catálogo (volte e marque os checkboxes).
+            </div>
+            <div v-else-if="!variationsCategoryModal.support.supports_variations" class="alert alert-danger py-2 small mb-0">
+              <i class="fas fa-times-circle mr-1"></i>
+              Esta categoria <strong>não aceita variações</strong> no Mercado Livre.
+            </div>
+            <div v-else class="alert alert-success py-2 small mb-0">
+              <i class="fas fa-check-circle mr-1"></i>
+              Categoria aceita variações por:
+              <strong>{{ (variationsCategoryModal.support.variation_combination_attrs || []).map(a => a.name).join(', ') || 'atributos personalizados' }}</strong>.
+            </div>
+          </div>
+
+          <div v-if="variationsCategoryModal.error" class="alert alert-danger py-2 mt-2 small">
+            {{ variationsCategoryModal.error }}
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" @click="closeVariationsCategoryPicker">Cancelar</button>
+          <button
+            class="btn btn-success"
+            :disabled="!variationsCategoryModal.support || variationsCategoryModal.support.requires_family_name || !variationsCategoryModal.support.supports_variations"
+            @click="proceedToVariationsWizard"
+          >
+            <i class="fas fa-arrow-right mr-1"></i>Continuar
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ── Modal: Publicar Anúncio ── -->
   <div v-if="modal.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,0.55);z-index:1050">
@@ -540,10 +693,14 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import api from '@/composables/useApi'
 import { formatCurrency } from '@/utils/formatters'
 import PublishCategoryPicker from '@/components/catalog/PublishCategoryPicker.vue'
+import AgruparAnunciosModal from '@/components/catalog/AgruparAnunciosModal.vue'
 import { persistCategoryToProduct } from '@/composables/usePublishCategory'
+
+const router = useRouter()
 
 // ── Listagem ──────────────────────────────────────────────────────────────────
 const products    = ref([])
@@ -609,17 +766,10 @@ const selectedAccountLabel = computed(() => {
 
 const isMercadoLivre = computed(() => selectedAccount.value?.platform === 'mercadolivre')
 
-const variationsTooltip = computed(() =>
-  selectedAccountId.value && isMercadoLivre.value
-    ? 'Criar anúncio com variações para esta conta'
-    : 'Criar anúncio com variações'
-)
-const variationsRouteTarget = computed(() => {
-  const useAccount = !!selectedAccountId.value && isMercadoLivre.value
-  return {
-    path: '/catalog/anuncios-variacoes/new',
-    query: useAccount ? { account_id: selectedAccountId.value } : {},
-  }
+const variationsTooltip = computed(() => {
+  if (!selectedAccountId.value) return 'Selecione uma conta para criar anúncio com variações'
+  if (!isMercadoLivre.value) return 'Variações disponíveis apenas para Mercado Livre'
+  return 'Criar anúncio com variações para esta conta'
 })
 
 async function loadAccounts() {
@@ -947,6 +1097,121 @@ async function openPublishModalFromCmig(cmigProduct) {
   form.weight_kg        = cmigProduct.weight_kg || ''
   newPhotoUrl.value     = ''
   resetCategorySel()
+}
+
+// ── Seleção múltipla para agrupamento ─────────────────────────────────────────
+const selectedPgIds = ref(new Set())
+const selectedCmigIds = ref(new Set())
+
+const currentSelectionCount = computed(() =>
+  catalogTab.value === 'pg' ? selectedPgIds.value.size : selectedCmigIds.value.size
+)
+
+function togglePgSelection(id) {
+  const s = new Set(selectedPgIds.value)
+  if (s.has(id)) s.delete(id); else s.add(id)
+  selectedPgIds.value = s
+}
+
+function toggleCmigSelection(id) {
+  const s = new Set(selectedCmigIds.value)
+  if (s.has(id)) s.delete(id); else s.add(id)
+  selectedCmigIds.value = s
+}
+
+function clearCurrentSelection() {
+  if (catalogTab.value === 'pg') selectedPgIds.value = new Set()
+  else selectedCmigIds.value = new Set()
+}
+
+// Modal "Agrupar Anúncios"
+const agruparModal = reactive({ show: false, source: 'pg', products: [] })
+
+function openAgruparModal() {
+  if (catalogTab.value === 'pg') {
+    agruparModal.source = 'pg'
+    agruparModal.products = products.value.filter(p => selectedPgIds.value.has(p.id))
+  } else {
+    agruparModal.source = 'cmig'
+    agruparModal.products = cmigProducts.value.filter(p => selectedCmigIds.value.has(p.id))
+  }
+  agruparModal.show = true
+}
+
+function onAgruparClose(result) {
+  agruparModal.show = false
+  if (result?.success) {
+    clearCurrentSelection()
+    if (catalogTab.value === 'cmig') loadCmigProducts()
+    else loadProducts()
+  }
+}
+
+// ── Modal de pré-validação de categoria para "Anúncio com Variações" ──────────
+const variationsCategoryModal = reactive({
+  show: false,
+  catSearch: '',
+  catResults: [],
+  catSearching: false,
+  selected: null,           // {id, name, path_from_root}
+  support: null,            // /variation-support result
+  supportLoading: false,
+  error: '',
+})
+
+let varCatSearchTimer = null
+function openVariationsCategoryPicker() {
+  variationsCategoryModal.show = true
+  variationsCategoryModal.catSearch = ''
+  variationsCategoryModal.catResults = []
+  variationsCategoryModal.selected = null
+  variationsCategoryModal.support = null
+  variationsCategoryModal.error = ''
+}
+function closeVariationsCategoryPicker() {
+  variationsCategoryModal.show = false
+}
+function onVarCatSearchInput() {
+  clearTimeout(varCatSearchTimer)
+  varCatSearchTimer = setTimeout(doVarCatSearch, 300)
+}
+async function doVarCatSearch() {
+  const q = variationsCategoryModal.catSearch.trim()
+  if (q.length < 2) { variationsCategoryModal.catResults = []; return }
+  variationsCategoryModal.catSearching = true
+  try {
+    const { data } = await api.get('/anuncios/categories/search', { params: { q } })
+    variationsCategoryModal.catResults = (data || []).slice(0, 12)
+  } catch { variationsCategoryModal.catResults = [] }
+  finally { variationsCategoryModal.catSearching = false }
+}
+async function selectVarCategory(cat) {
+  variationsCategoryModal.selected = cat
+  variationsCategoryModal.support = null
+  variationsCategoryModal.error = ''
+  variationsCategoryModal.supportLoading = true
+  try {
+    const { data } = await api.get(`/anuncios/categories/${cat.id}/variation-support`)
+    variationsCategoryModal.support = data
+  } catch (e) {
+    variationsCategoryModal.error = e.response?.data?.detail || 'Erro ao verificar categoria.'
+  } finally {
+    variationsCategoryModal.supportLoading = false
+  }
+}
+function proceedToVariationsWizard() {
+  const cat = variationsCategoryModal.selected
+  const sup = variationsCategoryModal.support
+  if (!cat || !sup) return
+  closeVariationsCategoryPicker()
+  router.push({
+    path: '/catalog/anuncios-variacoes/new',
+    query: {
+      account_id: selectedAccountId.value || undefined,
+      category_id: cat.id,
+      category_name: cat.name,
+    },
+  })
 }
 
 onMounted(() => {

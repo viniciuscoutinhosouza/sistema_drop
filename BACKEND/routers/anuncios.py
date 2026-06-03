@@ -3479,6 +3479,245 @@ async def publish_anuncio(
     return response
 
 
+def _extract_differentiator(product) -> tuple[str | None, str | None]:
+    """Tenta extrair o atributo diferenciador (cor/tamanho/voltagem) de um produto
+    PG/CMIG para usar em anúncios User Products. Retorna (attr_id, value_name).
+    Hoje a cobertura é simples — usa apenas o campo `color` do produto se houver.
+    """
+    color = getattr(product, "color", None)
+    if color:
+        return ("COLOR", str(color))
+    # Próximos passos: também ler de attributes_json/variants se necessário.
+    return (None, None)
+
+
+@router.post("/publish-as-family")
+async def publish_anuncios_as_family(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Publica N anúncios compartilhando o mesmo family_name (modelo User Products
+    do ML). Cada produto vira um item separado no ML; o ML auto-agrupa pelos
+    items que compartilham family_name + BRAND + MODEL idênticos.
+
+    Loop INDEPENDENTE: cada produto é tentado isoladamente. Se falhar, registra
+    o erro e segue para o próximo. Resposta inclui resultado por produto.
+
+    Body:
+      account_id, source ('pg'|'cmig'), category_id, family_name (compartilhado),
+      model, listing_type, free_shipping, item_condition, warranty_type,
+      warranty_time, shipping_mode, stock_mode, fixed_quantity, keep_stock_fixed,
+      products: [{ product_id, sale_price, pictures, attributes(opcional) }]
+    """
+    import uuid as _uuid
+
+    account_id = body.get("account_id")
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id é obrigatório")
+
+    source = (body.get("source") or "").lower()
+    if source not in ("pg", "cmig"):
+        raise HTTPException(status_code=400, detail="source deve ser 'pg' ou 'cmig'")
+
+    products_input = body.get("products") or []
+    if len(products_input) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Informe pelo menos 2 produtos para agrupar como família",
+        )
+
+    family_name = (body.get("family_name") or "").strip()
+    if not family_name:
+        raise HTTPException(status_code=400, detail="family_name é obrigatório")
+    family_name = family_name[:60]  # ML cap
+
+    category_id = body.get("category_id")
+    if not category_id:
+        raise HTTPException(status_code=400, detail="category_id é obrigatório")
+
+    account = await _get_account_or_403(account_id, current_user, db)
+    if account.platform != "mercadolivre":
+        raise HTTPException(
+            status_code=422,
+            detail="Agrupamento por family_name só funciona para Mercado Livre",
+        )
+    access_token = await _get_valid_token(account, db)
+    await _validate_token_owner(account, access_token)
+
+    cmig_crt = await _resolve_cmig_crt(account, db)
+    model = body.get("model")
+    listing_type = body.get("listing_type", "gold_special")
+    free_shipping = bool(body.get("free_shipping", False))
+    item_condition = body.get("item_condition") or "new"
+    warranty_type = body.get("warranty_type")
+    warranty_time = body.get("warranty_time")
+    shipping_mode = body.get("shipping_mode") or "me2"
+    stock_mode = body.get("stock_mode") or "product"
+    fixed_quantity = int(body.get("fixed_quantity") or 1)
+    keep_stock_fixed = bool(body.get("keep_stock_fixed", False))
+
+    # variation_group_id compartilhado — todos os listings ficam vinculados
+    group_id = str(_uuid.uuid4())
+
+    results: list[dict] = []  # por produto: {product_id, ok, listing? error?}
+
+    for p_input in products_input:
+        product_id = p_input.get("product_id")
+        sale_price = p_input.get("sale_price")
+        pictures = p_input.get("pictures") or []
+
+        if not product_id or not sale_price:
+            results.append({
+                "product_id": product_id,
+                "ok": False,
+                "error": "product_id e sale_price são obrigatórios",
+            })
+            continue
+
+        try:
+            # Carrega o produto fonte (PG ou CMIG)
+            if source == "pg":
+                prod = (await db.execute(
+                    select(CatalogProduct).where(CatalogProduct.id == product_id)
+                )).scalar_one_or_none()
+            else:
+                prod = (await db.execute(
+                    select(CMIGProduct).where(CMIGProduct.id == product_id)
+                )).scalar_one_or_none()
+
+            if not prod:
+                results.append({
+                    "product_id": product_id,
+                    "ok": False,
+                    "error": f"Produto {source.upper()} #{product_id} não encontrado",
+                })
+                continue
+
+            # Estoque: recalcula real ou usa fixo
+            if stock_mode == "product":
+                available_quantity = await _refresh_product_stock(prod, db)
+            else:
+                available_quantity = fixed_quantity
+
+            # Atributos: mescla atributos manuais + diferenciador inferido do produto
+            attrs = list(p_input.get("attributes") or [])
+            attr_ids = {(a.get("id") or "").upper() for a in attrs}
+            if model and "MODEL" not in attr_ids:
+                attrs.append({"id": "MODEL", "value_name": str(model)})
+                attr_ids.add("MODEL")
+
+            diff_id, diff_value = _extract_differentiator(prod)
+            if diff_id and diff_id not in attr_ids and diff_value:
+                attrs.append({"id": diff_id, "value_name": diff_value})
+
+            ml_form = {
+                "title_override": (prod.title or "")[:60],
+                "sale_price": sale_price,
+                "listing_type": listing_type,
+                "category_id": category_id,
+                "available_quantity": available_quantity,
+                "item_condition": item_condition,
+                "warranty_type": warranty_type,
+                "warranty_time": warranty_time,
+                "shipping_mode": shipping_mode,
+                "free_shipping": free_shipping,
+                "pictures": pictures,
+                "attributes": attrs,
+                "height_cm": getattr(prod, "height_cm", None),
+                "width_cm": getattr(prod, "width_cm", None),
+                "length_cm": getattr(prod, "length_cm", None),
+                "weight_kg": getattr(prod, "weight_kg", None),
+                "model": model,
+                "sku": getattr(prod, "sku", None) or getattr(prod, "sku_cmig", None),
+                "fiscal_json": p_input.get("fiscal_json"),
+                "cmig_crt": cmig_crt,
+                "family_name": family_name,
+            }
+
+            ml_item = await _create_ml_item_with_retry(access_token, prod, ml_form)
+            platform_item_id = ml_item.get("id")
+
+            thumbnail = (
+                ml_item.get("secure_thumbnail")
+                or ml_item.get("thumbnail")
+                or (pictures[0] if pictures else None)
+            )
+            if thumbnail:
+                thumbnail = thumbnail.replace("http://", "https://")
+            pictures_json = _pictures_to_json(ml_item.get("pictures"), pictures)
+            family_name_ml = ml_item.get("family_name") or family_name
+
+            listing = ProductListing(
+                account_id=account_id,
+                cmig_product_id=product_id if source == "cmig" else None,
+                catalog_product_id=product_id if source == "pg" else None,
+                platform_item_id=platform_item_id,
+                sale_price=float(sale_price),
+                title_override=(prod.title or "")[:60],
+                thumbnail=thumbnail,
+                category_id=category_id,
+                listing_type=listing_type,
+                attributes_json=_json.dumps(attrs, ensure_ascii=False) if attrs else None,
+                available_quantity=available_quantity,
+                stock_mode=stock_mode,
+                fixed_quantity=fixed_quantity,
+                keep_stock_fixed=keep_stock_fixed,
+                item_condition=item_condition,
+                warranty_type=warranty_type,
+                warranty_time=warranty_time,
+                shipping_mode=shipping_mode,
+                free_shipping=free_shipping,
+                weight_kg=float(prod.weight_kg) if getattr(prod, "weight_kg", None) else None,
+                height_cm=float(prod.height_cm) if getattr(prod, "height_cm", None) else None,
+                width_cm=float(prod.width_cm) if getattr(prod, "width_cm", None) else None,
+                length_cm=float(prod.length_cm) if getattr(prod, "length_cm", None) else None,
+                status="published",
+                published_at=datetime.now(UTC),
+                last_sync_at=datetime.now(UTC),
+                pictures_json=pictures_json,
+                family_name_ml=family_name_ml,
+                variation_group_id=group_id,
+            )
+            db.add(listing)
+            await db.flush()
+            results.append({
+                "product_id": product_id,
+                "ok": True,
+                "listing_id": listing.id,
+                "platform_item_id": platform_item_id,
+            })
+        except HTTPException as exc:
+            results.append({
+                "product_id": product_id,
+                "ok": False,
+                "error": str(exc.detail),
+            })
+        except Exception as exc:
+            logger.exception(
+                "Falha inesperada em publish_anuncios_as_family produto=%s", product_id
+            )
+            results.append({
+                "product_id": product_id,
+                "ok": False,
+                "error": f"Erro inesperado: {exc}",
+            })
+
+    await db.commit()
+
+    success_count = sum(1 for r in results if r.get("ok"))
+    return {
+        "variation_group_id": group_id,
+        "family_name": family_name,
+        "account_id": account_id,
+        "category_id": category_id,
+        "total": len(results),
+        "success_count": success_count,
+        "failure_count": len(results) - success_count,
+        "results": results,
+    }
+
+
 @router.put("/{listing_id}")
 async def update_anuncio(
     listing_id: int,
