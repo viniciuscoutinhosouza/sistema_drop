@@ -2866,6 +2866,17 @@ async def create_variation_group(
     # Anúncios fechados/pausados/deletados rejeitam alterações com cause 374
     # críptico ("The field family name is invalid"). Atualiza o status local
     # quando divergente — o DB pode estar out-of-sync com o ML.
+    #
+    # Mapeamento ML→local: o DB tem CHECK constraint chk_pl_status restringindo
+    # status a ('draft','published','paused','error'). Mapeamos closed/inactive/
+    # under_review → 'paused' (semanticamente: "não vendendo agora").
+    ML_TO_LOCAL_STATUS = {
+        "active": "published",
+        "paused": "paused",
+        "closed": "paused",
+        "inactive": "paused",
+        "under_review": "paused",
+    }
     mlb_ids = [l.platform_item_id for l in listings if l.platform_item_id]
     if mlb_ids:
         try:
@@ -2879,8 +2890,9 @@ async def create_variation_group(
         for l in listings:
             real_status = status_by_id.get(l.platform_item_id)
             if real_status and real_status != "active":
-                if l.status != real_status:
-                    l.status = real_status
+                local_status = ML_TO_LOCAL_STATUS.get(real_status, "paused")
+                if l.status != local_status:
+                    l.status = local_status
                     status_changed = True
                 not_active.append({
                     "listing_id": l.id,
@@ -2890,19 +2902,27 @@ async def create_variation_group(
 
         if not_active:
             if status_changed:
-                await db.commit()
+                try:
+                    await db.commit()
+                except Exception as commit_exc:
+                    # Falha de commit no sync de status é não-crítica: não pode
+                    # bloquear o usuário de ver o erro real (agrupamento falhou).
+                    await db.rollback()
+                    logger.warning(
+                        "Falha ao sincronizar status local dos listings %s: %s",
+                        [e["listing_id"] for e in not_active], commit_exc,
+                    )
             raise HTTPException(
                 status_code=422,
                 detail={
                     "type": "listings_not_active",
                     "message": (
                         f"{len(not_active)} anúncio(s) não estão ativos no Mercado Livre "
-                        "e não podem ser agrupados. O status local foi atualizado para refletir "
-                        "o estado real do ML."
+                        "e não podem ser agrupados."
                     ),
                     "instruction": (
                         "Remova-os da seleção (ou republique se necessário) e tente novamente "
-                        "com apenas anúncios em status 'active'."
+                        "com apenas anúncios ativos."
                     ),
                     "ml_errors": [
                         {
