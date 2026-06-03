@@ -1509,6 +1509,15 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
     def _has_cause(body: dict, code: str) -> bool:
         return any((c or {}).get("code") == code for c in _cause_list(body))
 
+    def _cause_references(body: dict, code: str) -> set:
+        """Retorna o conjunto de campos referenciados na causa de erro X."""
+        refs: set = set()
+        for c in _cause_list(body):
+            if (c or {}).get("code") == code:
+                for ref in (c.get("references") or []):
+                    refs.add(ref)
+        return refs
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.put(
             f"{ML_API_BASE}/items/{item_id}",
@@ -1521,11 +1530,32 @@ async def reactivate_item(access_token: str, item_id: str, quantity: int = 1) ->
 
         # For not_modifiable: update stock via the proper endpoint first, then activate
         is_not_modifiable = False
+        is_item_closed = False
         if resp.status_code == 400:
             try:
-                is_not_modifiable = _has_cause(resp.json(), "item.available_quantity.not_modifiable")
+                err_body = resp.json()
+                # ML usa duas variantes pro mesmo problema de campo bloqueado:
+                #  • code="item.available_quantity.not_modifiable" (legado)
+                #  • code="field_not_updatable" + references=["available_quantity"] (novo)
+                is_not_modifiable = (
+                    _has_cause(err_body, "item.available_quantity.not_modifiable")
+                    or "available_quantity" in _cause_references(err_body, "field_not_updatable")
+                )
+                # Item permanentemente fechado/deletado — não dá pra reativar
+                top_msg = (err_body.get("message") or "").lower()
+                if "status:closed" in top_msg and "cannot update item" in top_msg:
+                    is_item_closed = True
             except Exception:
                 pass
+
+        if is_item_closed:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Anúncio {item_id} está fechado/deletado no Mercado Livre e não pode "
+                    "ser reativado. Republique como um anúncio novo."
+                ),
+            )
 
         if not is_not_modifiable:
             raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp.text}")
