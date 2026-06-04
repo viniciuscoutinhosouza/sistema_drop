@@ -30,10 +30,12 @@ import time
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import require_role
+from models.integration import MarketplaceAccount
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,35 @@ router = APIRouter()
 
 ML_BASE_URL = "https://api.mercadolibre.com"
 ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
+
+
+@router.get("/accounts")
+async def list_all_accounts_for_admin(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """Lista TODAS as contas de marketplace pro Console de API.
+
+    Diferente do GET /accounts (filtra por co-administração do usuário),
+    aqui o admin vê tudo — é o ponto de entrada da ferramenta de debug.
+    """
+    result = await db.execute(
+        select(MarketplaceAccount).order_by(
+            MarketplaceAccount.platform, MarketplaceAccount.created_at
+        )
+    )
+    return [
+        {
+            "id": a.id,
+            "platform": a.platform,
+            "description": a.description,
+            "platform_username": a.platform_username,
+            "email": a.email,
+            "requires_reauth": getattr(a, "requires_reauth", False),
+            "cmig_id": getattr(a, "cmig_id", None),
+        }
+        for a in result.scalars().all()
+    ]
 
 
 @router.post("/execute")

@@ -36,15 +36,24 @@
             <div class="card-body">
 
               <div class="form-group">
-                <label class="font-weight-bold">Conta de Marketplace <span class="text-danger">*</span></label>
+                <label class="font-weight-bold">
+                  Conta de Marketplace <span class="text-danger">*</span>
+                  <span class="text-muted ml-1 small">({{ accounts.length }} disponível(is))</span>
+                </label>
                 <select v-model="form.account_id" class="form-control form-control-sm">
                   <option value="">Selecione...</option>
                   <option v-for="a in accounts" :key="a.id" :value="a.id">
-                    {{ a.platform_label }} — {{ a.description || a.platform_username || a.email }}
+                    {{ a.platform_label }} — {{ a.description || a.platform_username || a.email || '(sem nome)' }}
                   </option>
                 </select>
-                <small v-if="selectedAccount && selectedAccount.platform !== 'mercadolivre'" class="text-danger">
-                  Plataforma não suportada ainda (só Mercado Livre).
+                <small v-if="accountsLoadError" class="text-danger d-block">
+                  <i class="fas fa-exclamation-triangle mr-1"></i>{{ accountsLoadError }}
+                </small>
+                <small v-else-if="!accounts.length" class="text-muted d-block">
+                  Nenhuma conta de marketplace cadastrada no sistema.
+                </small>
+                <small v-if="selectedAccount && selectedAccount.platform !== 'mercadolivre'" class="text-danger d-block">
+                  Plataforma <strong>{{ selectedAccount.platform }}</strong> ainda não suportada (só Mercado Livre na v1 do Console).
                 </small>
               </div>
 
@@ -257,14 +266,19 @@ function statusBadgeClass(status) {
   return 'badge-danger'
 }
 
+const accountsLoadError = ref('')
 async function loadAccounts() {
+  accountsLoadError.value = ''
   try {
-    const { data } = await api.get('/accounts')
+    // Endpoint admin-only que retorna TODAS as contas (diferente do /accounts
+    // que filtra pelas contas co-administradas pelo usuário).
+    const { data } = await api.get('/admin/api-console/accounts')
     const label = p => ({ mercadolivre: 'Mercado Livre', shopee: 'Shopee', bling: 'Bling' }[p] || p)
     accounts.value = (Array.isArray(data) ? data : []).map(a => ({ ...a, platform_label: label(a.platform) }))
     if (accounts.value.length === 1) form.account_id = accounts.value[0].id
-  } catch {
+  } catch (e) {
     accounts.value = []
+    accountsLoadError.value = e.response?.data?.detail || e.message || 'Erro ao carregar contas'
   }
 }
 
