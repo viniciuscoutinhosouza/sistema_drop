@@ -283,6 +283,15 @@
                     <p>Configuração de IA</p>
                   </RouterLink>
                 </li>
+                <li class="nav-item" v-if="isAdmin">
+                  <RouterLink to="/admin/api-console" class="nav-link" :class="{ active: route.path === '/admin/api-console' }">
+                    <i class="far fa-circle nav-icon"></i>
+                    <p>
+                      Console de API
+                      <span class="badge badge-danger ml-1" style="font-size:9px">Admin</span>
+                    </p>
+                  </RouterLink>
+                </li>
               </ul>
             </li>
           </template>

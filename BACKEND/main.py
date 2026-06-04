@@ -53,6 +53,7 @@ app.add_middleware(
 
 # Import and register routers
 from routers import (
+    admin_api_console,
     ai_config,
     anuncios,
     auth,
@@ -122,6 +123,11 @@ app.include_router(
     cmig_reports.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/reports", tags=["CMIGReports"]
 )
 app.include_router(invoices.router, prefix=f"{PREFIX}/invoices", tags=["Invoices"])
+app.include_router(
+    admin_api_console.router,
+    prefix=f"{PREFIX}/admin/api-console",
+    tags=["AdminAPIConsole"],
+)
 app.include_router(messages.router)
 app.include_router(ai_config.router)
 app.include_router(

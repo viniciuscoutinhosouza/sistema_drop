@@ -98,6 +98,9 @@ const MessagesView = () => import('@/views/messages/MessagesView.vue')
 // Configuração IA
 const AIConfigView = () => import('@/views/settings/AIConfigView.vue')
 
+// Console de API do Marketplace — Admin only
+const ApiConsoleView = () => import('@/views/admin/ApiConsoleView.vue')
+
 // Monitoramento de Rotinas (UGO + GO + Admin)
 const SchedulerMonitoringView = () => import('@/views/monitoring/SchedulerMonitoringView.vue')
 
@@ -207,6 +210,9 @@ const routes = [
 
       // Configuração IA — Admin
       { path: 'settings/ai-config', component: AIConfigView, meta: { title: 'Configuração de IA', role: 'admin' } },
+
+      // Console de API do Marketplace — Admin only
+      { path: 'admin/api-console', component: ApiConsoleView, meta: { title: 'Console de API', role: 'admin' } },
 
       // Simulador ML — todos os usuários
       { path: 'simulator', component: SimuladorView, meta: { title: 'Simulador ML' } },
