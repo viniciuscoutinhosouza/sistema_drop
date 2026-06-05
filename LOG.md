@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-05 — fix(users): grid mostra perfil de acesso atribuído, não só o papel
+
+### Problema
+- Na tela de Usuários, a coluna "Perfil" exibia sempre `roleLabel(u.role)` (papel: ac/ugo/...). Ao vincular um Perfil de Acesso (`profile_id`) via modal de edição, o grid continuava mostrando o papel antigo (ex.: Ianelli alterada para "Gestor Operacional" seguia aparecendo como "Gestor de Conta").
+
+### Correção (`FRONTEND/src/views/settings/UsersView.vue`)
+- Nova função `userProfile(u)` resolve `u.profile_id` na lista `profiles` já carregada (admin).
+- Coluna "Perfil" passa a usar `profileLabel(u)` (label do perfil de acesso quando há um; senão, label do papel) e `profileBadge(u)` (cor pelo `base_role` do perfil ou pelo papel).
+- Fallback para `roleLabel`/`roleBadge` preservado para usuários sem perfil atribuído e para visualizadores não-admin (que não carregam `profiles`).
+
+---
+
 ## 2026-06-02 — feat(anuncios): pré-flight de status no ML antes de agrupar (+ sync DB)
 
 **Contexto:** depois de remover a interpretação enganosa de cause 374, o erro real do ML chegou ao frontend: `{"cause":374,"message":"BODY_INVALID_FIELDS","error":"The field family name is invalid","status":400}`. Tecnicamente correto, mas críptico — o usuário não sabe que a causa é "anúncio fechado/deletado no ML".

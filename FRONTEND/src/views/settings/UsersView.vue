@@ -49,7 +49,7 @@
               <td>{{ u.full_name }}</td>
               <td>{{ u.email }}</td>
               <td>{{ u.whatsapp || '—' }}</td>
-              <td><span :class="roleBadge(u.role)">{{ roleLabel(u.role) }}</span></td>
+              <td><span :class="profileBadge(u)">{{ profileLabel(u) }}</span></td>
               <td>
                 <span v-if="u.warehouse_id" class="text-muted small">{{ warehouseName(u.warehouse_id) }}</span>
                 <span v-else class="text-muted">—</span>
@@ -415,6 +415,21 @@ function roleLabel(r) {
 
 function roleBadge(r) {
   return { admin: 'badge badge-dark', ugo: 'badge badge-warning', ac: 'badge badge-info', go: 'badge badge-success' }[r] || 'badge badge-secondary'
+}
+
+// Quando há perfil de acesso atribuído, exibe o label dele (sobrepõe o papel padrão).
+function userProfile(u) {
+  return u.profile_id ? profiles.value.find(p => p.id === u.profile_id) : null
+}
+
+function profileLabel(u) {
+  const p = userProfile(u)
+  return p ? p.label : roleLabel(u.role)
+}
+
+function profileBadge(u) {
+  const p = userProfile(u)
+  return roleBadge(p ? p.base_role : u.role)
 }
 
 function formatDate(dt) {
