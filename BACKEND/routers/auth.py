@@ -64,6 +64,42 @@ async def oauth2_token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
+async def _resolve_user_menu_permissions(user: User, db: AsyncSession) -> tuple[int | None, str | None, list[str]]:
+    """Resolve as menu_permissions efetivas de um usuário.
+
+    Ordem:
+      1. Se user.profile_id setado → usa esse perfil
+      2. Fallback: perfil de sistema com mesmo base_role do usuário
+         (usuários antigos sem profile_id herdam do perfil-template do role)
+      3. Nenhum casa → retorna lista vazia (frontend cai no fallback hardcoded)
+
+    Returns: (profile_id_efetivo, profile_name, menu_keys)
+    """
+    profile_id: int | None = user.profile_id
+    if profile_id:
+        r = await db.execute(select(UserProfile).where(UserProfile.id == profile_id))
+        up = r.scalar_one_or_none()
+        if up and up.is_active:
+            keys = sorted([m.menu_key for m in (up.menu_permissions or [])])
+            return up.id, up.label, keys
+
+    # Fallback: perfil de sistema com mesmo base_role
+    if user.role:
+        r = await db.execute(
+            select(UserProfile).where(
+                UserProfile.base_role == user.role,
+                UserProfile.is_system == 1,
+                UserProfile.is_active == 1,
+            )
+        )
+        up = r.scalar_one_or_none()
+        if up:
+            keys = sorted([m.menu_key for m in (up.menu_permissions or [])])
+            return up.id, up.label, keys
+
+    return None, None, []
+
+
 @router.post("/login", response_model=TokenResponse)
 async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):
     _check_rate_limit(request.client.host if request.client else "unknown")
@@ -89,18 +125,7 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
     db.add(db_refresh)
     await db.commit()
 
-    # Carrega permissões de menu do perfil vinculado ao usuário
-    menu_permissions: list[str] = []
-    profile_id: int | None = user.profile_id
-    profile_name: str | None = None
-    if profile_id:
-        r = await db.execute(
-            select(UserProfile).where(UserProfile.id == profile_id)
-        )
-        up = r.scalar_one_or_none()
-        if up:
-            profile_name = up.label
-            menu_permissions = sorted([m.menu_key for m in (up.menu_permissions or [])])
+    profile_id, profile_name, menu_permissions = await _resolve_user_menu_permissions(user, db)
 
     return TokenResponse(
         access_token=access_token,
@@ -254,15 +279,7 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
     db.add(RefreshToken(user_id=user.id, token=new_refresh_str, expires_at=new_refresh_expires))
     await db.commit()
 
-    menu_permissions_refresh: list[str] = []
-    profile_id_refresh: int | None = user.profile_id
-    profile_name_refresh: str | None = None
-    if profile_id_refresh:
-        r2 = await db.execute(select(UserProfile).where(UserProfile.id == profile_id_refresh))
-        up2 = r2.scalar_one_or_none()
-        if up2:
-            profile_name_refresh = up2.label
-            menu_permissions_refresh = sorted([m.menu_key for m in (up2.menu_permissions or [])])
+    profile_id_refresh, profile_name_refresh, menu_permissions_refresh = await _resolve_user_menu_permissions(user, db)
 
     return TokenResponse(
         access_token=access_token,

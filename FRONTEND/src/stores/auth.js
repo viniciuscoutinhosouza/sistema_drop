@@ -95,6 +95,23 @@ export const useAuthStore = defineStore('auth', () => {
     const { data } = await api.post('/auth/refresh', { refresh_token: refreshToken.value })
     accessToken.value = data.access_token
     refreshToken.value = data.refresh_token
+    // Atualiza user com os campos que o backend manda frescos no refresh —
+    // crucial pra menu_permissions, profile_name e profile_id refletirem
+    // mudanças feitas pelo super admin sem exigir logout/login.
+    if (user.value && data.user_id) {
+      user.value = {
+        ...user.value,
+        full_name: data.full_name ?? user.value.full_name,
+        email: data.email ?? user.value.email,
+        role: data.role ?? user.value.role,
+        dark_mode: data.dark_mode ?? user.value.dark_mode,
+        go_id: data.go_id ?? user.value.go_id,
+        warehouse_id: data.warehouse_id ?? user.value.warehouse_id,
+        profile_id: data.profile_id ?? null,
+        profile_name: data.profile_name ?? null,
+        menu_permissions: data.menu_permissions ?? [],
+      }
+    }
     saveToStorage()
     return data.access_token
   }
