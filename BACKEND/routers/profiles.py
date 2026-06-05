@@ -157,7 +157,7 @@ async def update_profile(
             select(ProfileMenuPermission).where(ProfileMenuPermission.profile_id == profile_id)
         )
         for perm in existing_perms.scalars().all():
-            await db.delete(perm)
+            db.delete(perm)   # síncrono no AsyncSyncSession
         await db.flush()
 
         for key in menu_keys:
@@ -182,7 +182,7 @@ async def delete_profile(
     if profile.is_system:
         raise HTTPException(status_code=409, detail="Perfis de sistema não podem ser deletados")
 
-    await db.delete(profile)
+    db.delete(profile)   # síncrono no AsyncSyncSession
     await db.commit()
 
 
