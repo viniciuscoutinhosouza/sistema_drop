@@ -5191,16 +5191,23 @@ async def toggle_flex_anuncio(
     access_token = await _get_valid_token(listing.account, db)
 
     if enable:
-        me = await ml_service.get_item_owner_me(access_token)
-        me_envios = (me.get("status") or {}).get("mercadoenvios") or "unknown"
-        if me_envios != "accepted":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"A conta '{listing.account.platform_username}' não está habilitada para Mercado Envios "
-                    f"(status: '{me_envios}'). Acesse Minha conta → Envios no Mercado Livre e aceite o serviço antes de ativar Flex."
-                ),
-            )
+        # Diagnóstico best-effort: registra o status mercadoenvios que o ML
+        # retorna no GET /users/me. Não bloqueamos com base nele porque o
+        # campo varia entre contas/momentos (visto na conta MADE_IN_GROUP:
+        # ME habilitado no painel mas API retornando 'not_accepted'). A fonte
+        # de verdade é o /flex/.../v2 que retorna erro claro se ME não estiver
+        # realmente aceito.
+        try:
+            me = await ml_service.get_item_owner_me(access_token)
+            me_envios = (me.get("status") or {}).get("mercadoenvios") or "unknown"
+            if me_envios != "accepted":
+                logger.warning(
+                    "toggle_flex: mercadoenvios='%s' para conta #%s (%s). "
+                    "Seguindo mesmo assim — /flex/.../v2 é a fonte de verdade.",
+                    me_envios, listing.account.id, listing.account.platform_username,
+                )
+        except Exception as exc:
+            logger.warning("toggle_flex: falha em /users/me (não-bloqueante): %s", exc)
 
         # Verifica se a categoria do anúncio aceita Flex (self_service).
         # Conservador: se a consulta falhar, deixa o set_item_flex tentar e o ML
