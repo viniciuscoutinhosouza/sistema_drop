@@ -5232,20 +5232,31 @@ async def toggle_flex_anuncio(
         access_token, listing.platform_item_id, enable, site_id="MLB"
     )
 
-    # already_in_state: o item já estava no estado desejado (Flex é opt-out automático).
-    # Refetch o item ML pra atualizar logistic_type no DB (a resposta do v2 dá só has_flex).
-    try:
-        ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
-        ml_shipping = ml_item.get("shipping") or {}
-        ml_tags = set(ml_shipping.get("tags") or [])
-        new_logistic = (ml_shipping.get("logistic_type") or "").lower()
-        if "self_service_in" in ml_tags and new_logistic not in ("fulfillment", "self_service"):
-            new_logistic = "self_service"
-    except Exception:
-        new_logistic = "self_service" if enable else "cross_docking"
+    # Fonte de verdade: has_flex retornado por GET /flex/.../v2 (mesmo recurso
+    # que acabamos de mutar — atualiza imediato, sem eventual consistency).
+    # /items pode levar segundos pra propagar shipping.tags depois do POST/DELETE,
+    # então NÃO confiamos nele pra decidir Flex sim/não.
+    has_flex_after = bool(result.get("has_flex"))
 
-    if new_logistic:
-        listing.logistic_type = new_logistic
+    if has_flex_after:
+        new_logistic = "self_service"
+    else:
+        # has_flex=false → precisa saber qual modo não-Flex o item assumiu
+        # (cross_docking, drop_off, xd_drop_off). /items é nossa única fonte.
+        # Se /items ainda devolver 'self_service' (stale), caímos em cross_docking
+        # como default conservador.
+        try:
+            ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
+            ml_shipping = ml_item.get("shipping") or {}
+            candidate = (ml_shipping.get("logistic_type") or "").lower()
+            if candidate in ("self_service", "", "fulfillment"):
+                new_logistic = "cross_docking"
+            else:
+                new_logistic = candidate
+        except Exception:
+            new_logistic = "cross_docking"
+
+    listing.logistic_type = new_logistic
     listing.last_sync_at = datetime.now(UTC)
     await db.commit()
 
