@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_menu_permission, require_role
 from models.cmig import CMIGProduct
 from models.order import OrderItem
 from models.product import (
@@ -127,7 +127,7 @@ def _serialize_variant(v: CatalogProductVariant) -> dict:
 @router.get("")
 async def list_supplier_products(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin", "ac")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     if current_user.role == "ugo" and current_user.warehouse_id:
         stmt = (
@@ -163,7 +163,7 @@ async def list_supplier_products(
 async def get_supplier_product(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin", "ac")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     result = await db.execute(
         select(CatalogProduct)
@@ -182,7 +182,7 @@ async def get_supplier_product(
 async def create_product(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     is_composite = bool(body.get("is_composite", False))
     product = CatalogProduct(
@@ -243,7 +243,7 @@ async def update_product(
     product_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
     product = result.scalar_one_or_none()
@@ -381,7 +381,7 @@ async def duplicate_product(
     product_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     """Duplica um produto PG com o SKU informado pelo usuário."""
     result = await db.execute(
@@ -479,7 +479,7 @@ async def upload_product_photo(
     product_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
     if not result.scalar_one_or_none():
@@ -505,7 +505,7 @@ async def update_stock(
     product_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     """DEPRECATED: edição manual de `stock_quantity` é desencorajada no modelo
     canônico (event-sourced). Para ajustes, crie uma NFe de entrada/saída.
@@ -663,7 +663,7 @@ async def get_pg_product_stock_movements(
 async def delete_product(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
     product = result.scalar_one_or_none()
@@ -710,7 +710,7 @@ async def delete_product(
 async def list_variants(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin", "ac")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     result = await db.execute(
         select(CatalogProductVariant).where(CatalogProductVariant.product_id == product_id)
@@ -723,7 +723,7 @@ async def create_variant(
     product_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     sku = (body.get("sku") or "").strip()
     if not sku:
@@ -757,7 +757,7 @@ async def update_variant(
     variant_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     result = await db.execute(
         select(CatalogProductVariant).where(
@@ -792,7 +792,7 @@ async def delete_variant(
     product_id: int,
     variant_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pg")),
 ):
     result = await db.execute(
         select(CatalogProductVariant).where(

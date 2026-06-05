@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models.user import User
+from models.user import User, UserProfile
 from services.auth_service import verify_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
@@ -40,6 +40,59 @@ def require_role(*roles: str):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Permissão insuficiente",
+            )
+        return current_user
+
+    return checker
+
+
+async def _resolve_user_menu_keys(user: User, db: AsyncSession) -> set[str]:
+    """Resolve as menu_keys efetivas de um usuário.
+
+    Mesmo algoritmo usado em auth._resolve_user_menu_permissions (login/refresh)
+    pra que UI e backend autorizem pelos mesmos critérios:
+      1. user.profile_id setado e ativo → usa as menu_keys desse perfil
+      2. Fallback: perfil de sistema (is_system=1, is_active=1) com mesmo base_role
+      3. Vazio se nada casar
+    """
+    if user.profile_id:
+        r = await db.execute(select(UserProfile).where(UserProfile.id == user.profile_id))
+        up = r.scalar_one_or_none()
+        if up and up.is_active:
+            return {m.menu_key for m in (up.menu_permissions or [])}
+
+    if user.role:
+        r = await db.execute(
+            select(UserProfile).where(
+                UserProfile.base_role == user.role,
+                UserProfile.is_system == 1,
+                UserProfile.is_active == 1,
+            )
+        )
+        up = r.scalar_one_or_none()
+        if up:
+            return {m.menu_key for m in (up.menu_permissions or [])}
+
+    return set()
+
+
+def require_menu_permission(menu_key: str):
+    """Autoriza pela menu_key efetiva do usuário (perfil + fallback do role).
+
+    Admin sempre passa, independente do perfil. Para os demais papéis, exige
+    que a menu_key esteja na lista resolvida por _resolve_user_menu_keys.
+    """
+    async def checker(
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        if current_user.role == "admin":
+            return current_user
+        keys = await _resolve_user_menu_keys(current_user, db)
+        if menu_key not in keys:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Sem permissão de menu '{menu_key}'. Solicite ao administrador.",
             )
         return current_user
 

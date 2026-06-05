@@ -65,25 +65,24 @@ async def oauth2_token(
 
 
 async def _resolve_user_menu_permissions(user: User, db: AsyncSession) -> tuple[int | None, str | None, list[str]]:
-    """Resolve as menu_permissions efetivas de um usuário.
+    """Resolve perfil efetivo + menu_keys ordenadas de um usuário.
 
     Ordem:
-      1. Se user.profile_id setado → usa esse perfil
-      2. Fallback: perfil de sistema com mesmo base_role do usuário
-         (usuários antigos sem profile_id herdam do perfil-template do role)
-      3. Nenhum casa → retorna lista vazia (frontend cai no fallback hardcoded)
+      1. Se user.profile_id setado e perfil ativo → usa esse perfil
+      2. Fallback: perfil de sistema (is_system=1, is_active=1) com mesmo base_role
+      3. Nenhum casa → (None, None, [])
 
-    Returns: (profile_id_efetivo, profile_name, menu_keys)
+    Mesmas regras usadas pela dependency require_menu_permission em
+    dependencies.py — manter sincronizado pra UI e backend autorizarem
+    pelos mesmos critérios.
     """
-    profile_id: int | None = user.profile_id
-    if profile_id:
-        r = await db.execute(select(UserProfile).where(UserProfile.id == profile_id))
+    if user.profile_id:
+        r = await db.execute(select(UserProfile).where(UserProfile.id == user.profile_id))
         up = r.scalar_one_or_none()
         if up and up.is_active:
             keys = sorted([m.menu_key for m in (up.menu_permissions or [])])
             return up.id, up.label, keys
 
-    # Fallback: perfil de sistema com mesmo base_role
     if user.role:
         r = await db.execute(
             select(UserProfile).where(
