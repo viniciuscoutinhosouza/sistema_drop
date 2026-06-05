@@ -75,6 +75,7 @@ from routers import (
     people,
     product_categories,
     products,
+    profiles,
     returns,
     scheduler_monitoring,
     simulator,
@@ -133,6 +134,7 @@ app.include_router(ai_config.router)
 app.include_router(
     scheduler_monitoring.router, prefix=f"{PREFIX}/scheduler", tags=["SchedulerMonitoring"]
 )
+app.include_router(profiles.router, prefix=f"{PREFIX}/profiles", tags=["Profiles"])
 
 
 _os.makedirs("static/uploads/cmig-products", exist_ok=True)

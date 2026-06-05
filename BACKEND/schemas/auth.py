@@ -78,6 +78,9 @@ class TokenResponse(BaseModel):
     dark_mode: bool
     go_id: int | None = None
     warehouse_id: int | None = None
+    profile_id: int | None = None
+    profile_name: str | None = None
+    menu_permissions: list[str] = []
 
 
 class RefreshRequest(BaseModel):

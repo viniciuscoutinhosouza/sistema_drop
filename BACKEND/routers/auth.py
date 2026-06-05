@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user, require_role
-from models.user import ACProfile, RefreshToken, User
+from models.user import ACProfile, RefreshToken, User, UserProfile
 from schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
@@ -89,6 +89,19 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
     db.add(db_refresh)
     await db.commit()
 
+    # Carrega permissões de menu do perfil vinculado ao usuário
+    menu_permissions: list[str] = []
+    profile_id: int | None = user.profile_id
+    profile_name: str | None = None
+    if profile_id:
+        r = await db.execute(
+            select(UserProfile).where(UserProfile.id == profile_id)
+        )
+        up = r.scalar_one_or_none()
+        if up:
+            profile_name = up.label
+            menu_permissions = sorted([m.menu_key for m in (up.menu_permissions or [])])
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token_str,
@@ -99,6 +112,9 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
         dark_mode=user.dark_mode,
         go_id=user.go_id,
         warehouse_id=user.warehouse_id,
+        profile_id=profile_id,
+        profile_name=profile_name,
+        menu_permissions=menu_permissions,
     )
 
 
@@ -238,6 +254,16 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
     db.add(RefreshToken(user_id=user.id, token=new_refresh_str, expires_at=new_refresh_expires))
     await db.commit()
 
+    menu_permissions_refresh: list[str] = []
+    profile_id_refresh: int | None = user.profile_id
+    profile_name_refresh: str | None = None
+    if profile_id_refresh:
+        r2 = await db.execute(select(UserProfile).where(UserProfile.id == profile_id_refresh))
+        up2 = r2.scalar_one_or_none()
+        if up2:
+            profile_name_refresh = up2.label
+            menu_permissions_refresh = sorted([m.menu_key for m in (up2.menu_permissions or [])])
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=new_refresh_str,
@@ -248,6 +274,9 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
         dark_mode=user.dark_mode,
         go_id=user.go_id,
         warehouse_id=user.warehouse_id,
+        profile_id=profile_id_refresh,
+        profile_name=profile_name_refresh,
+        menu_permissions=menu_permissions_refresh,
     )
 
 

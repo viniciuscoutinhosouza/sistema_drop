@@ -1,7 +1,46 @@
 from sqlalchemy import TIMESTAMP, Boolean, Column, Date, ForeignKey, Integer, Numeric, String, text
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, selectinload  # noqa: F401 — re-exported for convenience
 
 from database import Base
+
+
+class UserProfile(Base):
+    """Perfil de acesso configurável pelo super admin.
+
+    Cada perfil define quais menus da sidebar o usuário pode ver.
+    base_role determina o papel JWT/API (admin|ac|ugo|go) — usado nos require_role().
+    is_system=1 → perfis built-in que não podem ser deletados nem ter base_role alterado.
+    """
+
+    __tablename__ = "user_profiles"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(50), nullable=False, unique=True)
+    label = Column(String(100), nullable=False)
+    base_role = Column(String(20), nullable=False)   # admin | ac | ugo | go
+    is_system = Column(Integer, nullable=False, default=0)
+    is_active = Column(Integer, nullable=False, default=1)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+
+    menu_permissions = relationship(
+        "ProfileMenuPermission",
+        back_populates="profile",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    users = relationship("User", back_populates="user_profile")
+
+
+class ProfileMenuPermission(Base):
+    """Permissão de menu associada a um perfil."""
+
+    __tablename__ = "profile_menu_permissions"
+
+    id = Column(Integer, primary_key=True)
+    profile_id = Column(Integer, ForeignKey("user_profiles.id", ondelete="CASCADE"), nullable=False)
+    menu_key = Column(String(100), nullable=False)
+
+    profile = relationship("UserProfile", back_populates="menu_permissions")
 
 
 class User(Base):
@@ -20,12 +59,14 @@ class User(Base):
         Integer, ForeignKey("warehouses.id"), nullable=True
     )  # UGO: galpão de trabalho
     go_id = Column(Integer, ForeignKey("goes.id"), nullable=True)
+    profile_id = Column(Integer, ForeignKey("user_profiles.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
     )
 
     profile = relationship("ACProfile", back_populates="user", uselist=False)
+    user_profile = relationship("UserProfile", back_populates="users", foreign_keys=[profile_id])
     refresh_tokens = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )

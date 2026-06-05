@@ -221,12 +221,23 @@ async def update_user(
         if field in allowed:
             setattr(user, field, value)
 
+    # Vincula perfil de acesso se informado (apenas admin)
+    if "profile_id" in body and current_user.role == "admin":
+        new_pid = body["profile_id"]
+        if new_pid is not None:
+            from models.user import UserProfile
+            r = await db.execute(select(UserProfile).where(UserProfile.id == new_pid))
+            if not r.scalar_one_or_none():
+                raise HTTPException(status_code=404, detail="Perfil de acesso não encontrado")
+        user.profile_id = new_pid
+
     await db.commit()
     return {
         "id": user.id,
         "full_name": user.full_name,
         "warehouse_id": user.warehouse_id,
         "is_active": user.is_active,
+        "profile_id": user.profile_id,
     }
 
 

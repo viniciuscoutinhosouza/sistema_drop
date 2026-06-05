@@ -37,259 +37,178 @@
             </RouterLink>
           </li>
 
-          <!-- Menus visíveis apenas para AC -->
-          <template v-if="isAC">
+          <!-- ══ MENUS DINÂMICOS (perfil de acesso) ══════════════════════════ -->
+
+          <!-- MINHAS CONTAS (GC / AC) -->
+          <template v-if="canSee('cmig') || canSee('integrations') || canSee('cmig_reports') || canSee('full_cnpjs')">
             <li class="nav-header">MINHAS CONTAS</li>
-
-            <li class="nav-item">
+            <li v-if="canSee('cmig')" class="nav-item">
               <RouterLink to="/cmigs" class="nav-link" :class="{ active: route.path.startsWith('/cmigs') || route.path.startsWith('/cmig-products') }">
-                <i class="nav-icon fas fa-id-card"></i>
-                <p>Contas MIG (CMIG)</p>
+                <i class="nav-icon fas fa-id-card"></i><p>Contas MIG (CMIG)</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('integrations')" class="nav-item">
               <RouterLink to="/integrations" class="nav-link" :class="{ active: route.path.startsWith('/integrations') }">
-                <i class="nav-icon fas fa-plug"></i>
-                <p>Contas Marketplace (CM)</p>
+                <i class="nav-icon fas fa-plug"></i><p>Contas Marketplace (CM)</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('cmig_reports')" class="nav-item">
               <RouterLink to="/cmig-reports" class="nav-link" :class="{ active: route.path.startsWith('/cmig-reports') }">
-                <i class="nav-icon fas fa-file-pdf"></i>
-                <p>Relatórios</p>
+                <i class="nav-icon fas fa-file-pdf"></i><p>Relatórios</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('full_cnpjs')" class="nav-item">
               <RouterLink to="/full-cnpjs" class="nav-link" :class="{ active: route.path.startsWith('/full-cnpjs') }">
-                <i class="nav-icon fas fa-warehouse"></i>
-                <p>CNPJs FULL</p>
+                <i class="nav-icon fas fa-warehouse"></i><p>CNPJs FULL</p>
               </RouterLink>
             </li>
+          </template>
 
+          <!-- OPERAÇÕES (GC / AC) -->
+          <template v-if="canSee('anuncios') || canSee('atendimento') || canSee('financeiro') || canSee('pedidos') || canSee('catalog') || canSee('pedido_manual') || canSee('devolucoes') || canSee('estoque')">
             <li class="nav-header">OPERAÇÕES</li>
-
-            <li class="nav-item">
+            <li v-if="canSee('anuncios')" class="nav-item">
               <RouterLink to="/anuncios" class="nav-link" :class="{ active: route.path.startsWith('/anuncios') }">
-                <i class="nav-icon fas fa-tag"></i>
-                <p>Anúncios</p>
+                <i class="nav-icon fas fa-tag"></i><p>Anúncios</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('atendimento')" class="nav-item">
               <RouterLink to="/messages" class="nav-link" :class="{ active: route.path.startsWith('/messages') }">
                 <i class="nav-icon fas fa-comments"></i>
-                <p>
-                  Atendimento
-                  <span v-if="unreadMessages > 0" class="badge badge-danger badge-pill right">{{ unreadMessages }}</span>
-                </p>
+                <p>Atendimento <span v-if="unreadMessages > 0" class="badge badge-danger badge-pill right">{{ unreadMessages }}</span></p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('financeiro')" class="nav-item">
               <RouterLink to="/financial" class="nav-link" :class="{ active: route.path.startsWith('/financial') }">
-                <i class="nav-icon fas fa-dollar-sign"></i>
-                <p>Financeiro</p>
+                <i class="nav-icon fas fa-dollar-sign"></i><p>Financeiro</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('pedidos')" class="nav-item">
               <RouterLink to="/orders" class="nav-link" :class="{ active: route.path.startsWith('/orders') }">
-                <i class="nav-icon fas fa-shopping-cart"></i>
-                <p>Pedidos</p>
+                <i class="nav-icon fas fa-shopping-cart"></i><p>Pedidos</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('catalog')" class="nav-item">
               <RouterLink to="/catalog" class="nav-link" :class="{ active: route.path.startsWith('/catalog') }">
-                <i class="nav-icon fas fa-store"></i>
-                <p>Catálogo</p>
+                <i class="nav-icon fas fa-store"></i><p>Catálogo</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('pedido_manual')" class="nav-item">
               <RouterLink to="/manual-orders" class="nav-link" :class="{ active: route.path.startsWith('/manual-orders') }">
-                <i class="nav-icon fas fa-hand-paper"></i>
-                <p>Pedido Manual</p>
+                <i class="nav-icon fas fa-hand-paper"></i><p>Pedido Manual</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
-              <RouterLink to="/returns" class="nav-link" :class="{ active: route.path.startsWith('/returns') }">
-                <i class="nav-icon fas fa-undo"></i>
-                <p>Devoluções</p>
+            <li v-if="canSee('devolucoes')" class="nav-item">
+              <RouterLink to="/returns" class="nav-link" :class="{ active: route.path.startsWith('/returns') && route.path !== '/returns/aguardando-retorno' }">
+                <i class="nav-icon fas fa-undo"></i><p>Devoluções</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('estoque')" class="nav-item">
               <RouterLink to="/estoque" class="nav-link" :class="{ active: route.path === '/estoque' }">
-                <i class="nav-icon fas fa-boxes"></i>
-                <p>Controle de Estoque</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-header">FISCAL</li>
-
-            <li class="nav-item">
-              <RouterLink to="/people" class="nav-link" :class="{ active: route.path.startsWith('/people') }">
-                <i class="nav-icon fas fa-address-book"></i>
-                <p>Pessoas</p>
-              </RouterLink>
-            </li>
-            <li class="nav-item">
-              <RouterLink to="/fiscal/entradas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/entradas') }">
-                <i class="nav-icon fas fa-arrow-down"></i>
-                <p>Entradas</p>
-              </RouterLink>
-            </li>
-            <li class="nav-item">
-              <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') }">
-                <i class="nav-icon fas fa-arrow-up"></i>
-                <p>Saídas</p>
+                <i class="nav-icon fas fa-boxes"></i><p>Controle de Estoque</p>
               </RouterLink>
             </li>
           </template>
 
-          <!-- Menus exclusivos para UGO (Operador Logístico) -->
-          <template v-if="isUGO">
+          <!-- OPERAÇÃO GL / UGO -->
+          <template v-if="canSee('pg')">
             <li class="nav-header">OPERAÇÃO</li>
-
             <li class="nav-item">
               <RouterLink to="/pg" class="nav-link" :class="{ active: route.path.startsWith('/pg') }">
-                <i class="nav-icon fas fa-warehouse"></i>
-                <p>Produto Geral (PG)</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-item">
-              <RouterLink to="/cmigs" class="nav-link" :class="{ active: route.path.startsWith('/cmigs') || route.path.startsWith('/cmig-products') }">
-                <i class="nav-icon fas fa-id-card"></i>
-                <p>Contas MIG (CMIG)</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-item" v-if="isOnlyUGO">
-              <RouterLink to="/orders" class="nav-link" :class="{ active: route.path.startsWith('/orders') }">
-                <i class="nav-icon fas fa-shopping-cart"></i>
-                <p>Pedidos</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-header">ESTOQUE</li>
-
-            <li class="nav-item">
-              <RouterLink to="/estoque" class="nav-link" :class="{ active: route.path === '/estoque' }">
-                <i class="nav-icon fas fa-boxes"></i>
-                <p>Controle de Estoque</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-item">
-              <RouterLink to="/returns/aguardando-retorno" class="nav-link" :class="{ active: route.path === '/returns/aguardando-retorno' }">
-                <i class="nav-icon fas fa-undo-alt text-info"></i>
-                <p>Ag. Retorno Físico</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-item">
-              <RouterLink to="/returns" class="nav-link" :class="{ active: route.path.startsWith('/returns') && route.path !== '/returns/aguardando-retorno' }">
-                <i class="nav-icon fas fa-undo"></i>
-                <p>Devoluções</p>
-              </RouterLink>
-            </li>
-
-            <li class="nav-header">FISCAL</li>
-
-            <li class="nav-item">
-              <RouterLink to="/people" class="nav-link" :class="{ active: route.path.startsWith('/people') }">
-                <i class="nav-icon fas fa-address-book"></i>
-                <p>Pessoas</p>
-              </RouterLink>
-            </li>
-            <li class="nav-item">
-              <RouterLink to="/fiscal/entradas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/entradas') }">
-                <i class="nav-icon fas fa-arrow-down"></i>
-                <p>Entradas</p>
-              </RouterLink>
-            </li>
-            <li class="nav-item">
-              <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') }">
-                <i class="nav-icon fas fa-arrow-up"></i>
-                <p>Saídas</p>
+                <i class="nav-icon fas fa-warehouse"></i><p>Produto Geral (PG)</p>
               </RouterLink>
             </li>
           </template>
 
-          <!-- Monitoramento de Rotinas — UGO, GO e Admin -->
-          <template v-if="isUGO || isGO">
+          <!-- ESTOQUE GL -->
+          <template v-if="canSee('ag_retorno')">
+            <li class="nav-header">ESTOQUE</li>
+            <li class="nav-item">
+              <RouterLink to="/returns/aguardando-retorno" class="nav-link" :class="{ active: route.path === '/returns/aguardando-retorno' }">
+                <i class="nav-icon fas fa-undo-alt text-info"></i><p>Ag. Retorno Físico</p>
+              </RouterLink>
+            </li>
+          </template>
+
+          <!-- FISCAL -->
+          <template v-if="canSee('pessoas') || canSee('fiscal_entradas') || canSee('fiscal_saidas')">
+            <li class="nav-header">FISCAL</li>
+            <li v-if="canSee('pessoas')" class="nav-item">
+              <RouterLink to="/people" class="nav-link" :class="{ active: route.path.startsWith('/people') }">
+                <i class="nav-icon fas fa-address-book"></i><p>Pessoas</p>
+              </RouterLink>
+            </li>
+            <li v-if="canSee('fiscal_entradas')" class="nav-item">
+              <RouterLink to="/fiscal/entradas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/entradas') }">
+                <i class="nav-icon fas fa-arrow-down"></i><p>Entradas</p>
+              </RouterLink>
+            </li>
+            <li v-if="canSee('fiscal_saidas')" class="nav-item">
+              <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') }">
+                <i class="nav-icon fas fa-arrow-up"></i><p>Saídas</p>
+              </RouterLink>
+            </li>
+          </template>
+
+          <!-- MONITORAMENTO -->
+          <template v-if="canSee('rotinas')">
             <li class="nav-header">MONITORAMENTO</li>
             <li class="nav-item">
               <RouterLink to="/monitoring/jobs" class="nav-link" :class="{ active: route.path.startsWith('/monitoring') }">
-                <i class="nav-icon fas fa-clock"></i>
-                <p>Rotinas Automatizadas</p>
+                <i class="nav-icon fas fa-clock"></i><p>Rotinas Automatizadas</p>
               </RouterLink>
             </li>
           </template>
 
-          <!-- Menus para GO (Gestor Operacional) -->
-          <template v-if="isGO">
+          <!-- GESTÃO GO -->
+          <template v-if="canSee('go_empresa') || canSee('go_usuarios')">
             <li class="nav-header">GESTÃO</li>
-
-            <li class="nav-item">
+            <li v-if="canSee('go_empresa')" class="nav-item">
               <RouterLink :to="`/goes/${authStore.user?.go_id}/edit`" class="nav-link" :class="{ active: route.path.includes('/goes/') && route.path.includes('/edit') }">
-                <i class="nav-icon fas fa-building"></i>
-                <p>Minha Empresa</p>
+                <i class="nav-icon fas fa-building"></i><p>Minha Empresa</p>
               </RouterLink>
             </li>
-
-            <li class="nav-item">
+            <li v-if="canSee('go_usuarios')" class="nav-item">
               <RouterLink to="/settings/users" class="nav-link" :class="{ active: route.path === '/settings/users' }">
-                <i class="nav-icon fas fa-users"></i>
-                <p>Usuários</p>
+                <i class="nav-icon fas fa-users"></i><p>Usuários</p>
               </RouterLink>
             </li>
           </template>
 
-          <!-- Configurações — visível para Admin e UGO -->
-          <template v-if="isAdmin || isOnlyUGO">
+          <!-- ADMINISTRAÇÃO -->
+          <template v-if="canSee('config_usuarios') || canSee('config_gestores') || canSee('config_ai') || canSee('config_api_console') || canSee('config_perfis')">
             <li class="nav-header">ADMINISTRAÇÃO</li>
-
             <li class="nav-item" :class="{ 'menu-open': settingsOpen }">
-              <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/goes') }" @click.prevent="settingsOpen = !settingsOpen">
+              <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/goes') || route.path.startsWith('/admin') }" @click.prevent="settingsOpen = !settingsOpen">
                 <i class="nav-icon fas fa-cog"></i>
-                <p>
-                  Configurações
-                  <i class="right fas fa-angle-left"></i>
-                </p>
+                <p>Configurações <i class="right fas fa-angle-left"></i></p>
               </a>
               <ul class="nav nav-treeview">
-                <li class="nav-item">
+                <li v-if="canSee('config_usuarios')" class="nav-item">
                   <RouterLink to="/settings/users" class="nav-link" :class="{ active: route.path === '/settings/users' }">
-                    <i class="far fa-circle nav-icon"></i>
-                    <p>Usuários</p>
+                    <i class="far fa-circle nav-icon"></i><p>Usuários</p>
                   </RouterLink>
                 </li>
-                <li class="nav-item" v-if="isAdmin">
+                <li v-if="canSee('config_gestores')" class="nav-item">
                   <RouterLink to="/goes" class="nav-link" :class="{ active: route.path.startsWith('/goes') }">
-                    <i class="far fa-circle nav-icon"></i>
-                    <p>Gestores Operacionais</p>
+                    <i class="far fa-circle nav-icon"></i><p>Gestores Operacionais</p>
                   </RouterLink>
                 </li>
-                <li class="nav-item" v-if="isAdmin">
+                <li v-if="canSee('config_ai')" class="nav-item">
                   <RouterLink to="/settings/ai-config" class="nav-link" :class="{ active: route.path === '/settings/ai-config' }">
-                    <i class="far fa-circle nav-icon"></i>
-                    <p>Configuração de IA</p>
+                    <i class="far fa-circle nav-icon"></i><p>Configuração de IA</p>
                   </RouterLink>
                 </li>
-                <li class="nav-item" v-if="isAdmin">
+                <li v-if="canSee('config_api_console')" class="nav-item">
                   <RouterLink to="/admin/api-console" class="nav-link" :class="{ active: route.path === '/admin/api-console' }">
                     <i class="far fa-circle nav-icon"></i>
-                    <p>
-                      Console de API
-                      <span class="badge badge-danger ml-1" style="font-size:9px">Admin</span>
-                    </p>
+                    <p>Console de API <span class="badge badge-danger ml-1" style="font-size:9px">Admin</span></p>
+                  </RouterLink>
+                </li>
+                <li v-if="canSee('config_perfis')" class="nav-item">
+                  <RouterLink to="/admin/profiles" class="nav-link" :class="{ active: route.path === '/admin/profiles' }">
+                    <i class="far fa-circle nav-icon"></i>
+                    <p>Gestão de Perfis <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
                   </RouterLink>
                 </li>
               </ul>
@@ -344,7 +263,35 @@ const isOnlyUGO = computed(() => role.value === 'ugo')
 const isAC      = computed(() => role.value === 'ac' || role.value === 'admin')
 
 const roleLabel = computed(() => {
-  const map = { admin: 'Administrador', go: 'Gestor Operacional', ugo: 'Operador Logístico', ac: 'Gestor de Conta' }
+  if (authStore.user?.profile_name) return authStore.user.profile_name
+  const map = { admin: 'Administrador', go: 'Gestor Operacional', ugo: 'Gestor Logístico', ac: 'Gestor de Conta' }
   return map[role.value] || role.value
 })
+
+// Mapa legado: qual menu_key cada role vê por padrão (sem perfil configurado)
+const _legacyMenus = {
+  admin: new Set([
+    'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',
+    'pedidos','catalog','pedido_manual','devolucoes','estoque','pessoas','fiscal_entradas',
+    'fiscal_saidas','pg','ag_retorno','rotinas','go_empresa','go_usuarios','config_usuarios',
+    'config_gestores','config_ai','config_api_console','config_perfis',
+  ]),
+  ac: new Set([
+    'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',
+    'pedidos','catalog','pedido_manual','devolucoes','estoque','pessoas','fiscal_entradas','fiscal_saidas',
+  ]),
+  ugo: new Set([
+    'pg','cmig','pedidos','estoque','ag_retorno','devolucoes','pessoas','fiscal_entradas',
+    'fiscal_saidas','rotinas','config_usuarios',
+  ]),
+  go: new Set(['rotinas','go_empresa','go_usuarios']),
+}
+
+function canSee(menuKey) {
+  const perms = authStore.user?.menu_permissions
+  // Se o usuário tem permissões de perfil configuradas, usa elas
+  if (perms && perms.length > 0) return perms.includes(menuKey)
+  // Fallback para o mapa legado por role
+  return _legacyMenus[role.value]?.has(menuKey) ?? false
+}
 </script>

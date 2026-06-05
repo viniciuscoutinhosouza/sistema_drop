@@ -101,6 +101,9 @@ const AIConfigView = () => import('@/views/settings/AIConfigView.vue')
 // Console de API do Marketplace — Admin only
 const ApiConsoleView = () => import('@/views/admin/ApiConsoleView.vue')
 
+// Gestão de Perfis de Acesso — Admin only
+const ProfilesView = () => import('@/views/admin/ProfilesView.vue')
+
 // Monitoramento de Rotinas (UGO + GO + Admin)
 const SchedulerMonitoringView = () => import('@/views/monitoring/SchedulerMonitoringView.vue')
 
@@ -213,6 +216,7 @@ const routes = [
 
       // Console de API do Marketplace — Admin only
       { path: 'admin/api-console', component: ApiConsoleView, meta: { title: 'Console de API', role: 'admin' } },
+      { path: 'admin/profiles',    component: ProfilesView,   meta: { title: 'Gestão de Perfis', role: 'admin' } },
 
       // Simulador ML — todos os usuários
       { path: 'simulator', component: SimuladorView, meta: { title: 'Simulador ML' } },
