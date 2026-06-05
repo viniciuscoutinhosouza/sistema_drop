@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import require_role
+from dependencies import require_menu_permission
 from models.cmig import CMIG, CMIGAdministrator
 from models.full_stock import FullCnpj, FullStock
 from models.integration import MarketplaceAccount
@@ -65,7 +65,7 @@ async def _resolve_cmig_ids(user: User, db: AsyncSession) -> list[int]:
 async def list_full_cnpjs(
     cmig_id: int = Query(None),
     marketplace_account_id: int = Query(None),
-    current_user: User = Depends(require_role("ac", "admin")),
+    current_user: User = Depends(require_menu_permission("full_cnpjs")),
     db: AsyncSession = Depends(get_db),
 ):
     allowed_cmig_ids = await _resolve_cmig_ids(current_user, db)
@@ -85,7 +85,7 @@ async def list_full_cnpjs(
 @router.post("", status_code=201)
 async def create_full_cnpj(
     body: dict,
-    current_user: User = Depends(require_role("ac", "admin")),
+    current_user: User = Depends(require_menu_permission("full_cnpjs")),
     db: AsyncSession = Depends(get_db),
 ):
     cnpj_raw = body.get("cnpj") or ""
@@ -133,7 +133,7 @@ async def create_full_cnpj(
 async def update_full_cnpj(
     full_cnpj_id: int,
     body: dict,
-    current_user: User = Depends(require_role("ac", "admin")),
+    current_user: User = Depends(require_menu_permission("full_cnpjs")),
     db: AsyncSession = Depends(get_db),
 ):
     row = (
@@ -158,7 +158,7 @@ async def update_full_cnpj(
 @router.delete("/{full_cnpj_id}", status_code=204)
 async def delete_full_cnpj(
     full_cnpj_id: int,
-    current_user: User = Depends(require_role("ac", "admin")),
+    current_user: User = Depends(require_menu_permission("full_cnpjs")),
     db: AsyncSession = Depends(get_db),
 ):
     row = (
@@ -178,7 +178,7 @@ async def delete_full_cnpj(
 @router.get("/{full_cnpj_id}/stock")
 async def get_full_stock_by_cnpj(
     full_cnpj_id: int,
-    current_user: User = Depends(require_role("ac", "admin", "ugo")),
+    current_user: User = Depends(require_menu_permission("full_cnpjs")),
     db: AsyncSession = Depends(get_db),
 ):
     """Retorna o saldo de full_stock para a conta vinculada a este CNPJ FULL."""

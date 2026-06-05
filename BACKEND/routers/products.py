@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_active_ac
+from dependencies import require_menu_permission
 from models.product import DropshipperProduct
 from models.user import User
 
@@ -15,7 +15,7 @@ async def list_products(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     search: str = None,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("anuncios")),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(DropshipperProduct).where(
@@ -59,7 +59,7 @@ async def list_products(
 @router.post("", status_code=201)
 async def create_product(
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("anuncios")),
     db: AsyncSession = Depends(get_db),
 ):
     product = DropshipperProduct(
@@ -84,7 +84,7 @@ async def create_product(
 @router.get("/{product_id}")
 async def get_product(
     product_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("anuncios")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -119,7 +119,7 @@ async def get_product(
 async def update_product(
     product_id: int,
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("anuncios")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -153,7 +153,7 @@ async def update_product(
 @router.delete("/{product_id}", status_code=204)
 async def delete_product(
     product_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("anuncios")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(

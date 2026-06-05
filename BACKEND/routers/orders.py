@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
-from dependencies import get_active_ac, get_current_user, require_role
+from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIGProduct
 from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
@@ -954,7 +954,7 @@ async def debug_cost(
 @router.post("/{order_id}/pay")
 async def pay_order(
     order_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("pedidos")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -1008,7 +1008,7 @@ async def pay_order(
 async def update_shipping_cost(
     order_id: int,
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("pedidos")),
     db: AsyncSession = Depends(get_db),
 ):
     """Edita o frete (`shipping_cost`) de um pedido manual ainda nao pago.
@@ -1112,7 +1112,7 @@ async def update_order_notes(
 @router.post("/{order_id}/hide")
 async def hide_order(
     order_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("pedidos")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -1300,7 +1300,7 @@ async def sync_order_nfe(
 @router.post("/{order_id}/confirm-return")
 async def confirm_order_return(
     order_id: int,
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pedidos")),
     db: AsyncSession = Depends(get_db),
 ):
     """UGO confirma que o produto físico retornou ao galpão (pedido cancelado pós-despacho).
@@ -1325,7 +1325,7 @@ async def confirm_order_return(
 async def list_orders_awaiting_return(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("pedidos")),
     db: AsyncSession = Depends(get_db),
 ):
     """Lista pedidos cancelados após despacho que ainda não tiveram o produto confirmado no galpão."""

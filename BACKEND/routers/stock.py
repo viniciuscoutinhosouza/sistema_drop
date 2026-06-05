@@ -5,7 +5,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db, task_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.fiscal import Invoice
 from models.full_stock import FullStock
@@ -475,7 +475,7 @@ async def _ensure_token(account, db: AsyncSession) -> str:
 @router.post("/recompute-all")
 async def recompute_all_stock_endpoint(
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("estoque")),
 ):
     """Recalcula stock_quantity de TODOS os produtos a partir dos eventos (NF-e + pedidos).
 
@@ -511,7 +511,7 @@ async def recompute_all_stock_endpoint(
 
 @router.post("/recompute-reservations")
 async def recompute_reservations_endpoint(
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("estoque")),
     db: AsyncSession = Depends(get_db),
 ):
     """Reconstrói reserved_quantity de todos os produtos a partir dos stock_movements.

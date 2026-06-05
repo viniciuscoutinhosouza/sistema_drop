@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database import get_db
-from dependencies import get_active_ac, get_current_user
+from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIGAdministrator
 from models.integration import AccountBalance, MarketplaceAccount, OTPVerification
 from models.product import DropshipperProduct, ProductListing
@@ -118,7 +118,7 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
 
 @router.get("")
 async def list_accounts(
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Lista todas as CONTAs que o AC co-administra ou que pertencem às suas CMIGs."""
@@ -156,7 +156,7 @@ async def list_accounts(
 @router.post("", status_code=201)
 async def create_account(
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -260,7 +260,7 @@ async def create_account(
 async def verify_otp(
     account_id: int,
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Confirma o vínculo da CONTA via código OTP."""
@@ -305,7 +305,7 @@ async def verify_otp(
 @router.post("/{account_id}/resend-otp")
 async def resend_otp(
     account_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Gera um novo OTP e invalida os anteriores."""
@@ -472,7 +472,7 @@ async def remove_co_admin(
 @router.get("/{account_id}")
 async def get_account(
     account_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     account = await _assert_ac_can_access(account_id, current_user.id, db)
@@ -517,7 +517,7 @@ async def _refresh_shipping_capabilities(
 @router.get("/{account_id}/shipping-capabilities")
 async def get_shipping_capabilities(
     account_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Retorna capacidades de envio (Flex, Full) detectadas + override manual.
@@ -565,7 +565,7 @@ async def get_shipping_capabilities(
 @router.post("/{account_id}/shipping-capabilities/refresh")
 async def refresh_shipping_capabilities(
     account_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Força redetecção das capacidades agora (ignora cache)."""
@@ -586,7 +586,7 @@ async def refresh_shipping_capabilities(
 async def set_shipping_capabilities_override(
     account_id: int,
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Override manual: admin força has_flex/has_full ignorando a auto-detecção.
@@ -614,7 +614,7 @@ async def set_shipping_capabilities_override(
 async def update_account(
     account_id: int,
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     account = await _assert_ac_can_access(account_id, current_user.id, db)
@@ -631,7 +631,7 @@ async def update_account(
 @router.delete("/{account_id}", status_code=204)
 async def disconnect_account(
     account_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Desativa uma CONTA (apenas owner pode fazer isso)."""
@@ -659,7 +659,7 @@ async def disconnect_account(
 @router.get("/{account_id}/ml/authorize")
 async def ml_authorize(
     account_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_ac_can_access(account_id, current_user.id, db)
@@ -708,7 +708,7 @@ async def ml_callback(
 @router.get("/{account_id}/shopee/authorize")
 async def shopee_authorize(
     account_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_ac_can_access(account_id, current_user.id, db)
@@ -762,7 +762,7 @@ async def shopee_callback(
 @router.post("/{account_id}/sync-orders")
 async def sync_orders_now(
     account_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Dispara sincronização de pedidos imediatamente para esta conta."""
@@ -789,7 +789,7 @@ async def sync_orders_now(
 @router.post("/{account_id}/import-listings")
 async def import_listings(
     account_id: int,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Importa todos os anúncios ativos desta conta do Mercado Livre."""
@@ -894,7 +894,7 @@ async def import_listings(
 async def bling_connect(
     account_id: int,
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     account = await _assert_ac_can_access(account_id, current_user.id, db)

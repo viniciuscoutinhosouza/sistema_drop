@@ -3,7 +3,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import require_role
+from dependencies import require_menu_permission
 from models.cmig import CMIGProduct
 from models.product import CatalogProduct, CatalogProductImage, Category
 
@@ -80,7 +80,7 @@ async def list_categories(db: AsyncSession = Depends(get_db)):
 
 
 @router.post(
-    "/categories", status_code=201, dependencies=[Depends(require_role("ac", "ugo", "admin"))]
+    "/categories", status_code=201, dependencies=[Depends(require_menu_permission("catalog"))]
 )
 async def create_category(body: dict, db: AsyncSession = Depends(get_db)):
     name = (body.get("name") or "").strip()
@@ -110,7 +110,7 @@ async def create_category(body: dict, db: AsyncSession = Depends(get_db)):
     return {"id": cat.id, "name": cat.name, "parent_id": cat.parent_id}
 
 
-@router.put("/categories/{category_id}", dependencies=[Depends(require_role("ac", "ugo", "admin"))])
+@router.put("/categories/{category_id}", dependencies=[Depends(require_menu_permission("catalog"))])
 async def update_category(category_id: int, body: dict, db: AsyncSession = Depends(get_db)):
     cat = (
         await db.execute(select(Category).where(Category.id == category_id))
@@ -134,7 +134,7 @@ async def update_category(category_id: int, body: dict, db: AsyncSession = Depen
 
 
 @router.delete(
-    "/categories/{category_id}", dependencies=[Depends(require_role("ac", "ugo", "admin"))]
+    "/categories/{category_id}", dependencies=[Depends(require_menu_permission("catalog"))]
 )
 async def delete_category(category_id: int, db: AsyncSession = Depends(get_db)):
     cat = (

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem
 from models.integration import MarketplaceAccount
@@ -1504,7 +1504,7 @@ async def finalize_invoice_no_sefaz(
 async def reapply_stock_for_pg_items(
     invoice_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    current_user: User = Depends(require_menu_permission("fiscal_entradas")),
 ):
     """Recalcula estoque de todos os produtos afetados por esta NFe a partir dos eventos.
 

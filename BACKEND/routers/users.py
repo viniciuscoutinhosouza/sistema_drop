@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_menu_permission, require_role
 from models.user import AccessPlan, ACProfile, User
 from models.warehouse import Warehouse
 from schemas.user import AddressSchema, PreferencesUpdate, ProfileOut, ProfileUpdate
@@ -117,7 +117,7 @@ async def lookup_cep(cep: str):
 async def list_users(
     role: str | None = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ac", "ugo", "admin", "go")),
+    current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
     """Lista usuários. AC lista apenas outros ACs (exceto ele mesmo); UGO lista ACs;
     GO lista UGOs+ACs do seu galpão; Admin lista todos."""
@@ -158,7 +158,7 @@ async def list_users(
 async def get_user(
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -203,7 +203,7 @@ async def update_user(
     user_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin", "go")),
+    current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
     """Atualiza dados de um usuário (nome, whatsapp, warehouse_id, is_active)."""
     result = await db.execute(select(User).where(User.id == user_id))
@@ -247,7 +247,7 @@ async def update_user(
 async def deactivate_user(
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -264,7 +264,7 @@ async def update_ac_plan(
     user_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
     """Atualiza o plano de acesso de um AC."""
     result = await db.execute(select(User).where(User.id == user_id, User.role == "ac"))
@@ -296,7 +296,7 @@ async def update_ac_plan(
 @router.get("/plans/access")
 async def list_plans(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
     result = await db.execute(
         select(AccessPlan).where(AccessPlan.is_active == True).order_by(AccessPlan.monthly_price)

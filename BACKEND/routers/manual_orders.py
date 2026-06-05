@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_active_ac, get_current_user
+from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.order import Order, OrderItem
 from models.person import Person
@@ -21,7 +21,7 @@ router = APIRouter()
 @router.post("", status_code=201)
 async def create_manual_order(
     body: dict,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("pedido_manual")),
     db: AsyncSession = Depends(get_db),
 ):
     """Cria um Pedido Manual com carrinho (PG + CMIG) e cliente vindo de people.

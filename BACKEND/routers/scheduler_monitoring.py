@@ -17,7 +17,7 @@ from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import require_role
+from dependencies import require_menu_permission
 from models.scheduler_job_execution import SchedulerJobExecution
 from models.user import User
 
@@ -132,7 +132,7 @@ def _next_run_for(job_id: str) -> str | None:
 async def list_jobs(
     hours: int = Query(24, ge=1, le=720),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("ugo", "go", "admin")),
+    _: User = Depends(require_menu_permission("rotinas")),
 ):
     """Lista as rotinas conhecidas com KPIs agregados no período (default últimas 24h)."""
     period_start = datetime.now(UTC) - timedelta(hours=hours)
@@ -227,7 +227,7 @@ async def list_executions(
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("ugo", "go", "admin")),
+    _: User = Depends(require_menu_permission("rotinas")),
 ):
     """Histórico paginado de execuções. Default: últimas 3 horas."""
     if date_from is None and date_to is None:
@@ -271,7 +271,7 @@ async def list_executions(
 async def get_execution(
     execution_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("ugo", "go", "admin")),
+    _: User = Depends(require_menu_permission("rotinas")),
 ):
     """Detalhe individual de uma execução, com result_json e error_message completos."""
     row = (

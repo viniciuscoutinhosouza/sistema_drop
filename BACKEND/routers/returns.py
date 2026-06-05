@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_menu_permission
 from models.return_ import Return
 from models.user import User
 
@@ -21,7 +21,7 @@ router = APIRouter()
 async def list_pending_validation(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("devolucoes")),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Return).where(Return.status == "awaiting_validation")
@@ -117,7 +117,7 @@ async def get_return(
 async def update_return_status(
     return_id: int,
     body: dict,
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("devolucoes")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Return).where(Return.id == return_id))
@@ -149,7 +149,7 @@ async def update_return_status(
 async def upload_return_photo(
     return_id: int,
     file: UploadFile = File(...),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("devolucoes")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Return).where(Return.id == return_id))
@@ -169,7 +169,7 @@ async def upload_return_photo(
 async def validate_return_endpoint(
     return_id: int,
     body: dict,
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_menu_permission("devolucoes")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Return).where(Return.id == return_id))

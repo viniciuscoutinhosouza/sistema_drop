@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_active_ac
+from dependencies import require_menu_permission
 from models.user import User
 from schemas.financial import BalanceOut, PIXDepositRequest
 from services.financial_service import credit_balance, get_balance, get_transactions
@@ -14,7 +14,7 @@ router = APIRouter()
 
 @router.get("/balance", response_model=BalanceOut)
 async def get_my_balance(
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("financeiro")),
     db: AsyncSession = Depends(get_db),
 ):
     balance, reserved = await get_balance(db, current_user.id)
@@ -32,7 +32,7 @@ async def list_transactions(
     type: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("financeiro")),
     db: AsyncSession = Depends(get_db),
 ):
     return await get_transactions(
@@ -49,7 +49,7 @@ async def list_transactions(
 @router.post("/pix-deposit", status_code=201)
 async def register_pix_deposit(
     body: PIXDepositRequest,
-    current_user: User = Depends(get_active_ac),
+    current_user: User = Depends(require_menu_permission("financeiro")),
     db: AsyncSession = Depends(get_db),
 ):
     """

@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_menu_permission
 from models.user import User
 from models.warehouse import Warehouse
 
@@ -78,7 +78,7 @@ async def get_warehouse(
 async def create_warehouse(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin", "go")),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
 ):
     """Cria um Galpão. Admin ou GO podem executar."""
     go_id = body.get("go_id") or current_user.go_id
@@ -115,7 +115,7 @@ async def create_warehouse(
 async def delete_warehouse(
     warehouse_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin", "go")),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
 ):
     """Remove um galpão. Bloqueia se houver usuários ativos vinculados."""
     result = await db.execute(select(Warehouse).where(Warehouse.id == warehouse_id))
@@ -143,7 +143,7 @@ async def update_warehouse(
     warehouse_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin", "go")),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
 ):
     """Atualiza os dados do galpão. Admin ou GO podem executar."""
     result = await db.execute(select(Warehouse).where(Warehouse.id == warehouse_id))
