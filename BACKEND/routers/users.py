@@ -147,6 +147,7 @@ async def list_users(
             "is_active": u.is_active,
             "warehouse_id": u.warehouse_id,
             "go_id": u.go_id,
+            "profile_id": u.profile_id,
             "created_at": u.created_at.isoformat() if u.created_at else None,
         }
         for u in users
@@ -176,6 +177,7 @@ async def get_user(
         "role": user.role,
         "is_active": user.is_active,
         "dark_mode": user.dark_mode,
+        "profile_id": user.profile_id,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "profile": {
             "zip_code": profile.zip_code,

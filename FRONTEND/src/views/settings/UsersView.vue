@@ -143,6 +143,22 @@
                 </div>
               </div>
 
+              <!-- Perfil de Acesso — só na edição e só admin -->
+              <div class="form-group" v-if="modal.editing && isAdmin">
+                <label>Perfil de Acesso</label>
+                <select v-model="form.profile_id" class="form-control">
+                  <option value="">— Usar perfil padrão do papel —</option>
+                  <option v-for="p in profiles" :key="p.id" :value="p.id" :disabled="!p.is_active">
+                    {{ p.label }}
+                    <template v-if="p.is_system"> (sistema)</template>
+                    <template v-if="!p.is_active"> — inativo</template>
+                  </option>
+                </select>
+                <small class="text-muted">
+                  Sobrepõe as permissões padrão do papel. Em branco = usa o perfil de sistema do papel.
+                </small>
+              </div>
+
               <!-- Campos extras para AC (só no cadastro) -->
               <template v-if="modal.type === 'ac' && !modal.editing">
                 <hr />
@@ -239,12 +255,21 @@ const search     = ref('')
 const filterRole = ref('')
 
 const canCreateUGO = computed(() => ['admin', 'go'].includes(authStore.user?.role))
+const isAdmin = computed(() => authStore.user?.role === 'admin')
+
+const profiles = ref([])
+async function loadProfiles() {
+  try {
+    const { data } = await api.get('/profiles')
+    profiles.value = Array.isArray(data) ? data : []
+  } catch { profiles.value = [] }
+}
 
 const modal = ref({ show: false, type: 'ac', editing: false, editId: null, saving: false, error: '' })
 
 const formDefault = () => ({
   full_name: '', email: '', whatsapp: '', password: '', password_confirm: '',
-  warehouse_id: '', is_active: true,
+  warehouse_id: '', is_active: true, profile_id: '',
   person_type: 'fisica', cpf_cnpj: '', plan_id: null,
   zip_code: '', street: '', number: '', complement: '', neighborhood: '', city: '', state: '',
 })
@@ -266,7 +291,9 @@ function warehouseName(id) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadUsers(), loadPlans(), loadWarehouses()])
+  const tasks = [loadUsers(), loadPlans(), loadWarehouses()]
+  if (isAdmin.value) tasks.push(loadProfiles())
+  await Promise.all(tasks)
 })
 
 async function loadUsers() {
@@ -303,6 +330,7 @@ function openModal(type, user) {
     form.value.whatsapp     = user.whatsapp || ''
     form.value.warehouse_id = user.warehouse_id || ''
     form.value.is_active    = user.is_active
+    form.value.profile_id   = user.profile_id ?? ''
   }
 }
 
@@ -324,6 +352,10 @@ async function submitForm() {
         whatsapp:     form.value.whatsapp || null,
         warehouse_id: form.value.warehouse_id || null,
         is_active:    form.value.is_active,
+      }
+      // Só admin pode alterar profile_id; backend valida o role além disso.
+      if (isAdmin.value) {
+        payload.profile_id = form.value.profile_id === '' ? null : Number(form.value.profile_id)
       }
       await api.put(`/users/${modal.value.editId}`, payload)
       toast.success('Usuário atualizado com sucesso!')
