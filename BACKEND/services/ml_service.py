@@ -1078,81 +1078,161 @@ async def detect_shipping_capabilities(access_token: str, seller_id: str) -> dic
 
 
 async def set_item_flex(access_token: str, item_id: str, enable: bool, site_id: str = "MLB") -> dict:
-    """Ativa (POST) ou desativa (DELETE) Mercado Envios Flex num item, com check-then-act.
+    """Ativa (POST) ou desativa (DELETE) Mercado Envios Flex num item via endpoint v2.
 
-    IMPORTANTE: Flex no ML é OPT-OUT automático — se a conta tem Flex habilitado e o item
-    é elegível, ele já vem ativo automaticamente. POST/DELETE só são necessários se o
-    item está fora do estado desejado. Chamar POST num item que já tem 'self_service_in'
-    pode causar 403 do WAF.
+    Endpoint atualmente documentado:
+      GET    /flex/sites/{site}/items/{id}/v2  →  {"has_flex": bool}
+      POST   /flex/sites/{site}/items/{id}/v2  →  204 (ativa)
+      DELETE /flex/sites/{site}/items/{id}/v2  →  204 (desativa)
+
+    Substitui o endpoint legado /sites/{site}/shipping/selfservice/items/{id}
+    que está bloqueado pelo WAF do ML para a maioria dos apps.
 
     Fluxo:
-    1. GET /items/{id} lê shipping.tags atual
-    2. Se já no estado desejado retorna {already_in_state: True, ...} sem chamar /selfservice
-    3. Senão chama POST (ativar) ou DELETE (desativar) com headers completos
+    1. GET /flex/.../v2 lê has_flex atual
+    2. Se já no estado desejado → retorna {already_in_state: True}
+    3. Senão chama POST (ativar) ou DELETE (desativar)
+
+    Importante: ativar o Flex converte o item automaticamente para mode=me2
+    se estiver em ME1/custom/not_specified.
     """
-    headers_get = {
+    base = f"{ML_API_BASE}/flex/sites/{site_id}/items/{item_id}/v2"
+    headers = {
         "Authorization": f"Bearer {access_token}",
         "User-Agent": "SistemaDrop/1.0",
         "Accept": "application/json",
     }
+
+    # 1. Consulta estado atual
     async with httpx.AsyncClient(timeout=15) as client:
-        item_resp = await client.get(
-            f"{ML_API_BASE}/items/{item_id}",
-            headers=headers_get,
-            params={"attributes": "shipping,status"},
+        check_resp = await client.get(base, headers=headers)
+    if check_resp.status_code == 200:
+        try:
+            check_body = check_resp.json()
+        except Exception:
+            check_body = {}
+        is_currently_flex = bool(check_body.get("has_flex"))
+    elif check_resp.status_code == 404:
+        # Item nunca passou pelo Flex — tratamos como "não tem Flex".
+        is_currently_flex = False
+    else:
+        # Não conseguimos confirmar o estado, mas vamos seguir e tentar a ação
+        # (o ML retornará erro claro se houver problema).
+        logger.warning(
+            "set_item_flex check %s → %s: %s",
+            item_id, check_resp.status_code, check_resp.text[:300],
         )
-    if item_resp.status_code != 200:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Não foi possível consultar o item {item_id} no ML antes do toggle: {item_resp.text[:300]}",
-        )
-    item_data = item_resp.json()
-    shipping = item_data.get("shipping") or {}
-    tags = set(shipping.get("tags") or [])
-    is_currently_flex = "self_service_in" in tags
-    current_logistic = (shipping.get("logistic_type") or "").lower()
+        is_currently_flex = not enable  # força tentativa da ação
 
     if enable and is_currently_flex:
-        return {"already_in_state": True, "logistic_type": current_logistic, "tags": list(tags)}
+        return {"already_in_state": True, "has_flex": True}
     if not enable and not is_currently_flex:
-        return {"already_in_state": True, "logistic_type": current_logistic, "tags": list(tags)}
+        return {"already_in_state": True, "has_flex": False}
 
+    # 2. Aplica a mudança
     method = "POST" if enable else "DELETE"
-    url = f"{ML_API_BASE}/sites/{site_id}/shipping/selfservice/items/{item_id}"
-    headers_action = {
-        "Authorization": f"Bearer {access_token}",
-        "User-Agent": "SistemaDrop/1.0",
-        "Accept": "application/json",
-    }
     async with httpx.AsyncClient(timeout=15) as client:
-        req = client.build_request(method, url, headers=headers_action)
+        req = client.build_request(method, base, headers=headers)
         sent_headers = dict(req.headers)
-        logger.info("set_item_flex: %s %s | headers=%s", method, url, sent_headers)
+        logger.info("set_item_flex (v2): %s %s | headers=%s", method, base, sent_headers)
         resp = await client.send(req)
 
     if resp.status_code in (200, 201, 204):
-        try:
-            ml_resp = resp.json()
-        except Exception:
-            ml_resp = {}
-        return {"already_in_state": False, "response": ml_resp}
+        return {"already_in_state": False, "has_flex": enable}
 
     body_text = resp.text or ""
-    logger.warning("set_item_flex erro %s: %s", resp.status_code, body_text[:500])
+    logger.warning("set_item_flex (v2) erro %s: %s", resp.status_code, body_text[:500])
     if resp.status_code == 403:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"O Mercado Livre bloqueou o acesso ao endpoint de gerenciamento de Flex para o app {settings.ML_APP_ID} (403 tengine). "
-                "Headers e token estão corretos — o bloqueio é policy do ML no recurso /shipping/selfservice. "
-                "Para desbloquear: abra ticket em developers.mercadolibre.com.br solicitando acesso ao endpoint "
-                "POST/DELETE /sites/MLB/shipping/selfservice/items para este app ID."
+                f"O Mercado Livre bloqueou {method} /flex/sites/{site_id}/items/{item_id}/v2 "
+                f"para o app {settings.ML_APP_ID} (403). "
+                "Headers e token estão corretos — o bloqueio é policy do ML neste recurso. "
+                "Abra ticket em developers.mercadolibre.com.br solicitando acesso ao endpoint "
+                "POST/DELETE /flex/sites/{site}/items/{id}/v2 para este app ID."
             ),
         )
+    if resp.status_code == 404 and not enable:
+        # DELETE em item que já não tem Flex pode retornar 404 — tratamos como sucesso idempotente
+        return {"already_in_state": True, "has_flex": False}
     raise HTTPException(
         status_code=400,
         detail=f"ML rejeitou {'habilitar' if enable else 'desabilitar'} Flex no item {item_id}: {body_text[:500]}",
     )
+
+
+_category_flex_cache: dict[str, tuple[float, dict]] = {}
+_CATEGORY_FLEX_CACHE_TTL = 300  # 5 minutos
+
+
+async def category_supports_flex(access_token: str, category_id: str) -> dict:
+    """Verifica se uma categoria do ML aceita Mercado Envios Flex (self_service).
+
+    Consulta GET /categories/{cat}/shipping_preferences e procura 'self_service'
+    em algum entry de logistics[].types. Resposta cacheada em memória por 5min.
+
+    Returns:
+        {
+            "category_id": str,
+            "supports": bool,
+            "modes": list[str],          # union de logistics[].mode
+            "types": list[str],          # union de logistics[].types
+        }
+    """
+    import time as _time
+
+    cached = _category_flex_cache.get(category_id)
+    if cached and (_time.time() - cached[0] < _CATEGORY_FLEX_CACHE_TTL):
+        return cached[1]
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": "SistemaDrop/1.0",
+        "Accept": "application/json",
+    }
+    url = f"{ML_API_BASE}/categories/{category_id}/shipping_preferences"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url, headers=headers)
+
+    if resp.status_code != 200:
+        logger.warning(
+            "category_supports_flex %s → HTTP %s: %s",
+            category_id, resp.status_code, resp.text[:200],
+        )
+        # Falha conservadora: retorna supports=True para não bloquear o usuário
+        # se a consulta falhar; o set_item_flex vai chamar o endpoint do Flex
+        # e o ML rejeita lá com mensagem clara se realmente não suportar.
+        result = {
+            "category_id": category_id,
+            "supports": True,
+            "modes": [],
+            "types": [],
+            "_check_failed": True,
+        }
+        _category_flex_cache[category_id] = (_time.time(), result)
+        return result
+
+    body = resp.json() if resp.text else {}
+    logistics = body.get("logistics") or []
+    all_modes: set[str] = set()
+    all_types: set[str] = set()
+    for entry in logistics:
+        if entry.get("mode"):
+            all_modes.add(entry["mode"])
+        for t in (entry.get("types") or []):
+            all_types.add(t)
+
+    supports = "self_service" in all_types
+
+    result = {
+        "category_id": category_id,
+        "supports": supports,
+        "modes": sorted(all_modes),
+        "types": sorted(all_types),
+    }
+    _category_flex_cache[category_id] = (_time.time(), result)
+    return result
 
 
 async def get_item_and_selfservice(access_token: str, item_id: str) -> tuple[dict, dict]:

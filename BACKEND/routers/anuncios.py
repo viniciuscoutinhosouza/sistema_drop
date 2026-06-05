@@ -5202,25 +5202,40 @@ async def toggle_flex_anuncio(
                 ),
             )
 
+        # Verifica se a categoria do anúncio aceita Flex (self_service).
+        # Conservador: se a consulta falhar, deixa o set_item_flex tentar e o ML
+        # devolve o erro detalhado.
+        if listing.category_id:
+            cat_support = await ml_service.category_supports_flex(
+                access_token, listing.category_id
+            )
+            if not cat_support.get("supports") and not cat_support.get("_check_failed"):
+                cat_label = listing.category_name or listing.category_id
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"A categoria \"{cat_label}\" ({listing.category_id}) não permite "
+                        f"Mercado Envios Flex (self_service). Modos aceitos: "
+                        f"{', '.join(cat_support.get('modes') or []) or 'não declarado'}. "
+                        "Mude a categoria do anúncio ou use outro tipo de envio."
+                    ),
+                )
+
     result = await ml_service.set_item_flex(
         access_token, listing.platform_item_id, enable, site_id="MLB"
     )
 
     # already_in_state: o item já estava no estado desejado (Flex é opt-out automático).
-    # Reusa o logistic_type que veio do GET inicial, sem refetch.
-    if result.get("already_in_state"):
-        new_logistic = result.get("logistic_type") or ""
-    else:
-        # Refetch para pegar o estado pós-ação (propagação não é instantânea no ML)
-        try:
-            ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
-            ml_shipping = ml_item.get("shipping") or {}
-            ml_tags = set(ml_shipping.get("tags") or [])
-            new_logistic = (ml_shipping.get("logistic_type") or "").lower()
-            if "self_service_in" in ml_tags and new_logistic not in ("fulfillment", "self_service"):
-                new_logistic = "self_service"
-        except Exception:
-            new_logistic = "self_service" if enable else "cross_docking"
+    # Refetch o item ML pra atualizar logistic_type no DB (a resposta do v2 dá só has_flex).
+    try:
+        ml_item = await ml_service.get_item(access_token, listing.platform_item_id)
+        ml_shipping = ml_item.get("shipping") or {}
+        ml_tags = set(ml_shipping.get("tags") or [])
+        new_logistic = (ml_shipping.get("logistic_type") or "").lower()
+        if "self_service_in" in ml_tags and new_logistic not in ("fulfillment", "self_service"):
+            new_logistic = "self_service"
+    except Exception:
+        new_logistic = "self_service" if enable else "cross_docking"
 
     if new_logistic:
         listing.logistic_type = new_logistic
