@@ -52,7 +52,7 @@ class StockEvent:
     """Um evento que afeta (ou poderia afetar) o estoque de um produto."""
 
     date: datetime
-    source: Literal["nfe_in", "nfe_out", "order", "adjustment"]
+    source: Literal["nfe_in", "nfe_out", "order", "adjustment", "inventory"]
     direction: Literal["in", "out"]  # pra 'order' sempre 'out'
     qty: int
     qty_to_cmig: int = 0
@@ -95,6 +95,12 @@ class StockEvent:
     adjustment_user_name: str | None = None
     adjustment_old: int | None = None
     adjustment_new: int | None = None
+    # Inventário (apenas quando source='inventory')
+    inventory_mode: str | None = None      # 'baseline' | 'adjustment'
+    inventory_counted: int | None = None   # quantidade física contada
+    inventory_delta: int | None = None     # counted - system (congelado na finalização)
+    inventory_id: int | None = None
+    inventory_number: int | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -609,6 +615,58 @@ async def _fetch_kit_component_events(
                 item_sku=item.sku,
                 item_ml_item_id=item.ml_item_id,
                 origin_kind="kit_component",
+            )
+        )
+    return events
+
+
+async def _fetch_inventory_events_for_product(
+    product_type: str, product_id: int, db: AsyncSession
+) -> list[StockEvent]:
+    """Contagens de inventário FINALIZADAS que afetam um produto.
+
+    - baseline   → redefine o saldo para `counted_qty` na data `finalized_at`.
+    - adjustment → soma `delta` (counted - system) na data `finalized_at`.
+
+    Esses eventos são DURÁVEIS (sobrevivem a recomputes) e entram no replay
+    cronológico junto com NF-e e pedidos.
+    """
+    from models.inventory import Inventory, InventoryItem
+
+    rows = (
+        await db.execute(
+            select(InventoryItem, Inventory)
+            .join(Inventory, Inventory.id == InventoryItem.inventory_id)
+            .where(
+                and_(
+                    Inventory.status == "finalized",
+                    InventoryItem.product_type == product_type,
+                    InventoryItem.product_id == product_id,
+                    InventoryItem.counted_qty.isnot(None),
+                )
+            )
+        )
+    ).all()
+
+    events: list[StockEvent] = []
+    for item, inv in rows:
+        m_date = inv.finalized_at or inv.created_at
+        if m_date is None:
+            continue
+        counted = int(item.counted_qty or 0)
+        delta = int(item.delta if item.delta is not None else 0)
+        events.append(
+            StockEvent(
+                date=m_date,
+                source="inventory",
+                direction="in" if delta >= 0 else "out",
+                qty=counted if inv.mode == "baseline" else abs(delta),
+                inventory_mode=inv.mode,
+                inventory_counted=counted,
+                inventory_delta=delta,
+                inventory_id=inv.id,
+                inventory_number=inv.number,
+                origin_kind=f"inventory_{inv.mode}",
             )
         )
     return events

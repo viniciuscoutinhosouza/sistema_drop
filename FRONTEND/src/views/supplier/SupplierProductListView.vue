@@ -86,14 +86,15 @@
                   </td>
                   <td>{{ p.cost_price ? `R$ ${Number(p.cost_price).toFixed(2)}` : '—' }}</td>
                   <td>{{ p.suggested_price ? `R$ ${Number(p.suggested_price).toFixed(2)}` : '—' }}</td>
-                  <td>
-                    <input
-                      type="number" min="0"
-                      :value="p.stock_quantity"
-                      class="form-control form-control-sm"
-                      style="width:80px"
-                      @change="updateStock(p.id, $event.target.value)"
-                    />
+                  <td class="text-center">
+                    <span :class="(p.stock_quantity || 0) <= 0 ? 'text-danger font-weight-bold' : ''">
+                      {{ p.stock_quantity ?? 0 }}
+                    </span>
+                    <i
+                      class="fas fa-lock text-muted ml-1"
+                      style="font-size:0.7em"
+                      title="O estoque físico é alterado pelo módulo Inventário (menu ESTOQUE)"
+                    ></i>
                   </td>
                   <td>
                     <span :class="`badge badge-${p.is_active ? 'success' : 'secondary'}`">
@@ -248,14 +249,6 @@ async function load() {
     products.value = data
   } finally {
     loading.value = false
-  }
-}
-
-async function updateStock(id, qty) {
-  try {
-    await api.put(`/pg/${id}/stock`, { stock_quantity: parseInt(qty) })
-  } catch (e) {
-    toast.error('Erro ao atualizar estoque.')
   }
 }
 

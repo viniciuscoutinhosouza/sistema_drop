@@ -4,6 +4,37 @@
 
 ---
 
+## 2026-06-06 — feat(inventory): módulo de Inventário + estoque do PG read-only
+
+### Objetivo
+- Tirar a edição direta de estoque da tela PG (era `PUT /pg/{id}/stock`, sobrescrita no recompute) e centralizar toda alteração de estoque físico num documento de Inventário.
+
+### Modelo / dados
+- `BACKEND/models/inventory.py`: `Inventory` (number, mode 'baseline'|'adjustment', catalog_type 'pg'|'cmig', cmig_id, status draft|finalized|cancelled, created_by/finalized_by) e `InventoryItem` (system_qty snapshot, counted_qty, delta).
+- Migration `Scripts SQL/84_inventories.sql`: cria as tabelas + índice + injeta menu_keys `inventario`/`inventario_criar` nos perfis de sistema (admin+gl criam; go+gc só veem).
+
+### Cálculo (durável, sobrevive a recompute)
+- `stock_history._fetch_inventory_events_for_product` + tratamento `source=='inventory'` no `stock_calculator`:
+  - **baseline** → reseta o saldo para o contado na data (replay cronológico no CMIG; piso de data no PG, descartando eventos anteriores).
+  - **adjustment** → soma o delta congelado (counted − system).
+- Sem inventário, o comportamento é idêntico ao anterior (zero regressão).
+
+### API / permissões
+- `routers/inventories.py` (registrado em main.py em `/api/v1/inventories`): list/create/get/update-items/finalize/cancel. Leitura por `inventario`, escrita por `inventario_criar`.
+- `PUT /pg/{id}/stock` agora retorna **410** (descontinuado).
+- `MENU_CATALOG` ganhou `inventario` e `inventario_criar` (seção ESTOQUE GL) — configuráveis no cadastro de Perfil.
+
+### Frontend
+- PG: campo de estoque virou **somente leitura** com cadeado (`SupplierProductListView.vue`).
+- Menu "Inventário" na seção ESTOQUE (`AppSidebar.vue`) + mapas legados (admin/ugo/go/ac).
+- Rotas + `views/inventory/InventoryListView.vue` (grid) e `InventoryFormView.vue` (criar: modo+catálogo; contar: grid de produtos, rascunho/finalizar/cancelar).
+
+### Verificação
+- `python -c import main` OK; `pytest -m "not integration"` 10 passed (2 falhas pré-existentes em test_orders, mock sem `.scalar()`); `npm run build` OK.
+- **Pendente:** rodar migration 84 no Oracle de produção; criar ADR do padrão "eventos de inventário no cálculo de estoque"; auditoria (quality-guardian/consistency-auditor) antes do fechamento formal.
+
+---
+
 ## 2026-06-06 — fix(stock): pedidos FULL não debitam mais o estoque do galpão (dupla baixa)
 
 ### Problema (contabilização de estoque FULL)

@@ -45,7 +45,10 @@ async def calculate_cmig_product_stock(
     """
     nfe_events = await stock_history._fetch_nfe_events_for_cmig_product(cmig_product, db)
     order_events = await stock_history._fetch_order_events_for_cmig_product(cmig_product, db)
-    events = nfe_events + order_events
+    inv_events = await stock_history._fetch_inventory_events_for_product(
+        "cmig", cmig_product.id, db
+    )
+    events = nfe_events + order_events + inv_events
     events.sort(key=lambda e: e.date)
 
     has_pg = cmig_product.pg_product_id is not None
@@ -66,6 +69,13 @@ async def calculate_cmig_product_stock(
                 # overflow (e.qty - taken) vai pro PG — calculate_pg_product_stock recalcula
             else:
                 cmig_balance -= e.qty
+        elif e.source == "inventory":
+            # baseline = a contagem vira a verdade na data (reset);
+            # adjustment = soma o delta congelado (counted - system).
+            if e.inventory_mode == "baseline":
+                cmig_balance = int(e.inventory_counted or 0)
+            else:
+                cmig_balance += int(e.inventory_delta or 0)
     return cmig_balance
 
 
@@ -81,18 +91,37 @@ async def calculate_pg_product_stock(
     - NFe-in direta com `source_type='pg'` matchando este PG → +qty
     - NFe-out direta com `source_type='pg'` não-linked → -qty
     - Overflow de pedidos dos CMIGProducts vinculados (qty_to_pg após split)
+    - Inventário: baseline reseta o saldo (piso de data) e adjustment soma delta.
     """
+    # Âncora de inventário: o baseline finalizado mais recente define um piso de
+    # data (eventos anteriores são descartados) e o saldo inicial = contado.
+    inv_events = await stock_history._fetch_inventory_events_for_product(
+        "pg", pg_product.id, db
+    )
+    floor_date = None
     balance = 0
+    baseline_events = [e for e in inv_events if e.inventory_mode == "baseline"]
+    if baseline_events:
+        latest = max(baseline_events, key=lambda e: e.date)
+        floor_date = latest.date
+        balance = int(latest.inventory_counted or 0)
+
+    def _after_floor(dt) -> bool:
+        return floor_date is None or (dt is not None and dt > floor_date)
 
     # 1) Eventos NFe diretos (source_type='pg' + match SKU/EAN)
     direct_pg_events = await stock_history._fetch_direct_pg_events(pg_product, db)
     for e in direct_pg_events:
+        if not _after_floor(e.date):
+            continue
         if e.source == "nfe_in":
             balance += e.qty
         elif e.source == "nfe_out" and not e.invoice_linked_to_order:
             balance -= e.qty
 
-    # 2) Overflow de pedidos: replay cronológico de cada CMIG vinculado
+    # 2) Overflow de pedidos: replay cronológico de cada CMIG vinculado.
+    # O replay do CMIG roda com histórico completo (pra computar overflow
+    # corretamente), mas só ACUMULA no PG o overflow posterior ao piso.
     linked_cmigs = (
         await db.execute(
             select(CMIGProduct).where(CMIGProduct.pg_product_id == pg_product.id)
@@ -114,24 +143,27 @@ async def calculate_pg_product_stock(
             elif e.source == "order" and e.is_definitive:
                 taken = max(0, min(e.qty, cmig_balance))
                 overflow = e.qty - taken
-                if overflow > 0:
+                if overflow > 0 and _after_floor(e.date):
                     balance -= overflow
                 cmig_balance -= taken
 
     # 3) Consumo de kit: se este PG é componente de algum produto composto,
     # subtrair a quantidade usada em pedidos shipped/delivered dos kits.
+    kit_filters = [
+        CatalogProductComponent.component_id == pg_product.id,
+        Order.shipment_status.in_(("shipped", "delivered")),
+        stock_history.local_order_clause(),  # exclui kits via FULL
+    ]
+    if floor_date is not None:
+        kit_filters.append(
+            func.coalesce(Order.shipped_at, Order.created_at) > floor_date
+        )
     kit_usage = (
         await db.execute(
             select(func.sum(OrderItem.quantity * CatalogProductComponent.quantity))
             .join(CatalogProductComponent, CatalogProductComponent.composite_id == OrderItem.catalog_product_id)
             .join(Order, Order.id == OrderItem.order_id)
-            .where(
-                and_(
-                    CatalogProductComponent.component_id == pg_product.id,
-                    Order.shipment_status.in_(("shipped", "delivered")),
-                    stock_history.local_order_clause(),  # exclui kits via FULL
-                )
-            )
+            .where(and_(*kit_filters))
         )
     ).scalar() or 0
     balance -= int(kit_usage)
@@ -141,29 +173,37 @@ async def calculate_pg_product_stock(
     # A exclusão evita dupla contagem com:
     #   - caminho 2 (overflow): só dispara se houver CMIGProduct vinculado por pg_product_id
     #   - caminho via sku_cmig (em _fetch_order_events_for_cmig_product)
+    direct_filters = [
+        OrderItem.catalog_product_id == pg_product.id,
+        Order.shipment_status.in_(("shipped", "delivered")),
+        stock_history.local_order_clause(),  # exclui pedidos FULL
+        ~exists().where(
+            and_(
+                CMIGProduct.cmig_id == Order.cmig_id,
+                or_(
+                    CMIGProduct.sku_cmig == OrderItem.sku,
+                    CMIGProduct.pg_product_id == OrderItem.catalog_product_id,
+                ),
+            )
+        ),
+    ]
+    if floor_date is not None:
+        direct_filters.append(
+            func.coalesce(Order.shipped_at, Order.created_at) > floor_date
+        )
     direct_pg_order_qty = (
         await db.execute(
             select(func.sum(OrderItem.quantity))
             .join(Order, Order.id == OrderItem.order_id)
-            .where(
-                and_(
-                    OrderItem.catalog_product_id == pg_product.id,
-                    Order.shipment_status.in_(("shipped", "delivered")),
-                    stock_history.local_order_clause(),  # exclui pedidos FULL
-                    ~exists().where(
-                        and_(
-                            CMIGProduct.cmig_id == Order.cmig_id,
-                            or_(
-                                CMIGProduct.sku_cmig == OrderItem.sku,
-                                CMIGProduct.pg_product_id == OrderItem.catalog_product_id,
-                            ),
-                        )
-                    ),
-                )
-            )
+            .where(and_(*direct_filters))
         )
     ).scalar() or 0
     balance -= int(direct_pg_order_qty)
+
+    # 5) Inventários em modo 'adjustment' posteriores ao piso → soma o delta congelado.
+    for e in inv_events:
+        if e.inventory_mode == "adjustment" and _after_floor(e.date):
+            balance += int(e.inventory_delta or 0)
 
     return balance
 

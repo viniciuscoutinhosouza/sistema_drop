@@ -66,6 +66,7 @@ from routers import (
     full_cnpjs,
     goes,
     integrations,
+    inventories,
     invoices,
     listings,
     manual_orders,
@@ -103,6 +104,7 @@ app.include_router(
 )
 app.include_router(returns.router, prefix=f"{PREFIX}/returns", tags=["Returns"])
 app.include_router(stock.router, prefix=f"{PREFIX}/stock", tags=["Stock"])
+app.include_router(inventories.router, prefix=f"{PREFIX}/inventories", tags=["Inventories"])
 app.include_router(full_cnpjs.router, prefix=f"{PREFIX}/full-cnpjs", tags=["FullCNPJs"])
 app.include_router(notifications.router, prefix=f"{PREFIX}/notifications", tags=["Notifications"])
 app.include_router(webhooks.router, prefix=f"{PREFIX}/webhooks", tags=["Webhooks"])

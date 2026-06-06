@@ -507,31 +507,17 @@ async def update_stock(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("pg")),
 ):
-    """DEPRECATED: edição manual de `stock_quantity` é desencorajada no modelo
-    canônico (event-sourced). Para ajustes, crie uma NFe de entrada/saída.
-    Mantido pra compat. Quando chamado, sobrescreve o cache — próximo recompute
-    pode restaurar pro valor calculado dos eventos."""
-    from services.fiscal.stock_audit import log_adjustment
-
-    result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
-    product = result.scalar_one_or_none()
-    if not product:
-        raise HTTPException(status_code=404, detail="Produto não encontrado")
-    old_v = int(product.stock_quantity or 0)
-    new_v = int(body["stock_quantity"])
-    product.stock_quantity = new_v
-    await log_adjustment(
-        db,
-        product_type="pg",
-        product_id=product_id,
-        old_value=old_v,
-        new_value=new_v,
-        kind="manual_override",
-        reason=(body.get("reason") or "Override manual via PUT /pg/{id}/stock"),
-        user_id=current_user.id,
+    """REMOVIDO: a edição manual de estoque físico foi substituída pelo módulo de
+    Inventário (menu ESTOQUE > Inventário). O estoque é event-sourced e qualquer
+    override aqui seria sobrescrito no próximo recompute. Use um inventário
+    (baseline ou ajuste) para alterar o estoque físico de forma durável."""
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Edição manual de estoque foi descontinuada. Crie um Inventário "
+            "(menu ESTOQUE > Inventário) para ajustar o estoque físico."
+        ),
     )
-    await db.commit()
-    return {"ok": True, "stock_quantity": product.stock_quantity}
 
 
 @router.post("/{product_id}/recalculate-stock")

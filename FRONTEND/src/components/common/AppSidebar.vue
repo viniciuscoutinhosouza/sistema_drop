@@ -121,11 +121,16 @@
           </template>
 
           <!-- ESTOQUE GL -->
-          <template v-if="canSee('ag_retorno')">
+          <template v-if="canSee('ag_retorno') || canSee('inventario')">
             <li class="nav-header">ESTOQUE</li>
-            <li class="nav-item">
+            <li v-if="canSee('ag_retorno')" class="nav-item">
               <RouterLink to="/returns/aguardando-retorno" class="nav-link" :class="{ active: route.path === '/returns/aguardando-retorno' }">
                 <i class="nav-icon fas fa-undo-alt text-info"></i><p>Ag. Retorno Físico</p>
+              </RouterLink>
+            </li>
+            <li v-if="canSee('inventario')" class="nav-item">
+              <RouterLink to="/inventario" class="nav-link" :class="{ active: route.path.startsWith('/inventario') }">
+                <i class="nav-icon fas fa-clipboard-list text-success"></i><p>Inventário</p>
               </RouterLink>
             </li>
           </template>
@@ -273,18 +278,19 @@ const _legacyMenus = {
   admin: new Set([
     'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',
     'pedidos','catalog','pedido_manual','devolucoes','estoque','pessoas','fiscal_entradas',
-    'fiscal_saidas','pg','ag_retorno','rotinas','go_empresa','go_usuarios','config_usuarios',
-    'config_gestores','config_ai','config_api_console','config_perfis',
+    'fiscal_saidas','pg','ag_retorno','inventario','inventario_criar','rotinas','go_empresa',
+    'go_usuarios','config_usuarios','config_gestores','config_ai','config_api_console','config_perfis',
   ]),
   ac: new Set([
     'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',
     'pedidos','catalog','pedido_manual','devolucoes','estoque','pessoas','fiscal_entradas','fiscal_saidas',
+    'inventario',
   ]),
   ugo: new Set([
-    'pg','cmig','pedidos','estoque','ag_retorno','devolucoes','pessoas','fiscal_entradas',
-    'fiscal_saidas','rotinas','config_usuarios',
+    'pg','cmig','pedidos','estoque','ag_retorno','inventario','inventario_criar','devolucoes',
+    'pessoas','fiscal_entradas','fiscal_saidas','rotinas','config_usuarios',
   ]),
-  go: new Set(['rotinas','go_empresa','go_usuarios']),
+  go: new Set(['rotinas','go_empresa','go_usuarios','inventario']),
 }
 
 function canSee(menuKey) {

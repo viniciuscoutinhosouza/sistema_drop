@@ -55,6 +55,10 @@ const SupplierProductListView = () => import('@/views/supplier/SupplierProductLi
 const PgProductFormView       = () => import('@/views/supplier/PgProductFormView.vue')
 const PgCompositeFormView     = () => import('@/views/supplier/PgCompositeFormView.vue')
 
+// Inventário (ESTOQUE)
+const InventoryListView = () => import('@/views/inventory/InventoryListView.vue')
+const InventoryFormView = () => import('@/views/inventory/InventoryFormView.vue')
+
 // Settings
 const UsersView     = () => import('@/views/settings/UsersView.vue')
 const WarehouseView = () => import('@/views/settings/WarehouseView.vue')
@@ -171,6 +175,11 @@ const routes = [
       { path: 'pg/novo-composto',      component: PgCompositeFormView,     meta: { title: 'Novo KIT PG', menuKey: 'pg' } },
       { path: 'pg/:id/edit',           component: PgProductFormView,       meta: { title: 'Editar Produto PG',    menuKey: 'pg' } },
       { path: 'pg/:id/editar-composto', component: PgCompositeFormView,    meta: { title: 'Editar KIT PG', menuKey: 'pg' } },
+
+      // Inventário (ESTOQUE)
+      { path: 'inventario',        component: InventoryListView, meta: { title: 'Inventário', menuKey: 'inventario' } },
+      { path: 'inventario/novo',   component: InventoryFormView, meta: { title: 'Novo Inventário', menuKey: 'inventario_criar' } },
+      { path: 'inventario/:id',    component: InventoryFormView, meta: { title: 'Inventário', menuKey: 'inventario' } },
 
       // Configurações — Admin e UGO
       {
