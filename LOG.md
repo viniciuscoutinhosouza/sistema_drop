@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-06-06 — feat(stock): FULL atribuído ao CMIG + histórico completo com venda/marketplace
+
+### Fase 1 — Atribuição FULL correta
+- Novo `resolve_full_product(db, order, item)` em `full_stock_service`: resolve o produto de um item FULL preferindo o `cmig_product_id` do anúncio (ProductListing por ml_item_id+account_id), pois FULL pertence à conta CMIG. Mesma lógica do sync-full.
+- `_apply_full_reservation` (reserva) e `apply_full_order_shipped` (baixa) passam a usar o resolver → movimentos e FullStock vão para o CMIG product, não mais para o PG.
+- Backfill `sandbox/backfill_full_attribution.py`: re-aponta stock_movements FULL e reconstrói FullStock.reserved_qty de PG→CMIG (qty reconciliado depois via sync-full).
+
+### Fase 2/3 — Histórico completo + venda/marketplace
+- `stock_movements.build_movements_response` retorna `full_movements` (trilha FULL: full_in/out/reserve/unreserve/return), com nº da venda, plataforma, NF-e e link externo do marketplace. Não entra no saldo local.
+- Endpoint inline `/stock/{type}/{id}/movements` enriquecido com order_platform/platform_order_id/marketplace_url.
+- StockControlView: botão (ícone) por linha abre o `StockMovementsModal` (histórico completo); coluna Pedido do histórico inline vira link interno + link externo do marketplace.
+- StockMovementsModal: link direto para a venda no marketplace nos pedidos + nova seção "Movimentações no FULL".
+
+### Verificação
+- `import main` OK; `pytest -m "not integration"` 10 passed (2 falhas pré-existentes em test_orders); `npm run build` OK.
+- **Pendente:** deploy + rodar backfill de atribuição + sync-full por CMIG em produção.
+
+---
+
 ## 2026-06-06 — feat(inventory): módulo de Inventário + estoque do PG read-only
 
 ### Objetivo

@@ -22,10 +22,88 @@ from datetime import datetime as _datetime
 from datetime import time as _time
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.cmig import CMIGProduct
+from models.fiscal import Invoice
+from models.order import Order
 from models.product import CatalogProduct
+from models.stock_movement import StockMovement
+
+
+_FULL_MOVEMENT_LABELS = {
+    "full_in": "Enviado ao FULL",
+    "full_out": "Venda FULL",
+    "full_reserve": "Reserva FULL",
+    "full_unreserve": "Reserva FULL liberada",
+    "full_return_out": "Retorno do FULL",
+}
+
+
+def _marketplace_url(platform: str | None, platform_order_id: str | None) -> str | None:
+    """Link direto para a venda no marketplace (quando há URL pública estável)."""
+    if not platform_order_id:
+        return None
+    if platform == "mercadolivre":
+        return f"https://www.mercadolivre.com.br/vendas/{platform_order_id}/detalhe"
+    return None  # Shopee não tem URL pública estável de venda → usa link interno
+
+
+async def _build_full_movements(
+    db: AsyncSession,
+    product_type: str,
+    product_id: int,
+    start_dt,
+    end_dt,
+) -> list[dict]:
+    """Trilha informativa de eventos FULL (fulfillment ML) do produto.
+
+    FULL tem ciclo próprio (reconciliado pelo ML) e NÃO entra no saldo local —
+    por isso vem como lista separada, com referência ao pedido/NF-e, número da
+    venda, marketplace e link externo.
+    """
+    rows = (
+        await db.execute(
+            select(StockMovement, Order)
+            .outerjoin(Order, Order.id == StockMovement.order_id)
+            .where(
+                StockMovement.product_type == product_type,
+                StockMovement.product_id == product_id,
+                StockMovement.field_affected.in_(("full_stock", "full_stock_reserved")),
+            )
+            .order_by(StockMovement.created_at.desc())
+        )
+    ).all()
+
+    out: list[dict] = []
+    for m, order in rows:
+        if start_dt is not None and m.created_at and m.created_at < start_dt:
+            continue
+        if end_dt is not None and m.created_at and m.created_at > end_dt:
+            continue
+        invoice_number = None
+        if m.invoice_id:
+            invoice_number = (
+                await db.execute(select(Invoice.nfe_number).where(Invoice.id == m.invoice_id))
+            ).scalar_one_or_none()
+        platform = order.platform if order else None
+        platform_order_id = order.platform_order_id if order else None
+        out.append({
+            "date": m.created_at.isoformat() if m.created_at else None,
+            "movement_type": m.movement_type,
+            "label": _FULL_MOVEMENT_LABELS.get(m.movement_type, m.movement_type),
+            "field_affected": m.field_affected,
+            "qty": abs(int(m.delta or 0)),
+            "delta": int(m.delta or 0),
+            "order_id": m.order_id,
+            "order_platform": platform,
+            "order_platform_id": platform_order_id,
+            "marketplace_url": _marketplace_url(platform, platform_order_id),
+            "invoice_id": m.invoice_id,
+            "invoice_number": invoice_number,
+        })
+    return out
 from services.fiscal.stock_calculator import (
     calculate_cmig_product_stock,
     calculate_pg_product_stock,
@@ -47,6 +125,12 @@ async def build_movements_response(
     is_pg = product_type == "pg"
 
     current_balance = int(product.stock_quantity or 0)
+
+    end_dt_full = _datetime.combine(end_date, _time.max) if end_date is not None else None
+    start_dt_full = _datetime.combine(start_date, _time.min) if start_date is not None else None
+    full_movements = await _build_full_movements(
+        db, product_type, product.id, start_dt_full, end_dt_full
+    )
 
     # Recalcula do zero para detectar drift cache vs canonical
     if is_pg:
@@ -85,6 +169,7 @@ async def build_movements_response(
             "period_initial_available": 0,
             "period_final_available": 0,
             "movements": [],
+            "full_movements": full_movements,
         }
         if is_pg:
             common.update({
@@ -236,6 +321,7 @@ async def build_movements_response(
         "period_initial_available": period_initial_available,
         "period_final_available": period_final_available,
         "movements": visible_events,
+        "full_movements": full_movements,
     }
 
     # Aliases legados (consumidos pelo StockMovementsModal.vue e outros)

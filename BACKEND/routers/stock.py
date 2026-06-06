@@ -682,20 +682,37 @@ async def product_movements(
         if allowed.scalar_one_or_none() is None:
             raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
 
-    q = (
-        select(StockMovement)
+    from models.order import Order
+
+    count_q = (
+        select(func.count())
+        .select_from(StockMovement)
         .where(
             StockMovement.product_type == product_type,
             StockMovement.product_id == product_id,
         )
-        .order_by(StockMovement.created_at.desc())
     )
-    total = (
-        await db.execute(select(func.count()).select_from(q.subquery()))
-    ).scalar()
+    total = (await db.execute(count_q)).scalar()
+
     rows = (
-        await db.execute(q.offset((page - 1) * page_size).limit(page_size))
-    ).scalars().all()
+        await db.execute(
+            select(StockMovement, Order)
+            .outerjoin(Order, Order.id == StockMovement.order_id)
+            .where(
+                StockMovement.product_type == product_type,
+                StockMovement.product_id == product_id,
+            )
+            .order_by(StockMovement.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+
+    def _mkt_url(platform, platform_order_id):
+        if platform == "mercadolivre" and platform_order_id:
+            return f"https://www.mercadolivre.com.br/vendas/{platform_order_id}/detalhe"
+        return None
+
     return {
         "items": [
             {
@@ -706,9 +723,12 @@ async def product_movements(
                 "delta": m.delta,
                 "order_id": m.order_id,
                 "return_id": m.return_id,
+                "order_platform": (o.platform if o else None),
+                "order_platform_id": (o.platform_order_id if o else None),
+                "marketplace_url": _mkt_url(o.platform, o.platform_order_id) if o else None,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
-            for m in rows
+            for m, o in rows
         ],
         "total": total,
         "page": page,

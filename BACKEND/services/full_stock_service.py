@@ -24,6 +24,52 @@ logger = logging.getLogger(__name__)
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+async def resolve_full_product(db: AsyncSession, order, item) -> tuple[str | None, int | None]:
+    """Resolve (product_type, product_id) para um item de pedido FULL.
+
+    FULL pertence à conta CMIG: mesmo quando o anúncio está vinculado a um PG,
+    no fulfillment o produto foi transferido para a CMIG. Por isso preferimos o
+    `cmig_product_id` do anúncio (ProductListing por ml_item_id + account_id),
+    caindo para PG só quando não há vínculo CMIG. Mantém a atribuição do FULL
+    consistente com o `sync-full` (que também resolve via listing.cmig_product_id).
+    """
+    from models.product import ProductListing
+
+    if getattr(item, "ml_item_id", None) and order.account_id:
+        cmig_pid = (
+            await db.execute(
+                select(ProductListing.cmig_product_id).where(
+                    ProductListing.platform_item_id == item.ml_item_id,
+                    ProductListing.account_id == order.account_id,
+                    ProductListing.cmig_product_id.isnot(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if cmig_pid:
+            return "cmig", cmig_pid
+
+    if getattr(item, "cmig_product_id", None):
+        return "cmig", item.cmig_product_id
+
+    if getattr(item, "catalog_product_id", None):
+        return "pg", item.catalog_product_id
+
+    if getattr(item, "ml_item_id", None) and order.account_id:
+        cat_pid = (
+            await db.execute(
+                select(ProductListing.catalog_product_id).where(
+                    ProductListing.platform_item_id == item.ml_item_id,
+                    ProductListing.account_id == order.account_id,
+                    ProductListing.catalog_product_id.isnot(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if cat_pid:
+            return "pg", cat_pid
+
+    return None, None
+
+
 async def is_full_cnpj(db: AsyncSession, cnpj: str, cmig_id: int) -> FullCnpj | None:
     """Retorna o FullCnpj se o CNPJ está cadastrado como FULL para a CMIG."""
     if not cnpj:
@@ -215,18 +261,13 @@ async def apply_full_order_shipped(db: AsyncSession, order: Order) -> None:
     items = await _get_order_items(db, order.id)
     for item in items:
         qty = item.quantity or 1
+        # FULL pertence à conta CMIG → resolve preferindo o CMIG product do anúncio.
         # release_reserved=True: ao debitar qty, também libera a reserva FULL feita
         # quando o pedido foi baixado (movement_type full_reserve em
         # stock_reservation_service). Mantém reserved_qty consistente.
-        if item.catalog_product_id:
-            await _adjust_full_stock(
-                db, "pg", item.catalog_product_id, account_id, -qty, release_reserved=True
-            )
-            _log(db, product_type="pg", product_id=item.catalog_product_id,
-                 movement_type="full_out", qty=qty, delta=-qty, order_id=order.id)
-        elif item.cmig_product_id:
-            await _adjust_full_stock(
-                db, "cmig", item.cmig_product_id, account_id, -qty, release_reserved=True
-            )
-            _log(db, product_type="cmig", product_id=item.cmig_product_id,
-                 movement_type="full_out", qty=qty, delta=-qty, order_id=order.id)
+        ptype, pid = await resolve_full_product(db, order, item)
+        if not ptype:
+            continue
+        await _adjust_full_stock(db, ptype, pid, account_id, -qty, release_reserved=True)
+        _log(db, product_type=ptype, product_id=pid,
+             movement_type="full_out", qty=qty, delta=-qty, order_id=order.id)

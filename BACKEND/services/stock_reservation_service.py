@@ -131,14 +131,14 @@ async def _apply_full_reservation(
     if not order.account_id:
         logger.warning("FULL %s: order %s sem account_id", movement_type, order.id)
         return
+    from services.full_stock_service import resolve_full_product
+
     items = await _get_order_items(db, order)
     for item in items:
         qty = item.quantity or 1
-        if item.cmig_product_id:
-            ptype, pid = "cmig", item.cmig_product_id
-        elif item.catalog_product_id:
-            ptype, pid = "pg", item.catalog_product_id
-        else:
+        # FULL pertence à conta CMIG → resolve preferindo o CMIG product do anúncio.
+        ptype, pid = await resolve_full_product(db, order, item)
+        if not ptype:
             continue
         delta = sign * qty
         ok = await _adjust_full_reserved(

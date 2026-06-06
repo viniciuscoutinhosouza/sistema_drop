@@ -167,7 +167,14 @@
                   </span>
                   <span v-else class="text-muted">—</span>
                 </td>
-                <td class="text-center text-muted">
+                <td class="text-center text-nowrap">
+                  <button
+                    class="btn btn-xs btn-outline-dark mr-1"
+                    title="Histórico completo (NF-e, pedidos, FULL, inventário)"
+                    @click.stop="openMovements(item)"
+                  >
+                    <i class="fas fa-clipboard-list"></i>
+                  </button>
                   <i :class="expandedKey === itemKey(item) ? 'fas fa-chevron-up' : 'fas fa-chevron-down'" style="font-size:11px"></i>
                 </td>
               </tr>
@@ -206,7 +213,24 @@
                           <td class="text-center" :class="m.delta > 0 ? 'text-success' : 'text-danger'">
                             <strong>{{ m.delta > 0 ? '+' : '' }}{{ m.delta }}</strong>
                           </td>
-                          <td class="text-center">{{ m.order_id || '—' }}</td>
+                          <td class="text-center">
+                            <template v-if="m.order_id">
+                              <a
+                                v-if="m.marketplace_url"
+                                :href="m.marketplace_url"
+                                target="_blank"
+                                rel="noopener"
+                                :title="`Abrir venda no ${marketplaceName(m.order_platform)}`"
+                              >
+                                {{ m.order_platform_id || m.order_id }}
+                                <i class="fas fa-external-link-alt" style="font-size:9px"></i>
+                              </a>
+                              <RouterLink v-else :to="`/orders/${m.order_id}`" :title="marketplaceName(m.order_platform)">
+                                {{ m.order_platform_id || m.order_id }}
+                              </RouterLink>
+                            </template>
+                            <span v-else>—</span>
+                          </td>
                           <td class="text-center">{{ m.return_id || '—' }}</td>
                         </tr>
                       </tbody>
@@ -234,6 +258,15 @@
         </div>
       </div>
     </div>
+
+    <StockMovementsModal
+      v-model:show="movementsModal.show"
+      :product-type="movementsModal.type"
+      :product-id="movementsModal.id"
+      :product-sku="movementsModal.sku"
+      :product-title="movementsModal.title"
+      :cmig-id="movementsModal.cmigId"
+    />
   </div>
 </template>
 
@@ -243,6 +276,7 @@ import api from '@/composables/useApi'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { formatDateTime } from '@/utils/formatters'
+import StockMovementsModal from '@/components/stock/StockMovementsModal.vue'
 
 const authStore = useAuthStore()
 const toast = useToast()
@@ -271,6 +305,23 @@ const movementsTotal = ref(0)
 const loadingMovements = ref(false)
 
 const syncingFull = ref(false)
+
+const movementsModal = ref({ show: false, type: 'pg', id: null, sku: '', title: '', cmigId: null })
+
+function openMovements(item) {
+  movementsModal.value = {
+    show: true,
+    type: item.product_type,
+    id: item.product_id,
+    sku: item.sku || '',
+    title: item.name || '',
+    cmigId: item.cmig_id || null,
+  }
+}
+
+function marketplaceName(p) {
+  return { mercadolivre: 'Mercado Livre', shopee: 'Shopee' }[p] || 'marketplace'
+}
 
 let searchTimer = null
 

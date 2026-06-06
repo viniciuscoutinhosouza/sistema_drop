@@ -237,6 +237,12 @@
                     </RouterLink>
                     <span v-else-if="m.source === 'order' && m.order_id">
                       <RouterLink :to="`/orders/${m.order_id}`" class="text-primary">#{{ m.order_platform_id || m.order_id }}</RouterLink>
+                      <a v-if="mktUrl(m.order_platform, m.order_platform_id)"
+                         :href="mktUrl(m.order_platform, m.order_platform_id)"
+                         target="_blank" rel="noopener" class="ml-1"
+                         :title="`Abrir venda no ${marketplaceName(m.order_platform)}`">
+                        <i class="fas fa-external-link-alt" style="font-size:10px"></i>
+                      </a>
                       <span class="text-muted ml-1">· {{ shipmentLabel(m.order_shipment_status) }}</span>
                       <span v-if="m.is_reserved" class="badge badge-warning text-dark ml-1" title="Status handling ou ready_to_ship">reservado</span>
                     </span>
@@ -300,6 +306,57 @@
               </tbody>
             </table>
           </div>
+          <!-- Movimentações FULL (fulfillment ML) — trilha informativa, ciclo próprio -->
+          <div v-if="!loading && data && (data.full_movements || []).length" class="mt-4">
+            <h6 class="text-muted mb-2" style="font-size:13px">
+              <i class="fas fa-warehouse mr-1" style="color:#6f42c1"></i>
+              Movimentações no FULL (Fulfillment)
+              <small class="text-muted">· estoque do ML, não entra no saldo local</small>
+            </h6>
+            <div class="table-responsive" style="max-height:30vh">
+              <table class="table table-sm table-hover mb-0" style="font-size:12px;white-space:nowrap">
+                <thead class="thead-light">
+                  <tr>
+                    <th>Data</th>
+                    <th>Evento</th>
+                    <th>Venda / Marketplace</th>
+                    <th>NF-e</th>
+                    <th class="text-right">Qtd</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(f, i) in data.full_movements" :key="'full-'+i">
+                    <td>{{ formatDateTimeOneLine(f.date) }}</td>
+                    <td>
+                      <span class="badge" :class="fullBadgeClass(f.movement_type)">{{ f.label }}</span>
+                    </td>
+                    <td>
+                      <template v-if="f.order_id">
+                        <span v-if="f.order_platform === 'mercadolivre'" class="badge mr-1" style="background:#FFE600;color:#3F3F3F;font-weight:bold">ML</span>
+                        <span v-else-if="f.order_platform === 'shopee'" class="badge mr-1" style="background:#EE4D2D;color:#fff;font-weight:bold">Shopee</span>
+                        <RouterLink :to="`/orders/${f.order_id}`" class="text-primary">#{{ f.order_platform_id || f.order_id }}</RouterLink>
+                        <a v-if="f.marketplace_url" :href="f.marketplace_url" target="_blank" rel="noopener" class="ml-1" :title="`Abrir venda no ${marketplaceName(f.order_platform)}`">
+                          <i class="fas fa-external-link-alt" style="font-size:10px"></i>
+                        </a>
+                      </template>
+                      <span v-else class="text-muted">—</span>
+                    </td>
+                    <td>
+                      <RouterLink v-if="f.invoice_id" :to="`/fiscal/invoices/${f.invoice_id}`" class="text-primary">
+                        <span v-if="f.invoice_number">NF #{{ f.invoice_number }}</span>
+                        <span v-else>Rascunho #{{ f.invoice_id }}</span>
+                      </RouterLink>
+                      <span v-else class="text-muted">—</span>
+                    </td>
+                    <td class="text-right" :class="f.delta >= 0 ? 'text-success' : 'text-danger'">
+                      <strong>{{ f.delta >= 0 ? '+' : '−' }}{{ Math.abs(f.delta) }}</strong>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <small class="text-muted d-block mt-2">
             <i class="fas fa-info-circle mr-1"></i>
             <strong>Saldo em estoque</strong> reflete NFes (entrada − saída não-fiscalizada) − pedidos shipped/delivered.
@@ -436,6 +493,26 @@ function qtySplitAnnotation(m, full = false) {
 }
 
 function closeModal() { emit('update:show', false) }
+
+function mktUrl(platform, platformOrderId) {
+  if (platform === 'mercadolivre' && platformOrderId) {
+    return `https://www.mercadolivre.com.br/vendas/${platformOrderId}/detalhe`
+  }
+  return null
+}
+function marketplaceName(p) {
+  return { mercadolivre: 'Mercado Livre', shopee: 'Shopee' }[p] || 'marketplace'
+}
+function fullBadgeClass(type) {
+  const map = {
+    full_in: 'badge-success',
+    full_out: 'badge-danger',
+    full_reserve: 'badge-warning text-dark',
+    full_unreserve: 'badge-info',
+    full_return_out: 'badge-secondary',
+  }
+  return map[type] || 'badge-light'
+}
 
 function todayIso() { return new Date().toISOString().slice(0, 10) }
 function isoDaysAgo(days) {
