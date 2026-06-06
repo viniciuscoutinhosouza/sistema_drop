@@ -166,11 +166,11 @@ const routes = [
       { path: 'notifications', component: NotificationsView, meta: { title: 'Notificações' } },
 
       // UGO-only (Operador Logístico — Produto Geral)
-      { path: 'pg',                    component: SupplierProductListView, meta: { title: 'Produtos Gerais (PG)', role: 'ugo' } },
-      { path: 'pg/new',                component: PgProductFormView,       meta: { title: 'Novo Produto PG',      role: 'ugo' } },
-      { path: 'pg/novo-composto',      component: PgCompositeFormView,     meta: { title: 'Novo KIT PG', role: 'ugo' } },
-      { path: 'pg/:id/edit',           component: PgProductFormView,       meta: { title: 'Editar Produto PG',    role: 'ugo' } },
-      { path: 'pg/:id/editar-composto', component: PgCompositeFormView,    meta: { title: 'Editar KIT PG', role: 'ugo' } },
+      { path: 'pg',                    component: SupplierProductListView, meta: { title: 'Produtos Gerais (PG)', menuKey: 'pg' } },
+      { path: 'pg/new',                component: PgProductFormView,       meta: { title: 'Novo Produto PG',      menuKey: 'pg' } },
+      { path: 'pg/novo-composto',      component: PgCompositeFormView,     meta: { title: 'Novo KIT PG', menuKey: 'pg' } },
+      { path: 'pg/:id/edit',           component: PgProductFormView,       meta: { title: 'Editar Produto PG',    menuKey: 'pg' } },
+      { path: 'pg/:id/editar-composto', component: PgCompositeFormView,    meta: { title: 'Editar KIT PG', menuKey: 'pg' } },
 
       // Configurações — Admin e UGO
       {
@@ -259,6 +259,19 @@ router.beforeEach((to, from, next) => {
 
   if (to.meta.guestOnly && isAuthenticated) {
     return next('/dashboard')
+  }
+
+  // Gate por menu_permission (novo padrão alinhado com backend require_menu_permission)
+  if (to.meta.menuKey) {
+    const user = JSON.parse(stored || '{}').user
+    const role = user?.role
+    // Admin sempre passa
+    if (role !== 'admin') {
+      const perms = Array.isArray(user?.menu_permissions) ? user.menu_permissions : []
+      if (!perms.includes(to.meta.menuKey)) {
+        return next('/dashboard')
+      }
+    }
   }
 
   if (to.meta.role) {
