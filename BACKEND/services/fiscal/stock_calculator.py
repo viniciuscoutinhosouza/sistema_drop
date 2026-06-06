@@ -129,6 +129,7 @@ async def calculate_pg_product_stock(
                 and_(
                     CatalogProductComponent.component_id == pg_product.id,
                     Order.shipment_status.in_(("shipped", "delivered")),
+                    stock_history.local_order_clause(),  # exclui kits via FULL
                 )
             )
         )
@@ -148,6 +149,7 @@ async def calculate_pg_product_stock(
                 and_(
                     OrderItem.catalog_product_id == pg_product.id,
                     Order.shipment_status.in_(("shipped", "delivered")),
+                    stock_history.local_order_clause(),  # exclui pedidos FULL
                     ~exists().where(
                         and_(
                             CMIGProduct.cmig_id == Order.cmig_id,

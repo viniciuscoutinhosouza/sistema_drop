@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-06 — fix(stock): pedidos FULL não debitam mais o estoque do galpão (dupla baixa)
+
+### Problema (contabilização de estoque FULL)
+- O cálculo canônico do estoque LOCAL (`stock_calculator` / `stock_history`) contava TODOS os pedidos `shipped/delivered`, **sem excluir os pedidos FULL**.
+- Para um produto no FULL, o galpão era debitado 2x: (1) pela NF-e de transferência CMIG→CNPJ FULL (correto) e (2) pelo pedido FULL recontado como saída local (errado). As vendas do FULL "vazavam" para a contabilidade do galpão, deixando CMIG/PG subdimensionados/negativos.
+- O recompute roda a cada pedido novo e a cada mudança de status, então o erro era ativo e recorrente.
+
+### Correção (Etapa 1 — núcleo)
+- Novo predicado único `local_order_clause()` em `BACKEND/services/stock_history.py`: `coalesce(Order.shipping_mode,'') != 'full'`. NULL/'desconhecido' são tratados como LOCAL (só exclui o que é comprovadamente FULL).
+- Aplicado no WHERE de: `_fetch_order_events_for_cmig_product`, `_fetch_direct_pg_order_events`, `_fetch_kit_component_events` (stock_history) e nas subqueries `kit_usage` + `direct_pg_order_qty` de `calculate_pg_product_stock` (stock_calculator).
+- Semântica final: NF-e de transferência = única saída do galpão; pedido FULL = baixa só do FullStock (via `apply_full_order_shipped`).
+
+### Backfill (Etapa 2)
+- `POST /stock/recompute-all` reconstrói o estoque local correto a partir dos eventos já corrigidos.
+- `POST /stock/cmig/{id}/sync-full` por CMIG realinha o FULL com a verdade do ML.
+
+### Verificação
+- `py_compile` OK; suíte `pytest -m "not integration"`: 10 passed. As 2 falhas em test_orders.py são pré-existentes (mock sem `.scalar()` em orders.py:479) e não relacionadas.
+
+---
+
 ## 2026-06-05 — fix(users): grid mostra perfil de acesso atribuído, não só o papel
 
 ### Problema

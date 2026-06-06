@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.cmig import CMIG, CMIGProduct
@@ -30,6 +30,21 @@ from models.product import CatalogProduct, CatalogProductComponent, ProductListi
 RESERVED_STATUSES = ("handling", "ready_to_ship")
 DEFINITIVE_STATUSES = ("shipped", "delivered")
 SHIPPED_STATUSES = RESERVED_STATUSES + DEFINITIVE_STATUSES  # todos contam pra estoque
+
+
+def local_order_clause():
+    """Predicado: pedido que debita o estoque LOCAL (galpão / PG / CMIG).
+
+    Pedidos FULL (shipping_mode='full') NÃO debitam o galpão — o produto já saiu
+    do galpão na NF-e de transferência para o CNPJ FULL (evento nfe_out) e a venda
+    é baixada do FullStock por `full_stock_service.apply_full_order_shipped`. Contar
+    o pedido FULL aqui causaria DUPLA baixa do galpão.
+
+    NULL / 'desconhecido' são tratados como LOCAL (mantidos), pois só excluímos o
+    que sabemos ser FULL. Usado por todas as fontes de evento de pedido que
+    alimentam o cálculo canônico de estoque local.
+    """
+    return func.coalesce(Order.shipping_mode, "") != "full"
 
 
 @dataclass
@@ -223,6 +238,7 @@ async def _fetch_order_events_for_cmig_product(
             and_(
                 Order.cmig_id == cmig_product.cmig_id,
                 Order.shipment_status.in_(SHIPPED_STATUSES),
+                local_order_clause(),  # exclui pedidos FULL (baixa só do FullStock)
                 or_(*or_clauses),
             )
         )
@@ -484,6 +500,7 @@ async def _fetch_direct_pg_order_events(
             and_(
                 OrderItem.catalog_product_id == pg_product.id,
                 Order.shipment_status.in_(SHIPPED_STATUSES),
+                local_order_clause(),  # exclui pedidos FULL (baixa só do FullStock)
                 ~has_cmig_match,
             )
         )
@@ -553,6 +570,7 @@ async def _fetch_kit_component_events(
             and_(
                 CatalogProductComponent.component_id == pg_product.id,
                 Order.shipment_status.in_(SHIPPED_STATUSES),
+                local_order_clause(),  # exclui kits vendidos via FULL
             )
         )
     )
