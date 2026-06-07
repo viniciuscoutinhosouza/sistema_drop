@@ -32,6 +32,7 @@ from models.order import Order, OrderItem
 from models.picking import PickingCart, PickingCartItem, PickingCartOrder
 from models.product import CatalogProduct, CatalogProductComponent
 from models.user import User
+from models.warehouse import Warehouse
 from services import ml_service as _ml
 from services import picking_service as ps
 from services.label_service import LABEL_LAYOUT_LABELS, render_shipping_labels
@@ -89,6 +90,31 @@ def _ensure_warehouse(user: User) -> None:
         raise HTTPException(
             status_code=403, detail="Operador sem galpão atribuído — solicite ao administrador"
         )
+
+
+async def _resolve_cart_warehouse(db: AsyncSession, user: User, body: dict) -> int:
+    """Define o galpão da gaiola (toda gaiola precisa de galpão p/ ser compartilhada).
+
+    - Gest.Log/GO: usa o próprio warehouse_id.
+    - Admin (sem galpão): usa body.warehouse_id; senão o único galpão existente;
+      se houver vários, exige escolha (400).
+    """
+    if user.warehouse_id is not None:
+        return user.warehouse_id
+    body_wh = body.get("warehouse_id")
+    if body_wh:
+        exists = (
+            await db.execute(select(Warehouse.id).where(Warehouse.id == int(body_wh)))
+        ).scalar_one_or_none()
+        if not exists:
+            raise HTTPException(status_code=422, detail="Galpão informado não existe")
+        return int(body_wh)
+    wh_ids = (await db.execute(select(Warehouse.id).order_by(Warehouse.id))).scalars().all()
+    if len(wh_ids) == 1:
+        return wh_ids[0]
+    if not wh_ids:
+        raise HTTPException(status_code=400, detail="Nenhum galpão cadastrado")
+    raise HTTPException(status_code=400, detail="Informe warehouse_id (há vários galpões)")
 
 
 async def _get_cart_scoped(db: AsyncSession, cart_id: int, user: User) -> PickingCart:
@@ -415,9 +441,12 @@ async def create_cart(
     mode = (body.get("mode") or "manual").strip()
     if mode not in ("manual", "scan"):
         raise HTTPException(status_code=422, detail="mode deve ser 'manual' ou 'scan'")
+    # Toda gaiola precisa de galpão para ser vista pelos Gest.Log do galpão.
+    # Gest.Log usa o próprio galpão; admin (sem galpão) usa o do body ou o único existente.
+    wh_id = await _resolve_cart_warehouse(db, current_user, body)
     cart = PickingCart(
-        cart_number=await _next_cart_number(db, current_user.warehouse_id),
-        warehouse_id=current_user.warehouse_id,
+        cart_number=await _next_cart_number(db, wh_id),
+        warehouse_id=wh_id,
         cart_mode=mode,
         status="open",
         created_by=current_user.id,

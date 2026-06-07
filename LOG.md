@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-06-07 — fix(separation): gaiola criada por admin ficava órfã de galpão (invisível ao Gest.Log)
+
+Causa: `create_cart` usava `warehouse_id = current_user.warehouse_id`. Admin não tem galpão
+(`warehouse_id=NULL`), então a gaiola ficava com `warehouse_id=NULL` e o filtro de `list_carts`
+(`warehouse_id == <galpão do usuário>`) nunca casava — o Gest.Log do galpão não via a gaiola
+do admin (e `_get_cart_scoped` também bloqueava o acesso).
+
+- `create_cart` agora resolve o galpão via `_resolve_cart_warehouse`: Gest.Log usa o próprio;
+  admin usa `body.warehouse_id` ou, havendo um único galpão, o único; com vários, exige escolha (400).
+- Data fix: gaiolas existentes com `warehouse_id=NULL` reatribuídas ao galpão único (MIG/1) —
+  a gaiola aberta #21 voltou a ser visível ao Gest.Log.
+- Resultado: toda gaiola tem galpão; todos os Gest.Log do galpão (e admin) veem/editam as mesmas gaiolas.
+
+---
+
 ## 2026-06-07 — feat(separation): Fase 2 — status de envio/NF-e, emissão, etiqueta oficial ML
 
 Separação passou a espelhar a Gestão de Pedidos e a operar o ciclo completo da gaiola.
