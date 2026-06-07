@@ -40,7 +40,7 @@
             <i class="fas fa-print mr-1"></i> Imprimir Lista ({{ selected.size }})
           </button>
           <div class="btn-group btn-group-sm">
-            <button class="btn btn-success dropdown-toggle" data-toggle="dropdown" :disabled="!selected.size">
+            <button class="btn btn-success dropdown-toggle" data-bs-toggle="dropdown" :disabled="!selected.size">
               <i class="fas fa-plus mr-1"></i> Nova Gaiola
             </button>
             <div class="dropdown-menu dropdown-menu-right">
