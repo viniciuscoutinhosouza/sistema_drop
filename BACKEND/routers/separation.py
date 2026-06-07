@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,8 +39,33 @@ from services.picking_list_service import render_picking_list
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Status de pedido que ainda PODE entrar em separação
-_ELIGIBLE_NOT_DONE = ("downloaded", "paid", "label_generated", "label_printed")
+# shipment_status (estado real no marketplace) que indica que o pedido JÁ saiu —
+# não deve mais aparecer para separar. Espelha a tela de Gestão de Pedidos, que
+# usa shipment_status (e não o Order.status interno) para "Entregue"/"A caminho".
+_SHIPMENT_DONE = ("shipped", "delivered", "not_delivered", "cancelled")
+
+# Order.status interno que indica que NÓS já tratamos o pedido na separação.
+_STATUS_DONE = ("separated", "shipped", "cancelled")
+
+
+def _eligibility_conditions() -> list:
+    """Condições de elegibilidade de um pedido para a tela de Separação.
+
+    Critério: NÃO-FULL, ainda não despachado no marketplace (shipment_status),
+    não cancelado/separado por nós, e fora de qualquer gaiola.
+    Baseia-se em shipment_status (fonte de verdade do ML), não no Order.status,
+    que permanece 'paid'/'downloaded' mesmo após a entrega.
+    """
+    return [
+        Order.is_hidden == False,  # noqa: E712
+        Order.shipping_mode != "full",  # exclui FULL e NULL
+        or_(
+            Order.shipment_status == None,  # noqa: E711
+            Order.shipment_status.notin_(_SHIPMENT_DONE),
+        ),
+        Order.status.notin_(_STATUS_DONE),
+        Order.picking_cart_id == None,  # noqa: E711 — ainda não está em gaiola
+    ]
 
 
 # ── Escopo ────────────────────────────────────────────────────────────────────
@@ -233,6 +258,8 @@ def _ser_order_brief(order: Order, items: list[OrderItem], cmig_name: str | None
         "cmig_name": cmig_name,
         "buyer_name": order.buyer_name,
         "shipping_mode": order.shipping_mode,
+        "shipment_status": order.shipment_status,
+        "payment_status": order.payment_status,
         "status": order.status,
         "created_at": order.created_at.isoformat() if order.created_at else None,
         "items": [
@@ -271,13 +298,7 @@ async def list_pending_orders(
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(Order).where(
-        Order.is_hidden == False,  # noqa: E712
-        Order.payment_status == "paid",
-        Order.shipping_mode != "full",  # exclui FULL e NULL (NULL != 'full' → unknown)
-        Order.status.in_(_ELIGIBLE_NOT_DONE),
-        Order.picking_cart_id == None,  # noqa: E711 — ainda não está em gaiola
-    )
+    q = select(Order).where(*_eligibility_conditions())
     wh = _order_warehouse_clause(current_user)
     if wh is not None:
         q = q.where(wh)
@@ -465,12 +486,7 @@ async def add_orders_to_cart(
     added = []
     skipped = []
     for oid in order_ids:
-        q = select(Order).where(
-            Order.id == oid,
-            Order.shipping_mode != "full",
-            Order.picking_cart_id == None,  # noqa: E711
-            Order.status.in_(_ELIGIBLE_NOT_DONE),
-        )
+        q = select(Order).where(Order.id == oid, *_eligibility_conditions())
         if wh is not None:
             q = q.where(wh)
         order = (await db.execute(q)).scalar_one_or_none()

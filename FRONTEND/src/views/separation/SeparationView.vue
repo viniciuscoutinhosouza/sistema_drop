@@ -77,7 +77,13 @@
             </tr>
             <tr v-for="o in displayedOrders" :key="o.id" @click="toggle(o.id)" style="cursor:pointer">
               <td @click.stop><input type="checkbox" :checked="selected.has(o.id)" @change="toggle(o.id)" /></td>
-              <td class="font-weight-bold align-middle">#{{ o.id }}</td>
+              <td class="font-weight-bold align-middle">
+                #{{ o.id }}
+                <span v-if="o.payment_status && o.payment_status !== 'paid'"
+                      class="badge badge-warning ml-1" title="Pagamento ainda não confirmado">
+                  <i class="fas fa-exclamation-triangle"></i> pgto
+                </span>
+              </td>
               <td class="align-middle">
                 <img v-if="platformLogo(o.platform)" :src="platformLogo(o.platform).src"
                      :alt="platformLogo(o.platform).label" :title="platformLogo(o.platform).label"
