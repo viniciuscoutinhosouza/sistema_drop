@@ -310,11 +310,53 @@ async def release_reservation(db: AsyncSession, order: Order) -> None:
 
 # ─── Confirmação de despacho ──────────────────────────────────────────────────
 
+async def _release_orphan_local_reserve(db: AsyncSession, order: Order) -> None:
+    """Libera reserva LOCAL órfã de um pedido FULL.
+
+    Quando um pedido FULL é baixado antes do shipping_mode ser classificado, o
+    reserve_stock cai no caminho local e reserva o galpão (reserved_quantity).
+    Ao despachar como FULL, essa reserva nunca era liberada. Aqui corrigimos:
+    se há 'reserve' local sem 'unreserve', devolve a reserva.
+    """
+    if not await _already_has_movement(db, order.id, "reserve"):
+        return
+    if await _already_has_movement(db, order.id, "unreserve"):
+        return
+    items = await _get_order_items(db, order)
+    for item in items:
+        qty = item.quantity or 1
+        if item.catalog_product_id:
+            await db.execute(
+                update(CatalogProduct)
+                .where(CatalogProduct.id == item.catalog_product_id)
+                .values(reserved_quantity=CatalogProduct.reserved_quantity - qty)
+            )
+            _log(db, product_type="pg", product_id=item.catalog_product_id, order_id=order.id,
+                 movement_type="unreserve", qty=qty, field="reserved_quantity", delta=-qty)
+            if item.catalog_variant_id and item.catalog_source == "pg":
+                await db.execute(
+                    update(CatalogProductVariant)
+                    .where(CatalogProductVariant.id == item.catalog_variant_id)
+                    .values(reserved_quantity=CatalogProductVariant.reserved_quantity - qty)
+                )
+                _log(db, product_type="variant_pg", product_id=item.catalog_variant_id, order_id=order.id,
+                     movement_type="unreserve", qty=qty, field="reserved_quantity", delta=-qty)
+        elif item.cmig_product_id:
+            await db.execute(
+                update(CMIGProduct)
+                .where(CMIGProduct.id == item.cmig_product_id)
+                .values(reserved_quantity=CMIGProduct.reserved_quantity - qty)
+            )
+            _log(db, product_type="cmig", product_id=item.cmig_product_id, order_id=order.id,
+                 movement_type="unreserve", qty=qty, field="reserved_quantity", delta=-qty)
+
+
 async def confirm_dispatch(db: AsyncSession, order: Order) -> None:
     """Pedido despachado/shipped → debita estoque físico e libera reserva."""
     if order.shipping_mode == "full":
         from services.full_stock_service import apply_full_order_shipped
         try:
+            await _release_orphan_local_reserve(db, order)
             await apply_full_order_shipped(db, order)
             await db.commit()
         except Exception as exc:
@@ -647,17 +689,22 @@ async def recompute_reservations_from_movements(db) -> dict:
     """
     cancel = aliased(StockMovement, name="sm_cancel")
 
-    # Reservas ativas: tem movimento 'reserve' sem movimento de encerramento correspondente
+    # Reservas ativas: tem movimento 'reserve' sem movimento de encerramento correspondente.
+    # Pedidos FULL NÃO reservam no galpão (reservam em full_stock) — se um pedido FULL
+    # gerou uma reserva local (porque o shipping_mode ainda não estava classificado no
+    # download), ela é espúria e é excluída aqui.
     result = await db.execute(
         select(
             StockMovement.product_type,
             StockMovement.product_id,
             func.sum(StockMovement.qty).label("active_reserved"),
         )
+        .join(Order, Order.id == StockMovement.order_id)
         .where(
             StockMovement.movement_type == "reserve",
             StockMovement.product_type.in_(["pg", "cmig"]),
             StockMovement.order_id.is_not(None),
+            func.coalesce(Order.shipping_mode, "") != "full",
             ~exists(
                 select(cancel.id).where(
                     cancel.order_id == StockMovement.order_id,
