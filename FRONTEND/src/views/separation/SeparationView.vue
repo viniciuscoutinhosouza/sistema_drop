@@ -11,12 +11,30 @@
     <div class="card">
       <div class="card-header d-flex flex-wrap align-items-center">
         <strong class="mr-3">Pedidos a separar</strong>
-        <div class="input-group input-group-sm mr-2" style="max-width:240px">
-          <input v-model="search" class="form-control" placeholder="Buscar cliente..." @keyup.enter="loadPending" />
+        <div class="input-group input-group-sm mr-2" style="max-width:220px">
+          <input v-model="search" class="form-control" placeholder="Buscar cliente..." />
           <div class="input-group-append">
-            <button class="btn btn-outline-secondary" @click="loadPending"><i class="fas fa-search"></i></button>
+            <span class="input-group-text"><i class="fas fa-search"></i></span>
           </div>
         </div>
+        <!-- Filtro: Marketplace -->
+        <select v-model="filterPlatform" class="form-control form-control-sm mr-2" style="max-width:150px">
+          <option value="">Todos marketplaces</option>
+          <option v-for="p in platformOptions" :key="p" :value="p">{{ platformLabel(p) }}</option>
+        </select>
+        <!-- Filtro: CMIG -->
+        <select v-model="filterCmig" class="form-control form-control-sm mr-2" style="max-width:170px">
+          <option value="">Todas as CMIGs</option>
+          <option v-for="c in cmigOptions" :key="c.id" :value="c.id">{{ c.name }}</option>
+        </select>
+        <!-- Filtro: Modo Envio -->
+        <select v-model="filterMode" class="form-control form-control-sm mr-2" style="max-width:150px">
+          <option value="">Todos os envios</option>
+          <option v-for="m in modeOptions" :key="m" :value="m">{{ shippingModeStyle(m).label }}</option>
+        </select>
+        <button v-if="hasFilters" class="btn btn-sm btn-link text-muted px-1 mr-2" @click="clearFilters" title="Limpar filtros">
+          <i class="fas fa-times"></i>
+        </button>
         <div class="ml-auto d-flex">
           <button class="btn btn-sm btn-outline-info mr-2" :disabled="!selected.size" @click="printList">
             <i class="fas fa-print mr-1"></i> Imprimir Lista ({{ selected.size }})
@@ -42,31 +60,52 @@
           <thead class="thead-light">
             <tr>
               <th style="width:36px"><input type="checkbox" :checked="allChecked" @change="toggleAll" /></th>
-              <th>Pedido</th>
-              <th>Marketplace</th>
-              <th>Modo Envio</th>
-              <th>Cliente</th>
+              <th class="sortable" @click="setSort('id')">Pedido <i :class="sortIcon('id')"></i></th>
+              <th class="sortable" @click="setSort('platform')">Marketplace <i :class="sortIcon('platform')"></i></th>
+              <th class="sortable" @click="setSort('cmig')">Conta CMIG <i :class="sortIcon('cmig')"></i></th>
+              <th class="sortable" @click="setSort('shipping_mode')">Modo Envio <i :class="sortIcon('shipping_mode')"></i></th>
+              <th class="sortable" @click="setSort('buyer')">Cliente <i :class="sortIcon('buyer')"></i></th>
               <th>Itens</th>
-              <th>Criado</th>
+              <th class="sortable" @click="setSort('created_at')">Criado <i :class="sortIcon('created_at')"></i></th>
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!pending.length"><td colspan="7" class="text-center text-muted py-4">Nenhum pedido pendente de separação.</td></tr>
-            <tr v-for="o in pending" :key="o.id" @click="toggle(o.id)" style="cursor:pointer">
+            <tr v-if="!displayedOrders.length">
+              <td colspan="8" class="text-center text-muted py-4">
+                {{ pending.length ? 'Nenhum pedido com os filtros atuais.' : 'Nenhum pedido pendente de separação.' }}
+              </td>
+            </tr>
+            <tr v-for="o in displayedOrders" :key="o.id" @click="toggle(o.id)" style="cursor:pointer">
               <td @click.stop><input type="checkbox" :checked="selected.has(o.id)" @change="toggle(o.id)" /></td>
-              <td class="font-weight-bold">#{{ o.id }}</td>
-              <td><span class="badge badge-light text-capitalize">{{ o.platform }}</span></td>
-              <td><span class="badge badge-secondary text-capitalize">{{ o.shipping_mode }}</span></td>
-              <td class="text-truncate" style="max-width:200px">{{ o.buyer_name || '—' }}</td>
-              <td>
-                <span v-for="it in o.items" :key="it.id" class="badge badge-outline-secondary mr-1" :title="it.title">
+              <td class="font-weight-bold align-middle">#{{ o.id }}</td>
+              <td class="align-middle">
+                <img v-if="platformLogo(o.platform)" :src="platformLogo(o.platform).src"
+                     :alt="platformLogo(o.platform).label" :title="platformLogo(o.platform).label"
+                     style="height:20px;max-width:80px;object-fit:contain" />
+                <span v-else class="badge badge-light text-capitalize">{{ o.platform || '—' }}</span>
+              </td>
+              <td class="align-middle text-truncate" style="max-width:170px" :title="o.cmig_name">
+                <i class="fas fa-id-card text-muted mr-1"></i>{{ o.cmig_name || '—' }}
+              </td>
+              <td class="align-middle">
+                <span class="badge" :title="shippingModeStyle(o.shipping_mode).title"
+                      :style="{ background: shippingModeStyle(o.shipping_mode).bg, color: shippingModeStyle(o.shipping_mode).fg, fontSize: '.68rem', fontWeight: 500 }">
+                  <i :class="shippingModeStyle(o.shipping_mode).icon" class="mr-1"></i>{{ shippingModeStyle(o.shipping_mode).label }}
+                </span>
+              </td>
+              <td class="align-middle text-truncate" style="max-width:180px">{{ o.buyer_name || '—' }}</td>
+              <td class="align-middle">
+                <span v-for="it in o.items" :key="it.id" class="badge badge-light border mr-1" :title="it.title">
                   {{ it.sku || '?' }} ×{{ it.quantity }}
                 </span>
               </td>
-              <td class="text-nowrap small text-muted">{{ fmt(o.created_at) }}</td>
+              <td class="text-nowrap small text-muted align-middle">{{ fmt(o.created_at) }}</td>
             </tr>
           </tbody>
         </table>
+      </div>
+      <div v-if="!loading && pending.length" class="card-footer py-2 text-muted small">
+        {{ displayedOrders.length }} de {{ pending.length }} pedido(s)
       </div>
     </div>
 
@@ -152,6 +191,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
+import { platformLogo, shippingModeStyle, PLATFORMS } from '@/utils/constants'
 
 const toast = useToast()
 
@@ -159,6 +199,13 @@ const pending = ref([])
 const loading = ref(false)
 const search = ref('')
 const selected = ref(new Set())
+
+// Filtros + ordenação (client-side; a lista de pendentes vem inteira)
+const filterPlatform = ref('')
+const filterCmig = ref('')
+const filterMode = ref('')
+const sortKey = ref('created_at')
+const sortDir = ref('asc')
 
 const openCarts = ref([])
 const activeCart = ref(null)
@@ -178,7 +225,7 @@ async function loadLayouts() {
 async function loadPending() {
   loading.value = true
   try {
-    const { data } = await api.get('/separation/orders', { params: { search: search.value || undefined } })
+    const { data } = await api.get('/separation/orders')
     pending.value = data.orders || []
   } catch { pending.value = [] } finally { loading.value = false }
 }
@@ -188,7 +235,60 @@ async function loadCarts() {
   catch { openCarts.value = [] }
 }
 
-const allChecked = computed(() => pending.value.length > 0 && selected.value.size === pending.value.length)
+// ── Opções de filtro derivadas dos pedidos carregados ──
+const platformOptions = computed(() => [...new Set(pending.value.map(o => o.platform).filter(Boolean))])
+const modeOptions = computed(() => [...new Set(pending.value.map(o => o.shipping_mode).filter(Boolean))])
+const cmigOptions = computed(() => {
+  const map = new Map()
+  for (const o of pending.value) {
+    if (o.cmig_id && !map.has(o.cmig_id)) map.set(o.cmig_id, { id: o.cmig_id, name: o.cmig_name || `CMIG ${o.cmig_id}` })
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+})
+const hasFilters = computed(() => !!(filterPlatform.value || filterCmig.value || filterMode.value || search.value))
+
+function platformLabel(key) {
+  return PLATFORMS.find(p => p.key === key)?.label || key
+}
+
+function clearFilters() {
+  filterPlatform.value = ''; filterCmig.value = ''; filterMode.value = ''; search.value = ''
+}
+
+// ── Lista exibida (filtro + ordenação) ──
+const displayedOrders = computed(() => {
+  let rows = pending.value.filter(o => {
+    if (filterPlatform.value && o.platform !== filterPlatform.value) return false
+    if (filterCmig.value && o.cmig_id !== filterCmig.value) return false
+    if (filterMode.value && o.shipping_mode !== filterMode.value) return false
+    if (search.value && !(o.buyer_name || '').toLowerCase().includes(search.value.toLowerCase())) return false
+    return true
+  })
+  const dir = sortDir.value === 'asc' ? 1 : -1
+  const keyFn = {
+    id: o => o.id,
+    platform: o => o.platform || '',
+    cmig: o => (o.cmig_name || '').toLowerCase(),
+    shipping_mode: o => o.shipping_mode || '',
+    buyer: o => (o.buyer_name || '').toLowerCase(),
+    created_at: o => o.created_at || '',
+  }[sortKey.value] || (o => o.id)
+  return [...rows].sort((a, b) => {
+    const va = keyFn(a), vb = keyFn(b)
+    return va < vb ? -dir : va > vb ? dir : 0
+  })
+})
+
+function setSort(key) {
+  if (sortKey.value === key) sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  else { sortKey.value = key; sortDir.value = 'asc' }
+}
+function sortIcon(key) {
+  if (sortKey.value !== key) return 'fas fa-sort text-muted'
+  return sortDir.value === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down'
+}
+
+const allChecked = computed(() => displayedOrders.value.length > 0 && displayedOrders.value.every(o => selected.value.has(o.id)))
 const allSeparated = computed(() => activeCart.value?.orders?.length > 0 && activeCart.value.orders.every(o => o.item_status === 'separated'))
 
 function toggle(id) {
@@ -197,7 +297,10 @@ function toggle(id) {
   selected.value = s
 }
 function toggleAll() {
-  selected.value = allChecked.value ? new Set() : new Set(pending.value.map(o => o.id))
+  const s = new Set(selected.value)
+  if (allChecked.value) displayedOrders.value.forEach(o => s.delete(o.id))
+  else displayedOrders.value.forEach(o => s.add(o.id))
+  selected.value = s
 }
 
 async function printList() {
@@ -311,3 +414,8 @@ function focusFirstBip() {
 function pct(scan) { return scan.expected ? Math.round((scan.scanned / scan.expected) * 100) : 0 }
 function fmt(dt) { return dt ? new Date(dt).toLocaleString('pt-BR') : '—' }
 </script>
+
+<style scoped>
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { background: rgba(0,0,0,.03); }
+</style>

@@ -224,12 +224,13 @@ async def _order_labels_meta(db: AsyncSession, orders: list[Order]) -> list[dict
 
 
 # ── Serialização ──────────────────────────────────────────────────────────────
-def _ser_order_brief(order: Order, items: list[OrderItem]) -> dict:
+def _ser_order_brief(order: Order, items: list[OrderItem], cmig_name: str | None = None) -> dict:
     return {
         "id": order.id,
         "platform": order.platform,
         "platform_order_id": order.platform_order_id,
         "cmig_id": order.cmig_id,
+        "cmig_name": cmig_name,
         "buyer_name": order.buyer_name,
         "shipping_mode": order.shipping_mode,
         "status": order.status,
@@ -290,7 +291,22 @@ async def list_pending_orders(
     from sqlalchemy.orm import selectinload
     q = q.options(selectinload(Order.items)).order_by(Order.created_at.asc())
     orders = (await db.execute(q)).scalars().all()
-    return {"orders": [_ser_order_brief(o, list(o.items)) for o in orders], "count": len(orders)}
+
+    # Nomes das CMIGs em lote (trade_name > company_name)
+    cmig_ids = {o.cmig_id for o in orders if o.cmig_id}
+    cmig_names: dict[int, str] = {}
+    if cmig_ids:
+        rows = (await db.execute(select(CMIG).where(CMIG.id.in_(cmig_ids)))).scalars().all()
+        for c in rows:
+            cmig_names[c.id] = c.trade_name or c.company_name or f"CMIG {c.id}"
+
+    return {
+        "orders": [
+            _ser_order_brief(o, list(o.items), cmig_names.get(o.cmig_id))
+            for o in orders
+        ],
+        "count": len(orders),
+    }
 
 
 # ── POST /picking-list — PDF consolidado ──────────────────────────────────────
