@@ -510,6 +510,18 @@ async def add_orders_to_cart(
             skipped.append(oid)  # não está pronto p/ envio / inacessível / já em gaiola
             continue
 
+        # Evita violar UNIQUE(cart_id, order_id) em duplo clique / corrida
+        dup = (
+            await db.execute(
+                select(PickingCartOrder.id).where(
+                    PickingCartOrder.cart_id == cart.id, PickingCartOrder.order_id == order.id
+                )
+            )
+        ).scalar_one_or_none()
+        if dup:
+            skipped.append(oid)
+            continue
+
         pco = PickingCartOrder(cart_id=cart.id, order_id=order.id, item_status="pending")
         db.add(pco)
         await db.flush()
