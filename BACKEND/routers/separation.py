@@ -27,14 +27,19 @@ from models.cmig import (
     CMIGProduct,
     CMIGProductComponent,
 )
+from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
 from models.picking import PickingCart, PickingCartItem, PickingCartOrder
 from models.product import CatalogProduct, CatalogProductComponent
 from models.user import User
+from services import ml_service as _ml
 from services import picking_service as ps
 from services.label_service import LABEL_LAYOUT_LABELS, render_shipping_labels
 from services.order_item_resolver import resolve_order_item_link
 from services.picking_list_service import render_picking_list
+
+# Reuso da URL de DANFE da Gestão de Pedidos
+from routers.orders import _ml_nfe_url  # noqa: E402
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -260,6 +265,9 @@ def _ser_order_brief(order: Order, items: list[OrderItem], cmig_name: str | None
         "shipping_mode": order.shipping_mode,
         "shipment_status": order.shipment_status,
         "payment_status": order.payment_status,
+        "nfe_status": order.nfe_status,
+        "nfe_key": order.nfe_key,
+        "nfe_url": _ml_nfe_url(order),
         "status": order.status,
         "created_at": order.created_at.isoformat() if order.created_at else None,
         "items": [
@@ -445,6 +453,9 @@ async def get_cart(
         brief = _ser_order_brief(order, list(items))
         brief["cart_order_id"] = pco.id
         brief["item_status"] = pco.item_status
+        brief["account_id"] = order.account_id
+        brief["label_printed"] = pco.label_printed_at is not None
+        brief["nfe_printed"] = pco.nfe_printed_at is not None
         # progresso de bipagem
         scan_rows = (
             await db.execute(select(PickingCartItem).where(PickingCartItem.cart_order_id == pco.id))
@@ -476,8 +487,8 @@ async def add_orders_to_cart(
     db: AsyncSession = Depends(get_db),
 ):
     cart = await _get_cart_scoped(db, cart_id, current_user)
-    if cart.status != "open":
-        raise HTTPException(status_code=409, detail="Gaiola não está aberta")
+    if cart.status not in ("open", "separated"):
+        raise HTTPException(status_code=409, detail="Gaiola não pode receber pedidos (já entregue/cancelada)")
     order_ids = body.get("order_ids") or []
     if not order_ids:
         raise HTTPException(status_code=422, detail="Informe order_ids")
@@ -486,12 +497,17 @@ async def add_orders_to_cart(
     added = []
     skipped = []
     for oid in order_ids:
-        q = select(Order).where(Order.id == oid, *_eligibility_conditions())
+        # Só "Pronto p/ Envio" pode entrar na gaiola
+        q = select(Order).where(
+            Order.id == oid,
+            Order.shipment_status == "ready_to_ship",
+            *_eligibility_conditions(),
+        )
         if wh is not None:
             q = q.where(wh)
         order = (await db.execute(q)).scalar_one_or_none()
         if not order:
-            skipped.append(oid)  # inacessível / já em outra gaiola / não elegível
+            skipped.append(oid)  # não está pronto p/ envio / inacessível / já em gaiola
             continue
 
         pco = PickingCartOrder(cart_id=cart.id, order_id=order.id, item_status="pending")
@@ -512,6 +528,12 @@ async def add_orders_to_cart(
                     scanned_qty=0,
                 ))
         added.append(order.id)
+
+    # Adicionar pedido a uma gaiola já concluída reabre a gaiola (precisa re-concluir).
+    if added and cart.status == "separated":
+        cart.status = "open"
+        cart.separated_at = None
+        cart.separated_by = None
 
     await db.commit()
     return {"added": added, "count": len(added), "skipped": skipped}
@@ -620,58 +642,16 @@ async def scan_order_item(
     }
 
 
-@router.post("/carts/{cart_id}/orders/{order_id}/separate")
-async def separate_order(
-    cart_id: int,
-    order_id: int,
-    current_user: User = Depends(require_menu_permission("separacao")),
-    db: AsyncSession = Depends(get_db),
-):
-    cart = await _get_cart_scoped(db, cart_id, current_user)
-    pco = (
-        await db.execute(
-            select(PickingCartOrder).where(
-                PickingCartOrder.cart_id == cart_id, PickingCartOrder.order_id == order_id
-            )
-        )
-    ).scalar_one_or_none()
-    if not pco:
-        raise HTTPException(status_code=404, detail="Pedido não está nesta gaiola")
-    if pco.item_status == "separated":
-        return {"ok": True, "already": True}
-
-    if cart.cart_mode == "scan":
-        rows = (
-            await db.execute(select(PickingCartItem).where(PickingCartItem.cart_order_id == pco.id))
-        ).scalars().all()
-        expected = sum(r.expected_qty for r in rows)
-        scanned = sum(r.scanned_qty for r in rows)
-        if expected == 0 or scanned < expected:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Bipagem incompleta ({scanned}/{expected}). Bipe todas as unidades.",
-            )
-
-    now = datetime.now(UTC)
-    pco.item_status = "separated"
-    pco.separated_by = current_user.id
-    pco.separated_at = now
-
-    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
-    if order:
-        order.status = "separated"
-        order.separated_at = now
-        order.separated_by = current_user.id
-    await db.commit()
-    return {"ok": True}
-
-
 @router.post("/carts/{cart_id}/conclude")
 async def conclude_cart(
     cart_id: int,
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
+    """Conclui a gaiola: exige ETIQUETA IMPRESSA em todos os pedidos (NF-e é opcional).
+
+    Marca cada pedido como separado e a gaiola como pronta para a transportadora.
+    """
     cart = await _get_cart_scoped(db, cart_id, current_user)
     if cart.status != "open":
         raise HTTPException(status_code=409, detail="Gaiola não está aberta")
@@ -680,15 +660,27 @@ async def conclude_cart(
     ).scalars().all()
     if not pcos:
         raise HTTPException(status_code=422, detail="Gaiola sem pedidos")
-    pending = [p.order_id for p in pcos if p.item_status != "separated"]
-    if pending:
+    sem_etiqueta = [p.order_id for p in pcos if p.label_printed_at is None]
+    if sem_etiqueta:
         raise HTTPException(
             status_code=422,
-            detail=f"Há pedidos não separados: {pending}",
+            detail=f"Imprima a etiqueta de todos antes de concluir. Faltam: {sem_etiqueta}",
         )
+
+    now = datetime.now(UTC)
+    for pco in pcos:
+        pco.item_status = "separated"
+        pco.separated_by = current_user.id
+        pco.separated_at = now
+        order = (await db.execute(select(Order).where(Order.id == pco.order_id))).scalar_one_or_none()
+        if order:
+            order.status = "separated"
+            order.separated_at = now
+            order.separated_by = current_user.id
+
     cart.status = "separated"
     cart.separated_by = current_user.id
-    cart.separated_at = datetime.now(UTC)
+    cart.separated_at = now
     await db.commit()
     return _ser_cart(cart)
 
@@ -778,63 +770,263 @@ async def cancel_cart(
 
 
 # ── Etiquetas / NF-e ──────────────────────────────────────────────────────────
-@router.get("/carts/{cart_id}/labels.pdf")
-async def cart_labels(
+async def _scan_blocks_label(db: AsyncSession, cart: PickingCart, pco: PickingCartOrder) -> bool:
+    """No modo scan, etiqueta só libera após bipar 100%. True = ainda bloqueado."""
+    if cart.cart_mode != "scan":
+        return False
+    rows = (
+        await db.execute(select(PickingCartItem).where(PickingCartItem.cart_order_id == pco.id))
+    ).scalars().all()
+    if not rows:
+        return False
+    return sum(r.scanned_qty for r in rows) < sum(r.expected_qty for r in rows)
+
+
+async def _load_order_scoped(db: AsyncSession, order_id: int, wh) -> Order | None:
+    oq = select(Order).where(Order.id == order_id)
+    if wh is not None:
+        oq = oq.where(wh)
+    return (await db.execute(oq)).scalar_one_or_none()
+
+
+def _account_label(acc: MarketplaceAccount | None) -> str:
+    if not acc:
+        return "Conta"
+    return acc.description or acc.platform_username or f"Conta {acc.id}"
+
+
+@router.get("/carts/{cart_id}/label-jobs")
+async def cart_label_jobs(
     cart_id: int,
-    layout: str = Query("10x15"),
-    order_id: int | None = Query(None),
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
+    """Grupos imprimíveis (por conta ML + bloco manual) dos pedidos com etiqueta liberada."""
     cart = await _get_cart_scoped(db, cart_id, current_user)
-    q = select(PickingCartOrder).where(PickingCartOrder.cart_id == cart_id)
-    if order_id:
-        q = q.where(PickingCartOrder.order_id == order_id)
-    pcos = (await db.execute(q)).scalars().all()
-    order_ids = [p.order_id for p in pcos]
-    if not order_ids:
+    wh = _order_warehouse_clause(current_user)
+    pcos = (
+        await db.execute(select(PickingCartOrder).where(PickingCartOrder.cart_id == cart_id))
+    ).scalars().all()
+
+    by_acc: dict[int, list[int]] = {}
+    manual: list[int] = []
+    blocked = 0
+    for pco in pcos:
+        if pco.label_printed_at is not None:
+            continue  # já impressa — não reentra no lote (reimpressão é por pedido)
+        order = await _load_order_scoped(db, pco.order_id, wh)
+        if not order:
+            continue
+        if await _scan_blocks_label(db, cart, pco):
+            blocked += 1
+            continue
+        if order.platform == "mercadolivre" and order.shipment_id:
+            by_acc.setdefault(order.account_id, []).append(order.id)
+        else:
+            manual.append(order.id)
+
+    jobs = []
+    for acc_id, ids in by_acc.items():
+        acc = (
+            await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == acc_id))
+        ).scalar_one_or_none()
+        jobs.append({
+            "kind": "ml", "account_id": acc_id, "account_name": _account_label(acc),
+            "order_ids": ids, "count": len(ids),
+        })
+    if manual:
+        jobs.append({
+            "kind": "manual", "account_id": None, "account_name": "Manual (etiqueta interna)",
+            "order_ids": manual, "count": len(manual),
+        })
+    return {"jobs": jobs, "blocked_scan": blocked}
+
+
+@router.get("/carts/{cart_id}/labels.pdf")
+async def cart_labels(
+    cart_id: int,
+    account_id: int | None = Query(None),
+    order_id: int | None = Query(None),
+    manual: bool = Query(False),
+    layout: str = Query("10x15"),
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gera a etiqueta dos pedidos da gaiola e marca como impressa.
+
+    - Pedido ML: etiqueta OFICIAL do ML (combina shipment_ids por conta).
+    - Pedido manual/sem shipment: etiqueta interna (render_shipping_labels).
+    Seletores: order_id (1 pedido) | account_id (conta ML) | manual=true (bloco manual).
+    """
+    if order_id is None and account_id is None and not manual:
+        raise HTTPException(status_code=422, detail="Informe order_id, account_id ou manual=true")
+
+    cart = await _get_cart_scoped(db, cart_id, current_user)
+    wh = _order_warehouse_clause(current_user)
+    pcos = (
+        await db.execute(select(PickingCartOrder).where(PickingCartOrder.cart_id == cart_id))
+    ).scalars().all()
+
+    targets: list[tuple[PickingCartOrder, Order]] = []
+    for pco in pcos:
+        if order_id and pco.order_id != order_id:
+            continue
+        order = await _load_order_scoped(db, pco.order_id, wh)
+        if not order:
+            continue
+        is_manual = not (order.platform == "mercadolivre" and order.shipment_id)
+        if order_id is None:
+            # lote (account/manual): não reimprime etiqueta já impressa (evita re-fetch no ML)
+            if pco.label_printed_at is not None:
+                continue
+            if manual and not is_manual:
+                continue
+            if account_id is not None and (is_manual or order.account_id != account_id):
+                continue
+        if await _scan_blocks_label(db, cart, pco):
+            raise HTTPException(status_code=422, detail=f"Pedido #{order.id}: bipe todos os itens antes de imprimir a etiqueta")
+        targets.append((pco, order))
+
+    if not targets:
         raise HTTPException(status_code=404, detail="Sem pedidos para etiquetar")
-    oq = select(Order).where(Order.id.in_(order_ids))
-    wh = _order_warehouse_clause(current_user)  # defesa em profundidade (PII na etiqueta)
-    if wh is not None:
-        oq = oq.where(wh)
-    orders = (await db.execute(oq)).scalars().all()
-    orders_meta = await _order_labels_meta(db, list(orders))
-    pdf = render_shipping_labels(orders_meta, layout=layout)
+
+    ml = [(p, o) for p, o in targets if o.platform == "mercadolivre" and o.shipment_id]
+    manual_t = [(p, o) for p, o in targets if not (o.platform == "mercadolivre" and o.shipment_id)]
+
+    if ml:
+        accs = {o.account_id for _, o in ml}
+        if len(accs) > 1:
+            raise HTTPException(status_code=400, detail="Pedidos de contas diferentes — imprima por conta (account_id)")
+        acc = (
+            await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == accs.pop()))
+        ).scalar_one_or_none()
+        if not acc or not acc.access_token:
+            raise HTTPException(status_code=400, detail="Conta de marketplace sem token para gerar etiqueta")
+        shipment_ids = ",".join(str(o.shipment_id) for _, o in ml)
+        pdf, _ctype = await _ml.get_shipment_label(acc.access_token, shipment_ids, "pdf")
+    else:
+        orders_meta = await _order_labels_meta(db, [o for _, o in manual_t])
+        pdf = render_shipping_labels(orders_meta, layout=layout)
+
+    now = datetime.now(UTC)
+    for pco, _o in targets:
+        pco.label_printed_at = now
+        pco.label_printed_by = current_user.id
+    await db.commit()
+
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="etiquetas-{cart.cart_number}.pdf"'},
     )
 
 
-@router.get("/carts/{cart_id}/nfe")
-async def cart_nfe_urls(
+@router.post("/carts/{cart_id}/emit-nfe")
+async def cart_emit_nfe(
     cart_id: int,
+    body: dict,
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retorna as URLs da DANFE já existente de cada pedido da gaiola."""
-    from routers.orders import _ml_nfe_url
+    """Emite NF-e via ML para pedidos da gaiola COM etiqueta impressa e sem nota.
 
-    await _get_cart_scoped(db, cart_id, current_user)
+    Emissão fiscal é irreversível: usa claim atômico (UPDATE condicional) para que
+    cliques simultâneos não disparem duas emissões para o mesmo pedido.
+    """
+    cart = await _get_cart_scoped(db, cart_id, current_user)
+    if cart.status in ("cancelled", "delivered"):
+        raise HTTPException(status_code=409, detail=f"Gaiola '{cart.status}' não emite NF-e")
+    wh = _order_warehouse_clause(current_user)
+    only = set(body.get("order_ids") or [])
     pcos = (
         await db.execute(select(PickingCartOrder).where(PickingCartOrder.cart_id == cart_id))
     ).scalars().all()
-    wh = _order_warehouse_clause(current_user)  # defesa em profundidade (PII / NF-e)
-    out = []
+
+    results = []
     for pco in pcos:
-        oq = select(Order).where(Order.id == pco.order_id)
-        if wh is not None:
-            oq = oq.where(wh)
-        order = (await db.execute(oq)).scalar_one_or_none()
+        if only and pco.order_id not in only:
+            continue
+        if pco.label_printed_at is None:
+            results.append({"order_id": pco.order_id, "skipped": "sem etiqueta impressa"})
+            continue
+        order = await _load_order_scoped(db, pco.order_id, wh)
         if not order:
             continue
+        if order.platform != "mercadolivre":
+            results.append({"order_id": order.id, "skipped": "não é Mercado Livre"})
+            continue
+        if order.nfe_key or order.nfe_status in ("authorized", "pending", "in_process"):
+            results.append({"order_id": order.id, "nfe_status": order.nfe_status, "already": True})
+            continue
+        acc = (
+            await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+        ).scalar_one_or_none()
+        if not acc:
+            results.append({"order_id": order.id, "error": "conta não encontrada"})
+            continue
+
+        # Claim atômico: marca pending só se ainda sem nota — evita dupla emissão.
+        claim = await db.execute(
+            sa_update(Order)
+            .where(Order.id == order.id, Order.nfe_status.is_(None), Order.nfe_key.is_(None))
+            .values(nfe_status="pending")
+        )
+        await db.commit()
+        if getattr(claim, "rowcount", 0) == 0:
+            results.append({"order_id": order.id, "skipped": "emissão já em andamento"})
+            continue
+
+        try:
+            ml_order_id = int(order.platform_order_id)
+            await _ml.emit_nfe(acc.access_token, acc.platform_user_id, [ml_order_id])
+            results.append({"order_id": order.id, "nfe_status": "pending"})
+        except Exception as exc:
+            # reverte o claim para permitir nova tentativa
+            await db.execute(
+                sa_update(Order)
+                .where(Order.id == order.id, Order.nfe_status == "pending", Order.nfe_key.is_(None))
+                .values(nfe_status=None)
+            )
+            await db.commit()
+            logger.warning("cart_emit_nfe order=%s: %s", order.id, exc)
+            results.append({"order_id": order.id, "error": str(exc)[:200]})
+    return {"results": results}
+
+
+@router.get("/carts/{cart_id}/nfe")
+async def cart_nfe_urls(
+    cart_id: int,
+    order_id: int | None = Query(None),
+    mark: int = Query(0),
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """URLs da DANFE existente de cada pedido. Com mark=1 marca como impressa."""
+    await _get_cart_scoped(db, cart_id, current_user)
+    wh = _order_warehouse_clause(current_user)  # defesa em profundidade (PII / NF-e)
+    q = select(PickingCartOrder).where(PickingCartOrder.cart_id == cart_id)
+    if order_id:
+        q = q.where(PickingCartOrder.order_id == order_id)
+    pcos = (await db.execute(q)).scalars().all()
+
+    now = datetime.now(UTC)
+    out = []
+    for pco in pcos:
+        order = await _load_order_scoped(db, pco.order_id, wh)
+        if not order:
+            continue
+        url = _ml_nfe_url(order)
         out.append({
             "order_id": order.id,
             "buyer_name": order.buyer_name,
             "nfe_key": order.nfe_key,
-            "nfe_url": _ml_nfe_url(order),
+            "nfe_status": order.nfe_status,
+            "nfe_url": url,
         })
+        if mark and url:
+            pco.nfe_printed_at = now
+            pco.nfe_printed_by = current_user.id
+    if mark:
+        await db.commit()
     return {"nfe": out}
 
 

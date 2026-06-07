@@ -73,6 +73,33 @@ só pelo anúncio. Kits expandidos via `CatalogProductComponent`/`CMIGProductCom
 (térmica, 1 etiqueta por volume) e `a4_4up` (A4, 4 por página). NF-e: apenas
 abre a DANFE já existente do marketplace (`nfe_url`/`nfe_key`), sem emitir.
 
+## Revisão — 2026-06-07 (Fase 2: etiqueta oficial ML + NF-e na gaiola)
+
+Status: Aceito. Substitui parcialmente as decisões 2 e 7.
+
+### Mudanças na máquina de estados
+- **Conclusão travada por etiqueta impressa.** `POST /carts/{id}/conclude` exige
+  `label_printed_at IS NOT NULL` em TODOS os pedidos (NF-e permanece opcional); senão 422.
+  A marcação `separated` passa a ser coletiva (na conclusão) — não há mais endpoint de
+  separar pedido individual (`separate_order` removido).
+- **Reabertura `separated → open`.** `POST /carts/{id}/orders` aceita gaiola `open` ou
+  `separated`; ao adicionar pedido a uma gaiola concluída, ela volta para `open` (re-concluir).
+- **Elegibilidade por `shipment_status`** (verdade do ML), não por `Order.status`. Só
+  `shipment_status='ready_to_ship'` entra na gaiola; despachados são excluídos.
+
+### Etiquetas e NF-e (substitui decisão 7)
+- **Etiqueta oficial do ML** para pedido ML com `shipment_id` (`ml_service.get_shipment_label`,
+  combinada por conta via `shipment_ids` em lote). Manual/sem shipment usa `render_shipping_labels`.
+- **NF-e emitida na gaiola.** `POST /carts/{id}/emit-nfe` emite via ML (claim atômico
+  anti-dupla-emissão), só para pedidos com etiqueta impressa e sem nota. `GET /carts/{id}/nfe?mark=1`
+  abre a DANFE e carimba `nfe_printed_at/by`. Emissão nova na LISTA reusa `POST /orders/{id}/emit-nfe`.
+
+### Schema
+- Migration 88 adiciona em `picking_cart_orders`: `label_printed_at/by`, `nfe_printed_at/by`.
+
+### Interação com ADR-0004
+- Inalterada: baixa de estoque continua SOMENTE no `deliver` via `confirm_dispatch`.
+
 ## Consequências
 
 - 3 tabelas novas + 5 colunas em `orders` (migrations 85/86), menu_key em 87.

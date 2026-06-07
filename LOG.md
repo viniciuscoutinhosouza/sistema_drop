@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-06-07 — feat(separation): Fase 2 — status de envio/NF-e, emissão, etiqueta oficial ML
+
+Separação passou a espelhar a Gestão de Pedidos e a operar o ciclo completo da gaiola.
+
+### Backend
+- Migration `88_picking_cart_print_flags.sql`: `label_printed_at/by`, `nfe_printed_at/by` em `picking_cart_orders`.
+- `list_pending_orders` retorna `shipment_status`/`nfe_status`/`nfe_key`/`nfe_url`.
+- `add_orders_to_cart`: só aceita `shipment_status='ready_to_ship'`; adicionar a gaiola concluída a reabre (`separated→open`).
+- `conclude_cart`: trava por **etiqueta impressa** de todos (NF-e opcional); marca todos separados. `separate_order` removido.
+- Etiqueta **oficial do ML** (`label-jobs` + `labels.pdf` combinando `shipment_ids` por conta via `ml_service.get_shipment_label`); manual usa etiqueta interna. Marca `label_printed_at`.
+- NF-e na gaiola: `POST emit-nfe` (claim atômico anti-dupla-emissão, só com etiqueta) e `GET nfe?mark=1` (carimba impressão). Emissão na lista reusa `POST /orders/{id}/emit-nfe`.
+
+### Frontend (`SeparationView.vue`)
+- Colunas Envio (shipment_status) e NF-e; botão "Emitir NF-e" na lista; seleção/gaiola só para Prontos p/ Envio.
+- Modal "adicionar a gaiola aberta"; ícones de etiqueta/NF-e com cor (impresso); trava de Concluir = todas etiquetas impressas.
+
+### Auditoria (nível Full) + correções
+quality-guardian / consistency-auditor / adr-consistency-checker em paralelo. Sem CRITICAL; 2 HIGH corrigidos:
+- **dupla emissão de NF-e** (irreversível) → claim atômico `UPDATE ... WHERE nfe_status IS NULL`.
+- **re-fetch de etiqueta ML no lote** → `label-jobs`/lote ignoram etiquetas já impressas (reimpressão é por pedido).
+- MEDIUM: emit-nfe bloqueia gaiola cancelada/entregue; `SHIPMENT_MAP` completo; filtro CMIG por string; 422 em labels.pdf sem seletor.
+- ADR-0005 atualizado (revisão Fase 2).
+
+### Verificação
+- Migration 88 aplicada no Oracle (4 colunas). `import main` OK (16 rotas). `pytest -m "not integration"` 15 passed (2 pré-existentes). `npm run build` OK.
+- Smoke DB-only das travas (ready_to_ship/etiqueta/reabertura) com revert — **pós-deploy**.
+
+---
+
 ## 2026-06-06 — feat(separation): módulo SEPARAÇÃO p/ Operador Logístico (pedidos não-FULL)
 
 Nova opção de menu "SEPARAÇÃO" (menu_key `separacao`) onde o Operador Logístico separa,

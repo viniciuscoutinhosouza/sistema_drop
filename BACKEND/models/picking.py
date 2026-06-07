@@ -39,6 +39,10 @@ class PickingCartOrder(Base):
     item_status = Column(String(15), nullable=False, default="pending")  # pending | separated
     separated_by = Column(Integer, ForeignKey("users.id"))
     separated_at = Column(TIMESTAMP(timezone=True))
+    label_printed_at = Column(TIMESTAMP(timezone=True))
+    label_printed_by = Column(Integer, ForeignKey("users.id"))
+    nfe_printed_at = Column(TIMESTAMP(timezone=True))
+    nfe_printed_by = Column(Integer, ForeignKey("users.id"))
 
     cart = relationship("PickingCart", back_populates="orders")
     items = relationship(
