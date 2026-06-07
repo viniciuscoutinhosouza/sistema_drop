@@ -79,6 +79,7 @@ from routers import (
     profiles,
     returns,
     scheduler_monitoring,
+    separation,
     simulator,
     stock,
     supplier_products,
@@ -137,6 +138,7 @@ app.include_router(
     scheduler_monitoring.router, prefix=f"{PREFIX}/scheduler", tags=["SchedulerMonitoring"]
 )
 app.include_router(profiles.router, prefix=f"{PREFIX}/profiles", tags=["Profiles"])
+app.include_router(separation.router, prefix=f"{PREFIX}/separation", tags=["Separation"])
 
 
 _os.makedirs("static/uploads/cmig-products", exist_ok=True)

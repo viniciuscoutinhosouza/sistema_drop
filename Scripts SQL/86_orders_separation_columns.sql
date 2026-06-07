@@ -1,0 +1,47 @@
+-- 86_orders_separation_columns.sql
+-- Colunas de rastreio de separação/despacho em orders (módulo Separação).
+-- Idempotente: exceção -1430 = coluna já existe.
+
+DECLARE e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -1430);
+BEGIN EXECUTE IMMEDIATE 'ALTER TABLE orders ADD separated_at TIMESTAMP WITH TIME ZONE';
+EXCEPTION WHEN e_exists THEN NULL; END;
+/
+DECLARE e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -1430);
+BEGIN EXECUTE IMMEDIATE 'ALTER TABLE orders ADD separated_by NUMBER';
+EXCEPTION WHEN e_exists THEN NULL; END;
+/
+DECLARE e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -1430);
+BEGIN EXECUTE IMMEDIATE 'ALTER TABLE orders ADD dispatched_at TIMESTAMP WITH TIME ZONE';
+EXCEPTION WHEN e_exists THEN NULL; END;
+/
+DECLARE e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -1430);
+BEGIN EXECUTE IMMEDIATE 'ALTER TABLE orders ADD dispatched_by NUMBER';
+EXCEPTION WHEN e_exists THEN NULL; END;
+/
+DECLARE e_exists EXCEPTION; PRAGMA EXCEPTION_INIT(e_exists, -1430);
+BEGIN EXECUTE IMMEDIATE 'ALTER TABLE orders ADD picking_cart_id NUMBER';
+EXCEPTION WHEN e_exists THEN NULL; END;
+/
+
+-- FK best-effort para picking_carts (ON DELETE SET NULL: gaiola some, pedido fica)
+DECLARE
+  e1 EXCEPTION; PRAGMA EXCEPTION_INIT(e1, -955);
+  e2 EXCEPTION; PRAGMA EXCEPTION_INIT(e2, -2275);
+  e3 EXCEPTION; PRAGMA EXCEPTION_INIT(e3, -2264);
+  e4 EXCEPTION; PRAGMA EXCEPTION_INIT(e4, -942);
+BEGIN
+  EXECUTE IMMEDIATE 'ALTER TABLE orders ADD CONSTRAINT fk_orders_picking_cart
+    FOREIGN KEY (picking_cart_id) REFERENCES picking_carts(id) ON DELETE SET NULL';
+EXCEPTION WHEN e1 THEN NULL; WHEN e2 THEN NULL; WHEN e3 THEN NULL; WHEN e4 THEN NULL;
+END;
+/
+
+SET SERVEROUTPUT ON
+DECLARE v_n NUMBER;
+BEGIN
+  SELECT COUNT(*) INTO v_n FROM user_tab_columns
+   WHERE table_name = 'ORDERS'
+     AND column_name IN ('SEPARATED_AT','SEPARATED_BY','DISPATCHED_AT','DISPATCHED_BY','PICKING_CART_ID');
+  DBMS_OUTPUT.PUT_LINE('orders separation columns=' || v_n || ' (esperado 5)');
+END;
+/

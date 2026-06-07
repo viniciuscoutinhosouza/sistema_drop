@@ -243,3 +243,158 @@ def render_manual_order_label(*, order, items, cmig, items_meta: list[dict]) -> 
 
     c.save()
     return buf.getvalue()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Etiquetas de envio multi-pedido com layout configurável (módulo SEPARAÇÃO)
+# ─────────────────────────────────────────────────────────────────────────────
+# Tamanho da etiqueta térmica padrão 10x15 (100x150mm).
+THERMAL_W, THERMAL_H = 100 * mm, 150 * mm
+
+
+def _flatten_volumes(orders_meta: list[dict]):
+    """Achata (order, item, meta, cmig, volume_idx, total) de N pedidos.
+
+    `orders_meta`: lista de dicts {order, items, cmig, items_meta}.
+    Volume é por-pedido (1..N de cada pedido), não global.
+    """
+    for om in orders_meta:
+        order = om["order"]
+        items = om.get("items") or []
+        metas = om.get("items_meta") or [{} for _ in items]
+        cmig = om.get("cmig")
+        total = len(items)
+        for vidx, (item, meta) in enumerate(zip(items, metas), start=1):
+            yield order, item, meta, cmig, vidx, total
+
+
+def _render_a4_4up(orders_meta: list[dict]) -> bytes:
+    """A4 com 4 etiquetas por página (2x2), N pedidos em sequência."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    idx = 0
+    for order, item, meta, cmig, vidx, total in _flatten_volumes(orders_meta):
+        slot = idx % 4
+        if idx > 0 and slot == 0:
+            c.showPage()
+        _draw_label(
+            c, slot, order=order, item=item, item_meta=meta, cmig=cmig,
+            volume_idx=vidx, total_volumes=total,
+        )
+        idx += 1
+    if idx == 0:
+        c.setFont("Helvetica", 10)
+        c.drawString(20 * mm, A4[1] - 20 * mm, "Nenhum volume para etiquetar.")
+    c.save()
+    return buf.getvalue()
+
+
+def _draw_thermal_label(c: canvas.Canvas, *, order, item, item_meta, cmig, volume_idx, total_volumes):
+    """Desenha 1 etiqueta ocupando a página inteira (100x150mm térmica)."""
+    pad = 5 * mm
+    ix = pad
+    iw = THERMAL_W - 2 * pad
+    top = THERMAL_H - pad
+
+    c.setStrokeColorRGB(0, 0, 0)
+    c.setLineWidth(0.8)
+    c.rect(pad / 2, pad / 2, THERMAL_W - pad, THERMAL_H - pad)
+
+    c.setFillColorRGB(0, 0, 0)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(ix, top - 5 * mm, "VENDA DIRETA — sem marketplace")
+    c.setFont("Helvetica", 8)
+    empresa = (cmig.company_name if cmig else "") or ""
+    cnpj = (cmig.cnpj if cmig else "") or ""
+    if empresa:
+        c.drawString(ix, top - 9 * mm, empresa[:55])
+    if cnpj:
+        c.drawString(ix, top - 12.5 * mm, f"CNPJ: {cnpj}")
+    c.setFont("Helvetica-Bold", 9)
+    c.drawRightString(ix + iw, top - 5 * mm, f"Vol {volume_idx}/{total_volumes}")
+
+    sep_y = top - 16 * mm
+    c.setLineWidth(0.5)
+    c.line(ix, sep_y, ix + iw, sep_y)
+
+    # Pedido
+    c.setFont("Helvetica", 8)
+    c.drawString(ix, sep_y - 5 * mm, "PEDIDO")
+    c.setFont("Helvetica-Bold", 22)
+    c.drawString(ix, sep_y - 14 * mm, f"#{order.id}")
+    _draw_barcode(c, ix, sep_y - 26 * mm, iw, 10 * mm, _barcode_png(str(order.id), "code128"))
+
+    # Destinatário
+    y = sep_y - 32 * mm
+    c.setFont("Helvetica", 8)
+    c.drawString(ix, y, "DESTINATÁRIO")
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(ix, y - 5 * mm, (order.buyer_name or "(cliente sem nome)").strip()[:45])
+    c.setFont("Helvetica", 8.5)
+    y_addr = y - 10 * mm
+    for line in _format_address(order.shipping_address)[:5]:
+        c.drawString(ix, y_addr, line[:60])
+        y_addr -= 4 * mm
+
+    # Produto
+    y_prod = y_addr - 4 * mm
+    c.setLineWidth(0.4)
+    c.line(ix, y_prod, ix + iw, y_prod)
+    c.setFont("Helvetica", 8)
+    c.drawString(ix, y_prod - 5 * mm, "PRODUTO")
+    c.setFont("Helvetica-Bold", 9.5)
+    title = (item.title or item_meta.get("title") or "")[:60]
+    c.drawString(ix, y_prod - 10 * mm, title)
+    c.setFont("Helvetica", 8.5)
+    c.drawString(ix, y_prod - 14 * mm, f"Qtd: {item.quantity}")
+
+    sku = (item.sku or "").strip()
+    ean = (item_meta.get("ean") or "").strip()
+    y_sku = y_prod - 20 * mm
+    half_w = (iw - 4 * mm) / 2
+    c.setFont("Helvetica", 8)
+    c.drawString(ix, y_sku, f"SKU: {sku or '-'}")
+    if sku:
+        _draw_barcode(c, ix, y_sku - 9 * mm, half_w, 8 * mm, _barcode_png(sku, "code128"))
+    x_ean = ix + half_w + 4 * mm
+    c.drawString(x_ean, y_sku, f"EAN: {ean or '-'}")
+    if ean:
+        png = _barcode_png(ean, "ean13") or _barcode_png(ean, "code128")
+        _draw_barcode(c, x_ean, y_sku - 9 * mm, half_w, 8 * mm, png)
+
+
+def _render_10x15(orders_meta: list[dict]) -> bytes:
+    """Etiqueta térmica 100x150mm — 1 página por volume."""
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(THERMAL_W, THERMAL_H))
+    drawn = 0
+    for order, item, meta, cmig, vidx, total in _flatten_volumes(orders_meta):
+        if drawn > 0:
+            c.showPage()
+        _draw_thermal_label(
+            c, order=order, item=item, item_meta=meta, cmig=cmig,
+            volume_idx=vidx, total_volumes=total,
+        )
+        drawn += 1
+    if drawn == 0:
+        c.setFont("Helvetica", 10)
+        c.drawString(8 * mm, THERMAL_H - 12 * mm, "Nenhum volume.")
+    c.save()
+    return buf.getvalue()
+
+
+# Registry de layouts — extensível: basta adicionar `"chave": funcao`.
+LABEL_LAYOUTS = {
+    "10x15": _render_10x15,
+    "a4_4up": _render_a4_4up,
+}
+LABEL_LAYOUT_LABELS = {
+    "10x15": "Térmica 10x15",
+    "a4_4up": "A4 (4 por página)",
+}
+
+
+def render_shipping_labels(orders_meta: list[dict], layout: str = "10x15") -> bytes:
+    """Renderiza etiquetas de N pedidos no layout escolhido. Retorna bytes do PDF."""
+    fn = LABEL_LAYOUTS.get(layout) or LABEL_LAYOUTS["10x15"]
+    return fn(orders_meta)

@@ -33,6 +33,7 @@ MENU_CATALOG: list[dict] = [
     {"key": "fiscal_saidas",    "label": "Saídas (NF-e)",            "section": "FISCAL"},
     # Seção UGO
     {"key": "pg",               "label": "Produto Geral (PG)",       "section": "OPERAÇÃO (GL)"},
+    {"key": "separacao",        "label": "Separação (Gaiola)",       "section": "SEPARAÇÃO (GL)"},
     {"key": "ag_retorno",       "label": "Ag. Retorno Físico",       "section": "ESTOQUE (GL)"},
     {"key": "inventario",       "label": "Inventário (ver)",         "section": "ESTOQUE (GL)"},
     {"key": "inventario_criar", "label": "Inventário (criar)",       "section": "ESTOQUE (GL)"},

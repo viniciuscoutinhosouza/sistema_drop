@@ -120,6 +120,21 @@
             </li>
           </template>
 
+          <!-- SEPARAÇÃO GL -->
+          <template v-if="canSee('separacao')">
+            <li class="nav-header">SEPARAÇÃO</li>
+            <li class="nav-item">
+              <RouterLink to="/separacao" class="nav-link" :class="{ active: route.path === '/separacao' }">
+                <i class="nav-icon fas fa-dolly"></i><p>Separar Pedidos</p>
+              </RouterLink>
+            </li>
+            <li class="nav-item">
+              <RouterLink to="/separacao/gaiolas" class="nav-link" :class="{ active: route.path.startsWith('/separacao/gaiolas') }">
+                <i class="nav-icon fas fa-shipping-fast"></i><p>Gaiolas / Transportadora</p>
+              </RouterLink>
+            </li>
+          </template>
+
           <!-- ESTOQUE GL -->
           <template v-if="canSee('ag_retorno') || canSee('inventario')">
             <li class="nav-header">ESTOQUE</li>
@@ -278,7 +293,7 @@ const _legacyMenus = {
   admin: new Set([
     'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',
     'pedidos','catalog','pedido_manual','devolucoes','estoque','pessoas','fiscal_entradas',
-    'fiscal_saidas','pg','ag_retorno','inventario','inventario_criar','rotinas','go_empresa',
+    'fiscal_saidas','pg','separacao','ag_retorno','inventario','inventario_criar','rotinas','go_empresa',
     'go_usuarios','config_usuarios','config_gestores','config_ai','config_api_console','config_perfis',
   ]),
   ac: new Set([
@@ -287,7 +302,7 @@ const _legacyMenus = {
     'inventario',
   ]),
   ugo: new Set([
-    'pg','cmig','pedidos','estoque','ag_retorno','inventario','inventario_criar','devolucoes',
+    'pg','cmig','pedidos','estoque','separacao','ag_retorno','inventario','inventario_criar','devolucoes',
     'pessoas','fiscal_entradas','fiscal_saidas','rotinas','config_usuarios',
   ]),
   go: new Set(['rotinas','go_empresa','go_usuarios','inventario']),

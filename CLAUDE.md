@@ -243,6 +243,7 @@ BLING_CLIENT_SECRET=
 | `/api/v1/cmigs` | CMIGs e produtos CMIG |
 | `/api/v1/anuncios` | Anúncios importados do ML |
 | `/api/v1/simulator` | Simulador de preço |
+| `/api/v1/separation` | Separação (Carrinho Gaiola, pedidos não-FULL) |
 
 ---
 
@@ -308,6 +309,8 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0001](docs/decisions/ADR-0001-oracle-asyncsyncsession.md) — Oracle + AsyncSyncSession
 - [ADR-0002](docs/decisions/ADR-0002-vue3-adminlte-bootstrap.md) — Vue 3 + AdminLTE sem TypeScript
 - [ADR-0003](docs/decisions/ADR-0003-jwt-localstorage.md) — JWT em localStorage
+- [ADR-0004](DOCs/decisions/ADR-0004-stock-ssot-fases.md) — Estoque SSOT + reserva FULL + snapshots
+- [ADR-0005](DOCs/decisions/ADR-0005-separacao-picking-cart.md) — Separação: Carrinho Gaiola + estados separated/shipped
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 

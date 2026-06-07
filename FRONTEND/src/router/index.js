@@ -111,6 +111,10 @@ const ProfilesView = () => import('@/views/admin/ProfilesView.vue')
 // Monitoramento de Rotinas (UGO + GO + Admin)
 const SchedulerMonitoringView = () => import('@/views/monitoring/SchedulerMonitoringView.vue')
 
+// Separação (Operador Logístico — pedidos não-FULL)
+const SeparationView = () => import('@/views/separation/SeparationView.vue')
+const CartsListView  = () => import('@/views/separation/CartsListView.vue')
+
 
 const routes = [
   // Auth routes (no sidebar)
@@ -175,6 +179,10 @@ const routes = [
       { path: 'pg/novo-composto',      component: PgCompositeFormView,     meta: { title: 'Novo KIT PG', menuKey: 'pg' } },
       { path: 'pg/:id/edit',           component: PgProductFormView,       meta: { title: 'Editar Produto PG',    menuKey: 'pg' } },
       { path: 'pg/:id/editar-composto', component: PgCompositeFormView,    meta: { title: 'Editar KIT PG', menuKey: 'pg' } },
+
+      // Separação (Operador Logístico — pedidos não-FULL)
+      { path: 'separacao',         component: SeparationView, meta: { title: 'Separação', menuKey: 'separacao' } },
+      { path: 'separacao/gaiolas', component: CartsListView,  meta: { title: 'Gaiolas / Transportadora', menuKey: 'separacao' } },
 
       // Inventário (ESTOQUE)
       { path: 'inventario',        component: InventoryListView, meta: { title: 'Inventário', menuKey: 'inventario' } },

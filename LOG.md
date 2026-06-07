@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-06-06 — feat(separation): módulo SEPARAÇÃO p/ Operador Logístico (pedidos não-FULL)
+
+Nova opção de menu "SEPARAÇÃO" (menu_key `separacao`) onde o Operador Logístico separa,
+etiqueta e despacha os pedidos não-FULL do seu galpão (entregues pelo Galpão).
+
+### Backend
+- Migrations `85_picking_carts.sql` (picking_carts/picking_cart_orders/picking_cart_items),
+  `86_orders_separation_columns.sql` (orders: separated_at/by, dispatched_at/by, picking_cart_id),
+  `87_separacao_menu_key.sql` (menu_key `separacao` nos perfis admin + gl).
+- Models `models/picking.py` (PickingCart, PickingCartOrder, PickingCartItem) + 5 colunas em `Order`.
+- `services/picking_service.py` (lógica pura: expansão de kits, consolidação, conferência de código).
+- `services/picking_list_service.py` (PDF da lista de picking consolidada por catálogo).
+- `services/label_service.py` estendido: registry `LABEL_LAYOUTS` (`10x15` térmica + `a4_4up`) e
+  `render_shipping_labels(orders_meta, layout)` multi-pedido.
+- `routers/separation.py` (14 rotas) com `require_menu_permission("separacao")` + escopo por galpão.
+  Dois modos de gaiola: **manual** e **scan** (bipagem — só separa com 100% conferido). Entrega à
+  transportadora marca pedidos `shipped` e baixa estoque via `confirm_dispatch` (reuso).
+- `menu_key` `separacao` adicionada ao `MENU_CATALOG` em `profiles.py`; router registrado em `main.py`.
+
+### Frontend
+- `views/separation/SeparationView.vue` (lista de pedidos + workspace da gaiola, manual e bipagem) e
+  `views/separation/CartsListView.vue` (entrega à transportadora). Rotas `/separacao` e
+  `/separacao/gaiolas`. Seção "SEPARAÇÃO" na sidebar + legacy menus ugo/admin.
+
+### Auditoria (nível Full) + correções
+Rodados quality-guardian, consistency-auditor e adr-consistency-checker em paralelo.
+Corrigidos todos os CRITICAL/HIGH antes do fechamento:
+- **C-1/CRUD**: novo `POST /carts/{id}/cancel` devolve pedidos à lista (reverte picking_cart_id +
+  status separated→paid) — status `cancelled` antes inalcançável. Botão de cancelar no frontend.
+- **H-1 (IDOR/PII)**: cláusula de galpão aplicada também nas queries de Order em `labels.pdf` e `nfe`.
+- **H-2 (escopo NULL)**: `_get_cart_scoped` NULL-safe + `_ensure_warehouse` bloqueia operador sem galpão.
+- **H-3 (corrida bipagem)**: incremento atômico `UPDATE ... WHERE scanned_qty < expected_qty` + rowcount.
+- **H-4 (baixa silenciosa)**: `deliver` retorna `failed_dispatch` e loga `error`.
+- **HIGH consistência**: `_resolve_base` agora faz fallback via `resolve_order_item_link`
+  (ProductListing/DP/SKU) — cobre pedidos ML vinculados só pelo anúncio (picking list + bipagem de kits).
+- **M-2**: `consolidate` não colapsa mais itens sem produto/SKU. **M-4**: `add_orders` retorna `skipped`.
+- ADR-0005 criado (Carrinho Gaiola + estados separated/shipped); prefixo `/api/v1/separation` e ADRs
+  0004/0005 adicionados ao CLAUDE.md.
+
+### Verificação
+- `import main` OK; 15 rotas `/separation/*` registram. ORM `configure_mappers()` OK.
+- `pytest tests/test_picking_service.py` 5 passed; suíte `-m "not integration"` 15 passed
+  (2 falhas **pré-existentes** em test_orders — MockResult sem `.scalar()`, router orders.py não tocado).
+- Smoke dos PDFs (10x15, a4_4up, lista) gera `%PDF` OK. `npm run build` OK.
+- **Pendente:** smoke ponta-a-ponta com usuário `ugo` em produção (migrations 85/86/87 já rodadas).
+
+---
+
 ## 2026-06-06 — feat(stock): FULL atribuído ao CMIG + histórico completo com venda/marketplace
 
 ### Fase 1 — Atribuição FULL correta

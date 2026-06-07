@@ -54,6 +54,12 @@ class Order(Base):
     notes = Column(String)
     paid_at = Column(TIMESTAMP(timezone=True))
     shipped_at = Column(TIMESTAMP(timezone=True))
+    # Separação (módulo SEPARAÇÃO / Carrinho Gaiola)
+    separated_at = Column(TIMESTAMP(timezone=True))
+    separated_by = Column(Integer, ForeignKey("users.id"))
+    dispatched_at = Column(TIMESTAMP(timezone=True))  # entregue à transportadora
+    dispatched_by = Column(Integer, ForeignKey("users.id"))
+    picking_cart_id = Column(Integer, ForeignKey("picking_carts.id"))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
