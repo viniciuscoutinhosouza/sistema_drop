@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-06-07 — fix(separation): NF-e da gaiola ficava presa em "processando"
+
+Causa: `cart_emit_nfe` emitia no ML e marcava `pending`, mas **não sincronizava o resultado
+de volta** (a Gestão de Pedidos faz esse sync após emitir). Como não há job de sync de NF-e no
+scheduler, o pedido ficava `pending` para sempre mesmo com a nota já autorizada no ML.
+
+- Novo helper `_sync_nfe` (reusa `_ml.get_order_fiscal_data` + `_extract_nfe_fields`).
+- `cart_emit_nfe`: após emitir, sincroniza e retorna `nfe_status`/`nfe_url` atualizados.
+- `GET /carts/{id}/nfe`: para pedidos `pending/in_process` sem chave, puxa o estado do ML
+  (finaliza notas presas ao abrir o NF-e da gaiola).
+- Data fix: pedido #742 (venda 2000016821664834) sincronizado — estava `authorized` no ML, DANFE ok.
+
+---
+
 ## 2026-06-07 — fix(separation): gaiola criada por admin ficava órfã de galpão (invisível ao Gest.Log)
 
 Causa: `create_cart` usava `warehouse_id = current_user.warehouse_id`. Admin não tem galpão

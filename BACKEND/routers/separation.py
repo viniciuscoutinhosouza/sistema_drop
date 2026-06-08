@@ -39,8 +39,8 @@ from services.label_service import LABEL_LAYOUT_LABELS, render_shipping_labels
 from services.order_item_resolver import resolve_order_item_link
 from services.picking_list_service import render_picking_list
 
-# Reuso da URL de DANFE da Gestão de Pedidos
-from routers.orders import _ml_nfe_url  # noqa: E402
+# Reuso da lógica de NF-e da Gestão de Pedidos
+from routers.orders import _extract_nfe_fields, _ml_nfe_url  # noqa: E402
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -830,6 +830,27 @@ async def _load_order_scoped(db: AsyncSession, order_id: int, wh) -> Order | Non
     return (await db.execute(oq)).scalar_one_or_none()
 
 
+async def _sync_nfe(db: AsyncSession, order: Order, acc: MarketplaceAccount | None) -> None:
+    """Puxa o estado real da NF-e no ML e atualiza key/status/url do pedido.
+
+    Best-effort: emissão no ML é assíncrona; após emitir, o resultado (autorizada)
+    pode levar segundos. Chamado após emitir e ao consultar pedidos pendentes.
+    """
+    if not acc or order.platform != "mercadolivre":
+        return
+    try:
+        invoice = await _ml.get_order_fiscal_data(
+            acc.access_token, order.platform_order_id,
+            seller_id=acc.platform_user_id, shipment_id=order.shipment_id,
+        )
+    except Exception as exc:
+        logger.warning("_sync_nfe order=%s: %s", order.id, exc)
+        return
+    if invoice:
+        order.nfe_key, order.nfe_status, order.nfe_url = _extract_nfe_fields(invoice)
+        await db.commit()
+
+
 def _account_label(acc: MarketplaceAccount | None) -> str:
     if not acc:
         return "Conta"
@@ -1019,7 +1040,13 @@ async def cart_emit_nfe(
         try:
             ml_order_id = int(order.platform_order_id)
             await _ml.emit_nfe(acc.access_token, acc.platform_user_id, [ml_order_id])
-            results.append({"order_id": order.id, "nfe_status": "pending"})
+            # Sincroniza o resultado de volta (a nota pode já sair autorizada).
+            await _sync_nfe(db, order, acc)
+            results.append({
+                "order_id": order.id,
+                "nfe_status": order.nfe_status,
+                "nfe_url": _ml_nfe_url(order),
+            })
         except Exception as exc:
             # reverte o claim para permitir nova tentativa
             await db.execute(
@@ -1055,6 +1082,12 @@ async def cart_nfe_urls(
         order = await _load_order_scoped(db, pco.order_id, wh)
         if not order:
             continue
+        # Pendente sem chave → tenta finalizar puxando o estado do ML
+        if not order.nfe_key and order.nfe_status in ("pending", "in_process"):
+            acc = (
+                await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+            ).scalar_one_or_none()
+            await _sync_nfe(db, order, acc)
         url = _ml_nfe_url(order)
         out.append({
             "order_id": order.id,
