@@ -41,7 +41,7 @@ const props = defineProps({
   canPrintLabel: { type: Boolean, default: false }, // true para manual ou ML com shipment
   hasNfe:        { type: Boolean, default: false }, // true quando ha NFe associada
 })
-const emit = defineEmits(['click:delivery', 'click:pay', 'click:label', 'click:nfe'])
+const emit = defineEmits(['click:delivery', 'click:pay', 'click:label', 'click:nfe', 'click:separated', 'click:shipped'])
 
 const steps = [
   { key: 'downloaded',      label: 'Pedido Baixado',      icon: 'fas fa-download' },
@@ -103,13 +103,23 @@ function stepTooltip(key, defaultLabel) {
   if (key === 'nfe') {
     return props.hasNfe ? 'NF-e autorizada — clique para detalhes' : 'NF-e — clique para emitir/consultar'
   }
+  if (key === 'separated' && reachedSeparated.value) return 'Pedido separado — clique para detalhes'
+  if (key === 'shipped' && reachedShipped.value) return 'Pedido coletado — clique para detalhes'
   return defaultLabel
 }
+
+// Etapas alcançadas (para liberar o clique de detalhes)
+const reachedSeparated = computed(() => isPast('separated') || isCurrent('separated'))
+const reachedShipped = computed(() =>
+  isCurrent('shipped') || !!(props.order?.dispatched_at || props.order?.shipped_at)
+)
 
 function stepClickable(key) {
   if (key === 'paid' && props.paymentStatus === 'pending' && props.canPay) return true
   if (key === 'label_generated' && props.canPrintLabel) return true
   if (key === 'nfe') return true
+  if (key === 'separated') return reachedSeparated.value
+  if (key === 'shipped') return reachedShipped.value
   return false
 }
 
@@ -124,6 +134,14 @@ function onStepClick(key) {
   }
   if (key === 'nfe') {
     emit('click:nfe')
+    return
+  }
+  if (key === 'separated' && reachedSeparated.value) {
+    emit('click:separated')
+    return
+  }
+  if (key === 'shipped' && reachedShipped.value) {
+    emit('click:shipped')
   }
 }
 

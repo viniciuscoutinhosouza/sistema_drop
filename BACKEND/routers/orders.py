@@ -1088,6 +1088,54 @@ async def update_order_status(
     return {"status": order.status}
 
 
+@router.get("/{order_id}/separation-info")
+async def order_separation_info(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Detalhes de separação e coleta de um pedido (para os ícones da Gestão de Pedidos).
+
+    Junta os carimbos do pedido (separated_*/dispatched_*) com a gaiola
+    (picking_cart_id → cart_number/modo/status) e resolve os nomes dos operadores.
+    """
+    from models.picking import PickingCart
+
+    order = await _get_order_checked(db, order_id, current_user)
+
+    cart = None
+    if order.picking_cart_id:
+        cart = (
+            await db.execute(select(PickingCart).where(PickingCart.id == order.picking_cart_id))
+        ).scalar_one_or_none()
+
+    # Nomes dos operadores em lote
+    user_ids = {order.separated_by, order.dispatched_by} - {None}
+    names: dict[int, str] = {}
+    if user_ids:
+        rows = (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()
+        names = {u.id: (u.full_name or u.email) for u in rows}
+
+    def _iso(dt):
+        return dt.isoformat() if dt else None
+
+    return {
+        "has_gaiola": cart is not None,
+        "separated": {
+            "at": _iso(order.separated_at),
+            "by_name": names.get(order.separated_by),
+            "mode": cart.cart_mode if cart else None,
+            "cart_number": cart.cart_number if cart else None,
+            "cart_status": cart.status if cart else None,
+        },
+        "dispatched": {
+            "at": _iso(order.dispatched_at) or _iso(order.shipped_at),
+            "by_name": names.get(order.dispatched_by),
+            "cart_number": cart.cart_number if cart else None,
+        },
+    }
+
+
 @router.put("/{order_id}/notes")
 async def update_order_notes(
     order_id: int,

@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-06-07 — feat(orders): detalhes de separação/coleta nos ícones da Gestão de Pedidos
+
+Os ícones 5 ("Pedido Separado") e 6 ("Coletado p/ Entrega") do `OrderStatusStepper` agora são
+clicáveis e abrem um modal com os detalhes vindos do módulo de gaiola.
+
+- Backend `GET /orders/{id}/separation-info`: junta `order.separated_*`/`dispatched_*` com a gaiola
+  (`picking_cart_id` → cart_number/cart_mode/status) e resolve nomes dos operadores.
+- `OrderStatusStepper.vue`: passos `separated`/`shipped` clicáveis quando alcançados (emits
+  `click:separated`/`click:shipped`).
+- Novo `SeparationInfoModal.vue` + wiring em `OrderListView.vue`: modal com data/hora, usuário,
+  modo (Manual/Bipagem), código e status da gaiola (separação) e data/hora + usuário da coleta.
+- Sem migration (campos já existem). Pedidos separados fora de gaiola exibem detalhes parciais.
+
+---
+
 ## 2026-06-07 — feat(users): botão único "Novo Usuário" com Perfil definindo o acesso
 
 Tela de cadastro de usuários (`UsersView.vue`) tinha 2 botões ("Novo Operador Logístico" e

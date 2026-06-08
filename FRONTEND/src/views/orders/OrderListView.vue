@@ -457,6 +457,8 @@
               @click:pay="payOrder(order)"
               @click:label="handleLabelClick(order)"
               @click:nfe="handleNfeClick(order)"
+              @click:separated="openSeparationInfo(order)"
+              @click:shipped="openSeparationInfo(order)"
             />
 
             <!-- Pedido manual: botão ver detalhes (olho) — etiqueta esta no stepper -->
@@ -517,6 +519,7 @@
     <DeliveryModal :show="showDeliveryModal" :order="selectedOrder" @close="showDeliveryModal = false" />
     <InvoicesModal :show="showInvoicesModal" :order="invoicesOrder" @close="showInvoicesModal = false" />
     <ShipmentModal :show="showShipmentModal" :order="shipmentOrder" @close="showShipmentModal = false" />
+    <SeparationInfoModal :show="showSeparationModal" :info="separationInfo" @close="showSeparationModal = false" />
 
     <!-- Modal Sincronizar Período -->
     <div v-if="showSyncRangeModal" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5);z-index:1060">
@@ -584,6 +587,7 @@ import OrderFinancialCard from '@/components/orders/OrderFinancialCard.vue'
 import DeliveryModal from '@/components/orders/DeliveryModal.vue'
 import InvoicesModal from '@/components/orders/InvoicesModal.vue'
 import ShipmentModal from '@/components/orders/ShipmentModal.vue'
+import SeparationInfoModal from '@/components/orders/SeparationInfoModal.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 
 const route = useRoute()
@@ -634,6 +638,8 @@ const showInvoicesModal = ref(false)
 const invoicesOrder = ref(null)
 const showShipmentModal = ref(false)
 const shipmentOrder = ref(null)
+const showSeparationModal = ref(false)
+const separationInfo = ref(null)
 
 const filters = reactive({
   search: route.query.search || '',
@@ -1176,6 +1182,18 @@ async function emitNfe(order) {
 function openDeliveryModal(order) { selectedOrder.value = order; showDeliveryModal.value = true }
 function openInvoicesModal(order) { invoicesOrder.value = order; showInvoicesModal.value = true }
 function openShipmentModal(order) { shipmentOrder.value = order; showShipmentModal.value = true }
+
+async function openSeparationInfo(order) {
+  separationInfo.value = null
+  showSeparationModal.value = true
+  try {
+    const { data } = await api.get(`/orders/${order.id}/separation-info`)
+    separationInfo.value = data
+  } catch {
+    showSeparationModal.value = false
+    toast.error('Erro ao carregar detalhes de separação')
+  }
+}
 
 async function _getOrderInvoices(orderId) {
   try {
