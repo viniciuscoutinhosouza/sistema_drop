@@ -24,6 +24,41 @@ class RegisterUGORequest(BaseModel):
         return v
 
 
+class RegisterUserRequest(BaseModel):
+    """Cadastro unificado de usuário — o perfil de acesso define o papel (base_role).
+
+    Sem perfil informado, o usuário é criado como Operador Logístico (ugo).
+    Campos de AC (cpf/endereço/plano) só são usados quando o perfil tem base_role == 'ac'.
+    """
+
+    full_name: str
+    email: EmailStr
+    whatsapp: str = ""
+    password: str
+    password_confirm: str
+    warehouse_id: int | None = None
+    profile_id: int | None = None
+
+    # Campos opcionais — só aplicados quando o perfil for de base_role 'ac'
+    person_type: str = "fisica"  # "fisica" | "juridica"
+    cpf_cnpj: str = ""
+    plan_id: int | None = None
+    zip_code: str = ""
+    street: str = ""
+    number: str = ""
+    complement: str = ""
+    neighborhood: str = ""
+    city: str = ""
+    state: str = ""
+
+    @field_validator("password_confirm")
+    @classmethod
+    def passwords_match(cls, v, info):
+        if "password" in info.data and v != info.data["password"]:
+            raise ValueError("As senhas não coincidem")
+        return v
+
+
 class RegisterACRequest(BaseModel):
     """Cadastro de Gestor de Conta (AC) — realizado apenas por UGO."""
 

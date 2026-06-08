@@ -17,6 +17,7 @@ from schemas.auth import (
     RefreshRequest,
     RegisterACRequest,
     RegisterUGORequest,
+    RegisterUserRequest,
     TokenResponse,
 )
 from services.auth_service import (
@@ -179,6 +180,97 @@ async def register_ugo(
             logger.exception("Constraint de role ao cadastrar UGO — execute migration 16")
             raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
         logger.exception("IntegrityError ao cadastrar UGO")
+        raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
+
+    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role}
+
+
+@router.post("/register/user", status_code=201)
+async def register_user(
+    body: RegisterUserRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin", "go")),
+):
+    """Cadastro unificado de usuário. O perfil de acesso (profile_id) define o papel.
+
+    Sem perfil → criado como Operador Logístico (ugo). Admin ou GO podem executar,
+    mas apenas o admin pode criar usuários com papel admin ou go.
+    """
+    result = await db.execute(select(User).where(User.email == body.email))
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="E-mail já cadastrado")
+
+    # Resolve o perfil de acesso → define o papel (base_role)
+    role = "ugo"
+    profile_id = None
+    if body.profile_id is not None:
+        prof_result = await db.execute(
+            select(UserProfile).where(UserProfile.id == body.profile_id)
+        )
+        profile = prof_result.scalar_one_or_none()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Perfil de acesso não encontrado")
+        if not profile.is_active:
+            raise HTTPException(status_code=400, detail="Perfil de acesso está inativo")
+        role = profile.base_role
+        profile_id = profile.id
+
+    # GO não pode escalar privilégio criando admin ou outro go
+    if current_user.role != "admin" and role in ("admin", "go"):
+        raise HTTPException(
+            status_code=403, detail="Sem permissão para criar usuários com este perfil"
+        )
+
+    cpf_cnpj = (body.cpf_cnpj or "").strip() or None
+    if cpf_cnpj:
+        dup = await db.execute(select(User).where(User.cpf_cnpj == cpf_cnpj))
+        if dup.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="CPF/CNPJ já cadastrado")
+
+    user = User(
+        email=body.email,
+        password_hash=hash_password(body.password),
+        full_name=body.full_name,
+        whatsapp=body.whatsapp,
+        role=role,
+        warehouse_id=body.warehouse_id,
+        go_id=current_user.go_id if current_user.role == "go" else None,
+        profile_id=profile_id,
+        cpf_cnpj=cpf_cnpj,
+    )
+    db.add(user)
+    try:
+        await db.flush()
+    except IntegrityError as e:
+        await db.rollback()
+        err_str = str(e).lower()
+        if "unique" in err_str or "dup_val" in err_str:
+            raise HTTPException(status_code=400, detail="E-mail ou CPF/CNPJ já cadastrado")
+        logger.exception("IntegrityError no flush ao cadastrar usuário")
+        raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
+
+    # AC precisa de um ACProfile (endereço/plano podem vir vazios e ser editados depois)
+    if role == "ac":
+        db.add(
+            ACProfile(
+                user_id=user.id,
+                zip_code=body.zip_code,
+                street=body.street,
+                address_number=body.number,
+                complement=body.complement,
+                neighborhood=body.neighborhood,
+                city=body.city,
+                state=body.state,
+                plan_id=body.plan_id,
+            )
+        )
+
+    try:
+        await db.commit()
+        await db.refresh(user)
+    except IntegrityError:
+        await db.rollback()
+        logger.exception("IntegrityError no commit ao cadastrar usuário")
         raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
 
     return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role}

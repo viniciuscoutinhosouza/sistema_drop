@@ -3,11 +3,8 @@
     <!-- Cabeçalho + Botões -->
     <div class="d-flex justify-content-between align-items-center mb-3">
       <div class="btn-group">
-        <button v-if="canCreateUGO" class="btn btn-warning" @click="openModal('ugo', null)">
-          <i class="fas fa-user-tie mr-1"></i> Novo Operador Logístico
-        </button>
-        <button class="btn btn-primary ml-2" @click="openModal('ac', null)">
-          <i class="fas fa-user-plus mr-1"></i> Novo Gestor de Conta
+        <button class="btn btn-primary" @click="openModal(null, null)">
+          <i class="fas fa-user-plus mr-1"></i> Novo Usuário
         </button>
       </div>
       <div class="d-flex align-items-center gap-2">
@@ -84,8 +81,10 @@
           <div class="modal-header">
             <h5 class="modal-title">
               <i class="fas fa-user-edit mr-2"></i>
-              {{ modal.editing ? 'Editar' : 'Novo' }}
-              {{ modal.type === 'ugo' ? 'Operador Logístico (UGO)' : 'Gestor de Conta (AC)' }}
+              <template v-if="modal.editing">
+                Editar {{ modal.type === 'ugo' ? 'Operador Logístico (UGO)' : 'Gestor de Conta (AC)' }}
+              </template>
+              <template v-else>Novo Usuário</template>
             </h5>
             <button type="button" class="close" @click="closeModal"><span>&times;</span></button>
           </div>
@@ -143,11 +142,13 @@
                 </div>
               </div>
 
-              <!-- Perfil de Acesso — só na edição e só admin -->
-              <div class="form-group" v-if="modal.editing && isAdmin">
-                <label>Perfil de Acesso</label>
-                <select v-model="form.profile_id" class="form-control">
-                  <option value="">— Usar perfil padrão do papel —</option>
+              <!-- Perfil de Acesso — define os acessos do usuário (só admin) -->
+              <div class="form-group" v-if="isAdmin">
+                <label>Perfil de Acesso <span v-if="!modal.editing" class="text-danger">*</span></label>
+                <select v-model="form.profile_id" class="form-control" :required="!modal.editing">
+                  <option value="">
+                    {{ modal.editing ? '— Usar perfil padrão do papel —' : '— Operador Logístico (padrão) —' }}
+                  </option>
                   <option v-for="p in profiles" :key="p.id" :value="p.id" :disabled="!p.is_active">
                     {{ p.label }}
                     <template v-if="p.is_system"> (sistema)</template>
@@ -155,12 +156,12 @@
                   </option>
                 </select>
                 <small class="text-muted">
-                  Sobrepõe as permissões padrão do papel. Em branco = usa o perfil de sistema do papel.
+                  Define quais menus e acessos o usuário terá. Em branco = Operador Logístico.
                 </small>
               </div>
 
-              <!-- Campos extras para AC (só no cadastro) -->
-              <template v-if="modal.type === 'ac' && !modal.editing">
+              <!-- Campos extras para AC (só no cadastro, quando o perfil é de Gestor de Conta) -->
+              <template v-if="!modal.editing && createBaseRole === 'ac'">
                 <hr />
                 <div class="row">
                   <div class="col-md-4 form-group">
@@ -254,7 +255,6 @@ const loading    = ref(false)
 const search     = ref('')
 const filterRole = ref('')
 
-const canCreateUGO = computed(() => ['admin', 'go'].includes(authStore.user?.role))
 const isAdmin = computed(() => authStore.user?.role === 'admin')
 
 const profiles = ref([])
@@ -274,6 +274,13 @@ const formDefault = () => ({
   zip_code: '', street: '', number: '', complement: '', neighborhood: '', city: '', state: '',
 })
 const form = ref(formDefault())
+
+// No cadastro, o papel efetivo do novo usuário vem do perfil selecionado (base_role).
+const createBaseRole = computed(() => {
+  if (!form.value.profile_id) return 'ugo'
+  const p = profiles.value.find(p => p.id === Number(form.value.profile_id))
+  return p ? p.base_role : 'ugo'
+})
 
 const filteredUsers = computed(() => {
   let list = users.value
@@ -360,8 +367,31 @@ async function submitForm() {
       await api.put(`/users/${modal.value.editId}`, payload)
       toast.success('Usuário atualizado com sucesso!')
     } else {
-      const endpoint = modal.value.type === 'ugo' ? '/auth/register/ugo' : '/auth/register/ac'
-      await api.post(endpoint, form.value)
+      const payload = {
+        full_name:        form.value.full_name,
+        email:            form.value.email,
+        whatsapp:         form.value.whatsapp || '',
+        password:         form.value.password,
+        password_confirm: form.value.password_confirm,
+        warehouse_id:     form.value.warehouse_id || null,
+        profile_id:       form.value.profile_id === '' ? null : Number(form.value.profile_id),
+      }
+      // Perfil de Gestor de Conta → envia também os dados de AC (endereço/plano/documento)
+      if (createBaseRole.value === 'ac') {
+        Object.assign(payload, {
+          person_type:  form.value.person_type,
+          cpf_cnpj:     form.value.cpf_cnpj,
+          plan_id:      form.value.plan_id,
+          zip_code:     form.value.zip_code,
+          street:       form.value.street,
+          number:       form.value.number,
+          complement:   form.value.complement,
+          neighborhood: form.value.neighborhood,
+          city:         form.value.city,
+          state:        form.value.state,
+        })
+      }
+      await api.post('/auth/register/user', payload)
       toast.success('Usuário cadastrado com sucesso!')
     }
     closeModal()

@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-07 — feat(users): botão único "Novo Usuário" com Perfil definindo o acesso
+
+Tela de cadastro de usuários (`UsersView.vue`) tinha 2 botões ("Novo Operador Logístico" e
+"Novo Gestor de Conta"). Unificados em um só botão "Novo Usuário", modal simples (como o do UGO)
+com campo **Perfil de Acesso** (como na edição) para definir os acessos.
+
+- Backend: novo endpoint `POST /auth/register/user` (`auth.py`) + schema `RegisterUserRequest`.
+  O `profile_id` define o papel via `base_role` do perfil; sem perfil → `ugo`. GO não pode criar
+  admin/go (anti-escalonamento). Para `base_role == 'ac'` cria um `ACProfile` (endereço/plano
+  podem vir vazios). Endpoints antigos `/register/ugo` e `/register/ac` mantidos.
+- Frontend: botão único; modal mostra Perfil no cadastro (admin); campos de AC
+  (CPF/endereço/plano) aparecem só quando o perfil selecionado é de Gestor de Conta.
+- Verificado: `py_compile` backend OK, `npm run build` OK.
+
+---
+
 ## 2026-06-07 — fix(separation): NF-e da gaiola ficava presa em "processando"
 
 Causa: `cart_emit_nfe` emitia no ML e marcava `pending`, mas **não sincronizava o resultado
