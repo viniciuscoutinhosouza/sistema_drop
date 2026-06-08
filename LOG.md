@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-07 — change(separation): imprimir etiqueta marca pedido como "separado"
+
+Nova regra: ao imprimir a etiqueta de um pedido na gaiola, ele já vira **separado** (por pedido),
+sem esperar a conclusão da gaiola. A consulta de separação mostra o status da gaiola sempre que
+o pedido pertence a uma.
+
+- `cart_labels`: além de `label_printed_at`, marca `item_status='separated'`, `order.status='separated'`,
+  `separated_at/by`. (No modo scan a etiqueta só sai após bipar 100%, então a separação fica conferida.)
+- `remove_order_from_cart`: passa a permitir remover pedido já separado (gaiola aberta), revertendo
+  `order.status` (→ paid/downloaded conforme pagamento) e limpando carimbos. `cancel_cart` alinhado.
+- `SeparationInfoModal`: seção "Gaiola" (código/status/modo) exibida sempre que há gaiola.
+- Data fix #742: tinha etiqueta impressa (23:40) → marcado como separado (gaiola 21 aberta);
+  `shipped_at` órfão já havia sido limpo.
+
+---
+
 ## 2026-06-07 — feat(orders): detalhes de separação/coleta nos ícones da Gestão de Pedidos
 
 Os ícones 5 ("Pedido Separado") e 6 ("Coletado p/ Entrega") do `OrderStatusStepper` agora são

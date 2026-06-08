@@ -599,12 +599,15 @@ async def remove_order_from_cart(
     ).scalar_one_or_none()
     if not pco:
         raise HTTPException(status_code=404, detail="Pedido não está nesta gaiola")
-    if pco.item_status == "separated":
-        raise HTTPException(status_code=409, detail="Pedido já separado; não pode ser removido")
 
     order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
     if order:
         order.picking_cart_id = None
+        # Como imprimir etiqueta marca separado, ao remover revertemos o status.
+        if order.status == "separated":
+            order.status = "paid" if order.payment_status == "paid" else "downloaded"
+            order.separated_at = None
+            order.separated_by = None
     db.delete(pco)  # cascade remove picking_cart_items
     await db.commit()
     return {"ok": True}
@@ -800,7 +803,7 @@ async def cancel_cart(
         if order:
             order.picking_cart_id = None
             if order.status == "separated":
-                order.status = "paid"
+                order.status = "paid" if order.payment_status == "paid" else "downloaded"
                 order.separated_at = None
                 order.separated_by = None
         db.delete(pco)  # cascade remove picking_cart_items
@@ -971,9 +974,17 @@ async def cart_labels(
         pdf = render_shipping_labels(orders_meta, layout=layout)
 
     now = datetime.now(UTC)
-    for pco, _o in targets:
+    for pco, order in targets:
         pco.label_printed_at = now
         pco.label_printed_by = current_user.id
+        # Imprimir a etiqueta marca o pedido como SEPARADO (por pedido).
+        if pco.item_status != "separated":
+            pco.item_status = "separated"
+            pco.separated_by = current_user.id
+            pco.separated_at = now
+            order.status = "separated"
+            order.separated_at = now
+            order.separated_by = current_user.id
     await db.commit()
 
     return Response(

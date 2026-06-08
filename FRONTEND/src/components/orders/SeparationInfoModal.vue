@@ -11,21 +11,27 @@
         <div class="modal-body">
           <div v-if="!info" class="text-center text-muted py-3"><i class="fas fa-spinner fa-spin"></i></div>
           <template v-else>
+            <!-- Gaiola -->
+            <template v-if="info.has_gaiola">
+              <h6 class="text-primary"><i class="fas fa-dolly mr-1"></i> Gaiola</h6>
+              <div class="row">
+                <div class="col-6 mb-2"><small class="text-muted d-block">Código</small><strong>{{ info.separated.cart_number || '—' }}</strong></div>
+                <div class="col-6 mb-2"><small class="text-muted d-block">Status da Gaiola</small>
+                  <span class="badge" :class="cartBadge(info.separated.cart_status)">{{ cartStatusLabel(info.separated.cart_status) }}</span>
+                </div>
+                <div class="col-6 mb-2"><small class="text-muted d-block">Modo de Separação</small><strong>{{ modeLabel(info.separated.mode) }}</strong></div>
+              </div>
+              <hr />
+            </template>
+
             <!-- Separação -->
             <h6 class="text-primary"><i class="fas fa-box-open mr-1"></i> Pedido Separado</h6>
             <div v-if="info.separated && info.separated.at" class="row">
               <div class="col-6 mb-2"><small class="text-muted d-block">Data/Hora</small><strong>{{ fmt(info.separated.at) }}</strong></div>
               <div class="col-6 mb-2"><small class="text-muted d-block">Usuário</small><strong>{{ info.separated.by_name || '—' }}</strong></div>
-              <template v-if="info.has_gaiola">
-                <div class="col-6 mb-2"><small class="text-muted d-block">Modo de Separação</small><strong>{{ modeLabel(info.separated.mode) }}</strong></div>
-                <div class="col-6 mb-2"><small class="text-muted d-block">Gaiola</small><strong>{{ info.separated.cart_number || '—' }}</strong></div>
-                <div class="col-6 mb-2"><small class="text-muted d-block">Status da Gaiola</small>
-                  <span class="badge" :class="cartBadge(info.separated.cart_status)">{{ cartStatusLabel(info.separated.cart_status) }}</span>
-                </div>
-              </template>
-              <div v-else class="col-12"><small class="text-warning"><i class="fas fa-info-circle mr-1"></i>Separado fora de gaiola (sem detalhes de gaiola)</small></div>
+              <div v-if="!info.has_gaiola" class="col-12"><small class="text-warning"><i class="fas fa-info-circle mr-1"></i>Separado fora de gaiola</small></div>
             </div>
-            <p v-else class="text-muted small mb-0">Pedido ainda não separado.</p>
+            <p v-else class="text-muted small mb-0">Pedido ainda não separado (imprima a etiqueta para separar).</p>
 
             <hr />
 
