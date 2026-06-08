@@ -1104,6 +1104,49 @@ async def cart_nfe_urls(
     return {"nfe": out}
 
 
+def _invoice_id_from_order(order: Order) -> str | None:
+    """Extrai o invoice_id (Faturador) do pedido para baixar a DANFE."""
+    stored = str(order.nfe_url or "")
+    if stored.isdigit():
+        return stored
+    if "/danfe/" in stored:
+        return stored.rstrip("/").split("/danfe/")[-1]
+    return None
+
+
+@router.get("/orders/{order_id}/danfe")
+async def order_danfe(
+    order_id: int,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Baixa a DANFE (PDF) via backend com o token do vendedor.
+
+    A URL do visualizador do ML (myaccount) exige o vendedor logado no navegador;
+    aqui o backend busca o PDF server-to-server e devolve para o operador imprimir.
+    """
+    wh = _order_warehouse_clause(current_user)
+    order = await _load_order_scoped(db, order_id, wh)
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não acessível")
+    if order.platform != "mercadolivre":
+        raise HTTPException(status_code=400, detail="DANFE disponível apenas para Mercado Livre")
+    invoice_id = _invoice_id_from_order(order)
+    if not invoice_id:
+        raise HTTPException(status_code=400, detail="NF-e ainda não disponível para este pedido")
+    acc = (
+        await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+    ).scalar_one_or_none()
+    if not acc or not acc.access_token:
+        raise HTTPException(status_code=400, detail="Conta de marketplace sem token")
+    path = f"/users/{acc.platform_user_id}/invoices/sites/MLB/documents/danfe/{invoice_id}"
+    content, _ctype = await _ml.fetch_invoice_file(acc.access_token, path)
+    return Response(
+        content=content, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="DANFE_{order.id}.pdf"'},
+    )
+
+
 @router.get("/label-layouts")
 async def label_layouts(
     _: User = Depends(require_menu_permission("separacao")),

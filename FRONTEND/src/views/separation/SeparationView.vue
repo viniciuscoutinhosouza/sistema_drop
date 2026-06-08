@@ -107,9 +107,9 @@
                 </span>
               </td>
               <td @click.stop>
-                <a v-if="o.nfe_url" :href="o.nfe_url" target="_blank" class="badge badge-success" title="Imprimir DANFE">
+                <button v-if="o.nfe_url || o.nfe_key" class="btn btn-xs btn-success" title="Imprimir DANFE" @click="openDanfe(o.id)">
                   <i class="fas fa-file-invoice mr-1"></i>Emitida
-                </a>
+                </button>
                 <span v-else-if="['pending','in_process'].includes(o.nfe_status)" class="badge badge-info">
                   <i class="fas fa-spinner fa-spin mr-1"></i>Processando
                 </span>
@@ -463,12 +463,16 @@ async function printAllLabels() {
 }
 
 // ── NF-e na gaiola ──
+async function openDanfe(orderId) {
+  await openPdf(`/separation/orders/${orderId}/danfe`, 'get')
+}
 async function emitPrintOrderNfe(o) {
   try {
     await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, { order_ids: [o.id] })
+    // sincroniza/marca e descobre quais já têm nota
     const { data } = await api.get(`/separation/carts/${activeCart.value.id}/nfe`, { params: { order_id: o.id, mark: 1 } })
-    const urls = (data.nfe || []).filter(n => n.nfe_url)
-    if (urls.length) urls.forEach(n => window.open(n.nfe_url, '_blank'))
+    const ready = (data.nfe || []).filter(n => n.nfe_key || n.nfe_url)
+    if (ready.length) for (const n of ready) await openDanfe(n.order_id)
     else toast.info(`NF-e do #${o.id} solicitada — DANFE ainda processando no ML`)
     await refreshCart()
   } catch (e) { toast.error(e.response?.data?.detail || 'Erro na NF-e') }
@@ -477,9 +481,9 @@ async function cartNfe() {
   try {
     await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, {})
     const { data } = await api.get(`/separation/carts/${activeCart.value.id}/nfe`, { params: { mark: 1 } })
-    const urls = (data.nfe || []).filter(n => n.nfe_url)
-    if (!urls.length) return toast.info('NF-e solicitadas — DANFE ainda processando no ML')
-    urls.forEach(n => window.open(n.nfe_url, '_blank'))
+    const ready = (data.nfe || []).filter(n => n.nfe_key || n.nfe_url)
+    if (!ready.length) return toast.info('NF-e solicitadas — DANFE ainda processando no ML')
+    for (const n of ready) await openDanfe(n.order_id)
     await refreshCart()
   } catch (e) { toast.error(e.response?.data?.detail || 'Erro na NF-e') }
 }
