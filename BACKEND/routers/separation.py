@@ -296,6 +296,8 @@ def _ser_order_brief(order: Order, items: list[OrderItem], cmig_name: str | None
         "nfe_url": _ml_nfe_url(order),
         "status": order.status,
         "created_at": order.created_at.isoformat() if order.created_at else None,
+        "estimated_delivery_date": order.estimated_delivery_date.isoformat() if order.estimated_delivery_date else None,
+        "estimated_delivery_final": order.estimated_delivery_final.isoformat() if order.estimated_delivery_final else None,
         "items": [
             {
                 "id": it.id, "sku": it.sku, "title": it.title,

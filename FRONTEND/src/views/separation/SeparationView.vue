@@ -62,6 +62,8 @@
               <th class="sortable" @click="setSort('shipment')">Envio <i :class="sortIcon('shipment')"></i></th>
               <th>Modo</th>
               <th class="sortable" @click="setSort('nfe')">NF-e <i :class="sortIcon('nfe')"></i></th>
+              <th class="sortable" @click="setSort('sale')">Venda (Mkt) <i :class="sortIcon('sale')"></i></th>
+              <th class="sortable" @click="setSort('delivery')">Prev. Entrega <i :class="sortIcon('delivery')"></i></th>
               <th class="sortable" @click="setSort('buyer')">Cliente <i :class="sortIcon('buyer')"></i></th>
               <th>Itens</th>
               <th class="text-right">Ação</th>
@@ -69,7 +71,7 @@
           </thead>
           <tbody>
             <tr v-if="!displayedOrders.length">
-              <td colspan="10" class="text-center text-muted py-4">
+              <td colspan="12" class="text-center text-muted py-4">
                 {{ pending.length ? 'Nenhum pedido com os filtros atuais.' : 'Nenhum pedido pendente de separação.' }}
               </td>
             </tr>
@@ -118,6 +120,19 @@
                   <i class="fas fa-file-invoice mr-1"></i>{{ nfeEmitting[o.id] ? 'Emitindo…' : 'Emitir' }}
                 </button>
                 <span v-else class="text-muted small">—</span>
+              </td>
+              <td @click.stop>
+                <a v-if="o.platform === 'mercadolivre' && o.platform_order_id"
+                   :href="`https://www.mercadolivre.com.br/vendas/${o.platform_order_id}/detalhe`"
+                   target="_blank" rel="noopener" class="badge badge-light border text-primary"
+                   title="Ver venda no Mercado Livre">
+                  #{{ o.platform_order_id }} <i class="fas fa-external-link-alt ml-1"></i>
+                </a>
+                <span v-else class="small">{{ o.platform_order_id || '—' }}</span>
+                <div class="small text-muted text-nowrap"><i class="far fa-calendar mr-1"></i>{{ fmt(o.created_at) }}</div>
+              </td>
+              <td class="small text-nowrap">
+                <i class="far fa-clock mr-1 text-muted"></i>{{ fmtDate(o.estimated_delivery_date || o.estimated_delivery_final) }}
               </td>
               <td class="text-truncate" style="max-width:160px">{{ o.buyer_name || '—' }}</td>
               <td>
@@ -333,6 +348,8 @@ const displayedOrders = computed(() => {
     cmig: o => (o.cmig_name || '').toLowerCase(),
     shipment: o => o.shipment_status || '',
     nfe: o => (hasNfe(o) ? '1' : '0'),
+    sale: o => o.created_at || '',
+    delivery: o => o.estimated_delivery_date || o.estimated_delivery_final || '',
     buyer: o => (o.buyer_name || '').toLowerCase(),
   }[sortKey.value] || (o => o.id)
   return [...rows].sort((a, b) => { const va = keyFn(a), vb = keyFn(b); return va < vb ? -dir : va > vb ? dir : 0 })
@@ -525,6 +542,12 @@ function focusFirstBip() {
 }
 
 function pct(scan) { return scan.expected ? Math.round((scan.scanned / scan.expected) * 100) : 0 }
+function fmt(dt) { return dt ? new Date(dt).toLocaleString('pt-BR') : '—' }
+function fmtDate(d) {
+  if (!d) return '—'
+  const s = String(d).length === 10 ? d + 'T12:00:00' : d  // evita shift de fuso em datas só-data
+  return new Date(s).toLocaleDateString('pt-BR')
+}
 </script>
 
 <style scoped>
