@@ -7,36 +7,56 @@ from services import dre_service
 
 
 def test_aggregate_live_orders():
-    """faturamento = Σ unit_price*qty (paid) = 'Vendas brutas' do ML;
-    total_amount guardado à parte; tarifa = Σ sale_fee*qty; cancelados separados."""
+    """Venda é alocada ao mês pela data do pagamento aprovado; cancelado pela criação."""
+    win_start, win_end = dre_service._month_range(2026, 5)
     orders = [
+        # criado em abril, PAGO em maio → conta em maio (corrige a contagem 30→33)
         {
             "status": "paid",
-            "total_amount": 90.0,  # abaixo da receita de itens (cupom ML) → só auditoria
-            "order_items": [
-                {"unit_price": 50.0, "sale_fee": 5.0, "quantity": 2},   # rev 100 / fee 10
-                {"unit_price": 30.0, "sale_fee": 3.0, "quantity": 1},   # rev 30  / fee 3
-            ],
+            "total_amount": 130.0,
+            "date_created": "2026-04-29T20:00:00.000-03:00",
+            "date_closed": "2026-05-01T09:00:00.000-03:00",
+            "payments": [{"status": "approved", "date_approved": "2026-05-01T09:00:00.000-03:00"}],
+            "order_items": [{"unit_price": 100.0, "sale_fee": 10.0, "quantity": 1}],
         },
+        # criado e pago em maio
         {
             "status": "paid",
             "total_amount": 50.0,
+            "date_created": "2026-05-10T10:00:00.000-03:00",
+            "payments": [{"status": "approved", "date_approved": "2026-05-10T10:05:00.000-03:00"}],
             "order_items": [{"unit_price": 50.0, "sale_fee": 2.5, "quantity": 1}],
         },
+        # pago em JUNHO → NÃO conta em maio
+        {
+            "status": "paid",
+            "total_amount": 999.0,
+            "date_created": "2026-05-31T23:00:00.000-03:00",
+            "payments": [{"status": "approved", "date_approved": "2026-06-01T08:00:00.000-03:00"}],
+            "order_items": [{"unit_price": 999.0, "sale_fee": 9.0, "quantity": 1}],
+        },
+        # cancelado criado em maio → conta nas canceladas
         {
             "status": "cancelled",
             "total_amount": 80.0,
+            "date_created": "2026-05-15T12:00:00.000-03:00",
             "order_items": [{"unit_price": 80.0, "sale_fee": 0, "quantity": 1}],
         },
-        {"status": "payment_required", "total_amount": 999.0, "order_items": []},  # ignorado
+        # sem pagamento aprovado e não 'paid' → ignorado
+        {
+            "status": "payment_required",
+            "total_amount": 12.0,
+            "date_created": "2026-05-12T12:00:00.000-03:00",
+            "payments": [],
+            "order_items": [{"unit_price": 12.0, "quantity": 1}],
+        },
     ]
-    agg = dre_service._aggregate_live_orders(orders)
-    assert agg["faturamento"] == 180.0            # 100 + 30 + 50
-    assert agg["faturamento_total_amount"] == 140.0  # 90 + 50
-    assert agg["tarifa"] == 15.5                  # 10 + 3 + 2.5
+    agg = dre_service._aggregate_live_orders(orders, win_start, win_end)
+    assert agg["faturamento"] == 150.0   # 100 (abr→mai) + 50
+    assert agg["tarifa"] == 12.5         # 10 + 2.5
     assert agg["cancelados"] == 80.0
     assert agg["paid_count"] == 2
-    assert agg["units"] == 4
+    assert agg["units"] == 2
     assert agg["cancelled_count"] == 1
 
 

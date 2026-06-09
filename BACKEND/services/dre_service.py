@@ -79,9 +79,11 @@ async def sync_month(cmig_id: int, year: int, month: int) -> dict:
     """
     start, end_excl = _month_range(year, month)
 
-    # Intervalo em ISO-8601 com offset -03:00 para os endpoints do ML.
-    date_from = start.isoformat(timespec="milliseconds")
-    date_to = (end_excl - timedelta(milliseconds=1)).isoformat(timespec="milliseconds")
+    # Janela de BUSCA por data de criação ampliada ~31 dias antes do mês: captura
+    # pedidos criados no mês anterior mas PAGOS dentro do mês-alvo (o ML conta a
+    # venda pela data do pagamento). A alocação ao mês é feita em _aggregate_live_orders.
+    fetch_from = (start - timedelta(days=31)).isoformat(timespec="milliseconds")
+    fetch_to = (end_excl - timedelta(milliseconds=1)).isoformat(timespec="milliseconds")
     date_from_d = start.strftime("%Y-%m-%d")
     date_to_d = end_excl.strftime("%Y-%m-%d")
 
@@ -158,9 +160,9 @@ async def sync_month(cmig_id: int, year: int, month: int) -> dict:
         if seller_id:
             try:
                 orders = await ml_service.search_orders_by_created(
-                    token, str(seller_id), date_from, date_to
+                    token, str(seller_id), fetch_from, fetch_to
                 )
-                agg = _aggregate_live_orders(orders)
+                agg = _aggregate_live_orders(orders, start, end_excl)
                 live_fat += agg["faturamento"]
                 live_fat_total_amount += agg["faturamento_total_amount"]
                 live_tarifa += agg["tarifa"]
@@ -292,19 +294,45 @@ async def _ensure_seller_id(acc: MarketplaceAccount, token: str, db: AsyncSessio
         return None
 
 
-def _aggregate_live_orders(orders: list) -> dict:
-    """Agrega pedidos do /orders/search em uma estrutura para reconciliação.
+def _parse_ml_dt(s: str | None) -> datetime | None:
+    """Converte data ISO-8601 do ML (ex: '2026-05-15T10:30:00.000-03:00') em datetime tz-aware."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s))
+    except ValueError:
+        try:
+            return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
-    Faturamento (= "Vendas brutas" do ML) é a RECEITA DE ITENS:
-        Σ order_items[].unit_price * quantity   (33 un × R$130,21 = R$4.297)
-    e NÃO o total_amount, que pode vir abaixo por cupom/desconto custeado pelo ML.
 
-    Retorna ambas as formas para auditar divergências:
-      - faturamento: Σ unit_price*qty (pagos)      ← usado na DRE
-      - faturamento_total_amount: Σ total_amount (pagos)  ← só auditoria
-      - tarifa: Σ sale_fee*qty (pagos)
-      - cancelados: Σ unit_price*qty (cancelados)
-      - paid_count / cancelled_count / units
+def _sale_anchor(o: dict) -> datetime | None:
+    """Data em que a venda é reconhecida pelo ML (= 'Vendas brutas').
+
+    Prioridade: maior payments[].date_approved → date_closed → date_created.
+    """
+    appr = [
+        _parse_ml_dt(p.get("date_approved"))
+        for p in (o.get("payments") or [])
+        if p.get("status") == "approved" and p.get("date_approved")
+    ]
+    appr = [d for d in appr if d]
+    if appr:
+        return max(appr)
+    return _parse_ml_dt(o.get("date_closed")) or _parse_ml_dt(o.get("date_created"))
+
+
+def _aggregate_live_orders(orders: list, win_start: datetime, win_end: datetime) -> dict:
+    """Agrega pedidos do /orders/search dentro da janela [win_start, win_end).
+
+    A janela de BUSCA é maior que o mês (por data de criação), mas aqui cada
+    pedido é alocado ao mês pela sua ÂNCORA correta:
+      - vendas (pago/pagamento aprovado): data do pagamento aprovado (_sale_anchor)
+        → casa com o "Vendas brutas" do ML, que conta pela data do pagamento.
+      - cancelados: data de criação (que já batia com o painel do ML).
+
+    Faturamento = Σ order_items[].unit_price*quantity (receita de itens).
     """
     fat_items = Decimal("0")
     fat_total_amount = Decimal("0")
@@ -313,24 +341,44 @@ def _aggregate_live_orders(orders: list) -> dict:
     units = 0
     paid_count = 0
     cancelled_count = 0
+
+    def _items_rev(o: dict) -> Decimal:
+        return sum(
+            (_d(it.get("unit_price")) * _d(it.get("quantity") or 1) for it in (o.get("order_items") or [])),
+            Decimal("0"),
+        )
+
     for o in orders or []:
         status = o.get("status")
-        items_rev = Decimal("0")
+
+        if status == "cancelled":
+            created = _parse_ml_dt(o.get("date_created"))
+            if created and win_start <= created < win_end:
+                canc += _items_rev(o)
+                cancelled_count += 1
+            continue
+
+        # Venda: tem pagamento aprovado OU status 'paid'
+        has_approved = any(
+            p.get("status") == "approved" for p in (o.get("payments") or [])
+        )
+        if not (has_approved or status == "paid"):
+            continue
+
+        anchor = _sale_anchor(o)
+        if not (anchor and win_start <= anchor < win_end):
+            continue
+
+        fat_items += _items_rev(o)
+        fat_total_amount += _d(
+            o.get("total_amount") if o.get("total_amount") is not None else o.get("paid_amount")
+        )
         for it in o.get("order_items", []) or []:
             qty = _d(it.get("quantity") or 1)
-            items_rev += _d(it.get("unit_price")) * qty
-            if status == "paid":
-                tarifa += _d(it.get("sale_fee")) * qty
-                units += int(it.get("quantity") or 1)
-        if status == "paid":
-            fat_items += items_rev
-            fat_total_amount += _d(
-                o.get("total_amount") if o.get("total_amount") is not None else o.get("paid_amount")
-            )
-            paid_count += 1
-        elif status == "cancelled":
-            canc += items_rev
-            cancelled_count += 1
+            tarifa += _d(it.get("sale_fee")) * qty
+            units += int(it.get("quantity") or 1)
+        paid_count += 1
+
     return {
         "faturamento": fat_items,
         "faturamento_total_amount": fat_total_amount,
