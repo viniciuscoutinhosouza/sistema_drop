@@ -53,6 +53,9 @@ class CMIGFiscalConfig(Base):
     # Geral
     fiscal_email_copy = Column(String(255))
 
+    # DRE — % de imposto estimado sobre o faturamento (linha "Imposto ML")
+    tax_estimate_pct = Column(Numeric(8, 4), default=0)
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")

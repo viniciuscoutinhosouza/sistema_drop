@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-06-08 — feat(financial): Gestão Financeira (DRE de marketplace por CMIG)
+
+Nova aba **Gestão Financeira (DRE)** dentro de Financeiro: P&L mensal por CMIG, no formato
+Entrada → Custo Operacional → Margem de Contribuição → Custo Fixo → Lucro Líquido, com
+sincronização por mês (ícone ↻) contra o Mercado Livre.
+
+Modelo de 3 camadas somadas por linha: snapshot ML (cache) + lançamentos manuais + imposto derivado.
+- **Migrations 89/90/91**: `dre_snapshots` (cache mensal por CMIG), `dre_entries` (lançamentos manuais
+  com recorrência via `recurrence_group_id`), e `cmig_fiscal_config.tax_estimate_pct` (% imposto DRE).
+- **Models**: `models/dre.py` (DRESnapshot, DREEntry); `tax_estimate_pct` na CMIGFiscalConfig.
+- **`services/ml_auth.py`**: extraído `get_valid_token` (padrão antes duplicado em anuncios/stock/simulator).
+- **`services/ml_service.py`**: billing (`get_billing_periods/summary/details`) + ADS
+  (`get_advertisers`, `get_ads_cost`, header `api-version: 2`).
+- **`services/dre_service.py`**: `sync_month` (operacional via agregação SQL de `orders` + ADS +
+  conciliação billing, best-effort/tolerante a falha), `build_dre` (monta a grade), CRUD de
+  lançamentos com expansão de recorrência e edição/exclusão "esta/futuras".
+- **Router**: endpoints `/financial/dre`, `/dre/sync`, `/dre/cmigs`, `/dre/entries` (CRUD), com
+  `require_menu_permission("financeiro")` + checagem de acesso à CMIG.
+- **Frontend**: `FinancialView` vira abas (Conta Corrente + DRE); novos `DRETab.vue` (grade +
+  sync por mês + export CSV/print) e `DREEntryModal.vue` (lançamentos); campo "% Imposto (DRE)" no
+  `CmigFiscalConfigCard`.
+- **Testes**: `tests/test_dre.py` (math da grade, _month_range, recorrência cruzando o ano) — 3 verdes.
+- **Verificação**: `npm run build` OK; app sobe e registra as rotas `/financial/dre*`; pytest verde
+  (exceto 2 falhas pré-existentes em test_orders por limitação do MockResult, não relacionadas).
+- **Pendências**: export Excel/PDF é client-side (CSV + print) — endpoint dedicado fica p/ fase 2;
+  escopos OAuth de `/billing` e `/advertising` precisam validação contra conta ML real (degradam
+  para operacional sem quebrar). Auditorias quality-guardian/consistency-auditor/ADR-0006 recomendadas.
+
+---
+
 ## 2026-06-07 — change(separation): imprimir etiqueta marca pedido como "separado"
 
 Nova regra: ao imprimir a etiqueta de um pedido na gaiola, ele já vira **separado** (por pedido),

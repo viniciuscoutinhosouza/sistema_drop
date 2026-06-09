@@ -6,6 +6,7 @@ from models.cmig import (  # noqa: F401
     CMIGProductComponent,
     CMIGProductImage,
 )
+from models.dre import DREEntry, DRESnapshot  # noqa: F401
 from models.financial import FinancialTransaction  # noqa: F401
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem  # noqa: F401
 from models.full_stock import FullCnpj, FullStock  # noqa: F401

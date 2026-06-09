@@ -1,5 +1,21 @@
 <template>
   <div>
+    <ul class="nav nav-tabs mb-3">
+      <li class="nav-item">
+        <a class="nav-link" :class="{ active: activeTab === 'wallet' }" href="#"
+           @click.prevent="activeTab = 'wallet'">
+          <i class="fas fa-wallet mr-1"></i> Conta Corrente
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link" :class="{ active: activeTab === 'dre' }" href="#"
+           @click.prevent="activeTab = 'dre'">
+          <i class="fas fa-chart-line mr-1"></i> Gestão Financeira (DRE)
+        </a>
+      </li>
+    </ul>
+
+    <div v-show="activeTab === 'wallet'">
     <!-- Balance Card -->
     <div class="row mb-3">
       <div class="col-md-4">
@@ -149,6 +165,9 @@
         </div>
       </div>
     </div>
+    </div><!-- /wallet tab -->
+
+    <DRETab v-if="activeTab === 'dre'" />
   </div>
 </template>
 
@@ -157,7 +176,9 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { useFinancialStore } from '@/stores/financial'
 import { formatCurrency, formatDateTime } from '@/utils/formatters'
+import DRETab from './DRETab.vue'
 
+const activeTab = ref('wallet')
 const financialStore = useFinancialStore()
 
 const transactions = ref([])

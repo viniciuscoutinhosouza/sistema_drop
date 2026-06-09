@@ -486,6 +486,52 @@ async def get_recent_orders(
     return all_orders
 
 
+async def search_orders_by_created(
+    access_token: str,
+    seller_id: str,
+    date_from: str,
+    date_to: str,
+) -> list:
+    """Pagina /orders/search por DATA DE CRIAÇÃO no intervalo [date_from, date_to].
+
+    date_from / date_to em ISO-8601 com offset, ex: '2026-03-01T00:00:00.000-03:00'.
+    Retorna a lista bruta de pedidos (todos os status). Levanta RuntimeError em
+    falha de API para o chamador saber que o resultado está incompleto (e cair no
+    fallback do banco) — em vez de retornar uma soma parcial silenciosa.
+    """
+    all_orders: list = []
+    offset = 0
+    limit = 50
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            params: dict = {
+                "seller": seller_id,
+                "order.date_created.from": date_from,
+                "order.date_created.to": date_to,
+                "sort": "date_desc",
+                "offset": offset,
+                "limit": limit,
+            }
+            resp = await client.get(
+                f"{ML_API_BASE}/orders/search",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"orders/search status={resp.status_code}: {resp.text[:200]}"
+                )
+            data = resp.json()
+            results = data.get("results", [])
+            all_orders.extend(results)
+            paging = data.get("paging", {})
+            total = paging.get("total", 0)
+            if not results or offset + limit >= total:
+                break
+            offset += limit
+    return all_orders
+
+
 async def create_item(access_token: str, item_data: dict) -> dict:
     """Create a new listing on Mercado Livre."""
     async with httpx.AsyncClient() as client:
@@ -2381,3 +2427,140 @@ async def fetch_invoice_file(access_token: str, path: str) -> tuple[bytes, str]:
         )
     content_type = resp.headers.get("content-type", "application/octet-stream")
     return resp.content, content_type
+
+
+# ─── Billing / Faturamento (conciliação oficial) ─────────────────────────────
+# Doc: https://developers.mercadolivre.com.br/pt_br/relatorios-de-faturamento
+# Uso estritamente de pós-venda / conciliação fiscal — NÃO é fonte de gestão em
+# tempo real (essa vem da agregação de orders). Os endpoints retornam períodos
+# mensais identificados por uma "key".
+
+
+async def get_billing_periods(access_token: str) -> list[dict]:
+    """Retorna os últimos 12 períodos mensais de faturamento (cada um com 'key')."""
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/billing/integration/monthly/periods",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"group": "ML", "document_type": "BILL"},
+        )
+    if resp.status_code != 200:
+        logger.warning("[ML] billing periods status=%s: %s", resp.status_code, resp.text[:200])
+        return []
+    data = resp.json()
+    # A API costuma devolver {"results": [...]} ou {"periods": [...]} conforme versão.
+    if isinstance(data, dict):
+        return data.get("results") or data.get("periods") or []
+    return data if isinstance(data, list) else []
+
+
+async def get_billing_summary(access_token: str, key: str, group: str = "ML") -> dict:
+    """Resumo do período de faturamento (totais por tipo de cobrança)."""
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/billing/integration/periods/key/{key}/summary",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"group": group},
+        )
+    if resp.status_code != 200:
+        logger.warning("[ML] billing summary status=%s: %s", resp.status_code, resp.text[:200])
+        return {}
+    return resp.json()
+
+
+async def get_billing_details(
+    access_token: str, key: str, group: str = "ML", limit: int = 1000
+) -> list[dict]:
+    """Detalhe linha a linha do período (tarifas, fretes, estornos cobrados)."""
+    results: list[dict] = []
+    offset = 0
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            resp = await client.get(
+                f"{ML_API_BASE}/billing/integration/periods/key/{key}/details",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"group": group, "limit": limit, "offset": offset},
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "[ML] billing details status=%s: %s", resp.status_code, resp.text[:200]
+                )
+                break
+            data = resp.json()
+            page = data.get("results", []) if isinstance(data, dict) else (data or [])
+            results.extend(page)
+            paging = data.get("paging", {}) if isinstance(data, dict) else {}
+            total = paging.get("total", len(results))
+            if not page or offset + limit >= total:
+                break
+            offset += limit
+    return results
+
+
+# ─── Advertising / Product Ads ───────────────────────────────────────────────
+# Doc: https://developers.mercadolivre.com.br/pt_br/product-ads
+# Métricas aceitam janela de até 90 dias e são atualizadas às 10h GMT-3.
+# Header obrigatório: api-version: 2
+
+
+async def get_advertisers(access_token: str) -> list[dict]:
+    """Lista os advertisers (contas de anúncios) do usuário para product_ads."""
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/advertising/advertisers",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "api-version": "2",
+            },
+            params={"product_id": "PADS"},
+        )
+    if resp.status_code != 200:
+        logger.warning("[ML] advertisers status=%s: %s", resp.status_code, resp.text[:200])
+        return []
+    data = resp.json()
+    return data.get("advertisers", []) if isinstance(data, dict) else (data or [])
+
+
+async def get_ads_cost(
+    access_token: str, advertiser_id: str, date_from: str, date_to: str
+) -> float:
+    """Gasto total (métrica 'cost') em product_ads do advertiser no intervalo.
+
+    date_from / date_to no formato YYYY-MM-DD. Intervalo máximo de 90 dias.
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/advertising/advertisers/{advertiser_id}/product_ads/campaigns",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "api-version": "2",
+            },
+            params={
+                "metrics": "cost",
+                "date_from": date_from,
+                "date_to": date_to,
+                "limit": 100,
+            },
+        )
+    if resp.status_code != 200:
+        logger.warning("[ML] ads cost status=%s: %s", resp.status_code, resp.text[:200])
+        return 0.0
+    data = resp.json()
+    total = 0.0
+    # Soma o 'cost' de cada campanha; o shape pode variar entre metrics no topo
+    # ou dentro de cada item de results.
+    if isinstance(data, dict):
+        top_metrics = data.get("metrics") or {}
+        if isinstance(top_metrics, dict) and top_metrics.get("cost") is not None:
+            total += _as_float(top_metrics.get("cost"))
+        for camp in data.get("results", []) or []:
+            metrics = camp.get("metrics") or camp
+            total += _as_float(metrics.get("cost"))
+    return round(total, 2)
+
+
+def _as_float(v) -> float:
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0

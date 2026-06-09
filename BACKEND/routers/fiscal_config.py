@@ -82,6 +82,7 @@ def _serialize(cfg: CMIGFiscalConfig | None) -> dict:
         "csc_id": cfg.csc_id,
         "csc_token_set": bool(cfg.csc_token),
         "fiscal_email_copy": cfg.fiscal_email_copy,
+        "tax_estimate_pct": float(cfg.tax_estimate_pct) if cfg.tax_estimate_pct is not None else 0,
     }
 
 
@@ -138,6 +139,7 @@ async def update_fiscal_config(
         "nfe_serie",
         "nfe_next_number",
         "fiscal_email_copy",
+        "tax_estimate_pct",
     }
     if body.get("crt") is not None and body["crt"] not in (1, 2, 3, 4):
         raise HTTPException(status_code=422, detail="crt deve ser 1, 2, 3 ou 4")

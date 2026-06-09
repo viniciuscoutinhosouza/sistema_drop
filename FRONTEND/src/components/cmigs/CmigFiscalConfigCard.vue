@@ -69,9 +69,17 @@
           </div>
 
           <div class="row mt-3">
-            <div class="col-12">
+            <div class="col-md-9">
               <label class="small mb-1">Natureza da Operação padrão</label>
               <input v-model="form.default_natureza_operacao" class="form-control" :disabled="!canEdit">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">
+                % Imposto (estimativa DRE)
+                <i class="fas fa-info-circle text-muted" title="Percentual usado para estimar a linha 'Imposto ML' na Gestão Financeira (DRE)."></i>
+              </label>
+              <input v-model.number="form.tax_estimate_pct" type="number" step="0.01" min="0" max="100"
+                     class="form-control" :disabled="!canEdit">
             </div>
           </div>
 
@@ -233,6 +241,7 @@ const form = reactive({
   nfe_next_number: 1,
   default_natureza_operacao: 'Venda de mercadoria',
   fiscal_email_copy: '',
+  tax_estimate_pct: 0,
 })
 
 const canEdit = computed(() => ['ac', 'admin'].includes(authStore.user?.role))
@@ -286,6 +295,7 @@ async function load() {
       nfe_next_number: data.nfe_next_number ?? 1,
       default_natureza_operacao: data.default_natureza_operacao ?? 'Venda de mercadoria',
       fiscal_email_copy: data.fiscal_email_copy ?? '',
+      tax_estimate_pct: data.tax_estimate_pct ?? 0,
     })
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao carregar configuração fiscal')
