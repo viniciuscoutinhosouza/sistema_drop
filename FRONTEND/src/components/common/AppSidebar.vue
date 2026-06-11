@@ -315,6 +315,8 @@ const _legacyMenus = {
 }
 
 function canSee(menuKey) {
+  // Super Admin vê tudo — espelha o bypass do backend (require_role/menu_permission).
+  if (role.value === 'admin') return true
   const perms = authStore.user?.menu_permissions
   // Se o usuário tem permissões de perfil configuradas, usa elas
   if (perms && perms.length > 0) return perms.includes(menuKey)
