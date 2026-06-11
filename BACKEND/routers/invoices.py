@@ -25,6 +25,7 @@ from models.product import CatalogProduct
 from models.user import User
 from services import ml_service as _ml
 from services.fiscal import dfe_service, focus_service
+from services.fiscal.icms_table import compute_difal, get_icms_rate
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
 from services.fiscal.tax_calculator import calculate_item_taxes, suggest_cfop
 
@@ -1275,6 +1276,15 @@ async def calculate_taxes(
         uf_dest=person.state if person else cmig.state,
     )
 
+    # Detectar se destino é consumidor final não-contribuinte (DIFAL obrigatório)
+    is_difal_applicable = (
+        person is not None
+        and (person.person_type == "PF" or getattr(person, "ie_isento", False))
+        and cmig.state
+        and person.state
+        and cmig.state.upper() != (person.state or "").upper()
+    )
+
     for item in inv.items or []:
         if not item.cfop:
             item.cfop = suggested_cfop
@@ -1286,9 +1296,24 @@ async def calculate_taxes(
             pis_aliquota=item.pis_aliquota,
             cofins_aliquota=item.cofins_aliquota,
             origin=item.origin or 0,
+            tax_regime_mode=cfg.tax_regime_mode or "legacy",
         )
         for k, v in result.items():
             setattr(item, k, v)
+
+        # DIFAL — interestadual para não-contribuinte
+        if is_difal_applicable and item.cfop and item.cfop.startswith("6"):
+            from decimal import Decimal as D
+            aliq_orig = await get_icms_rate(db, cmig.state, cmig.state)
+            aliq_dest = await get_icms_rate(db, person.state, person.state)
+            difal_data = compute_difal(
+                base_value=item.total_value or D("0"),
+                aliquota_orig=aliq_orig,
+                aliquota_dest=aliq_dest,
+                fcp_aliquota=D("2"),  # FCP padrão 2% — ajustável por UF futuramente
+            )
+            for k, v in difal_data.items():
+                setattr(item, k, v)
 
     _recompute_totals(inv)
     await db.commit()
@@ -2363,4 +2388,69 @@ async def create_invoice_from_order(
             if items_unmapped
             else []
         ),
+    }
+
+
+# ── Inutilização de numeração (Fase 1 — Controle de Gaps) ─────────────────────
+
+
+@router.post("/inutilize")
+async def inutilize_nfe_range(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Inutiliza faixa de numeração NFe que não foi emitida (evita gaps).
+
+    Body:
+      cmig_id, ano, serie, nro_ini, nro_fim, justificativa
+    """
+    if current_user.role not in ("ac", "admin"):
+        raise HTTPException(status_code=403, detail="Apenas AC ou admin podem inutilizar numeração")
+
+    cmig_id = body.get("cmig_id")
+    if not cmig_id:
+        raise HTTPException(status_code=422, detail="cmig_id obrigatório")
+
+    justificativa = (body.get("justificativa") or "").strip()
+    if len(justificativa) < 15:
+        raise HTTPException(
+            status_code=422, detail="justificativa deve ter no mínimo 15 caracteres"
+        )
+
+    nro_ini = body.get("nro_ini")
+    nro_fim = body.get("nro_fim") or nro_ini
+    serie = body.get("serie", 1)
+    ano = body.get("ano") or date.today().year
+
+    if not nro_ini:
+        raise HTTPException(status_code=422, detail="nro_ini obrigatório")
+
+    cfg = await _get_fiscal_config(cmig_id, db)
+    if not cfg.focus_company_token:
+        raise HTTPException(status_code=400, detail="CMIG não registrada no Focus NFe")
+
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    if not cmig:
+        raise HTTPException(status_code=404, detail="CMIG não encontrada")
+
+    try:
+        result = await focus_service.inutilize_nfe(
+            cfg=cfg,
+            cnpj=cmig.cnpj,
+            ano=int(ano),
+            serie=int(serie),
+            nro_ini=int(nro_ini),
+            nro_fim=int(nro_fim),
+            justificativa=justificativa,
+        )
+    except focus_service.FocusError as e:
+        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
+
+    # Registrar evento de inutilização (sem invoice_id — range nunca emitido)
+    # Criamos um InvoiceEvent avulso associado à menor Invoice existente da CMIG
+    # ou simplesmente logamos no status retornado.
+    return {
+        "detail": f"Numeração {nro_ini}-{nro_fim} (série {serie}/{ano}) inutilizada com sucesso",
+        "focus_response": result,
     }

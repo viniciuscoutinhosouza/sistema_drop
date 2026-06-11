@@ -90,11 +90,17 @@ const SimuladorView = () => import('@/views/simulator/SimuladorView.vue')
 const PeopleListView = () => import('@/views/people/PeopleListView.vue')
 const PersonFormView = () => import('@/views/people/PersonFormView.vue')
 
+// Settings extras
+const NcmView = () => import('@/views/settings/NcmView.vue')
+
 // Fiscal (NF-e)
 const EntradasView      = () => import('@/views/fiscal/EntradasView.vue')
 const SaidasView        = () => import('@/views/fiscal/SaidasView.vue')
 const InvoiceFormView   = () => import('@/views/fiscal/InvoiceFormView.vue')
 const InvoiceDetailView = () => import('@/views/fiscal/InvoiceDetailView.vue')
+const CfopView                  = () => import('@/views/fiscal/CfopView.vue')
+const FiscalConfigView          = () => import('@/views/fiscal/FiscalConfigView.vue')
+const TransicaoTributariaView   = () => import('@/views/fiscal/TransicaoTributariaView.vue')
 
 // Atendimento (Mensagens)
 const MessagesView = () => import('@/views/messages/MessagesView.vue')
@@ -235,6 +241,9 @@ const routes = [
       // Servidor de E-mail (SMTP) — Admin
       { path: 'settings/email', component: EmailConfigView, meta: { title: 'Servidor de E-mail', role: 'admin' } },
 
+      // Tabela NCM — Admin
+      { path: 'settings/ncm', component: NcmView, meta: { title: 'Tabela NCM', role: 'admin' } },
+
       // Console de API do Marketplace — Admin only
       { path: 'admin/api-console', component: ApiConsoleView, meta: { title: 'Console de API', role: 'admin' } },
       { path: 'admin/profiles',    component: ProfilesView,   meta: { title: 'Gestão de Perfis', role: 'admin' } },
@@ -250,12 +259,15 @@ const routes = [
       // Monitoramento de Rotinas — UGO + GO + Admin (GO/Admin herdam pela lógica do guard)
       { path: 'monitoring/jobs', component: SchedulerMonitoringView, meta: { title: 'Monitoramento de Rotinas', role: 'ugo' } },
 
-      // Fiscal — Entradas / Saídas
-      { path: 'fiscal/entradas',         component: EntradasView,      meta: { title: 'Entradas (NF-e)' } },
-      { path: 'fiscal/saidas',           component: SaidasView,        meta: { title: 'Saídas (NF-e)' } },
-      { path: 'fiscal/invoices/new',     component: InvoiceFormView,   meta: { title: 'Nova NF-e' } },
-      { path: 'fiscal/invoices/:id',     component: InvoiceDetailView, meta: { title: 'NF-e' } },
-      { path: 'fiscal/invoices/:id/edit', component: InvoiceFormView,  meta: { title: 'Editar NF-e' } },
+      // Fiscal — Entradas / Saídas / Config
+      { path: 'fiscal/entradas',          component: EntradasView,      meta: { title: 'Entradas (NF-e)' } },
+      { path: 'fiscal/saidas',            component: SaidasView,        meta: { title: 'Saídas (NF-e)' } },
+      { path: 'fiscal/invoices/new',      component: InvoiceFormView,   meta: { title: 'Nova NF-e' } },
+      { path: 'fiscal/invoices/:id',      component: InvoiceDetailView, meta: { title: 'NF-e' } },
+      { path: 'fiscal/invoices/:id/edit', component: InvoiceFormView,   meta: { title: 'Editar NF-e' } },
+      { path: 'fiscal/cfop',              component: CfopView,                meta: { title: 'Cadastro de CFOPs' } },
+      { path: 'fiscal/config',            component: FiscalConfigView,        meta: { title: 'Configuração Fiscal', role: 'ac' } },
+      { path: 'fiscal/transicao',         component: TransicaoTributariaView, meta: { title: 'Transição Tributária' } },
     ],
   },
 

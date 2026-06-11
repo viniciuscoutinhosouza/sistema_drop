@@ -151,7 +151,7 @@
           </template>
 
           <!-- FISCAL -->
-          <template v-if="canSee('pessoas') || canSee('fiscal_entradas') || canSee('fiscal_saidas')">
+          <template v-if="canSee('pessoas') || canSee('fiscal_entradas') || canSee('fiscal_saidas') || canSee('fiscal_cfop') || canSee('fiscal_config') || canSee('fiscal_transicao')">
             <li class="nav-header">FISCAL</li>
             <li v-if="canSee('pessoas')" class="nav-item">
               <RouterLink to="/people" class="nav-link" :class="{ active: route.path.startsWith('/people') }">
@@ -166,6 +166,21 @@
             <li v-if="canSee('fiscal_saidas')" class="nav-item">
               <RouterLink to="/fiscal/saidas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/saidas') }">
                 <i class="nav-icon fas fa-arrow-up"></i><p>Saídas</p>
+              </RouterLink>
+            </li>
+            <li v-if="canSee('fiscal_cfop')" class="nav-item">
+              <RouterLink to="/fiscal/cfop" class="nav-link" :class="{ active: route.path === '/fiscal/cfop' }">
+                <i class="nav-icon fas fa-list-ol"></i><p>CFOPs</p>
+              </RouterLink>
+            </li>
+            <li v-if="canSee('fiscal_config')" class="nav-item">
+              <RouterLink to="/fiscal/config" class="nav-link" :class="{ active: route.path === '/fiscal/config' }">
+                <i class="nav-icon fas fa-key"></i><p>Configuração Fiscal</p>
+              </RouterLink>
+            </li>
+            <li v-if="canSee('fiscal_transicao')" class="nav-item">
+              <RouterLink to="/fiscal/transicao" class="nav-link" :class="{ active: route.path === '/fiscal/transicao' }">
+                <i class="nav-icon fas fa-balance-scale"></i><p>Transição Tributária</p>
               </RouterLink>
             </li>
           </template>
@@ -196,10 +211,10 @@
           </template>
 
           <!-- ADMINISTRAÇÃO -->
-          <template v-if="canSee('config_usuarios') || canSee('config_gestores') || canSee('config_ai') || canSee('config_api_console') || canSee('config_perfis') || canSee('config_email')">
+          <template v-if="canSee('config_usuarios') || canSee('config_email') || canSee('config_ncm') || canSee('config_ai') || canSee('config_api_console') || canSee('config_perfis')">
             <li class="nav-header">ADMINISTRAÇÃO</li>
             <li class="nav-item" :class="{ 'menu-open': settingsOpen }">
-              <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/goes') || route.path.startsWith('/admin') }" @click.prevent="settingsOpen = !settingsOpen">
+              <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') }" @click.prevent="settingsOpen = !settingsOpen">
                 <i class="nav-icon fas fa-cog"></i>
                 <p>Configurações <i class="right fas fa-angle-left"></i></p>
               </a>
@@ -209,19 +224,19 @@
                     <i class="far fa-circle nav-icon"></i><p>Usuários</p>
                   </RouterLink>
                 </li>
-                <li v-if="canSee('config_gestores')" class="nav-item">
-                  <RouterLink to="/goes" class="nav-link" :class="{ active: route.path.startsWith('/goes') }">
-                    <i class="far fa-circle nav-icon"></i><p>Gestores Operacionais</p>
+                <li v-if="canSee('config_email')" class="nav-item">
+                  <RouterLink to="/settings/email" class="nav-link" :class="{ active: route.path === '/settings/email' }">
+                    <i class="far fa-circle nav-icon"></i><p>Servidor de E-mail</p>
+                  </RouterLink>
+                </li>
+                <li v-if="canSee('config_ncm')" class="nav-item">
+                  <RouterLink to="/settings/ncm" class="nav-link" :class="{ active: route.path === '/settings/ncm' }">
+                    <i class="far fa-circle nav-icon"></i><p>Tabela NCM</p>
                   </RouterLink>
                 </li>
                 <li v-if="canSee('config_ai')" class="nav-item">
                   <RouterLink to="/settings/ai-config" class="nav-link" :class="{ active: route.path === '/settings/ai-config' }">
                     <i class="far fa-circle nav-icon"></i><p>Configuração de IA</p>
-                  </RouterLink>
-                </li>
-                <li v-if="canSee('config_email')" class="nav-item">
-                  <RouterLink to="/settings/email" class="nav-link" :class="{ active: route.path === '/settings/email' }">
-                    <i class="far fa-circle nav-icon"></i><p>Servidor de E-mail</p>
                   </RouterLink>
                 </li>
                 <li v-if="canSee('config_api_console')" class="nav-item">
@@ -297,14 +312,16 @@ const roleLabel = computed(() => {
 const _legacyMenus = {
   admin: new Set([
     'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',
-    'pedidos','catalog','pedido_manual','devolucoes','estoque','pessoas','fiscal_entradas',
-    'fiscal_saidas','pg','separacao','ag_retorno','inventario','inventario_criar','rotinas','go_empresa',
-    'go_usuarios','config_usuarios','config_gestores','config_ai','config_api_console','config_perfis',
-    'config_email',
+    'pedidos','catalog','pedido_manual','devolucoes','estoque',
+    'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
+    'pg','separacao','ag_retorno','inventario','inventario_criar','rotinas',
+    'go_empresa','go_usuarios',
+    'config_usuarios','config_email','config_ncm','config_ai','config_api_console','config_perfis',
   ]),
   ac: new Set([
     'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',
-    'pedidos','catalog','pedido_manual','devolucoes','estoque','pessoas','fiscal_entradas','fiscal_saidas',
+    'pedidos','catalog','pedido_manual','devolucoes','estoque',
+    'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
     'inventario',
   ]),
   ugo: new Set([

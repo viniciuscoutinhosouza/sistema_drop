@@ -60,6 +60,10 @@ class Order(Base):
     dispatched_at = Column(TIMESTAMP(timezone=True))  # entregue à transportadora
     dispatched_by = Column(Integer, ForeignKey("users.id"))
     picking_cart_id = Column(Integer, ForeignKey("picking_carts.id"))
+    # Fase 2 — Split Payment (retenção automática na origem — plataformas marketplace 2027+)
+    split_payment_amount = Column(Numeric(15, 2))
+    split_payment_ref = Column(String(100))
+    split_payment_date = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")

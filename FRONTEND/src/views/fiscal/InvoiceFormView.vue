@@ -524,7 +524,19 @@
               </div>
               <div class="col-md-3">
                 <label class="small mb-1">CFOP</label>
-                <input v-model="itemForm.cfop" class="form-control" maxlength="4" placeholder="5102">
+                <input v-model="itemForm.cfop" class="form-control" maxlength="4" placeholder="5102"
+                       list="cfop-datalist" autocomplete="off">
+                <datalist id="cfop-datalist">
+                  <option
+                    v-for="c in cfopStore.forDirection(form.direction)"
+                    :key="c.code"
+                    :value="c.code"
+                    :label="c.description"
+                  />
+                </datalist>
+                <small v-if="cfopStore.findByCode(itemForm.cfop)" class="form-text text-muted text-truncate d-block">
+                  {{ cfopStore.findByCode(itemForm.cfop).description }}
+                </small>
               </div>
               <div class="col-md-3">
                 <label class="small mb-1">EAN</label>
@@ -578,6 +590,7 @@ import { storeToRefs } from 'pinia'
 import { useFiscalStore } from '@/stores/fiscal'
 import { useCmigStore } from '@/stores/cmig'
 import { usePeopleStore } from '@/stores/people'
+import { useCfopStore } from '@/stores/cfop'
 import { useToast } from '@/composables/useToast'
 import { fmt } from '@/views/fiscal/_helpers'
 import api from '@/composables/useApi'
@@ -587,6 +600,7 @@ const router = useRouter()
 const fiscalStore = useFiscalStore()
 const cmigStore = useCmigStore()
 const peopleStore = usePeopleStore()
+const cfopStore = useCfopStore()
 const toast = useToast()
 const { cmigs } = storeToRefs(cmigStore)
 
@@ -1153,6 +1167,7 @@ async function finalizeNoSefaz() {
 
 onMounted(async () => {
   if (cmigs.value.length === 0) await cmigStore.fetchCmigs()
+  if (!cfopStore.loaded) cfopStore.fetchAll()
   if (isNew.value) {
     if (cmigs.value.length > 0 && !form.cmig_id) {
       form.cmig_id = cmigs.value[0].id

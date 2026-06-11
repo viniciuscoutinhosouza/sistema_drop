@@ -83,6 +83,7 @@ def _serialize(cfg: CMIGFiscalConfig | None) -> dict:
         "csc_token_set": bool(cfg.csc_token),
         "fiscal_email_copy": cfg.fiscal_email_copy,
         "tax_estimate_pct": float(cfg.tax_estimate_pct) if cfg.tax_estimate_pct is not None else 0,
+        "tax_regime_mode": cfg.tax_regime_mode or "legacy",
     }
 
 
@@ -140,12 +141,20 @@ async def update_fiscal_config(
         "nfe_next_number",
         "fiscal_email_copy",
         "tax_estimate_pct",
+        "tax_regime_mode",
     }
     if body.get("crt") is not None and body["crt"] not in (1, 2, 3, 4):
         raise HTTPException(status_code=422, detail="crt deve ser 1, 2, 3 ou 4")
     if body.get("environment") and body["environment"] not in ("homolog", "production"):
         raise HTTPException(
             status_code=422, detail="environment deve ser 'homolog' ou 'production'"
+        )
+    if body.get("tax_regime_mode") and body["tax_regime_mode"] not in (
+        "legacy", "transition", "reform"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="tax_regime_mode deve ser 'legacy', 'transition' ou 'reform'",
         )
 
     for k, v in body.items():

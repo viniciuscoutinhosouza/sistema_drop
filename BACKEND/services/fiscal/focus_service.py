@@ -298,6 +298,18 @@ def _build_item_payload(it) -> dict:
         p["icms_valor"] = _f(it.icms_value)
         p["icms_modalidade_base_calculo"] = 0
 
+    # DIFAL — venda interestadual a consumidor final não contribuinte (EC 87/2015)
+    if it.difal_value and float(it.difal_value) > 0:
+        p["icms_valor_diferencial_aliquota"] = _f(it.difal_value)
+        p["icms_base_calculo_diferencial"] = _f(it.difal_base or it.total_value)
+        if it.difal_aliquota_dest:
+            p["icms_aliquota_diferencial"] = _f(
+                (it.difal_aliquota_dest or 0) - (it.difal_aliquota_orig or 0)
+            )
+        if it.difal_fcp_value and float(it.difal_fcp_value) > 0:
+            p["fcp_valor_diferencial"] = _f(it.difal_fcp_value)
+            p["fcp_aliquota_diferencial"] = _f(it.difal_fcp_aliquota or 0)
+
     # PIS / COFINS
     p["pis_situacao_tributaria"] = it.pis_cst or "07"  # 07 = isenta (Simples)
     p["cofins_situacao_tributaria"] = it.cofins_cst or "07"
@@ -354,6 +366,35 @@ async def correction_letter(cfg: CMIGFiscalConfig, ref: str, correction: str) ->
     url = f"{_base_url(cfg.environment)}/v2/nfe/{ref}/carta_correcao"
     async with _client(cfg.focus_company_token) as client:
         resp = await client.post(url, json={"correcao": correction})
+    return _handle_response(resp)
+
+
+async def inutilize_nfe(
+    cfg: CMIGFiscalConfig,
+    cnpj: str,
+    ano: int,
+    serie: int,
+    nro_ini: int,
+    nro_fim: int,
+    justificativa: str,
+) -> dict:
+    """Inutiliza faixa de numeração NFe não emitida (evita gaps que geram obrigação SEFAZ).
+
+    Justificativa obrigatória, mínimo 15 caracteres.
+    """
+    if not justificativa or len(justificativa) < 15:
+        raise FocusError("Justificativa de inutilização deve ter no mínimo 15 caracteres")
+    url = f"{_base_url(cfg.environment)}/v2/nfe_inutilizacao"
+    payload = {
+        "cnpj": _digits(cnpj),
+        "serie": serie,
+        "numero_inicial": nro_ini,
+        "numero_final": nro_fim,
+        "ano": ano,
+        "justificativa": justificativa,
+    }
+    async with _client(cfg.focus_company_token) as client:
+        resp = await client.post(url, json=payload)
     return _handle_response(resp)
 
 

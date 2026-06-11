@@ -71,3 +71,6 @@ DOCs/*.zip
 
 # Sandbox e experimentos locais
 sandbox/
+
+# Dados TEC gerados localmente (arquivo grande, regenerar via sync do Siscomex)
+Scripts SQL/ncm_tec_siscomex.csv

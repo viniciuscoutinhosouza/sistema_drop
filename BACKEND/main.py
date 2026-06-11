@@ -58,6 +58,7 @@ from routers import (
     anuncios,
     auth,
     catalog,
+    cfop,
     cmig_reports,
     cmigs,
     dashboard,
@@ -71,6 +72,7 @@ from routers import (
     listings,
     manual_orders,
     messages,
+    ncm,
     notifications,
     orders,
     people,
@@ -128,6 +130,8 @@ app.include_router(
     cmig_reports.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/reports", tags=["CMIGReports"]
 )
 app.include_router(invoices.router, prefix=f"{PREFIX}/invoices", tags=["Invoices"])
+app.include_router(cfop.router, prefix=f"{PREFIX}/cfop", tags=["CFOP"])
+app.include_router(ncm.router, prefix=f"{PREFIX}/ncm", tags=["NCM"])
 app.include_router(
     admin_api_console.router,
     prefix=f"{PREFIX}/admin/api-console",

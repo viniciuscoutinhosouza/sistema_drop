@@ -1,8 +1,15 @@
-"""Parse de XML de NFe (modelo 55, layout 4.00) recebido de fornecedor.
+"""Parse de XML de NFe (modelo 55, layouts 4.00 e 5.00) recebido de fornecedor.
 
 Extrai dados estruturados do XML para criar um Invoice de entrada (direction='in').
 Suporta tanto o XML "puro" (raiz <NFe>) quanto o XML do protocolo (<nfeProc>).
 Usa xmltodict para parsing tolerante.
+
+Layout 5.0: quando publicado pela SEFAZ, detect_nfe_version() identificará
+automaticamente; o parser usará o mesmo dict normalizado de saída.
+Diferenças esperadas (a implementar conforme publicação):
+  - Namespace alterado: nfe5:NFe
+  - Novos campos IBS/CBS/IS nos itens
+  - Campo <cIBS> e <cCBS> no ICMS/PIS/COFINS
 """
 
 from __future__ import annotations
@@ -43,6 +50,19 @@ def _ensure_list(v: Any) -> list:
     if isinstance(v, list):
         return v
     return [v]
+
+
+def detect_nfe_version(xml_content: str | bytes) -> str:
+    """Detecta versão do layout NFe a partir do atributo versao na tag infNFe.
+
+    Retorna '4.00' (padrão vigente), '5.00' (futuro) ou o valor bruto encontrado.
+    """
+    if isinstance(xml_content, bytes):
+        xml_content = xml_content.decode("utf-8", errors="replace")
+    m = re.search(r'versao=["\']([^"\']+)["\']', xml_content)
+    if m:
+        return m.group(1)
+    return "4.00"
 
 
 def _parse_dt(s: str | None) -> datetime | None:

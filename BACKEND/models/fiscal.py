@@ -56,6 +56,12 @@ class CMIGFiscalConfig(Base):
     # DRE — % de imposto estimado sobre o faturamento (linha "Imposto ML")
     tax_estimate_pct = Column(Numeric(8, 4), default=0)
 
+    # Fase 2 — modo de regime tributário (Reforma Tributária EC 132/2023)
+    # legacy = regime atual (ICMS/PIS/COFINS)
+    # transition = coexistência 2026-2032 (ambos os regimes)
+    # reform = regime pleno IBS/CBS (2033+)
+    tax_regime_mode = Column(String(12), default="legacy", nullable=False)
+
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
@@ -203,6 +209,26 @@ class InvoiceItem(Base):
     inbound_item_id = Column(Integer, ForeignKey("invoice_items.id"))
     additional_info = Column(String(2000))
 
+    # Fase 1 — DIFAL (EC 87/2015): venda interestadual a consumidor final não-contribuinte
+    difal_base = Column(Numeric(15, 2))
+    difal_aliquota_orig = Column(Numeric(5, 2))  # alíquota ICMS na UF de origem
+    difal_aliquota_dest = Column(Numeric(5, 2))  # alíquota ICMS na UF de destino
+    difal_value = Column(Numeric(15, 2))         # base × (dest - orig)
+    difal_fcp_aliquota = Column(Numeric(5, 2))   # FCP % destino
+    difal_fcp_value = Column(Numeric(15, 2))     # base × fcp_aliquota
+
+    # Fase 2 — Reforma Tributária (EC 132/2023)
+    cbs_cst = Column(String(2))
+    cbs_aliquota = Column(Numeric(6, 4))
+    cbs_base = Column(Numeric(15, 2))
+    cbs_value = Column(Numeric(15, 2))
+    ibs_cst = Column(String(2))
+    ibs_aliquota_uf = Column(Numeric(6, 4))
+    ibs_aliquota_mun = Column(Numeric(6, 4))
+    ibs_base = Column(Numeric(15, 2))
+    ibs_value = Column(Numeric(15, 2))
+    is_value = Column(Numeric(15, 2))
+
     invoice = relationship("Invoice", back_populates="items", foreign_keys=[invoice_id])
     cmig_product = relationship("CMIGProduct")
 
@@ -226,3 +252,63 @@ class InvoiceEvent(Base):
     created_by_user_id = Column(Integer, ForeignKey("users.id"))
 
     invoice = relationship("Invoice", back_populates="events")
+
+
+class CFOPCode(Base):
+    """Tabela de CFOPs configuráveis — seed via migration 93."""
+
+    __tablename__ = "cfop_codes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(4), nullable=False, unique=True)
+    description = Column(String(255), nullable=False)
+    direction = Column(String(3), nullable=False)
+    notes = Column(String(500))
+    is_active = Column(Integer, default=1, nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+
+
+class ICMSRate(Base):
+    """Alíquotas ICMS por par UF origem/destino — seed via migration 94."""
+
+    __tablename__ = "icms_rates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uf_origin = Column(String(2), nullable=False)
+    uf_dest = Column(String(2), nullable=False)
+    aliquota = Column(Numeric(5, 2), nullable=False)
+    valid_from = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    valid_to = Column(TIMESTAMP(timezone=True))
+    is_active = Column(Integer, default=1, nullable=False)
+    notes = Column(String(255))
+
+
+class NCMCode(Base):
+    """Tabela de códigos NCM para validação — seed via migration 95."""
+
+    __tablename__ = "ncm_codes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(8), nullable=False, unique=True)
+    description = Column(String(500), nullable=False)
+    section = Column(String(5))
+    chapter = Column(String(2))
+    ipi_rate = Column(Numeric(5, 2))
+    is_active = Column(Integer, default=1, nullable=False)
+
+
+class DFeSyncLog(Base):
+    """Log de sincronização DFe por CMIG — criado via migration 96."""
+
+    __tablename__ = "dfe_sync_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cmig_id = Column(Integer, nullable=False)
+    started_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    finished_at = Column(TIMESTAMP(timezone=True))
+    status = Column(String(10), default="running", nullable=False)
+    invoices_created = Column(Integer, default=0)
+    invoices_skipped = Column(Integer, default=0)
+    errors_count = Column(Integer, default=0)
+    error_detail = Column(String(4000))
+    consecutive_errors = Column(Integer, default=0)

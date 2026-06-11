@@ -28,9 +28,12 @@ MENU_CATALOG: list[dict] = [
     {"key": "pedido_manual",    "label": "Pedido Manual",            "section": "OPERAÇÕES"},
     {"key": "devolucoes",       "label": "Devoluções",               "section": "OPERAÇÕES"},
     {"key": "estoque",          "label": "Controle de Estoque",      "section": "OPERAÇÕES"},
-    {"key": "pessoas",          "label": "Pessoas",                  "section": "FISCAL"},
-    {"key": "fiscal_entradas",  "label": "Entradas (NF-e)",          "section": "FISCAL"},
-    {"key": "fiscal_saidas",    "label": "Saídas (NF-e)",            "section": "FISCAL"},
+    {"key": "pessoas",            "label": "Pessoas",                  "section": "FISCAL"},
+    {"key": "fiscal_entradas",    "label": "Entradas (NF-e)",          "section": "FISCAL"},
+    {"key": "fiscal_saidas",      "label": "Saídas (NF-e)",            "section": "FISCAL"},
+    {"key": "fiscal_cfop",        "label": "Cadastro de CFOPs",        "section": "FISCAL"},
+    {"key": "fiscal_config",      "label": "Configuração Fiscal",      "section": "FISCAL"},
+    {"key": "fiscal_transicao",   "label": "Transição Tributária",     "section": "FISCAL"},
     # Seção UGO
     {"key": "pg",               "label": "Produto Geral (PG)",       "section": "OPERAÇÃO (GL)"},
     {"key": "separacao",        "label": "Separação (Gaiola)",       "section": "SEPARAÇÃO (GL)"},
@@ -43,11 +46,12 @@ MENU_CATALOG: list[dict] = [
     {"key": "go_empresa",       "label": "Minha Empresa",            "section": "GESTÃO (GO)"},
     {"key": "go_usuarios",      "label": "Usuários (GO)",            "section": "GESTÃO (GO)"},
     # Administração
-    {"key": "config_usuarios",  "label": "Usuários",                 "section": "ADMINISTRAÇÃO"},
-    {"key": "config_gestores",  "label": "Gestores Operacionais",    "section": "ADMINISTRAÇÃO"},
-    {"key": "config_ai",        "label": "Configuração de IA",       "section": "ADMINISTRAÇÃO"},
+    {"key": "config_usuarios",    "label": "Usuários",               "section": "ADMINISTRAÇÃO"},
+    {"key": "config_email",       "label": "Servidor de E-mail",     "section": "ADMINISTRAÇÃO"},
+    {"key": "config_ncm",         "label": "Tabela NCM",             "section": "ADMINISTRAÇÃO"},
+    {"key": "config_ai",          "label": "Configuração de IA",     "section": "ADMINISTRAÇÃO"},
     {"key": "config_api_console", "label": "Console de API",         "section": "ADMINISTRAÇÃO"},
-    {"key": "config_perfis",    "label": "Gestão de Perfis",         "section": "ADMINISTRAÇÃO"},
+    {"key": "config_perfis",      "label": "Gestão de Perfis",       "section": "ADMINISTRAÇÃO"},
 ]
 
 VALID_KEYS = {m["key"] for m in MENU_CATALOG}

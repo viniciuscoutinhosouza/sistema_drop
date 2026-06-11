@@ -10,6 +10,7 @@ Fluxo:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import and_, select
@@ -17,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from database import task_db
 from models.cmig import CMIG
-from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceItem
+from models.fiscal import CMIGFiscalConfig, DFeSyncLog, Invoice, InvoiceItem
 from models.notification import Notification
 from models.person import Person
 from services.fiscal import focus_service
@@ -25,10 +26,17 @@ from services.fiscal.nfe_xml_parser import parse_nfe_xml
 
 log = logging.getLogger(__name__)
 
+# Limiar de erros consecutivos antes de emitir alerta via Socket.io
+_MAX_CONSECUTIVE_ERRORS = 3
+
 
 async def sync_all() -> dict:
     """Sincroniza NFes recebidas para todas CMIGs com Focus configurado.
-    Retorna estatísticas agregadas."""
+
+    Falhas isoladas por CMIG são registradas em dfe_sync_log e não interrompem
+    as demais CMIGs. Após _MAX_CONSECUTIVE_ERRORS falhas seguidas, emite alerta
+    via Socket.io para o AC proprietário.
+    """
     stats = {"cmigs": 0, "new": 0, "skipped": 0, "errors": 0}
     async with task_db() as db:
         cfgs = (
@@ -44,15 +52,74 @@ async def sync_all() -> dict:
         )
 
     for cfg in cfgs:
+        log_entry = DFeSyncLog(cmig_id=cfg.cmig_id, status="running")
         try:
             r = await sync_received_for_cmig(cfg.cmig_id)
             stats["cmigs"] += 1
             stats["new"] += r.get("new", 0)
             stats["skipped"] += r.get("skipped", 0)
-        except Exception as e:
-            log.exception("DFe sync falhou para CMIG %s: %s", cfg.cmig_id, e)
+
+            log_entry.status = "ok"
+            log_entry.invoices_created = r.get("new", 0)
+            log_entry.invoices_skipped = r.get("skipped", 0)
+            log_entry.errors_count = len(r.get("errors", []))
+            log_entry.consecutive_errors = 0
+        except Exception as exc:
+            log.exception("DFe sync falhou para CMIG %s: %s", cfg.cmig_id, exc)
             stats["errors"] += 1
+            log_entry.status = "error"
+            log_entry.error_detail = str(exc)[:4000]
+            log_entry.errors_count = 1
+
+            # Conta erros consecutivos desta CMIG para alertar
+            log_entry.consecutive_errors = await _count_consecutive_errors(cfg.cmig_id)
+            if log_entry.consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                await _emit_dfe_error_alert(cfg.cmig_id, str(exc))
+        finally:
+            log_entry.finished_at = datetime.utcnow()
+            async with task_db() as db:
+                db.add(log_entry)
+                await db.commit()
+
     return stats
+
+
+async def _count_consecutive_errors(cmig_id: int) -> int:
+    """Retorna quantos erros consecutivos esta CMIG teve nos últimos registros."""
+    async with task_db() as db:
+        rows = (
+            await db.execute(
+                select(DFeSyncLog.status)
+                .where(DFeSyncLog.cmig_id == cmig_id)
+                .order_by(DFeSyncLog.started_at.desc())
+                .limit(10)
+            )
+        ).scalars().all()
+
+    count = 0
+    for status in rows:
+        if status == "error":
+            count += 1
+        else:
+            break
+    return count + 1  # inclui o erro atual
+
+
+async def _emit_dfe_error_alert(cmig_id: int, error: str) -> None:
+    """Emite alerta Socket.io para AC proprietário da CMIG."""
+    try:
+        from socket_manager import sio
+        await sio.emit(
+            "dfe_sync_error",
+            {
+                "cmig_id": cmig_id,
+                "message": f"DFe sync falhou {_MAX_CONSECUTIVE_ERRORS}× consecutivas. Verifique token Focus.",
+                "error": error[:500],
+            },
+            room=f"cmig_{cmig_id}",
+        )
+    except Exception:
+        pass  # alerta via socket é melhor-esforço
 
 
 async def sync_received_for_cmig(cmig_id: int) -> dict:

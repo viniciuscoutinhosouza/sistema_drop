@@ -8,16 +8,25 @@ from models.cmig import (  # noqa: F401
 )
 from models.dre import DREEntry, DRESnapshot  # noqa: F401
 from models.financial import FinancialTransaction  # noqa: F401
-from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem  # noqa: F401
+from models.fiscal import (  # noqa: F401
+    CFOPCode,
+    CMIGFiscalConfig,
+    DFeSyncLog,
+    ICMSRate,
+    Invoice,
+    InvoiceEvent,
+    InvoiceItem,
+    NCMCode,
+)
 from models.full_stock import FullCnpj, FullStock  # noqa: F401
 from models.go import GO  # noqa: F401
-from models.inventory import Inventory, InventoryItem  # noqa: F401
 from models.integration import (  # noqa: F401
     AccountBalance,
     AccountTransaction,
     MarketplaceAccount,
     OTPVerification,
 )
+from models.inventory import Inventory, InventoryItem  # noqa: F401
 from models.messages import (  # noqa: F401
     AIConfig,
     CMIGAIConfig,
