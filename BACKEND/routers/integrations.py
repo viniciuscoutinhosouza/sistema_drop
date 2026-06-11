@@ -266,16 +266,29 @@ async def create_account(
 
     await db.commit()
 
-    # DEV: exibe o OTP no log do backend até SMTP estar configurado
-    print(f"\n{'=' * 50}")
-    print(f"  OTP para conta '{email}' [{platform}]: {otp_code}")
-    print("  Válido por 15 minutos.")
-    print(f"{'=' * 50}\n")
+    # Envia o OTP por e-mail (se o SMTP estiver configurado e ativo).
+    from services import email_service
+
+    sent = False
+    if email:
+        sent = await email_service.send_otp_email(db, email, otp_code, platform)
+
+    if not sent:
+        # Fallback/DEV: exibe o OTP no log do backend quando o e-mail não foi enviado.
+        print(f"\n{'=' * 50}")
+        print(f"  OTP para conta '{email}' [{platform}]: {otp_code}")
+        print("  Válido por 15 minutos. (e-mail não enviado — verifique config SMTP)")
+        print(f"{'=' * 50}\n")
 
     return {
         "id": account.id,
-        "message": "Conta criada. Verifique o e-mail/WhatsApp para confirmar o vínculo.",
+        "message": (
+            "Conta criada. Enviamos um código de verificação para o seu e-mail."
+            if sent
+            else "Conta criada. Verifique o e-mail/WhatsApp para confirmar o vínculo."
+        ),
         "otp_required": True,
+        "otp_sent": sent,
     }
 
 
@@ -359,12 +372,26 @@ async def resend_otp(
     )
     await db.commit()
 
-    print(f"\n{'=' * 50}")
-    print(f"  NOVO OTP para conta '{account.email}' [{account.platform}]: {otp_code}")
-    print("  Válido por 15 minutos.")
-    print(f"{'=' * 50}\n")
+    from services import email_service
 
-    return {"message": "Novo código OTP gerado. Verifique o log do backend."}
+    sent = False
+    if account.email:
+        sent = await email_service.send_otp_email(db, account.email, otp_code, account.platform)
+
+    if not sent:
+        print(f"\n{'=' * 50}")
+        print(f"  NOVO OTP para conta '{account.email}' [{account.platform}]: {otp_code}")
+        print("  Válido por 15 minutos. (e-mail não enviado — verifique config SMTP)")
+        print(f"{'=' * 50}\n")
+
+    return {
+        "message": (
+            "Novo código enviado para o seu e-mail."
+            if sent
+            else "Novo código OTP gerado. Verifique o e-mail/WhatsApp."
+        ),
+        "otp_sent": sent,
+    }
 
 
 # ─── Co-administração ─────────────────────────────────────────────────────────

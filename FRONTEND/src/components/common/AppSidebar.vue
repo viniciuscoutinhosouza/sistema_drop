@@ -196,7 +196,7 @@
           </template>
 
           <!-- ADMINISTRAÇÃO -->
-          <template v-if="canSee('config_usuarios') || canSee('config_gestores') || canSee('config_ai') || canSee('config_api_console') || canSee('config_perfis')">
+          <template v-if="canSee('config_usuarios') || canSee('config_gestores') || canSee('config_ai') || canSee('config_api_console') || canSee('config_perfis') || canSee('config_email')">
             <li class="nav-header">ADMINISTRAÇÃO</li>
             <li class="nav-item" :class="{ 'menu-open': settingsOpen }">
               <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/goes') || route.path.startsWith('/admin') }" @click.prevent="settingsOpen = !settingsOpen">
@@ -217,6 +217,11 @@
                 <li v-if="canSee('config_ai')" class="nav-item">
                   <RouterLink to="/settings/ai-config" class="nav-link" :class="{ active: route.path === '/settings/ai-config' }">
                     <i class="far fa-circle nav-icon"></i><p>Configuração de IA</p>
+                  </RouterLink>
+                </li>
+                <li v-if="canSee('config_email')" class="nav-item">
+                  <RouterLink to="/settings/email" class="nav-link" :class="{ active: route.path === '/settings/email' }">
+                    <i class="far fa-circle nav-icon"></i><p>Servidor de E-mail</p>
                   </RouterLink>
                 </li>
                 <li v-if="canSee('config_api_console')" class="nav-item">
@@ -295,6 +300,7 @@ const _legacyMenus = {
     'pedidos','catalog','pedido_manual','devolucoes','estoque','pessoas','fiscal_entradas',
     'fiscal_saidas','pg','separacao','ag_retorno','inventario','inventario_criar','rotinas','go_empresa',
     'go_usuarios','config_usuarios','config_gestores','config_ai','config_api_console','config_perfis',
+    'config_email',
   ]),
   ac: new Set([
     'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',

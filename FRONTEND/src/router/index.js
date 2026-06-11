@@ -101,6 +101,7 @@ const MessagesView = () => import('@/views/messages/MessagesView.vue')
 
 // Configuração IA
 const AIConfigView = () => import('@/views/settings/AIConfigView.vue')
+const EmailConfigView = () => import('@/views/settings/EmailConfigView.vue')
 
 // Console de API do Marketplace — Admin only
 const ApiConsoleView = () => import('@/views/admin/ApiConsoleView.vue')
@@ -230,6 +231,9 @@ const routes = [
 
       // Configuração IA — Admin
       { path: 'settings/ai-config', component: AIConfigView, meta: { title: 'Configuração de IA', role: 'admin' } },
+
+      // Servidor de E-mail (SMTP) — Admin
+      { path: 'settings/email', component: EmailConfigView, meta: { title: 'Servidor de E-mail', role: 'admin' } },
 
       // Console de API do Marketplace — Admin only
       { path: 'admin/api-console', component: ApiConsoleView, meta: { title: 'Console de API', role: 'admin' } },
