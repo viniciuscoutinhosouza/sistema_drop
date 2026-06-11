@@ -121,7 +121,15 @@ async def list_accounts(
     current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Lista todas as CONTAs que o AC co-administra ou que pertencem às suas CMIGs."""
+    """Lista as CONTAs visíveis ao usuário. Admin vê todas; AC vê as que
+    co-administra ou que pertencem às suas CMIGs."""
+    # Super Admin: vê TODAS as contas (incluindo as vinculadas a qualquer CMIG).
+    if current_user.role == "admin":
+        result = await db.execute(
+            select(MarketplaceAccount).order_by(MarketplaceAccount.created_at)
+        )
+        return [_serialize_account(acc, True) for acc in result.scalars().all()]
+
     # Contas com vínculo direto via AccountAdministrator
     result = await db.execute(
         select(MarketplaceAccount, AccountAdministrator.is_owner)
