@@ -89,7 +89,7 @@
             <button type="button" class="close" @click="closeModal"><span>&times;</span></button>
           </div>
 
-          <form @submit.prevent="submitForm">
+          <form @submit.prevent="submitForm" autocomplete="off">
             <div class="modal-body">
               <div v-if="modal.error" class="alert alert-danger">{{ modal.error }}</div>
 
@@ -100,7 +100,7 @@
                 </div>
                 <div class="col-md-6 form-group">
                   <label>E-mail <span v-if="!modal.editing" class="text-danger">*</span></label>
-                  <input v-model="form.email" type="email" class="form-control" :required="!modal.editing" :disabled="modal.editing" />
+                  <input v-model="form.email" type="email" class="form-control" autocomplete="off" :required="!modal.editing" :disabled="modal.editing" />
                 </div>
               </div>
 
@@ -112,11 +112,11 @@
                 <template v-if="!modal.editing">
                   <div class="col-md-4 form-group">
                     <label>Senha <span class="text-danger">*</span></label>
-                    <input v-model="form.password" type="password" class="form-control" required minlength="6" />
+                    <input v-model="form.password" type="password" class="form-control" autocomplete="new-password" required minlength="6" />
                   </div>
                   <div class="col-md-4 form-group">
                     <label>Confirmar senha <span class="text-danger">*</span></label>
-                    <input v-model="form.password_confirm" type="password" class="form-control" required />
+                    <input v-model="form.password_confirm" type="password" class="form-control" autocomplete="new-password" required />
                   </div>
                 </template>
               </div>
