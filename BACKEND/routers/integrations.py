@@ -49,10 +49,25 @@ async def _assert_ac_can_access(
 ) -> MarketplaceAccount:
     """Verifica se o usuário pode acessar a CONTA.
 
-    Aceita dois caminhos:
+    Aceita três caminhos:
+    0. Usuário é admin (Super Admin) → acesso total a qualquer conta.
     1. Usuário é AccountAdministrator direto da conta.
     2. Usuário é CMIGAdministrator de uma CMIG vinculada à conta.
     """
+    # Super Admin: acesso total (mesmo critério de _assert_owner_or_admin).
+    role = (
+        await db.execute(select(User.role).where(User.id == user_id))
+    ).scalar_one_or_none()
+    if role == "admin":
+        acc = (
+            await db.execute(
+                select(MarketplaceAccount).where(MarketplaceAccount.id == account_id)
+            )
+        ).scalar_one_or_none()
+        if not acc:
+            raise HTTPException(status_code=404, detail="Conta não encontrada")
+        return acc
+
     result = await db.execute(
         select(MarketplaceAccount)
         .join(AccountAdministrator, MarketplaceAccount.id == AccountAdministrator.account_id)
