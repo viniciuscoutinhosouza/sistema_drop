@@ -108,25 +108,6 @@
                 <i class="fas fa-key mr-1"></i>
                 {{ acc.is_active ? 'Atualizar API Key' : 'Configurar Bling' }}
               </button>
-
-              <!-- Ações de sincronização (apenas contas conectadas) -->
-              <div v-if="acc.is_active" class="mt-2 d-flex gap-1" style="gap:6px">
-                <button class="btn btn-sm btn-outline-primary flex-fill"
-                        :disabled="syncing[acc.id]"
-                        @click="syncOrders(acc)"
-                        title="Baixar pedidos agora">
-                  <i :class="syncing[acc.id] ? 'fas fa-spinner fa-spin' : 'fas fa-shopping-bag'" class="mr-1"></i>
-                  {{ syncing[acc.id] === 'orders' ? 'Baixando...' : 'Baixar Pedidos' }}
-                </button>
-                <button v-if="acc.platform === 'mercadolivre'"
-                        class="btn btn-sm btn-outline-secondary flex-fill"
-                        :disabled="syncing[acc.id]"
-                        @click="importListings(acc)"
-                        title="Importar anúncios ativos do ML">
-                  <i :class="syncing[acc.id] === 'listings' ? 'fas fa-spinner fa-spin' : 'fas fa-tag'" class="mr-1"></i>
-                  {{ syncing[acc.id] === 'listings' ? 'Importando...' : 'Importar Anúncios' }}
-                </button>
-              </div>
             </div>
           </div>
         </div>
