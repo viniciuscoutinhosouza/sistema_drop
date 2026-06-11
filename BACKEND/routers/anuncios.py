@@ -689,59 +689,14 @@ def _serialize_listing(
 
 
 async def _get_valid_token(account: MarketplaceAccount, db: AsyncSession) -> str:
-    """Retorna o access_token da conta; tenta refresh se expirado."""
-    if account.platform != "mercadolivre":
-        raise HTTPException(
-            status_code=400, detail="Importação automática disponível apenas para Mercado Livre"
-        )
+    """Wrapper fino — o refresh é centralizado e coordenado em services.ml_auth.
 
-    now = datetime.now(UTC)
-    expires = account.token_expires_at
-    if expires and expires.tzinfo is None:
-        expires = expires.replace(tzinfo=UTC)
+    Mantido pelo nome porque vários endpoints deste router o usam. A lógica de
+    lock por conta, re-leitura e recuperação de invalid_grant mora no ml_auth.
+    """
+    from services.ml_auth import get_valid_token
 
-    token_expired = expires and expires <= now
-
-    if token_expired:
-        if not account.refresh_token:
-            raise HTTPException(
-                status_code=401,
-                detail="Token do Mercado Livre expirado. Reconecte a conta em Integrações → editar conta.",
-            )
-        from datetime import timedelta
-
-        try:
-            token_data = await ml_service.refresh_ml_token(account.refresh_token)
-        except HTTPException as exc:
-            # ML revogou o refresh_token (invalid_grant) → marca pra UI mostrar alerta
-            # de reconexão imediatamente, sem esperar o job sync_tokens (1h).
-            if exc.status_code == 401 and "invalid_grant" in (exc.detail or "").lower():
-                account.requires_reauth = True
-                await db.commit()
-                acc_label = account.description or account.platform_username or f"conta #{account.id}"
-                # Mantém a substring "invalid_grant" no detail (outros callers usam
-                # essa string como sinal — ex: stock.py).
-                raise HTTPException(
-                    status_code=401,
-                    detail=(
-                        f"A conta do Mercado Livre \"{acc_label}\" perdeu a autorização "
-                        "(invalid_grant). Vá em Integrações e reconecte a conta antes de "
-                        "publicar ou modificar anúncios."
-                    ),
-                ) from exc
-            raise
-        account.access_token = token_data["access_token"]
-        account.refresh_token = token_data.get("refresh_token", account.refresh_token)
-        account.token_expires_at = now + timedelta(seconds=token_data.get("expires_in", 21600))
-        await db.commit()
-
-    if not account.access_token:
-        raise HTTPException(
-            status_code=401,
-            detail="Conta sem token de acesso. Conecte a conta do Mercado Livre em Integrações.",
-        )
-
-    return account.access_token
+    return await get_valid_token(account, db)
 
 
 async def _cache_costs(

@@ -684,21 +684,60 @@ async def ml_callback(
     user_info = await ml_service.get_user_info(token_data["access_token"])
     expires_at = datetime.now(UTC) + timedelta(seconds=token_data.get("expires_in", 21600))
 
+    seller_id = str(user_info.get("id") or "")
+    token_nick = user_info.get("nickname") or ""
+    token_email = (user_info.get("email") or "").lower().strip()
+
     result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta não encontrada")
 
+    # ── Isolamento: garante que o vendedor autorizado é o DESTA conta ──
+    # A tela de autorização do ML reaproveita a sessão logada no navegador; sem
+    # esta checagem, autorizar com outra conta ML aberta no browser vincularia o
+    # token ao vendedor errado (CMIG "misturada" com a conta logada).
+    account_email = (account.email or "").lower().strip()
+    mismatch = None
+    if account.platform_user_id and seller_id and account.platform_user_id != seller_id:
+        mismatch = (
+            f"Esperado o vendedor ID {account.platform_user_id}, mas você autorizou "
+            f"'{token_nick or token_email or seller_id}'."
+        )
+    elif account_email and token_email and account_email != token_email:
+        mismatch = (
+            f"Esperado o e-mail {account_email}, mas você autorizou '{token_email}'."
+        )
+
+    if mismatch:
+        # NÃO sobrescreve a conta. Redireciona com instrução clara.
+        from urllib.parse import quote
+
+        detail = quote(
+            f"{mismatch} Saia do Mercado Livre no navegador (ou use uma aba anônima) "
+            "e reconecte a conta correta."
+        )
+        return RedirectResponse(
+            f"{settings.FRONTEND_URL}/oauth/success"
+            f"?platform=mercadolivre&status=wrong_account&detail={detail}"
+        )
+
     account.access_token = token_data["access_token"]
     account.refresh_token = token_data.get("refresh_token")
     account.token_expires_at = expires_at
-    account.platform_user_id = str(user_info.get("id"))
-    account.platform_username = user_info.get("nickname")
+    account.platform_user_id = seller_id
+    account.platform_username = token_nick
     account.is_active = True
     account.requires_reauth = False
     await db.commit()
 
-    frontend_url = f"{settings.FRONTEND_URL}/oauth/success?platform=mercadolivre&status=connected"
+    from urllib.parse import quote
+
+    connected = quote(token_nick or token_email or seller_id)
+    frontend_url = (
+        f"{settings.FRONTEND_URL}/oauth/success"
+        f"?platform=mercadolivre&status=connected&seller={connected}"
+    )
     return RedirectResponse(frontend_url)
 
 

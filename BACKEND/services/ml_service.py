@@ -75,7 +75,7 @@ async def exchange_code(code: str) -> dict:
 
 async def refresh_ml_token(refresh_token: str) -> dict:
     """Refresh an expired ML access token."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.post(
             ML_TOKEN_URL,
             data={

@@ -43,33 +43,10 @@ async def _get_account_with_token(
             status_code=400, detail="Simulador disponível apenas para Mercado Livre"
         )
 
-    now = datetime.now(UTC)
-    expires = account.token_expires_at
-    if expires and expires.tzinfo is None:
-        expires = expires.replace(tzinfo=UTC)
-    if expires and expires <= now:
-        if not account.refresh_token:
-            raise HTTPException(
-                status_code=401, detail="Token expirado. Reconecte a conta em Integrações."
-            )
-        try:
-            token_data = await ml_service.refresh_ml_token(account.refresh_token)
-        except HTTPException as exc:
-            if exc.status_code == 401 and "invalid_grant" in (exc.detail or "").lower():
-                account.requires_reauth = True
-                await db.commit()
-            raise
-        account.access_token = token_data["access_token"]
-        account.refresh_token = token_data.get("refresh_token", account.refresh_token)
-        account.token_expires_at = now + timedelta(seconds=token_data.get("expires_in", 21600))
-        await db.commit()
+    from services.ml_auth import get_valid_token
 
-    if not account.access_token:
-        raise HTTPException(
-            status_code=401, detail="Conta sem token. Conecte a conta em Integrações."
-        )
-
-    return account, account.access_token
+    access_token = await get_valid_token(account, db)
+    return account, access_token
 
 
 # ── metadados dos tipos de anúncio ─────────────────────────────────────────────

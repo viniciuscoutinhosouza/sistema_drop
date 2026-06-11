@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from database import task_db
 from models.integration import MarketplaceAccount
-from services import ml_service, shopee_service
+from services import ml_auth, shopee_service
 from tasks._job_wrapper import tracked_job
 
 
@@ -30,14 +30,9 @@ async def refresh_expiring_tokens():
                 stats["tokens_checked"] += 1
                 try:
                     if integration.platform == "mercadolivre":
-                        data = await ml_service.refresh_ml_token(integration.refresh_token)
-                        integration.access_token = data["access_token"]
-                        integration.refresh_token = data.get(
-                            "refresh_token", integration.refresh_token
-                        )
-                        integration.token_expires_at = datetime.now(UTC) + timedelta(
-                            seconds=data.get("expires_in", 21600)
-                        )
+                        # Refresh proativo coordenado (lock por conta + re-leitura).
+                        # margin de 1h: renova se vence dentro da próxima hora.
+                        await ml_auth.get_valid_token(integration, db, margin_seconds=3600)
                     elif integration.platform == "shopee":
                         data = await shopee_service.refresh_shopee_token(
                             integration.refresh_token, integration.shop_id

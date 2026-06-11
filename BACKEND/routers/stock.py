@@ -444,32 +444,10 @@ async def sync_full_stock_for_cmig(
 
 
 async def _ensure_token(account, db: AsyncSession) -> str:
-    """Retorna access_token válido, fazendo refresh se necessário."""
-    from datetime import datetime, timedelta, timezone
-    from services import ml_service
+    """Retorna access_token válido (refresh centralizado e coordenado em ml_auth)."""
+    from services.ml_auth import get_valid_token
 
-    now = datetime.now(timezone.utc)
-    expires = account.token_expires_at
-    if expires and expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-    if expires and expires <= now:
-        if not account.refresh_token:
-            raise HTTPException(
-                status_code=401,
-                detail=f"Conta {account.id} sem refresh_token — reconecte em Integrações.",
-            )
-        try:
-            token_data = await ml_service.refresh_ml_token(account.refresh_token)
-        except HTTPException as exc:
-            if exc.status_code == 401 and "invalid_grant" in (exc.detail or "").lower():
-                account.requires_reauth = True
-                await db.commit()
-            raise
-        account.access_token = token_data["access_token"]
-        account.refresh_token = token_data.get("refresh_token", account.refresh_token)
-        account.token_expires_at = now + timedelta(seconds=token_data.get("expires_in", 21600))
-        await db.commit()
-    return account.access_token
+    return await get_valid_token(account, db)
 
 
 @router.post("/recompute-all")
