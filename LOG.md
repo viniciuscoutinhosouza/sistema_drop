@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-06-11 — fix(integrations): refresh OAuth ML coordenado + isolamento da conta no callback
+
+Correção da causa de o sistema "perder a conexão" com as contas ML e da mistura
+da conta CMIG com a sessão logada no navegador.
+
+**Causa raiz (perda de conexão):** o refresh token do ML é de uso único (rotaciona
+a cada uso). O refresh estava espalhado em 5 lugares sem coordenação (job sync_tokens,
+anuncios, stock, simulator, DRE) → duas renovações concorrentes com o mesmo refresh
+token davam `invalid_grant` → conta marcada `requires_reauth` → caía.
+
+**Estabilização:**
+- `services/ml_auth.get_valid_token` agora é o ponto ÚNICO de refresh: lock por
+  `account_id` (PM2 = 1 worker), re-leitura da conta dentro do lock, e recuperação
+  no `invalid_grant` (se outro caminho já renovou, usa o token novo em vez de desativar).
+- `_refresh_with_retry` só retenta em erro de conexão (não em invalid_grant nem
+  read-timeout, que poderiam gastar o token de uso único); timeout explícito (20s).
+- Unificados os refresh duplicados: `sync_tokens` (margin 1h, proativo), `stock`,
+  `simulator` e `anuncios` passam a chamar `ml_auth.get_valid_token`.
+
+**Isolamento browser ↔ conta:**
+- `ml_callback` valida que o vendedor autorizado é o da conta (`platform_user_id`/
+  e-mail). Se divergir, NÃO sobrescreve e redireciona com instrução (sair do ML no
+  navegador / aba anônima). Mostra o vendedor conectado no sucesso.
+- `OAuthSuccessView` trata `status=wrong_account` e exibe a conta conectada.
+
+**Verificação:** pytest 20 passed (2 falhas pré-existentes de test_orders, sem relação);
+`npm run build` OK; deploy `685e0c2`, pm2 restart, health local+HTTPS 200.
+
+---
+
 ## 2026-06-08 — feat(financial): Gestão Financeira (DRE de marketplace por CMIG)
 
 Nova aba **Gestão Financeira (DRE)** dentro de Financeiro: P&L mensal por CMIG, no formato
