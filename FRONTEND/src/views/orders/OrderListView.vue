@@ -389,8 +389,8 @@
                 <i :class="deliveryBtnIcon(order)" class="mr-1"></i>{{ deliveryBtnLabel(order) }}
               </button>
 
-              <!-- NF-e -->
-              <div class="d-flex" style="gap:.25rem">
+              <!-- NF-e (oculto em pedidos Full — NF-e é emitida pelo ML) -->
+              <div v-if="!isFullOrder(order)" class="d-flex" style="gap:.25rem">
                 <!-- Autorizada com URL: abre DANFE direto em nova aba -->
                 <a
                   v-if="order.nfe_status === 'authorized' && order.nfe_url"
@@ -453,6 +453,7 @@
               :can-pay="canPay && !isCancelled(order)"
               :can-print-label="canPrintLabel(order)"
               :has-nfe="hasNfe(order)"
+              :is-full="isFullOrder(order)"
               @click:delivery="openShipmentModal(order)"
               @click:pay="payOrder(order)"
               @click:label="handleLabelClick(order)"
@@ -469,8 +470,9 @@
               title="Ver detalhes do pedido"
             ><i class="fas fa-eye"></i></RouterLink>
 
-            <!-- Atualizar status (UGO/Admin) — acoes restantes apos label/NFe -->
-            <template v-if="canUpdateStatus">
+            <!-- Atualizar status (UGO/Admin) — acoes restantes apos label/NFe.
+                 Oculto em Full: separação/coleta são geridas pelo ML. -->
+            <template v-if="canUpdateStatus && !isFullOrder(order)">
               <button v-if="order.status==='label_printed'" class="btn btn-xs btn-outline-info" @click="updateStatus(order,'separated')" title="Pedido Separado"><i class="fas fa-box-open"></i></button>
               <button v-if="order.status==='separated'" class="btn btn-xs btn-outline-success" @click="updateStatus(order,'shipped')" title="Coletado p/ Entrega"><i class="fas fa-truck"></i></button>
             </template>

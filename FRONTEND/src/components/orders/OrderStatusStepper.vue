@@ -2,7 +2,7 @@
   <div class="d-flex align-items-center" style="gap:.3rem">
     <!-- Passos internos -->
     <div
-      v-for="step in steps"
+      v-for="step in visibleSteps"
       :key="step.key"
       class="step-circle"
       :class="stepClass(step.key)"
@@ -40,6 +40,7 @@ const props = defineProps({
   canPay:        { type: Boolean, default: false },
   canPrintLabel: { type: Boolean, default: false }, // true para manual ou ML com shipment
   hasNfe:        { type: Boolean, default: false }, // true quando ha NFe associada
+  isFull:        { type: Boolean, default: false }, // Full ML: oculta etapas geridas pelo ML
 })
 const emit = defineEmits(['click:delivery', 'click:pay', 'click:label', 'click:nfe', 'click:separated', 'click:shipped'])
 
@@ -51,6 +52,13 @@ const steps = [
   { key: 'separated',       label: 'Pedido Separado',     icon: 'fas fa-box-open' },
   { key: 'shipped',         label: 'Coletado p/ Entrega', icon: 'fas fa-truck' },
 ]
+// Em pedidos Full o ML gerencia pagamento, etiqueta, NF-e e coleta — o vendedor
+// não age nessas etapas, então exibimos só "Pedido Baixado" + o ícone de entrega.
+const HIDDEN_WHEN_FULL = ['paid', 'label_generated', 'nfe', 'separated', 'shipped']
+const visibleSteps = computed(() =>
+  props.isFull ? steps.filter((s) => !HIDDEN_WHEN_FULL.includes(s.key)) : steps
+)
+
 // Ordem para isPast/isCurrent (mantém pipeline de status, NFe e label sao acoes paralelas)
 const stepOrderForStatus = ['downloaded', 'paid', 'label_generated', 'label_printed', 'separated', 'shipped']
 
