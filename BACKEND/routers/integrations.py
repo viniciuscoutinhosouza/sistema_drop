@@ -304,13 +304,15 @@ async def verify_otp(
     code = body.get("code", "").strip()
 
     otp_result = await db.execute(
-        select(OTPVerification).where(
+        select(OTPVerification)
+        .where(
             OTPVerification.account_id == account_id,
             OTPVerification.code == code,
             OTPVerification.is_used == False,
         )
+        .order_by(OTPVerification.id.desc())
     )
-    otp = otp_result.scalar_one_or_none()
+    otp = otp_result.scalars().first()
     if not otp:
         # DEV: mostrar OTPs ativos para diagnóstico
         all_otps = await db.execute(
@@ -349,16 +351,9 @@ async def resend_otp(
     if account.otp_verified:
         raise HTTPException(status_code=400, detail="Conta já verificada")
 
-    # Invalidar OTPs anteriores
-    old_otps = await db.execute(
-        select(OTPVerification).where(
-            OTPVerification.account_id == account_id,
-            OTPVerification.is_used == False,
-        )
-    )
-    for old in old_otps.scalars().all():
-        old.is_used = True
-
+    # NÃO invalida os códigos anteriores: cada um continua válido até expirar
+    # naturalmente (15 min). Isso evita que o reenvio mate justamente o código que
+    # o usuário acabou de receber por e-mail e está digitando.
     otp_code = _generate_otp()
     expires = datetime.now(UTC) + timedelta(minutes=15)
     db.add(
