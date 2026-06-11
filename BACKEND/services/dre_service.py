@@ -200,8 +200,12 @@ async def sync_month(cmig_id: int, year: int, month: int) -> dict:
             logger.warning("[DRE] billing conta %s falhou: %s", acc_id, e)
 
     # ── Reconciliação: escolhe a fonte mais autoritativa por linha ──
-    faturamento = live_fat if live_complete else _d(fat_db)
+    faturamento_pago = live_fat if live_complete else _d(fat_db)
     vendas_canceladas = live_canc if live_complete else _d(canc_db)
+    # Faturamento é o BRUTO (vendas pagas + canceladas). As canceladas são
+    # subtraídas no Custo Operacional; somá-las aqui evita que a linha "Faturamento"
+    # já venha líquida e que o cancelamento afete o resultado duas vezes.
+    faturamento = faturamento_pago + vendas_canceladas
 
     if bill_any and bill_tarifa:
         tarifa_venda = bill_tarifa
@@ -499,7 +503,10 @@ async def build_dre(db: AsyncSession, cmig_id: int, year: int) -> dict:
             custo_prod[m - 1] = _d(s.custo_produtos)
             frete[m - 1] = _d(s.frete_vendedor)
             ads[m - 1] = _d(s.gasto_ads)
-        imposto[m - 1] = (faturamento[m - 1] * tax_pct / Decimal("100")).quantize(Decimal("0.01"))
+        # Imposto estimado sobre o faturamento LÍQUIDO (bruto - canceladas),
+        # pois não há imposto sobre venda cancelada.
+        base_liquida = faturamento[m - 1] - vendas_canceladas[m - 1]
+        imposto[m - 1] = (base_liquida * tax_pct / Decimal("100")).quantize(Decimal("0.01"))
 
     # Lançamentos manuais agrupados por (kind, rótulo)
     manual: dict[str, dict[str, list]] = {
