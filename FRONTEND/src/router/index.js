@@ -11,6 +11,7 @@ const OAuthSuccessView = () => import('@/views/auth/OAuthSuccessView.vue')
 
 // Dashboard
 const DashboardView = () => import('@/views/DashboardView.vue')
+const MarketplaceDashboardView = () => import('@/views/MarketplaceDashboardView.vue')
 
 // Financial
 const FinancialView = () => import('@/views/financial/FinancialView.vue')
@@ -151,6 +152,11 @@ const routes = [
     children: [
       { path: '', redirect: '/dashboard' },
       { path: 'dashboard', component: DashboardView, meta: { title: 'Dashboard' } },
+      {
+        path: 'dashboard/marketplace',
+        component: MarketplaceDashboardView,
+        meta: { title: 'Dashboard de Marketplaces' },
+      },
 
       { path: 'financial', component: FinancialView, meta: { title: 'Financeiro' } },
 

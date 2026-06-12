@@ -15,6 +15,8 @@ window.jQuery = $
 import 'bootstrap/dist/js/bootstrap.bundle.min.js'
 import 'admin-lte/dist/js/adminlte.min.js'
 
+import VueApexCharts from 'vue3-apexcharts'
+
 import { useAuthStore } from '@/stores/auth'
 
 const app = createApp(App)
@@ -22,6 +24,7 @@ const pinia = createPinia()
 
 app.use(pinia)
 app.use(router)
+app.use(VueApexCharts)
 
 // Load persisted auth before mounting
 const authStore = useAuthStore()

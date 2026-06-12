@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-06-11 — feat(dashboard): Dashboard de Marketplaces (matriz + visitas/perguntas/ADS + ApexCharts)
+
+Novo painel de marketplaces no formato matriz (Hoje / Ontem / 7 dias / 7 dias antes / Este Mês / Mês Anterior) com 12 métricas: Qtd Pedidos, Cancelados, Full, Flex, Outros, Faturamento (+FULL/+FLEX), Visitas, Conversão, Perguntas, Gasto no ADS.
+
+### Diagnóstico de fontes
+- Pedidos/Cancelados/Full/Flex/Faturamento → calculados ao vivo da tabela `orders` (campos `status`, `shipping_mode`, `sale_amount`, `created_at`), sem API externa.
+- Visitas/Perguntas/ADS → só existem na API do ML e não eram persistidos → criado snapshot diário.
+
+### Backend
+- **Migration `Scripts SQL/101_marketplace_metrics_daily.sql`** (idempotente): tabela `marketplace_metrics_daily` (1 linha por conta/dia: visits, questions_total, questions_unanswered, ads_cost) com unique `(account_id, metric_date)`; + índices e `ix_orders_dropshipper_created` para as agregações.
+- **Modelo `MarketplaceMetricDaily`** em `BACKEND/models/integration.py`.
+- **Job `BACKEND/tasks/sync_marketplace_metrics.py`** (4x/dia via `CronTrigger hour="2,8,14,20" minute=10` em `scheduler.py`): para cada conta ML ativa, coleta visitas (breakdown por dia, com backfill de ontem), perguntas do dia e gasto em ADS; upsert por conta/dia. Tolera falha por conta; pula `requires_reauth`.
+- **Helper `get_account_visits_by_day`** em `services/ml_service.py` (o existente era fixo em 7 dias agregados).
+- **Endpoint `GET /api/v1/dashboard/marketplace`** em `routers/dashboard.py`: janelas em fuso America/Sao_Paulo; escopo por `dropshipper_id` (admin/GO veem tudo) + filtros opcionais `account_id`/`platform`; retorna `rows` (12 métricas × 6 janelas), `extras` (ticket médio, ACOS, margem, taxa de cancelamento) e `row_meta`.
+
+### Frontend
+- **ApexCharts** adicionado (`apexcharts` + `vue3-apexcharts`, registrado em `main.js`).
+- **`FRONTEND/src/views/MarketplaceDashboardView.vue`**: barra de filtros (conta + plataforma), 4 cards hero (Faturamento, Pedidos hoje, Conversão, ACOS), matriz, donut Full/Flex/Outros, barras Pedidos/período, gauge de Conversão.
+- **`FRONTEND/src/components/dashboard/MetricsMatrix.vue`**: tabela-matriz com cores condicionais e setas (7d vs 7d antes; mês vs mês anterior); linhas ML-only com badge "ML".
+- Rota `dashboard/marketplace` em `router/index.js` + item "Dashboard Marketplaces" na sidebar.
+
+### Verificação
+- `npm run build` OK; imports do backend OK (`routers.dashboard`, `tasks.sync_marketplace_metrics`, `tasks.scheduler`, `services.ml_service`); `pytest -m "not integration"` 25 passed (as 2 falhas de `test_orders` são pré-existentes — `MockResult` sem `scalar`, confirmado via stash).
+- Pendente em produção: rodar a migration 101 no Oracle e o 1º disparo do job (visitas/ADS = 0 até então).
+
+> Nota git: o commit `54ab716` (eship), feito por processo paralelo durante a sessão, absorveu os arquivos de backend deste dashboard. O frontend permaneceu não-commitado.
+
+---
+
 ## 2026-06-11 — fix(integrations): refresh OAuth ML coordenado + isolamento da conta no callback
 
 Correção da causa de o sistema "perder a conexão" com as contas ML e da mistura

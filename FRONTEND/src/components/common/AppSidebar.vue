@@ -31,6 +31,13 @@
           </li>
 
           <li class="nav-item">
+            <RouterLink to="/dashboard/marketplace" class="nav-link" :class="{ active: route.path === '/dashboard/marketplace' }">
+              <i class="nav-icon fas fa-store"></i>
+              <p>Dashboard Marketplaces</p>
+            </RouterLink>
+          </li>
+
+          <li class="nav-item">
             <RouterLink to="/simulator" class="nav-link" :class="{ active: route.path === '/simulator' }">
               <i class="nav-icon fas fa-calculator"></i>
               <p>Simulador ML</p>
