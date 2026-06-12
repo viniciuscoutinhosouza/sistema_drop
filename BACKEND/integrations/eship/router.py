@@ -34,6 +34,21 @@ def _serialize(wh: Warehouse, cfg: EShipConfig | None) -> dict:
     }
 
 
+@router.get("/enabled")
+async def eship_enabled(
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Indica se há algum galpão com eShip ativo (para a UI decidir mostrar ações).
+    Leve e acessível aos papéis operacionais (o /configs é admin-only)."""
+    row = (
+        await db.execute(
+            select(EShipConfig.id).where(EShipConfig.is_active == True).limit(1)  # noqa: E712
+        )
+    ).first()
+    return {"enabled": row is not None}
+
+
 @router.get("/configs")
 async def list_configs(
     current_user: User = Depends(require_role("admin")),

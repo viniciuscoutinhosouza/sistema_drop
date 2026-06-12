@@ -134,6 +134,18 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Dashboard de Marketplaces — snapshot de visitas/perguntas/ADS do ML.
+    # 4x/dia (02:10, 08:10, 14:10, 20:10 UTC = ~23h, 05h, 11h, 17h BRT).
+    from tasks.sync_marketplace_metrics import sync_marketplace_metrics
+
+    scheduler.add_job(
+        sync_marketplace_metrics,
+        CronTrigger(hour="2,8,14,20", minute=10),
+        id="sync_marketplace_metrics",
+        name="Snapshot de métricas de marketplace (visitas/perguntas/ADS)",
+        replace_existing=True,
+    )
+
     scheduler.start()
     print("Background scheduler started")
 

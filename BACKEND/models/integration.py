@@ -2,6 +2,7 @@ from sqlalchemy import (
     TIMESTAMP,
     Boolean,
     Column,
+    Date,
     ForeignKey,
     Integer,
     Numeric,
@@ -130,3 +131,33 @@ class OTPVerification(Base):
     is_used = Column(Boolean, nullable=False, default=False)
     expires_at = Column(TIMESTAMP(timezone=True), nullable=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+
+
+class MarketplaceMetricDaily(Base):
+    """
+    Snapshot diário (BRT) de métricas que só existem na API do Mercado Livre
+    e não são persistidas em nenhuma outra tabela: visitas, perguntas e gasto
+    em ADS. Alimentada pelo job tasks/sync_marketplace_metrics.py (4x/dia),
+    com upsert por (account_id, metric_date). Pedidos/Faturamento NÃO entram
+    aqui — são calculados ao vivo da tabela orders no endpoint do dashboard.
+    """
+
+    __tablename__ = "marketplace_metrics_daily"
+
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Integer, ForeignKey("marketplace_accounts.id"), nullable=False)
+    metric_date = Column(Date, nullable=False)  # dia comercial em BRT
+    visits = Column(Integer, nullable=False, default=0)
+    questions_total = Column(Integer, nullable=False, default=0)
+    questions_unanswered = Column(Integer, nullable=False, default=0)
+    ads_cost = Column(Numeric(15, 2), nullable=False, default=0)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True),
+        server_default=text("SYSTIMESTAMP"),
+        onupdate=text("SYSTIMESTAMP"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "metric_date", name="uq_mmd_account_date"),
+    )

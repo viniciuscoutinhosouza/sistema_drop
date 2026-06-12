@@ -470,6 +470,13 @@
               title="Ver detalhes do pedido"
             ><i class="fas fa-eye"></i></RouterLink>
 
+            <!-- eShip (WMS): enviar/sincronizar — só se há galpão eShip ativo e não é Full/manual -->
+            <OrderEShipActions
+              v-if="eshipEnabled && !isFullOrder(order) && order.platform !== 'manual'"
+              :order="order"
+              @updated="loadOrders"
+            />
+
             <!-- Atualizar status (UGO/Admin) — acoes restantes apos label/NFe.
                  Oculto em Full: separação/coleta são geridas pelo ML. -->
             <template v-if="canUpdateStatus && !isFullOrder(order)">
@@ -585,6 +592,8 @@ import { ORDER_STATUSES, PLATFORMS, SHIPPING_MODE_STYLE, shippingModeStyle, plat
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import OrderStatusStepper from '@/components/orders/OrderStatusStepper.vue'
+import OrderEShipActions from '@/views/integrations/eship/OrderEShipActions.vue'
+import { useEship } from '@/composables/useEship'
 import OrderFinancialCard from '@/components/orders/OrderFinancialCard.vue'
 import DeliveryModal from '@/components/orders/DeliveryModal.vue'
 import InvoicesModal from '@/components/orders/InvoicesModal.vue'
@@ -1274,9 +1283,12 @@ async function bulkPrintDanfe() {
   else toast.warning('Nenhuma DANFE disponível para os pedidos selecionados')
 }
 
+const { eshipEnabled, ensureLoaded: ensureEshipLoaded } = useEship()
+
 onMounted(() => {
   loadAvailableCmigs()
   loadOrders()
+  ensureEshipLoaded()
 })
 </script>
 

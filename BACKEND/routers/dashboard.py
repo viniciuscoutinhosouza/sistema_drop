@@ -1,7 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +12,8 @@ from models.user import User
 from schemas.dashboard import KPIResponse, TopProductSchema
 
 router = APIRouter()
+
+BRT = ZoneInfo("America/Sao_Paulo")
 
 
 @router.get("/kpis", response_model=KPIResponse)
@@ -170,3 +173,211 @@ async def get_top_products(db: AsyncSession = Depends(get_db)):
             )
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Dashboard de Marketplaces — matriz Hoje/Ontem/7d/7d antes/Mês/Mês anterior
+# ---------------------------------------------------------------------------
+
+# Ordem e rótulos das janelas (colunas da matriz).
+_WINDOWS = ["hoje", "ontem", "7d", "7d_antes", "mes", "mes_anterior"]
+_WINDOW_LABELS = {
+    "hoje": "Hoje",
+    "ontem": "Ontem",
+    "7d": "7 dias",
+    "7d_antes": "7 dias antes",
+    "mes": "Este Mês",
+    "mes_anterior": "Mês Anterior",
+}
+
+
+def _date_windows(now_brt: datetime):
+    """Devolve, para cada janela, os limites em datetime (BRT) para orders
+    e em date (BRT) para o snapshot diário."""
+    start_today = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
+    today = start_today.date()
+    start_month = start_today.replace(day=1)
+    start_prev_month = (start_month - timedelta(days=1)).replace(day=1)
+
+    dt = {
+        "hoje": (start_today, now_brt),
+        "ontem": (start_today - timedelta(days=1), start_today),
+        "7d": (start_today - timedelta(days=6), now_brt),
+        "7d_antes": (start_today - timedelta(days=13), start_today - timedelta(days=6)),
+        "mes": (start_month, now_brt),
+        "mes_anterior": (start_prev_month, start_month),
+    }
+    # Limites do snapshot por DATE (BRT), inclusivos.
+    dd = {
+        "hoje": (today, today),
+        "ontem": (today - timedelta(days=1), today - timedelta(days=1)),
+        "7d": (today - timedelta(days=6), today),
+        "7d_antes": (today - timedelta(days=13), today - timedelta(days=7)),
+        "mes": (start_month.date(), today),
+        "mes_anterior": (start_prev_month.date(), start_month.date() - timedelta(days=1)),
+    }
+    return dt, dd
+
+
+@router.get("/marketplace")
+async def get_marketplace_dashboard(
+    account_id: int | None = Query(None),
+    platform: str | None = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Matriz de métricas de marketplace por janela de tempo (fuso BRT).
+
+    Pedidos/Faturamento/Full/Flex saem ao vivo da tabela orders.
+    Visitas/Perguntas/ADS saem do snapshot marketplace_metrics_daily (ML-only).
+    Conversão = pedidos/visitas. Admin/GO veem tudo; AC/UGO só os próprios pedidos.
+    """
+    is_global = current_user.role in ("admin", "go")
+    now_brt = datetime.now(BRT)
+    dt_windows, dd_windows = _date_windows(now_brt)
+
+    # ----- filtros comuns (orders) -----
+    base_filters = []
+    params: dict = {}
+    if not is_global:
+        base_filters.append("dropshipper_id = :uid")
+        params["uid"] = current_user.id
+    if account_id is not None:
+        base_filters.append("account_id = :account_id")
+        params["account_id"] = account_id
+    if platform:
+        base_filters.append("platform = :platform")
+        params["platform"] = platform
+    extra_where = (" AND " + " AND ".join(base_filters)) if base_filters else ""
+
+    orders_sql = text(f"""
+        SELECT
+          COUNT(CASE WHEN status NOT IN ('cancelled','returned') THEN 1 END) AS qtd,
+          COUNT(CASE WHEN status = 'cancelled' THEN 1 END) AS cancelados,
+          COUNT(CASE WHEN status NOT IN ('cancelled','returned')
+                     AND shipping_mode = 'full' THEN 1 END) AS full_cnt,
+          COUNT(CASE WHEN status NOT IN ('cancelled','returned')
+                     AND shipping_mode = 'flex' THEN 1 END) AS flex_cnt,
+          COUNT(CASE WHEN status NOT IN ('cancelled','returned')
+                     AND (shipping_mode NOT IN ('full','flex') OR shipping_mode IS NULL)
+                     THEN 1 END) AS outros_cnt,
+          NVL(SUM(CASE WHEN status NOT IN ('cancelled','returned')
+                       THEN sale_amount END), 0) AS fat,
+          NVL(SUM(CASE WHEN status NOT IN ('cancelled','returned')
+                       AND shipping_mode = 'full' THEN sale_amount END), 0) AS fat_full,
+          NVL(SUM(CASE WHEN status NOT IN ('cancelled','returned')
+                       AND shipping_mode = 'flex' THEN sale_amount END), 0) AS fat_flex,
+          NVL(SUM(CASE WHEN status NOT IN ('cancelled','returned')
+                       THEN NVL(product_cost,0) + NVL(platform_fee,0)
+                            + NVL(seller_shipping_cost,0) END), 0) AS custos
+        FROM orders
+        WHERE created_at >= :start AND created_at < :end {extra_where}
+    """)
+
+    # Snapshot: contas dentro do escopo do usuário. Se filtro de conta, usa ela;
+    # senão, todas as contas que aparecem nos pedidos do escopo (alinha visitas/ads
+    # às mesmas contas que geraram os pedidos). Admin/GO = todas as contas ML.
+    snap_filters = ["metric_date >= :d_start", "metric_date <= :d_end"]
+    snap_params: dict = {}
+    if account_id is not None:
+        snap_filters.append("account_id = :s_account_id")
+        snap_params["s_account_id"] = account_id
+    elif not is_global:
+        snap_filters.append(
+            "account_id IN (SELECT DISTINCT account_id FROM orders "
+            "WHERE dropshipper_id = :s_uid AND account_id IS NOT NULL)"
+        )
+        snap_params["s_uid"] = current_user.id
+    snap_sql = text(f"""
+        SELECT NVL(SUM(visits),0) AS visits,
+               NVL(SUM(questions_total),0) AS questions,
+               NVL(SUM(ads_cost),0) AS ads
+        FROM marketplace_metrics_daily
+        WHERE {" AND ".join(snap_filters)}
+    """)
+
+    def _f(v) -> float:
+        return float(v or 0)
+
+    rows: dict[str, dict] = {
+        key: {}
+        for key in (
+            "qtd_pedidos", "cancelados", "full", "flex", "outros",
+            "faturamento", "fat_full", "fat_flex",
+            "visitas", "conversao", "perguntas", "ads_cost",
+        )
+    }
+    extras: dict[str, dict] = {}
+
+    for w in _WINDOWS:
+        start_dt, end_dt = dt_windows[w]
+        d_start, d_end = dd_windows[w]
+        o = await db.execute(
+            orders_sql,
+            {**params, "start": start_dt.astimezone(UTC), "end": end_dt.astimezone(UTC)},
+        )
+        orow = o.fetchone()
+        s = await db.execute(
+            snap_sql, {**snap_params, "d_start": d_start, "d_end": d_end}
+        )
+        srow = s.fetchone()
+
+        qtd = int(orow[0] or 0)
+        fat = _f(orow[5])
+        custos = _f(orow[9])
+        visits = int(srow[0] or 0)
+
+        rows["qtd_pedidos"][w] = qtd
+        rows["cancelados"][w] = int(orow[1] or 0)
+        rows["full"][w] = int(orow[2] or 0)
+        rows["flex"][w] = int(orow[3] or 0)
+        rows["outros"][w] = int(orow[4] or 0)
+        rows["faturamento"][w] = round(fat, 2)
+        rows["fat_full"][w] = round(_f(orow[6]), 2)
+        rows["fat_flex"][w] = round(_f(orow[7]), 2)
+        rows["visitas"][w] = visits
+        rows["conversao"][w] = round((qtd / visits * 100), 2) if visits > 0 else 0.0
+        rows["perguntas"][w] = int(srow[1] or 0)
+        rows["ads_cost"][w] = round(_f(srow[2]), 2)
+
+        # Extras (cards de apoio): ticket médio, ACOS, margem, taxa de cancelamento.
+        ads = round(_f(srow[2]), 2)
+        cancel = int(orow[1] or 0)
+        extras[w] = {
+            "ticket_medio": round(fat / qtd, 2) if qtd > 0 else 0.0,
+            "acos": round(ads / fat * 100, 2) if fat > 0 else 0.0,
+            "margem": round(fat - custos, 2),
+            "margem_pct": round((fat - custos) / fat * 100, 2) if fat > 0 else 0.0,
+            "taxa_cancelamento": round(cancel / (qtd + cancel) * 100, 2)
+            if (qtd + cancel) > 0 else 0.0,
+        }
+
+    # Rótulos amigáveis e flag ML-only por linha (para o frontend).
+    row_meta = {
+        "qtd_pedidos": {"label": "Qtd Pedidos", "type": "int"},
+        "cancelados": {"label": "Pedidos Cancelados", "type": "int"},
+        "full": {"label": "Pedidos do Full", "type": "int"},
+        "flex": {"label": "Pedidos do Flex", "type": "int"},
+        "outros": {"label": "Outros Pedidos", "type": "int"},
+        "faturamento": {"label": "Faturamento", "type": "money"},
+        "fat_full": {"label": "Faturamento FULL", "type": "money"},
+        "fat_flex": {"label": "Faturamento FLEX", "type": "money"},
+        "visitas": {"label": "Visitas", "type": "int", "ml_only": True},
+        "conversao": {"label": "Conversão", "type": "pct", "ml_only": True},
+        "perguntas": {"label": "Perguntas", "type": "int", "ml_only": True},
+        "ads_cost": {"label": "Gasto no ADS", "type": "money", "ml_only": True},
+    }
+
+    return {
+        "windows": _WINDOWS,
+        "window_labels": _WINDOW_LABELS,
+        "row_meta": row_meta,
+        "rows": rows,
+        "extras": extras,
+        "scope": {
+            "is_global": is_global,
+            "account_id": account_id,
+            "platform": platform,
+            "generated_at": now_brt.isoformat(),
+        },
+    }

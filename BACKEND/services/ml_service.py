@@ -1817,6 +1817,39 @@ async def get_account_visit_stats(access_token: str, seller_id: str) -> dict:
     }
 
 
+async def get_account_visits_by_day(
+    access_token: str, seller_id: str, last_days: int = 2
+) -> dict[str, int]:
+    """Visitas da conta com breakdown por dia via items_visits/time_window.
+
+    Retorna {"YYYY-MM-DD": total_visits} para os últimos `last_days` dias.
+    Usado pelo snapshot diário do dashboard para preencher "Hoje" e "Ontem".
+    Se a API não devolver o array `results`, cai para o total agregado no dia mais recente.
+    """
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/users/{seller_id}/items_visits/time_window",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"last": last_days, "unit": "day"},
+        )
+    if resp.status_code != 200:
+        logger.warning("[ML] visits_by_day status=%s: %s", resp.status_code, resp.text[:200])
+        return {}
+    data = resp.json()
+    per_day: dict[str, int] = {}
+    for entry in data.get("results", []) or []:
+        # date vem como ISO ("2026-06-11T00:00:00.000-04:00"); usamos só YYYY-MM-DD
+        raw = str(entry.get("date", ""))[:10]
+        if raw:
+            per_day[raw] = int(entry.get("total") or entry.get("total_visits") or 0)
+    if not per_day and data.get("total_visits") is not None:
+        # Fallback: sem breakdown — atribui o total ao dia de date_to.
+        day = str(data.get("date_to", ""))[:10]
+        if day:
+            per_day[day] = int(data.get("total_visits") or 0)
+    return per_day
+
+
 async def get_items_visit_stats(access_token: str, item_ids: list) -> dict:
     """Busca visitas dos últimos 7 dias por item via /items/visits."""
     if not item_ids:
