@@ -211,7 +211,7 @@
           </template>
 
           <!-- ADMINISTRAÇÃO -->
-          <template v-if="canSee('config_usuarios') || canSee('config_email') || canSee('config_ncm') || canSee('config_ai') || canSee('config_api_console') || canSee('config_perfis')">
+          <template v-if="canSee('config_usuarios') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_api_console') || canSee('config_perfis')">
             <li class="nav-header">ADMINISTRAÇÃO</li>
             <li class="nav-item" :class="{ 'menu-open': settingsOpen }">
               <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') }" @click.prevent="settingsOpen = !settingsOpen">
@@ -227,6 +227,11 @@
                 <li v-if="canSee('config_email')" class="nav-item">
                   <RouterLink to="/settings/email" class="nav-link" :class="{ active: route.path === '/settings/email' }">
                     <i class="far fa-circle nav-icon"></i><p>Servidor de E-mail</p>
+                  </RouterLink>
+                </li>
+                <li v-if="canSee('config_eship')" class="nav-item">
+                  <RouterLink to="/settings/eship" class="nav-link" :class="{ active: route.path === '/settings/eship' }">
+                    <i class="far fa-circle nav-icon"></i><p>Integração eShip</p>
                   </RouterLink>
                 </li>
                 <li v-if="canSee('config_ncm')" class="nav-item">
@@ -316,7 +321,7 @@ const _legacyMenus = {
     'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
     'pg','separacao','ag_retorno','inventario','inventario_criar','rotinas',
     'go_empresa','go_usuarios',
-    'config_usuarios','config_email','config_ncm','config_ai','config_api_console','config_perfis',
+    'config_usuarios','config_email','config_eship','config_ncm','config_ai','config_api_console','config_perfis',
   ]),
   ac: new Set([
     'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',

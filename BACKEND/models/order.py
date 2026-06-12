@@ -27,6 +27,7 @@ class Order(Base):
     tracking_code = Column(String(100))
     tracking_url = Column(String(500))
     shipment_id = Column(String(100))
+    eship_order_id = Column(String(100))  # ID da ordem no WMS eShip (integração isolada)
     label_url = Column(String(1000))
     label_cached_at = Column(TIMESTAMP(timezone=True))  # quando a etiqueta foi salva no disco
     nfe_url = Column(String(1000))

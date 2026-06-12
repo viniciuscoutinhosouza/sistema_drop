@@ -25,6 +25,8 @@ def start_scheduler():
     from tasks.sync_tokens import refresh_expiring_tokens
     from tasks.sync_variation_stock import sync_all_variation_stock
 
+    from integrations.eship.tasks import sync_eship_status
+
     scheduler.add_job(
         sync_all_orders,
         IntervalTrigger(minutes=15),
@@ -38,6 +40,15 @@ def start_scheduler():
         IntervalTrigger(hours=1),
         id="refresh_tokens",
         name="Refresh OAuth Tokens",
+        replace_existing=True,
+    )
+
+    # eShip (WMS): polling de status dos pedidos enviados (sem webhook no eShip)
+    scheduler.add_job(
+        sync_eship_status,
+        IntervalTrigger(minutes=15),
+        id="eship_status",
+        name="eShip — Sync Status de Pedidos",
         replace_existing=True,
     )
 

@@ -6,6 +6,7 @@ from models.cmig import (  # noqa: F401
     CMIGProductComponent,
     CMIGProductImage,
 )
+from integrations.eship.config import EShipConfig  # noqa: F401 — módulo isolado eShip
 from models.dre import DREEntry, DRESnapshot  # noqa: F401
 from models.financial import FinancialTransaction  # noqa: F401
 from models.fiscal import (  # noqa: F401

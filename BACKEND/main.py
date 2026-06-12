@@ -148,6 +148,11 @@ app.include_router(
     settings_email.router, prefix=f"{PREFIX}/settings/email", tags=["SettingsEmail"]
 )
 
+# Módulo isolado de integração eShip (WMS)
+from integrations.eship.router import router as eship_router  # noqa: E402
+
+app.include_router(eship_router, prefix=f"{PREFIX}/integrations/eship", tags=["eShip"])
+
 
 _os.makedirs("static/uploads/cmig-products", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
