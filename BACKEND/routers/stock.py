@@ -502,24 +502,22 @@ async def recompute_reservations_endpoint(
     return {"ok": True, **result}
 
 
-@router.post("/backfill-orphan-dispatches")
-async def backfill_orphan_dispatches_endpoint(
+@router.post("/release-orphan-reservations")
+async def release_orphan_reservations_endpoint(
     apply: bool = Query(False, description="False = dry-run (não grava); True = aplica"),
-    floor_zero: bool = Query(True, description="Trava físico dos afetados em >= 0 ao aplicar"),
     limit: int = Query(1000, ge=1, le=5000),
     current_user: User = Depends(require_menu_permission("estoque")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Processa pedidos não-FULL já entregues no ML mas presos com reserva ativa.
+    """Libera reservas órfãs de pedidos não-FULL já entregues no ML.
 
-    Libera a reserva e baixa o estoque físico (via confirm_dispatch canônico) de
-    pedidos com shipment_status 'shipped'/'delivered' que nunca foram despachados
-    no sistema. Dry-run por padrão — passe `apply=true` para gravar.
+    Pedidos com shipment_status 'shipped'/'delivered' que ainda têm reserva ativa
+    (movimento 'reserve' sem fechamento). Libera apenas `reserved_quantity` — NÃO
+    toca no estoque físico, que é event-sourced (pedido entregue já é a saída
+    canônica). Dry-run por padrão — passe `apply=true` para gravar.
     """
-    from services.stock_reservation_service import backfill_orphan_dispatches
-    result = await backfill_orphan_dispatches(
-        db, dry_run=not apply, floor_zero=floor_zero, limit=limit
-    )
+    from services.stock_reservation_service import backfill_orphan_reservations
+    result = await backfill_orphan_reservations(db, dry_run=not apply, limit=limit)
     return {"ok": True, **result}
 
 

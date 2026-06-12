@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-06-12 — fix(stock): backfill de reservas órfãs não toca mais no estoque event-sourced
+
+### Causa
+O `backfill_orphan_dispatches` rodava `confirm_dispatch`, que **decrementa `stock_quantity`**. Mas o estoque de PG/CMIG é **event-sourced** ([services/fiscal/stock_calculator.py](BACKEND/services/fiscal/stock_calculator.py)): o pedido `shipped`/`delivered` já é a saída canônica. Resultado: **dupla contagem** — o backfill baixou o físico de novo, depois o recompute sobrescreveu. Diagnóstico no SKU 5510: NFe entrada (13) − 8 entregas = 5 (correto); o backfill tinha zerado pra 0 e exigido recompute manual.
+
+### Mudança
+- `backfill_orphan_dispatches` → **`backfill_orphan_reservations`**: agora chama `release_reservation` (libera só `reserved_quantity`, loga `unreserve`), **sem tocar no estoque físico**. Removido `floor_zero` e a projeção de físico.
+- Endpoint `POST /stock/backfill-orphan-dispatches` → **`POST /stock/release-orphan-reservations`** (perm. "estoque").
+
+### Correção de dados (produção)
+- Recompute canônico dos 6 produtos tocados pelo backfill anterior: 5393 14→16, 5465 251→247, 5505 5→6 (5510/5249/5528 já corretos). Todos com `armazenado == canônico`.
+- Pendente: propagar o estoque novo ao ML (job `sync_stock` 30min, ou push manual).
+
+---
+
 ## 2026-06-11 — fix(stock): reconciliador de reservas agora reconstrói variantes + diagnóstico de reserva órfã
 
 ### Contexto
