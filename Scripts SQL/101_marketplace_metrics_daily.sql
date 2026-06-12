@@ -34,9 +34,7 @@ DECLARE
   e_obj_exists EXCEPTION;
   PRAGMA EXCEPTION_INIT(e_obj_exists, -955);
 BEGIN
-  EXECUTE IMMEDIATE
-    'CREATE UNIQUE INDEX uq_mmd_account_date '
-    'ON marketplace_metrics_daily(account_id, metric_date)';
+  EXECUTE IMMEDIATE 'CREATE UNIQUE INDEX uq_mmd_account_date ON marketplace_metrics_daily(account_id, metric_date)';
 EXCEPTION
   WHEN e_obj_exists THEN NULL;
 END;
@@ -47,9 +45,7 @@ DECLARE
   e_obj_exists EXCEPTION;
   PRAGMA EXCEPTION_INIT(e_obj_exists, -955);
 BEGIN
-  EXECUTE IMMEDIATE
-    'CREATE INDEX ix_mmd_date '
-    'ON marketplace_metrics_daily(metric_date)';
+  EXECUTE IMMEDIATE 'CREATE INDEX ix_mmd_date ON marketplace_metrics_daily(metric_date)';
 EXCEPTION
   WHEN e_obj_exists THEN NULL;
 END;
@@ -60,9 +56,7 @@ DECLARE
   e_obj_exists EXCEPTION;
   PRAGMA EXCEPTION_INIT(e_obj_exists, -955);
 BEGIN
-  EXECUTE IMMEDIATE
-    'CREATE INDEX ix_orders_dropshipper_created '
-    'ON orders(dropshipper_id, created_at)';
+  EXECUTE IMMEDIATE 'CREATE INDEX ix_orders_dropshipper_created ON orders(dropshipper_id, created_at)';
 EXCEPTION
   WHEN e_obj_exists THEN NULL;
 END;
