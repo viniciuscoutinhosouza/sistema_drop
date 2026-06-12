@@ -324,7 +324,7 @@ async def get_marketplace_dashboard(
 
         qtd = int(orow[0] or 0)
         fat = _f(orow[5])
-        custos = _f(orow[9])
+        custos = _f(orow[8])
         visits = int(srow[0] or 0)
 
         rows["qtd_pedidos"][w] = qtd
