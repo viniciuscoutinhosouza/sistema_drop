@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-06-11 — fix(stock): reconciliador de reservas agora reconstrói variantes + diagnóstico de reserva órfã
+
+### Contexto
+Anúncio do kettlebell (PG 5510) mostrava "Local: 5 un. (0 disp.)" sem reserva aparente. Investigação: `local_stock_available = max(0, stock_quantity − reserved_quantity)` ([anuncios.py:636](BACKEND/routers/anuncios.py#L636)); a coluna `reserved_quantity` do produto estava em 8.
+
+### Mudança de código
+- **`recompute_reservations_from_movements`** ([services/stock_reservation_service.py:684](BACKEND/services/stock_reservation_service.py#L684)) agora **também reconstrói `reserved_quantity` das variantes** (`CatalogProductVariant`/`CMIGProductVariant`). Antes só reconstruía o produto-pai (`pg`/`cmig`), deixando as variantes à deriva — agravado porque `mark_awaiting_return` (pg+cmig) e o release órfão-FULL (cmig) **não logam movimento de variante**. A reconstrução das variantes vem dos **itens dos pedidos cuja reserva-pai está ativa** (fonte confiável), não dos movimentos `variant_*` (incompletos). Retorno agora inclui `pg_variants_updated`/`cmig_variants_updated`.
+
+### Diagnóstico (produção)
+- Recompute rodado: 11 produtos PG atualizados; kettlebell **manteve reservado=8** — porque NÃO é drift: são **7 pedidos `agencia` reais** (561, 581, 582, 601, 621, 622[qty2], 661) **`delivered` no ML mas presos em `status=downloaded`** no sistema, sem movimento de `dispatch`. Reserva nunca liberada e estoque físico nunca baixado → tanto `reserved=8` quanto `physical=5` estão não-confiáveis pra esse SKU.
+- Lacuna sistêmica: `confirm_dispatch` no caminho de entrega tem o erro engolido ([webhook_service.py:385](BACKEND/services/webhook_service.py#L385)); entregas `agencia`/`flex` detectadas sem `status_changed` não disparam baixa.
+
+### Backfill seguro (novo)
+- **`backfill_orphan_dispatches`** ([services/stock_reservation_service.py](BACKEND/services/stock_reservation_service.py)) + endpoint **`POST /api/v1/stock/backfill-orphan-dispatches`** (perm. "estoque"): acha pedidos não-FULL `shipped`/`delivered` com reserva ativa sem `dispatch` e roda `confirm_dispatch`. **Dry-run por padrão** (`apply=false`); `floor_zero` trava físico dos afetados em ≥ 0 e sinaliza `would_go_negative`.
+- **APLICADO em produção** (`apply=true`, `floor_zero=true`): 15 pedidos despachados, 6 produtos corrigidos, reservas órfãs zeradas. Verificado: 15/15 com movimento `dispatch`, 0 reservas remanescentes. SKU 5510 travado em físico=0 (precisa contagem manual no galpão). Os pedidos seguem `status=downloaded` (confirm_dispatch não altera status — só estoque/auditoria).
+- Scripts temporários em `sandbox/` (run_recompute_reservations.py, diag_reserves_5510.py, run_backfill_dryrun.py, run_backfill_apply.py, verify_dispatch.py).
+- **Pendente:** corrigir causa raiz (confirm_dispatch engolido/não disparado em entregas por polling) pra não reacumular.
+
+---
+
 ## 2026-06-11 — feat(dashboard): Dashboard de Marketplaces (matriz + visitas/perguntas/ADS + ApexCharts)
 
 Novo painel de marketplaces no formato matriz (Hoje / Ontem / 7 dias / 7 dias antes / Este Mês / Mês Anterior) com 12 métricas: Qtd Pedidos, Cancelados, Full, Flex, Outros, Faturamento (+FULL/+FLEX), Visitas, Conversão, Perguntas, Gasto no ADS.

@@ -747,8 +747,234 @@ async def recompute_reservations_from_movements(db) -> dict:
                 .values(reserved_quantity=qty)
             )
 
+    # ── Variantes ────────────────────────────────────────────────────────────
+    # Reconstrói reserved_quantity das variantes a partir dos ITENS dos pedidos
+    # cuja reserva-PAI está ativa (não FULL, com 'reserve' e sem fechamento no
+    # nível do pai). NÃO usamos os movimentos variant_* porque alguns caminhos de
+    # encerramento não logam a variante (mark_awaiting_return em pg/cmig e o
+    # release órfão-FULL em cmig) — reconstruir a partir deles perpetuaria o
+    # vazamento. A reserva-pai é a fonte confiável; cada OrderItem aponta sua
+    # variante via catalog_variant_id + catalog_source ('pg' | 'cmig').
+    cancel_v = aliased(StockMovement, name="sm_cancel_v")
+    active_orders_subq = (
+        select(StockMovement.order_id)
+        .join(Order, Order.id == StockMovement.order_id)
+        .where(
+            StockMovement.movement_type == "reserve",
+            StockMovement.product_type.in_(["pg", "cmig"]),
+            StockMovement.order_id.is_not(None),
+            func.coalesce(Order.shipping_mode, "") != "full",
+            ~exists(
+                select(cancel_v.id).where(
+                    cancel_v.order_id == StockMovement.order_id,
+                    cancel_v.movement_type.in_(["unreserve", "dispatch", "await_return"]),
+                    cancel_v.product_type == StockMovement.product_type,
+                    cancel_v.product_id == StockMovement.product_id,
+                )
+            ),
+        )
+        .distinct()
+        .subquery()
+    )
+
+    var_result = await db.execute(
+        select(
+            OrderItem.catalog_source,
+            OrderItem.catalog_variant_id,
+            func.sum(OrderItem.quantity).label("active_reserved"),
+        )
+        .where(
+            OrderItem.catalog_variant_id.is_not(None),
+            OrderItem.order_id.in_(select(active_orders_subq.c.order_id)),
+        )
+        .group_by(OrderItem.catalog_source, OrderItem.catalog_variant_id)
+    )
+
+    pg_var_updates: dict[int, int] = {}
+    cmig_var_updates: dict[int, int] = {}
+    for row in var_result.all():
+        qty = max(0, int(row.active_reserved or 0))
+        if row.catalog_source == "pg":
+            pg_var_updates[row.catalog_variant_id] = qty
+        elif row.catalog_source == "cmig":
+            cmig_var_updates[row.catalog_variant_id] = qty
+
+    # Zera todas (cobre variantes cujas reservas foram integralmente encerradas)
+    await db.execute(update(CatalogProductVariant).values(reserved_quantity=0))
+    await db.execute(update(CMIGProductVariant).values(reserved_quantity=0))
+
+    for variant_id, qty in pg_var_updates.items():
+        if qty > 0:
+            await db.execute(
+                update(CatalogProductVariant)
+                .where(CatalogProductVariant.id == variant_id)
+                .values(reserved_quantity=qty)
+            )
+
+    for variant_id, qty in cmig_var_updates.items():
+        if qty > 0:
+            await db.execute(
+                update(CMIGProductVariant)
+                .where(CMIGProductVariant.id == variant_id)
+                .values(reserved_quantity=qty)
+            )
+
     await db.commit()
     return {
         "pg_products_updated": len(pg_updates),
         "cmig_products_updated": len(cmig_updates),
+        "pg_variants_updated": len(pg_var_updates),
+        "cmig_variants_updated": len(cmig_var_updates),
+    }
+
+
+# ─── Backfill de despachos órfãos ────────────────────────────────────────────
+
+async def backfill_orphan_dispatches(
+    db,
+    *,
+    dry_run: bool = True,
+    dropshipper_id: int | None = None,
+    floor_zero: bool = True,
+    limit: int = 1000,
+) -> dict:
+    """Processa pedidos não-FULL já entregues no ML mas presos com reserva ativa.
+
+    Sintoma: pedido com `shipment_status IN ('shipped','delivered')` que ainda tem
+    movimento 'reserve' sem fechamento ('dispatch'/'unreserve'/'await_return') — a
+    reserva nunca foi liberada e o estoque físico nunca foi baixado.
+
+    - dry_run=True (default): NÃO grava nada; só devolve o relatório do que faria.
+    - dry_run=False: roda `confirm_dispatch` (canônico, idempotente, com auditoria)
+      para cada pedido; se floor_zero, trava o físico dos produtos afetados em >= 0.
+
+    Sempre sinaliza (`would_go_negative`) os produtos cujo despacho levaria o físico
+    abaixo de zero — esses precisam de contagem de inventário manual.
+    """
+    cancel = aliased(StockMovement, name="sm_close_bf")
+    q = (
+        select(StockMovement.order_id)
+        .join(Order, Order.id == StockMovement.order_id)
+        .where(
+            StockMovement.movement_type == "reserve",
+            StockMovement.product_type.in_(["pg", "cmig"]),
+            StockMovement.order_id.is_not(None),
+            func.coalesce(Order.shipping_mode, "") != "full",
+            Order.status != "cancelled",
+            func.coalesce(Order.shipment_status, "").in_(["shipped", "delivered"]),
+            ~exists(
+                select(cancel.id).where(
+                    cancel.order_id == StockMovement.order_id,
+                    cancel.movement_type.in_(["unreserve", "dispatch", "await_return"]),
+                    cancel.product_type == StockMovement.product_type,
+                    cancel.product_id == StockMovement.product_id,
+                )
+            ),
+        )
+    )
+    if dropshipper_id is not None:
+        q = q.where(Order.dropshipper_id == dropshipper_id)
+    q = q.distinct().limit(limit)
+
+    res = await db.execute(q)
+    order_ids = [r[0] for r in res.all()]
+
+    if not order_ids:
+        return {"dry_run": dry_run, "orders_found": 0, "orders": [], "products": []}
+
+    # Carrega pedidos + itens.
+    ord_res = await db.execute(select(Order).where(Order.id.in_(order_ids)))
+    orders = list(ord_res.scalars().all())
+    items_res = await db.execute(select(OrderItem).where(OrderItem.order_id.in_(order_ids)))
+    items = list(items_res.scalars().all())
+
+    # Agrega qty a despachar por produto (mesma regra do confirm_dispatch:
+    # catalog_product_id → pg; senão cmig_product_id → cmig).
+    deltas: dict[tuple[str, int], int] = {}
+    orders_report = []
+    items_by_order: dict[int, list] = {}
+    for it in items:
+        items_by_order.setdefault(it.order_id, []).append(it)
+        qty = it.quantity or 1
+        if it.catalog_product_id:
+            deltas[("pg", it.catalog_product_id)] = deltas.get(("pg", it.catalog_product_id), 0) + qty
+        elif it.cmig_product_id:
+            deltas[("cmig", it.cmig_product_id)] = deltas.get(("cmig", it.cmig_product_id), 0) + qty
+
+    for o in orders:
+        orders_report.append({
+            "order_id": o.id,
+            "platform_order_id": o.platform_order_id,
+            "shipping_mode": o.shipping_mode,
+            "shipment_status": o.shipment_status,
+            "status": o.status,
+            "items": [
+                {"sku": it.sku, "qty": it.quantity or 1,
+                 "product_type": "pg" if it.catalog_product_id else ("cmig" if it.cmig_product_id else None)}
+                for it in items_by_order.get(o.id, [])
+            ],
+        })
+
+    # Estado atual dos produtos afetados (pra projeção e flag de negativo).
+    pg_ids = [pid for (t, pid) in deltas if t == "pg"]
+    cmig_ids = [pid for (t, pid) in deltas if t == "cmig"]
+    cur: dict[tuple[str, int], dict] = {}
+    if pg_ids:
+        for p in (await db.execute(select(CatalogProduct).where(CatalogProduct.id.in_(pg_ids)))).scalars():
+            cur[("pg", p.id)] = {"sku": p.sku, "physical": int(p.stock_quantity or 0),
+                                 "reserved": int(p.reserved_quantity or 0)}
+    if cmig_ids:
+        for p in (await db.execute(select(CMIGProduct).where(CMIGProduct.id.in_(cmig_ids)))).scalars():
+            cur[("cmig", p.id)] = {"sku": p.sku, "physical": int(p.stock_quantity or 0),
+                                   "reserved": int(p.reserved_quantity or 0)}
+
+    products_report = []
+    negatives: list[tuple[str, int]] = []
+    for (ptype, pid), qty in deltas.items():
+        c = cur.get((ptype, pid), {"sku": None, "physical": 0, "reserved": 0})
+        proj_phys = c["physical"] - qty
+        proj_resv = max(0, c["reserved"] - qty)
+        going_neg = proj_phys < 0
+        if going_neg:
+            negatives.append((ptype, pid))
+        products_report.append({
+            "product_type": ptype, "product_id": pid, "sku": c["sku"],
+            "qty_to_dispatch": qty,
+            "physical_before": c["physical"], "reserved_before": c["reserved"],
+            "physical_after": (0 if (going_neg and floor_zero and not dry_run) else proj_phys),
+            "reserved_after": proj_resv,
+            "would_go_negative": going_neg,
+        })
+
+    if not dry_run:
+        for o in orders:
+            try:
+                await confirm_dispatch(db, o)  # idempotente, faz commit próprio
+            except Exception as exc:
+                logger.error("backfill confirm_dispatch order=%s: %s", o.id, exc)
+        if floor_zero and negatives:
+            neg_pg = [pid for (t, pid) in negatives if t == "pg"]
+            neg_cmig = [pid for (t, pid) in negatives if t == "cmig"]
+            if neg_pg:
+                await db.execute(
+                    update(CatalogProduct)
+                    .where(CatalogProduct.id.in_(neg_pg), CatalogProduct.stock_quantity < 0)
+                    .values(stock_quantity=0)
+                )
+            if neg_cmig:
+                await db.execute(
+                    update(CMIGProduct)
+                    .where(CMIGProduct.id.in_(neg_cmig), CMIGProduct.stock_quantity < 0)
+                    .values(stock_quantity=0)
+                )
+            await db.commit()
+
+    return {
+        "dry_run": dry_run,
+        "floor_zero": floor_zero,
+        "orders_found": len(orders),
+        "products_affected": len(products_report),
+        "products_going_negative": len(negatives),
+        "orders": orders_report,
+        "products": products_report,
     }
