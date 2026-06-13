@@ -125,6 +125,13 @@
             </div>
 
             <div class="form-group">
+              <label class="font-weight-bold">Descrição</label>
+              <textarea v-model="form.description" class="form-control" rows="5"
+                placeholder="Deixe em branco para usar a descrição do produto..."></textarea>
+              <small class="text-muted">Se vazio, o sistema usa a descrição do produto da variação.</small>
+            </div>
+
+            <div class="form-group">
               <label class="font-weight-bold">Categoria <span class="text-danger">*</span></label>
 
               <div v-if="isEdit && form.category_id" class="p-2 rounded border bg-light">
@@ -418,6 +425,7 @@ const form = reactive({
   listing_type: 'gold_special',
   title: '',
   model: '',
+  description: '',
   category_id: '',
   category_name: '',
   category_path: [],          // [{id, name}, ...] caminho completo da categoria
@@ -503,6 +511,7 @@ async function loadListing() {
     const { data } = await api.get(`/anuncios/${listingId.value}`)
     form.account_id    = data.account_id
     form.title         = data.title_override || ''
+    form.description   = data.description_override || ''
     form.category_id   = data.category_id || ''
     form.category_name = data.category_name || ''
     form.listing_type  = data.listing_type || 'gold_special'
@@ -780,6 +789,7 @@ async function submit() {
     account_id: form.account_id,
     source: form.source,
     title: form.title.trim(),
+    description: form.description.trim() || null,
     category_id: form.category_id,
     listing_type: form.listing_type,
     model: form.model.trim() || null,

@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-12 — fix(anuncios): publicação carrega descrição, fiscal, vídeo e ficha técnica do produto
+
+### Problema
+Publicação de anúncios não levava vários campos do produto ao ML. **Variação**: sem descrição, sem fiscal (NCM/CEST/ORIGIN nem fiscal_information), sem dimensões/BRAND. **Simples**: descrição sem fallback ao produto; `video_id` e `attributes_json` (ficha técnica) nunca enviados em nenhum fluxo.
+
+### Backend (`routers/anuncios.py`)
+- **Novo helper `_collect_item_attributes(product, form, *, include_seller_sku)`**: centraliza produto→atributos (BRAND, SELLER_SKU, MODEL, NCM, CEST, GTIN, ORIGIN, dimensões do pacote + **ficha técnica via `product.attributes_json`**). `_build_ml_payload` passou a usá-lo + envia `video_id`.
+- **Novo `_attrs_list_from_json`**: parseia `attributes_json` (formatos `{id,value_name}` e `{id,name,value}`).
+- **Simples (`publish_anuncio`)**: descrição agora cai em `product.description`.
+- **Variação (`publish_anuncio_with_variations`)**: usa produto representativo (`loaded_list[0]["product"]`) para atributos-pai (fiscal/ficha/dimensões/BRAND), `video_id`, descrição (`post_item_description`, fallback produto) e **`fiscal_information` por SKU de cada variação**. `_load_variation_product` passou a devolver o objeto `product`.
+- **Update de variação**: atualiza descrição no ML (`update_item_description`) + persiste `description_override`.
+
+### Frontend (`CatalogVariationsFormView.vue`)
+- Campo **Descrição** (textarea) no form de variação; enviado no payload; pré-preenchido na edição. Placeholder indica que, se vazio, usa a descrição do produto (fallback do backend).
+
+### Observações
+- Com os fallbacks no backend, a publicação carrega os campos do produto **mesmo sem digitar nada** no formulário.
+- Pendente opcional: pré-preencher descrição/fiscal no wizard simples (UX — backend já cobre o dado) e integrar atributos curados do `ProductMarketplaceCategory` nos fluxos principais.
+- Verificação: `npm run build` OK; `pytest -m "not integration"` 25 passed (2 falhas pré-existentes em test_orders); teste funcional do helper (SELLER_SKU só no simples, BRAND sem duplicar, NCM limpo, ficha técnica mesclada).
+
+---
+
 ## 2026-06-12 — fix(stock): backfill de reservas órfãs não toca mais no estoque event-sourced
 
 ### Causa

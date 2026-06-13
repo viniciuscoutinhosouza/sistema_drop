@@ -265,6 +265,146 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
     return listing
 
 
+def _attrs_list_from_json(raw) -> list[dict]:
+    """Converte attributes_json (str|list, formato ML) em [{id, value_name}].
+
+    Aceita tanto `{"id","value_name"}` quanto o formato `{"id","name","value"}`
+    armazenado em alguns produtos. Ignora entradas sem id ou valor.
+    """
+    data = raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            data = _json.loads(raw)
+        except Exception:
+            return []
+    if not isinstance(data, list):
+        return []
+    out: list[dict] = []
+    for a in data:
+        if not isinstance(a, dict):
+            continue
+        aid = a.get("id")
+        val = a.get("value_name")
+        if val in (None, ""):
+            val = a.get("value")
+        if aid and val not in (None, ""):
+            out.append({"id": str(aid), "value_name": str(val)})
+    return out
+
+
+def _collect_item_attributes(product, form: dict, *, include_seller_sku: bool = True) -> list[dict]:
+    """Constrói a lista de atributos ML a partir do form + produto.
+
+    Centraliza a derivação produto→atributos para ser reutilizada pelos fluxos
+    de anúncio simples (_build_ml_payload) e de variação. Inclui: atributos
+    manuais do form, BRAND, SELLER_SKU (opcional — pulado no item-pai de variação),
+    MODEL, fiscais (NCM/CEST/GTIN/ORIGIN), dimensões/peso do pacote e a ficha
+    técnica do produto (product.attributes_json). Não duplica ids já presentes.
+    """
+    attributes = list(form.get("attributes") or [])
+    if not any(a.get("id") == "BRAND" for a in attributes) and getattr(product, "brand", None):
+        attributes.append({"id": "BRAND", "value_name": product.brand})
+
+    existing_ids = {a.get("id", "").upper() for a in attributes}
+
+    if include_seller_sku:
+        sku_value = (
+            form.get("sku")
+            or getattr(product, "sku_cmig", None)
+            or getattr(product, "sku", None)
+        )
+        if sku_value and "SELLER_SKU" not in existing_ids:
+            attributes.append({"id": "SELLER_SKU", "value_name": str(sku_value)})
+            existing_ids.add("SELLER_SKU")
+
+    model = form.get("model") or getattr(product, "model", None)
+    if model and "MODEL" not in existing_ids:
+        attributes.append({"id": "MODEL", "value_name": str(model)})
+        existing_ids.add("MODEL")
+
+    # Fiscais (NCM, CEST, GTIN, ORIGIN). Prioridade: form.fiscal_json > produto.
+    fiscal: dict = {}
+    raw_fiscal = form.get("fiscal_json")
+    if isinstance(raw_fiscal, str) and raw_fiscal.strip():
+        try:
+            fiscal = _json.loads(raw_fiscal) or {}
+        except Exception:
+            fiscal = {}
+    elif isinstance(raw_fiscal, dict):
+        fiscal = raw_fiscal
+
+    def _fiscal_str(*keys, prod_attr: str | None = None) -> str | None:
+        for k in keys:
+            v = fiscal.get(k) or fiscal.get(k.upper()) or fiscal.get(k.lower())
+            if v not in (None, ""):
+                return str(v).strip() or None
+        if prod_attr:
+            v = getattr(product, prod_attr, None)
+            if v not in (None, ""):
+                return str(v).strip() or None
+        return None
+
+    ncm_val = _fiscal_str("ncm", prod_attr="ncm")
+    if ncm_val:
+        ncm_val = ncm_val.replace(".", "").replace("-", "")[:8] or None
+    if ncm_val and "NCM" not in existing_ids and "FISCAL_CLASSIFICATION" not in existing_ids:
+        attributes.append({"id": "NCM", "value_name": ncm_val})
+        existing_ids.add("NCM")
+
+    cest_val = _fiscal_str("cest", prod_attr="cest")
+    if cest_val:
+        cest_val = cest_val.replace(".", "").replace("-", "")[:7] or None
+    if cest_val and "CEST" not in existing_ids:
+        attributes.append({"id": "CEST", "value_name": cest_val})
+        existing_ids.add("CEST")
+
+    # GTIN/EAN: valida checksum antes — inválido derrubaria todo o PUT /items.
+    gtin_val = _fiscal_str("gtin", "ean", prod_attr="ean")
+    if gtin_val and "GTIN" not in existing_ids and "EAN" not in existing_ids:
+        if _is_valid_ean13(gtin_val):
+            attributes.append({"id": "GTIN", "value_name": gtin_val})
+            existing_ids.add("GTIN")
+        else:
+            logging.getLogger(__name__).warning(
+                "GTIN '%s' com checksum EAN-13 inválido — skip envio ao ML", gtin_val
+            )
+
+    origin_val = fiscal.get("origin")
+    if origin_val in (None, ""):
+        origin_val = getattr(product, "origin", None)
+    if origin_val not in (None, "") and "ORIGIN" not in existing_ids:
+        attributes.append({"id": "ORIGIN", "value_name": str(origin_val)})
+        existing_ids.add("ORIGIN")
+
+    for field, attr_id in [
+        ("height_cm", "SELLER_PACKAGE_HEIGHT"),
+        ("width_cm", "SELLER_PACKAGE_WIDTH"),
+        ("length_cm", "SELLER_PACKAGE_LENGTH"),
+    ]:
+        val = form.get(field)
+        if val in (None, ""):
+            val = getattr(product, field, None)
+        if val not in (None, "") and attr_id not in existing_ids:
+            attributes.append({"id": attr_id, "value_name": f"{int(float(val))} cm"})
+            existing_ids.add(attr_id)
+    weight = form.get("weight_kg")
+    if weight in (None, ""):
+        weight = getattr(product, "weight_kg", None)
+    if weight not in (None, "") and "SELLER_PACKAGE_WEIGHT" not in existing_ids:
+        attributes.append(
+            {"id": "SELLER_PACKAGE_WEIGHT", "value_name": f"{int(float(weight) * 1000)} g"}
+        )
+        existing_ids.add("SELLER_PACKAGE_WEIGHT")
+
+    # Ficha técnica do produto (attributes_json) — preenche o que ainda não veio.
+    for a in _attrs_list_from_json(getattr(product, "attributes_json", None)):
+        if a["id"].upper() not in existing_ids:
+            attributes.append(a)
+            existing_ids.add(a["id"].upper())
+
+    return attributes
+
+
 def _build_ml_payload(
     product, form: dict, *, use_family_name: bool = False, for_update: bool = False
 ) -> dict:
@@ -302,117 +442,16 @@ def _build_ml_payload(
             {"source": _absolutize_image_url(url)} for url in images[:12]
         ]
 
-    # Attributes — list of {"id": "BRAND", "value_name": "Nike"}
-    attributes = list(form.get("attributes") or [])
-    if not any(a.get("id") == "BRAND" for a in attributes) and getattr(product, "brand", None):
-        attributes.append({"id": "BRAND", "value_name": product.brand})
-
-    # Package dimensions (obrigatórios em várias categorias ML)
-    existing_ids = {a.get("id", "").upper() for a in attributes}
-
-    # SELLER_SKU — código de identificação interno do vendedor.
-    # Ordem de preferência: form.sku → product.sku_cmig → product.sku
-    sku_value = (
-        form.get("sku")
-        or getattr(product, "sku_cmig", None)
-        or getattr(product, "sku", None)
-    )
-    if sku_value and "SELLER_SKU" not in existing_ids:
-        attributes.append({"id": "SELLER_SKU", "value_name": str(sku_value)})
-        existing_ids.add("SELLER_SKU")
-
-    # Modelo (obrigatório em várias categorias ML)
-    model = form.get("model") or getattr(product, "model", None)
-    if model and "MODEL" not in existing_ids:
-        attributes.append({"id": "MODEL", "value_name": str(model)})
-
-    # Atributos fiscais (NCM, CEST, GTIN, ORIGIN) — necessários pro Faturador ML emitir NFe
-    # sem retornar "Sku not found" (error_code 10316). Prioridade:
-    # attributes manuais > form.fiscal_json > campo fiscal do produto.
-    fiscal = {}
-    raw_fiscal = form.get("fiscal_json")
-    if isinstance(raw_fiscal, str) and raw_fiscal.strip():
-        try:
-            fiscal = _json.loads(raw_fiscal) or {}
-        except Exception:
-            fiscal = {}
-    elif isinstance(raw_fiscal, dict):
-        fiscal = raw_fiscal
-
-    def _fiscal_str(*keys, prod_attr: str | None = None) -> str | None:
-        """Retorna primeira chave não-vazia em fiscal (case-insensitive) ou prod.<prod_attr>."""
-        for k in keys:
-            v = fiscal.get(k) or fiscal.get(k.upper()) or fiscal.get(k.lower())
-            if v not in (None, ""):
-                return str(v).strip() or None
-        if prod_attr:
-            v = getattr(product, prod_attr, None)
-            if v not in (None, ""):
-                return str(v).strip() or None
-        return None
-
-    ncm_val = _fiscal_str("ncm", prod_attr="ncm")
-    if ncm_val:
-        ncm_val = ncm_val.replace(".", "").replace("-", "")[:8] or None
-    if ncm_val and "NCM" not in existing_ids and "FISCAL_CLASSIFICATION" not in existing_ids:
-        attributes.append({"id": "NCM", "value_name": ncm_val})
-        existing_ids.add("NCM")
-
-    cest_val = _fiscal_str("cest", prod_attr="cest")
-    if cest_val:
-        cest_val = cest_val.replace(".", "").replace("-", "")[:7] or None
-    if cest_val and "CEST" not in existing_ids:
-        attributes.append({"id": "CEST", "value_name": cest_val})
-        existing_ids.add("CEST")
-
-    # NOTA: CSOSN NÃO é atributo de item ML — o ML droppou silenciosamente quando
-    # tentamos enviar como `ICMS_CSOSN` em PUT /items. CSOSN é gravado via endpoint
-    # dedicado `POST /items/fiscal_information` chamado depois pelo Faturador
-    # (ver ml_service.register_or_update_fiscal_information). Aqui só atributos de
-    # categoria do item ML (NCM/CEST/GTIN/ORIGIN já estão acima).
-
-    # EAN e GTIN são equivalentes pro ML — usamos GTIN como id canônico.
-    # Validamos checksum EAN-13 antes de enviar: GTIN inválido derrubaria todo o
-    # PUT /items com 400 (item.attribute.product_identifier.invalid_format), e
-    # com isso NCM/CEST/ORIGIN também não salvariam. Skip silencioso é melhor UX.
-    gtin_val = _fiscal_str("gtin", "ean", prod_attr="ean")
-    if gtin_val and "GTIN" not in existing_ids and "EAN" not in existing_ids:
-        if _is_valid_ean13(gtin_val):
-            attributes.append({"id": "GTIN", "value_name": gtin_val})
-            existing_ids.add("GTIN")
-        else:
-            logging.getLogger(__name__).warning(
-                "GTIN '%s' com checksum EAN-13 inválido — skip envio ao ML", gtin_val
-            )
-
-    # Origin é numérico (0-8); fiscal_json raramente tem, então caímos no product.origin
-    origin_val = fiscal.get("origin")
-    if origin_val in (None, ""):
-        origin_val = getattr(product, "origin", None)
-    if origin_val not in (None, "") and "ORIGIN" not in existing_ids:
-        attributes.append({"id": "ORIGIN", "value_name": str(origin_val)})
-        existing_ids.add("ORIGIN")
-
-    for field, attr_id in [
-        ("height_cm", "SELLER_PACKAGE_HEIGHT"),
-        ("width_cm", "SELLER_PACKAGE_WIDTH"),
-        ("length_cm", "SELLER_PACKAGE_LENGTH"),
-    ]:
-        val = form.get(field)
-        if val in (None, ""):
-            val = getattr(product, field, None)
-        if val not in (None, "") and attr_id not in existing_ids:
-            attributes.append({"id": attr_id, "value_name": f"{int(float(val))} cm"})
-    weight = form.get("weight_kg")
-    if weight in (None, ""):
-        weight = getattr(product, "weight_kg", None)
-    if weight not in (None, "") and "SELLER_PACKAGE_WEIGHT" not in existing_ids:
-        attributes.append(
-            {"id": "SELLER_PACKAGE_WEIGHT", "value_name": f"{int(float(weight) * 1000)} g"}
-        )
-
+    # Atributos derivados de form + produto (BRAND, SELLER_SKU, MODEL, fiscais,
+    # dimensões, ficha técnica). Centralizado em _collect_item_attributes.
+    attributes = _collect_item_attributes(product, form)
     if attributes:
         payload["attributes"] = attributes
+
+    # Vídeo do produto/anúncio (ML aceita video_id no corpo do item).
+    video_id = form.get("video_id") or getattr(product, "video_id", None)
+    if video_id:
+        payload["video_id"] = str(video_id)
 
     # Warranty via sale_terms
     warranty_type = form.get("warranty_type")
@@ -2115,6 +2154,7 @@ async def _load_variation_product(
                 float(prod.cost_price) if prod.cost_price else None
             ),
             "images": [img.url for img in images_sorted if img.url],
+            "product": prod,
         }
 
     pid = var["cmig_product_id"]
@@ -2150,6 +2190,7 @@ async def _load_variation_product(
             float(prod.cost_price) if prod.cost_price else None
         ),
         "images": [img.url for img in images_sorted if img.url],
+        "product": prod,
     }
 
 
@@ -2365,13 +2406,32 @@ async def publish_anuncio_with_variations(
     # Fotos consolidadas no nível-pai (capa primeiro, depois únicas das variações)
     all_pics = _consolidate_unique_pictures(parent_pictures, pics_per_var)
 
-    # Atributos do item-pai: MODEL se informado + atributos manuais do formulário
+    # Produto representativo da família (todas as variações compartilham
+    # NCM/CEST/origin/descrição/vídeo/ficha técnica).
+    rep_product = loaded_list[0].get("product") if loaded_list else None
+
+    # Atributos do item-pai: form + derivados do produto (BRAND, MODEL, NCM, CEST,
+    # GTIN, ORIGIN, dimensões do pacote, ficha técnica). SELLER_SKU fica por variação.
     parent_attrs_out = list(parent_attributes)
     parent_ids = {a.get("id", "").upper() for a in parent_attrs_out}
     if model and "MODEL" not in parent_ids:
         parent_attrs_out.append({"id": "MODEL", "value_name": str(model)})
-
-    # Dimensões: tira do primeiro produto carregado (todos da mesma família via variação)
+        parent_ids.add("MODEL")
+    if rep_product is not None:
+        parent_form = {
+            "attributes": [],
+            "model": model,
+            "sku": None,
+            "fiscal_json": body.get("fiscal_json"),
+            "height_cm": body.get("height_cm"),
+            "width_cm": body.get("width_cm"),
+            "length_cm": body.get("length_cm"),
+            "weight_kg": body.get("weight_kg"),
+        }
+        for a in _collect_item_attributes(rep_product, parent_form, include_seller_sku=False):
+            if a.get("id", "").upper() not in parent_ids:
+                parent_attrs_out.append(a)
+                parent_ids.add(a.get("id", "").upper())
 
     ml_payload: dict = {
         "title": title[:60],
@@ -2393,11 +2453,18 @@ async def publish_anuncio_with_variations(
         if warranty_time:
             ml_payload["sale_terms"].append({"id": "WARRANTY_TIME", "value_name": warranty_time})
 
-    # Dimensões do pacote (imutáveis após criação)
-    _h = body.get("height_cm")
-    _w = body.get("width_cm")
-    _l = body.get("length_cm")
-    _kg = body.get("weight_kg")
+    # Vídeo (body ou produto representativo)
+    _video_id = body.get("video_id") or (
+        getattr(rep_product, "video_id", None) if rep_product else None
+    )
+    if _video_id:
+        ml_payload["video_id"] = str(_video_id)
+
+    # Dimensões do pacote (imutáveis após criação) — body ou produto representativo
+    _h = body.get("height_cm") or (getattr(rep_product, "height_cm", None) if rep_product else None)
+    _w = body.get("width_cm") or (getattr(rep_product, "width_cm", None) if rep_product else None)
+    _l = body.get("length_cm") or (getattr(rep_product, "length_cm", None) if rep_product else None)
+    _kg = body.get("weight_kg") or (getattr(rep_product, "weight_kg", None) if rep_product else None)
     if _h and _w and _l and _kg:
         ml_payload["shipping"]["dimensions"] = (
             f"{int(float(_h))}x{int(float(_w))}x{int(float(_l))},{int(float(_kg) * 1000)}"
@@ -2441,6 +2508,35 @@ async def publish_anuncio_with_variations(
                 platform_item_id, exc.detail,
             )
 
+    # 2.5) Descrição (body ou produto representativo) — endpoint dedicado do ML
+    description = body.get("description") or body.get("description_override") or (
+        getattr(rep_product, "description", None) if rep_product else None
+    )
+    if description and platform_item_id:
+        try:
+            await ml_service.post_item_description(access_token, platform_item_id, description)
+        except Exception:
+            logger.warning("Falha ao postar descrição do item de variação %s", platform_item_id)
+
+    # 2.6) fiscal_information por SKU de cada variação (Faturador NFe) — best-effort
+    cmig_crt = await _resolve_cmig_crt(account, db)
+    fiscal_overrides = _parse_fiscal_json(body.get("fiscal_json"))
+    for _lv in loaded_list:  # nome != _l/_h/_w/_kg (usados nas dimensões abaixo)
+        _p = _lv.get("product")
+        _sku = _lv.get("sku")
+        if not _p or not _sku:
+            continue
+        _fiscal_payload = _build_fiscal_payload_from_product(
+            _p, str(_sku), cmig_crt, fiscal_overrides=fiscal_overrides
+        )
+        if _fiscal_payload:
+            try:
+                await ml_service.register_or_update_fiscal_information(
+                    access_token, str(_sku), _fiscal_payload
+                )
+            except Exception as exc:
+                logger.warning("fiscal_information variação SKU %s falhou: %s", _sku, exc)
+
     # 3) Persiste ProductListing
     thumbnail = ml_item.get("secure_thumbnail") or ml_item.get("thumbnail") or (
         all_pics[0] if all_pics else None
@@ -2462,6 +2558,7 @@ async def publish_anuncio_with_variations(
         permalink=ml_item.get("permalink") or "",
         thumbnail=thumbnail,
         title_override=title[:60],
+        description_override=description,
         category_id=category_id,
         category_name=cat_support.get("category_name") or "",
         listing_type=listing_type,
@@ -2590,9 +2687,21 @@ async def update_anuncio_variations(
                 listing.platform_item_id, exc.detail,
             )
 
+    # Descrição: atualiza no ML se veio no body (endpoint dedicado)
+    description = body.get("description") or body.get("description_override")
+    if description and listing.platform_item_id:
+        try:
+            await ml_service.update_item_description(
+                access_token, listing.platform_item_id, description
+            )
+        except Exception:
+            logger.warning("Falha ao atualizar descrição do item %s", listing.platform_item_id)
+
     # Persiste no listing
     if title_new:
         listing.title_override = title_new[:60]
+    if description:
+        listing.description_override = description
     if "free_shipping" in body:
         listing.free_shipping = bool(body.get("free_shipping"))
     if "listing_type" in body and body["listing_type"]:
@@ -3266,7 +3375,11 @@ async def publish_anuncio(
             raise HTTPException(status_code=404, detail="Produto PG não encontrado")
         product_title = product_title or prod.title
 
-    description = body.get("description_override") or body.get("description")
+    description = (
+        body.get("description_override")
+        or body.get("description")
+        or getattr(prod, "description", None)
+    )
     item_condition = body.get("item_condition") or "new"
     warranty_type = body.get("warranty_type")
     warranty_time = body.get("warranty_time")
