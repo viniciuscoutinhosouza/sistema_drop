@@ -265,6 +265,15 @@ Toda mudança se enquadra em um de dois níveis:
 3. **Experimentos e arquivos temporários** vão em `sandbox/` — nunca na raiz ou em módulos de produção.
 4. **Código em inglês, conversação em português.**
 
+### Avaliação Prévia Obrigatória (antes de implementar)
+
+**Para TODA solicitação do usuário**, antes de escrever/refatorar qualquer código, invocar o agente `consistency-auditor` para:
+1. Avaliar a **solicitação do usuário** (o que está sendo pedido, ambiguidades, impacto).
+2. Avaliar o **plano de execução da Claude** (a abordagem proposta antes de codar).
+3. Apontar inconsistências, lacunas, fluxos que ficariam fora de paridade e oportunidades de reutilização.
+
+A Claude apresenta o plano, roda o `consistency-auditor` sobre ele, e só então implementa — incorporando os apontamentos. Exceção: tarefas triviais e somente-leitura (perguntas, investigações sem mudança de código) não exigem a avaliação prévia.
+
 ### Procedimento de Auditoria (Nível Full)
 
 Antes de fechar qualquer feature estrutural, invocar em **paralelo**:

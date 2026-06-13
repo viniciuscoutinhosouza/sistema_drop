@@ -3758,10 +3758,38 @@ async def publish_anuncios_as_family(
                 "fiscal_json": p_input.get("fiscal_json"),
                 "cmig_crt": cmig_crt,
                 "family_name": family_name,
+                "video_id": p_input.get("video_id"),
             }
 
             ml_item = await _create_ml_item_with_retry(access_token, prod, ml_form)
             platform_item_id = ml_item.get("id")
+
+            # Descrição (per-produto no body ou do produto) — endpoint dedicado do ML
+            description = p_input.get("description") or getattr(prod, "description", None)
+            if description and platform_item_id:
+                try:
+                    await ml_service.post_item_description(
+                        access_token, platform_item_id, description
+                    )
+                except Exception:
+                    logger.warning("Falha ao postar descrição do item família %s", platform_item_id)
+
+            # fiscal_information por SKU (Faturador NFe) — best-effort
+            sku_for_fiscal = getattr(prod, "sku", None) or getattr(prod, "sku_cmig", None)
+            if sku_for_fiscal:
+                _fp = _build_fiscal_payload_from_product(
+                    prod, str(sku_for_fiscal), cmig_crt,
+                    fiscal_overrides=_parse_fiscal_json(p_input.get("fiscal_json")),
+                )
+                if _fp:
+                    try:
+                        await ml_service.register_or_update_fiscal_information(
+                            access_token, str(sku_for_fiscal), _fp
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "fiscal_information família SKU %s falhou: %s", sku_for_fiscal, exc
+                        )
 
             thumbnail = (
                 ml_item.get("secure_thumbnail")
@@ -3780,9 +3808,11 @@ async def publish_anuncios_as_family(
                 platform_item_id=platform_item_id,
                 sale_price=float(sale_price),
                 title_override=(prod.title or "")[:60],
+                description_override=description,
                 thumbnail=thumbnail,
                 category_id=category_id,
                 listing_type=listing_type,
+                video_id=p_input.get("video_id"),
                 attributes_json=_json.dumps(attrs, ensure_ascii=False) if attrs else None,
                 available_quantity=available_quantity,
                 stock_mode=stock_mode,

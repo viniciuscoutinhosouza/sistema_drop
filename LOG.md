@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-12 — fix(anuncios): paridade do publish-as-family + regra de avaliação prévia
+
+### publish-as-family
+Alinhado aos fluxos simples e de variação: agora envia **descrição** (`post_item_description`, fallback `product.description`), **`fiscal_information` por SKU** (Faturador NFe), `video_id` (no `ml_form` e persistido no `ProductListing`) e grava `description_override`. Antes publicava itens da família sem descrição e sem fiscal (reproduzia "Sku not found" no Faturador).
+
+### Governança (CLAUDE.md)
+Nova seção **"Avaliação Prévia Obrigatória (antes de implementar)"**: para toda solicitação, o `consistency-auditor` avalia a solicitação do usuário + o plano de execução da Claude ANTES de codar (exceto tarefas triviais/somente-leitura).
+
+### Auditoria desta entrega
+quality-guardian: aprovado (sem CRITICAL/HIGH). consistency-auditor: sem bloqueio; pegou 1 MÉDIA (video_id não persistido no listing da família) — corrigido. Follow-up sugerido: helper `_sync_fiscal_for_sku` unificando o padrão fiscal repetido em 4 lugares. Verificação: `pytest -m "not integration"` 25 passed.
+
+---
+
 ## 2026-06-12 — fix(anuncios): publicação carrega descrição, fiscal, vídeo e ficha técnica do produto
 
 ### Problema
