@@ -2533,19 +2533,34 @@ async def get_billing_details(
 # ─── Advertising / Product Ads ───────────────────────────────────────────────
 # Doc: https://developers.mercadolivre.com.br/pt_br/product-ads
 # Métricas aceitam janela de até 90 dias e são atualizadas às 10h GMT-3.
-# Header obrigatório: api-version: 2
+# Endpoints de métricas usam header `api-version: 2`; o de anunciantes usa
+# `Api-Version: 1` (conforme levantamento oficial). Os endpoints antigos
+# /product_ads/campaigns (sem /search) foram DESCONTINUADOS em fev/2026 — usar
+# sempre as variantes /search abaixo.
+
+# Lista completa de métricas suportadas por campanhas / ads / ad groups.
+PRODUCT_ADS_METRICS = (
+    "clicks,prints,ctr,cost,cpc,acos,roas,sov,cvr,"
+    "total_amount,direct_amount,indirect_amount,"
+    "units_quantity,direct_units_quantity,indirect_units_quantity,"
+    "organic_units_quantity,organic_units_amount,organic_items_quantity,"
+    "direct_items_quantity,indirect_items_quantity,advertising_items_quantity"
+)
 
 
-async def get_advertisers(access_token: str) -> list[dict]:
-    """Lista os advertisers (contas de anúncios) do usuário para product_ads."""
+async def get_advertisers(access_token: str, product_id: str = "PADS") -> list[dict]:
+    """Lista os advertisers (contas de anúncios) do usuário.
+
+    product_id: `PADS` (Product Ads) | `DISPLAY` | `BADS` (Brand Ads).
+    """
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.get(
             f"{ML_API_BASE}/advertising/advertisers",
             headers={
                 "Authorization": f"Bearer {access_token}",
-                "api-version": "2",
+                "Api-Version": "1",
             },
-            params={"product_id": "PADS"},
+            params={"product_id": product_id},
         )
     if resp.status_code != 200:
         logger.warning("[ML] advertisers status=%s: %s", resp.status_code, resp.text[:200])
@@ -2554,41 +2569,216 @@ async def get_advertisers(access_token: str) -> list[dict]:
     return data.get("advertisers", []) if isinstance(data, dict) else (data or [])
 
 
+async def search_product_ads_campaigns(
+    access_token: str,
+    site_id: str,
+    advertiser_id: str,
+    date_from: str,
+    date_to: str,
+    *,
+    status: str | None = None,
+    campaign_ids: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    metrics: str = PRODUCT_ADS_METRICS,
+    metrics_summary: bool = True,
+) -> dict:
+    """Lista campanhas de Product Ads com métricas (endpoint /search, api-version 2).
+
+    Retorna o dict cru do ML: {paging, results:[...], metrics_summary:{...}}.
+    Em erro retorna estrutura vazia equivalente (não levanta) para tolerância por conta.
+    """
+    params: dict = {
+        "date_from": date_from,
+        "date_to": date_to,
+        "metrics": metrics,
+        "metrics_summary": "true" if metrics_summary else "false",
+        "limit": limit,
+        "offset": offset,
+    }
+    if status:
+        params["filters[status]"] = status
+    if campaign_ids:
+        params["filters[campaign_ids]"] = campaign_ids
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/advertising/{site_id}/advertisers/{advertiser_id}"
+            f"/product_ads/campaigns/search",
+            headers={"Authorization": f"Bearer {access_token}", "api-version": "2"},
+            params=params,
+        )
+    if resp.status_code != 200:
+        logger.warning("[ML] campaigns/search status=%s: %s", resp.status_code, resp.text[:200])
+        return {"paging": {"total": 0, "offset": offset, "limit": limit}, "results": [], "metrics_summary": {}}
+    data = resp.json()
+    return data if isinstance(data, dict) else {"results": data or [], "metrics_summary": {}}
+
+
+async def search_product_ads(
+    access_token: str,
+    site_id: str,
+    advertiser_id: str,
+    date_from: str,
+    date_to: str,
+    *,
+    campaign_id: int | None = None,
+    item_id: str | None = None,
+    statuses: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    sort_by: str | None = None,
+    sort: str | None = None,
+    aggregation_type: str | None = None,
+    metrics: str = PRODUCT_ADS_METRICS,
+    metrics_summary: bool = True,
+) -> dict:
+    """Lista anúncios (ads) de Product Ads com métricas (endpoint /ads/search).
+
+    aggregation_type: None/"item" (padrão da API, 1 linha por anúncio) ou "DAILY"
+    (série temporal — só um aggregation_type por chamada, conforme a API do ML).
+    """
+    params: dict = {
+        "date_from": date_from,
+        "date_to": date_to,
+        "metrics": metrics,
+        "metrics_summary": "true" if metrics_summary else "false",
+        "limit": limit,
+        "offset": offset,
+    }
+    if campaign_id:
+        params["filters[campaign_id]"] = campaign_id
+    if item_id:
+        params["filters[item_id]"] = item_id
+    if statuses:
+        params["filters[statuses]"] = statuses
+    if sort_by:
+        params["sort_by"] = sort_by
+    if sort:
+        params["sort"] = sort
+    if aggregation_type:
+        params["aggregation_type"] = aggregation_type
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/advertising/{site_id}/advertisers/{advertiser_id}"
+            f"/product_ads/ads/search",
+            headers={"Authorization": f"Bearer {access_token}", "api-version": "2"},
+            params=params,
+        )
+    if resp.status_code != 200:
+        logger.warning("[ML] ads/search status=%s: %s", resp.status_code, resp.text[:200])
+        return {"paging": {"total": 0, "offset": offset, "limit": limit}, "results": [], "metrics_summary": {}}
+    data = resp.json()
+    return data if isinstance(data, dict) else {"results": data or [], "metrics_summary": {}}
+
+
+async def search_ad_groups(
+    access_token: str,
+    site_id: str,
+    advertiser_id: str,
+    date_from: str,
+    date_to: str,
+    *,
+    statuses: str | None = None,
+    q: str | None = None,
+    ad_group_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    metrics: str = PRODUCT_ADS_METRICS,
+    metrics_summary: bool = True,
+) -> dict:
+    """Lista Ad Groups (Catálogo/UP — famílias/catálogos) com métricas."""
+    params: dict = {
+        "date_from": date_from,
+        "date_to": date_to,
+        "metrics": metrics,
+        "metrics_summary": "true" if metrics_summary else "false",
+        "limit": limit,
+        "offset": offset,
+    }
+    if statuses:
+        params["filters[statuses]"] = statuses
+    if q:
+        params["filters[q]"] = q
+    if ad_group_id:
+        params["filters[ad_group_id]"] = ad_group_id
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/advertising/{site_id}/advertisers/{advertiser_id}"
+            f"/product_ads/ad_groups/search",
+            headers={"Authorization": f"Bearer {access_token}", "api-version": "2"},
+            params=params,
+        )
+    if resp.status_code != 200:
+        logger.warning("[ML] ad_groups/search status=%s: %s", resp.status_code, resp.text[:200])
+        return {"paging": {"total": 0, "offset": offset, "limit": limit}, "results": [], "metrics_summary": {}}
+    data = resp.json()
+    return data if isinstance(data, dict) else {"results": data or [], "metrics_summary": {}}
+
+
+# Detalhe da campanha expõe métricas de "share" que NÃO existem no /search.
+CAMPAIGN_DETAIL_METRICS = (
+    PRODUCT_ADS_METRICS
+    + ",impression_share,top_impression_share"
+    + ",lost_impression_share_by_budget,lost_impression_share_by_ad_rank,acos_benchmark"
+)
+
+
+async def get_campaign_detail(
+    access_token: str,
+    site_id: str,
+    advertiser_id: str,
+    campaign_id: str,
+    date_from: str,
+    date_to: str,
+    *,
+    metrics: str = CAMPAIGN_DETAIL_METRICS,
+) -> dict:
+    """Detalhe de uma campanha de Product Ads com métricas extras de share.
+
+    Usa a forma COM advertiser_id no path (`/advertising/{site}/advertisers/{adv}
+    /product_ads/campaigns/{id}`) — a variante sem advertiser foi descontinuada
+    pelo ML em fev/2026. Retorna o dict cru ({} em erro, sem levantar).
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{ML_API_BASE}/advertising/{site_id}/advertisers/{advertiser_id}"
+            f"/product_ads/campaigns/{campaign_id}",
+            headers={"Authorization": f"Bearer {access_token}", "api-version": "2"},
+            params={"date_from": date_from, "date_to": date_to, "metrics": metrics},
+        )
+    if resp.status_code != 200:
+        logger.warning("[ML] campaign detail status=%s: %s", resp.status_code, resp.text[:200])
+        return {}
+    data = resp.json()
+    return data if isinstance(data, dict) else {}
+
+
 async def get_ads_cost(
-    access_token: str, advertiser_id: str, date_from: str, date_to: str
+    access_token: str, advertiser_id: str, date_from: str, date_to: str, site_id: str = "MLB"
 ) -> float:
     """Gasto total (métrica 'cost') em product_ads do advertiser no intervalo.
 
     date_from / date_to no formato YYYY-MM-DD. Intervalo máximo de 90 dias.
+    Migrado para o endpoint /search (o antigo foi descontinuado em fev/2026).
     """
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(
-            f"{ML_API_BASE}/advertising/advertisers/{advertiser_id}/product_ads/campaigns",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "api-version": "2",
-            },
-            params={
-                "metrics": "cost",
-                "date_from": date_from,
-                "date_to": date_to,
-                "limit": 100,
-            },
-        )
-    if resp.status_code != 200:
-        logger.warning("[ML] ads cost status=%s: %s", resp.status_code, resp.text[:200])
-        return 0.0
-    data = resp.json()
+    data = await search_product_ads_campaigns(
+        access_token,
+        site_id,
+        advertiser_id,
+        date_from,
+        date_to,
+        metrics="cost",
+        metrics_summary=True,
+        limit=100,
+    )
+    summary = data.get("metrics_summary") or {}
+    if isinstance(summary, dict) and summary.get("cost") is not None:
+        return round(_as_float(summary.get("cost")), 2)
+    # Fallback: soma o 'cost' de cada campanha retornada.
     total = 0.0
-    # Soma o 'cost' de cada campanha; o shape pode variar entre metrics no topo
-    # ou dentro de cada item de results.
-    if isinstance(data, dict):
-        top_metrics = data.get("metrics") or {}
-        if isinstance(top_metrics, dict) and top_metrics.get("cost") is not None:
-            total += _as_float(top_metrics.get("cost"))
-        for camp in data.get("results", []) or []:
-            metrics = camp.get("metrics") or camp
-            total += _as_float(metrics.get("cost"))
+    for camp in data.get("results", []) or []:
+        metrics = camp.get("metrics") or camp
+        total += _as_float(metrics.get("cost"))
     return round(total, 2)
 
 

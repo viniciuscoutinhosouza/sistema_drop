@@ -56,7 +56,10 @@ from routers import (
     admin_api_console,
     ai_config,
     anuncios,
+    marketplace_settings,
+    media,
     auth,
+    campaign_ads,
     catalog,
     cfop,
     cmig_reports,
@@ -116,6 +119,7 @@ app.include_router(warehouse.router, prefix=f"{PREFIX}/warehouse", tags=["Wareho
 app.include_router(goes.router, prefix=f"{PREFIX}/goes", tags=["GOs"])
 app.include_router(cmigs.router, prefix=f"{PREFIX}/cmigs", tags=["CMIGs"])
 app.include_router(anuncios.router, prefix=f"{PREFIX}/anuncios", tags=["Anuncios"])
+app.include_router(campaign_ads.router, prefix=f"{PREFIX}/campaign-ads", tags=["CampaignAds"])
 app.include_router(
     product_categories.router,
     prefix=f"{PREFIX}/product-categories",
@@ -139,6 +143,8 @@ app.include_router(
 )
 app.include_router(messages.router)
 app.include_router(ai_config.router)
+app.include_router(marketplace_settings.router)
+app.include_router(media.router)
 app.include_router(
     scheduler_monitoring.router, prefix=f"{PREFIX}/scheduler", tags=["SchedulerMonitoring"]
 )

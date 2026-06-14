@@ -4,6 +4,177 @@
 
 ---
 
+## 2026-06-14 — feat(campaign-ads): Raio-X do anúncio + detalhe de campanha (fase 2) (local, não enviado)
+
+Os 2 recursos deixados fora de escopo na fase 1 do módulo Campanha ADS. Avaliação prévia do consistency-auditor aplicada — pegou 1 CRITICAL: a URL de detalhe de campanha da §9.2 do levantamento (sem advertiser) está na lista de descontinuados; usei a forma COM `advertiser_id` no path + `api-version: 2`.
+
+- `services/ml_service.py`: `CAMPAIGN_DETAIL_METRICS` (= base + impression_share/top_impression_share/lost_*_budget/lost_*_ad_rank/acos_benchmark, que só existem no detalhe). `get_campaign_detail(token, site_id, advertiser_id, campaign_id, …)` com advertiser no path. `search_product_ads` ganhou `aggregation_type` (None|item|DAILY) para a série temporal do Raio-X.
+- `routers/campaign_ads.py`: `GET /product/campaign-detail` e `GET /product/ad-detail` (Raio-X). O ad-detail dispara as 2 visões obrigatórias (item + DAILY) em paralelo via `asyncio.gather` (a API só aceita 1 aggregation_type por chamada). Mesmo gating/validação da fase 1.
+- Frontend: `useCampaignAds.js` (+loadCampaignDetail/loadAdDetail); `components/campanha-ads/CampaignDetailModal.vue` (estratégia traduzida PT, orçamento, metas, share de impressões em barras + acos_benchmark — share/benchmark tratados como null⇒"—", não 0); `components/campanha-ads/AdRaioXModal.vue` (cards + funil + gráfico de linha diário ApexCharts, série DAILY normalizada defensivamente: date||day||aggregation_date, esconde o gráfico se ausente). `CampaignAdsView.vue`: coluna Raio-X (👁) na tabela de anúncios + botão "Detalhe completo" na campanha expandida; modais recebem os dados da linha p/ exibição imediata.
+- Verificação: backend importa OK (6 rotas no router, incluindo as 2 novas); `npm run build` OK; `pytest -m "not integration"` = 25 passed, 2 failed (pré-existentes, test_orders.py).
+- Incerteza registrada p/ validação ao vivo: nome do campo de data da agregação DAILY (tratado defensivamente no front).
+
+> **Local apenas.** Não enviado a GitHub/servidor.
+
+## 2026-06-14 — feat(campaign-ads): submenu "Campanha ADS" (OPERAÇÕES) + acompanhamento de campanhas por CMIG (local, não enviado)
+
+Página read-only de acompanhamento de Product Ads e Catálogo/UP do Mercado Livre por CMIG. Dados AO VIVO da API de Mercado Ads (sem job, sem tabela nova). Seletor CMIG → anunciante (o par `account_id`+`advertiser_id` é a chave, pois o advertiser pertence ao token de uma conta). Avaliação prévia do consistency-auditor aplicada (4 ajustes incorporados antes de codar).
+
+- `services/ml_service.py`: `PRODUCT_ADS_METRICS` + `search_product_ads_campaigns`/`search_product_ads`/`search_ad_groups` (endpoints `/search`, api-version 2). `get_advertisers` agora parametriza `product_id` e usa `Api-Version: 1` (correção do levantamento). `get_ads_cost` migrado para o `/search` (o endpoint antigo foi descontinuado pelo ML em fev/2026).
+- `routers/campaign_ads.py` (novo, prefix `/api/v1/campaign-ads`): `GET /advertisers?cmig_id`, `/product/campaigns`, `/product/ads`, `/catalog/ad-groups`. Gating `require_menu_permission("campanha_ads")` + acesso à conta via `_get_account_or_403` (reuso de anuncios.py). Validação de janela ≤90 dias; tolerância a erro por conta. Registrado em `main.py`.
+- `routers/profiles.py`: `MENU_CATALOG` ganha `campanha_ads` (seção OPERAÇÕES).
+- Frontend: `composables/useCampaignAds.js` (chamadas + derivadas), `views/campanha-ads/CampaignAdsView.vue` (abas PRODUCT[Campanhas/Anúncios] + CATÁLOGO/UP, cards globais, insights, lista expansível com metas, tabela de anúncios paginada). Rota `/campanha-ads`; item na sidebar (OPERAÇÕES, `fas fa-bullhorn`); `campanha_ads` nos `_legacyMenus` (admin, ac).
+- Fora de escopo desta fase (registrado): abas DISPLAY/BRAND, "Raio-X do anúncio" e detalhe de campanha (métricas impression_share etc.).
+- Verificação: backend importa OK (4 rotas); `npm run build` OK (chunk CampaignAdsView gerado); `pytest -m "not integration"` = 25 passed, 2 failed (pré-existentes em test_orders.py, sem relação).
+
+> **Local apenas.** Não enviado a GitHub/servidor.
+
+## 2026-06-12 — feat(ai-config): Fase B.1 — provider de IA de mídia (Gemini/Nano Banana) (local, não enviado)
+
+Subdividida a Fase B em B.1/B.2/B.3 por recomendação do consistency-auditor (risco do outpaint + conflito 1024px vs mínimo do marketplace). Esta é a B.1 — base para gerar/editar imagem por IA.
+
+- Migration `Scripts SQL/103_ai_config_media.sql` (idempotente, ORA-1430): adiciona `media_provider`/`media_api_key`/`media_image_model` em `ai_configs`.
+- Modelo `AIConfig` (models/messages.py): 3 colunas de mídia (chave em base64, independente da IA de chat).
+- `routers/ai_config.py`: GET retorna campos de mídia (chave mascarada) + `media_available_models`; PUT salva (admin). `MEDIA_MODELS` = {google: gemini-2.5-flash-image, openai: gpt-image-1}.
+- `AIConfigView.vue`: nova seção "IA de Mídia (imagens)" — provider/chave/modelo + aviso de custo.
+- Verificação: backend importa OK; `npm run build` OK. Pendente: migration 103 no Oracle.
+
+> **Local apenas.** (B.2 implementada na sequência; B.3 pendente.)
+
+## 2026-06-12 — feat(media): Fase B.2 — gerar foto por IA (Gemini) no wizard de anúncios (local, não enviado)
+
+- `services/media_ai_service.py`: `generate_image` (Gemini 2.5 Flash Image, trata timeout/safety/sem-imagem) + `upscale_to` (Pillow, amplia ao px recomendado do marketplace — decisão "upscale", resolve o limite ~1024px do Gemini vs mínimo do ML).
+- `services/product_brief.py`: `build_product_brief` (PG/CMIG) reutilizável, sanitizado (anti prompt-injection).
+- `routers/media.py`: `POST /api/v1/media/generate-image` (prompt + ficha técnica opcional + fotos de referência → imagem salva em static/uploads/media). Registrado no main.py.
+- `AIConfigView`: já tinha a seção de mídia (B.1). `AnunciosView`: botão **"Criar foto (IA)"** com painel (prompt, incluir ficha técnica, usar fotos como referência, aviso de custo) → adiciona a imagem gerada às fotos do wizard.
+
+### Auditoria de fechamento
+- quality-guardian pegou **1 CRITICAL** (path traversal em `_fetch_image`: `/static/../.env`/Wallet exfiltrados ao Gemini) + **2 HIGH** (SSRF via URL http externa; custo sem rate limit). **Corrigidos**: `_safe_static_path` (containment em static/ + só extensão de imagem), `_is_public_https` (bloqueia http e IPs privados/metadata/loopback), `follow_redirects=False` + check content-type, cap de prompt (4000), `_save_image` detecta formato real + trata I/O. Proteções testadas (traversal/SSRF/metadata rejeitados).
+- consistency-auditor: NÃO BLOQUEADO — tudo no padrão.
+- **Follow-up (HIGH residual):** rate limit/cota por usuário no endpoint pago — Gemini tem quota própria; documentado como pendência.
+- Verificação: `npm run build` OK; `pytest -m "not integration"` 25 passed. Pendente: migrations 102/103 no Oracle.
+
+## 2026-06-14 — feat(media): clip — preview, exclusão e associação ao produto (local, não enviado)
+
+- **#1 Preview:** `ClipPreviewModal.vue` (overlay com `<video controls autoplay muted playsinline>` + baixar/fechar), reutilizável. Clicar no clip abre o modal (ProductPhotosCard e AnunciosView).
+- **#2 Excluir:** `DELETE /media/clips/{job_id}` (ownership por user_id; apaga o mp4 via `_safe_static_path(..., exts=('.mp4',))` — agora parametrizado; best-effort). `useMediaAi.deleteClip`. Botão de lixeira em cada clip + confirm.
+- **#3 Associar ao produto:** migration `106` (colunas `product_type`/`product_id` em `media_clip_jobs`); `generate-clip` grava o produto; `GET /media/clips` aceita filtro opcional por produto (sempre escopado ao user_id); `ProductPhotosCard` lista só os clips daquele produto. O clip fica **persistido/associado ao produto** (pronto).
+- **Investigação ML (envio do clip):** skill + busca + doc oficial (403) — a API pública de itens do ML aceita vídeo só via `video_id` (YouTube); **upload de MP4 ("Clips") não tem endpoint público confirmado**. Por isso o envio automático do MP4 ao ML na publicação **não foi construído** (evitar dead code). O clip fica pronto/associado; o envio depende de confirmar o endpoint de upload do ML (ou marketplaces que aceitam MP4, ex.: Shopee/TikTok, quando integrados).
+- Auditoria: avaliação prévia + fechamento (quality-guardian) — NÃO BLOQUEADO, sem CRITICAL/HIGH. Follow-up: cancelar a operação Veo ao excluir clip em geração (custo); STATIC_DIR absoluto. Verificação: build OK; pytest 25 passed. Pendente: migration 106 no Oracle.
+
+## 2026-06-12 — fix(media): ORA-12899 no prompt do clip — truncar por bytes, não chars (local)
+
+`media_clip_jobs.prompt` é VARCHAR2(1100) (conta bytes). Com instruções+prompt+brief e acentos UTF-8, 1100 chars = 1133 bytes → ORA-12899. Trocado o corte `[:1100]` (chars) por `_truncate_bytes(final_prompt, 1000)` (bytes, sem quebrar caractere). Testado.
+
+## 2026-06-12 — fix(media): formato de imagem do Veo (bytesBase64Encoded) — clip dava 400 (local)
+
+`start_video` enviava a imagem como `inlineData` (formato do generateContent), mas o Veo (predictLongRunning) exige `image: { bytesBase64Encoded, mimeType }`. Erro: "`inlineData` isn't supported by this model" (400). Corrigido em `services/media_ai_service.py`. Testado ao vivo: operação criada com sucesso (sem 400/429).
+
+## 2026-06-12 — feat(ai-config): instruções/perfil de mídia aplicadas a todos os prompts de IA (local)
+
+Campo de "Instruções / Perfil de Mídia" no card de IA de Mídia, prefixado a TODO prompt de foto e clip (análogo ao global_instructions do chat).
+- Migration `Scripts SQL/105_ai_media_instructions.sql`: coluna CLOB `media_instructions` em `ai_configs`. Modelo `AIConfig.media_instructions` (Text).
+- `ai_config` GET (2 ramos) + PUT (limitado a 500 chars — evita estourar o cap de 1024 do prompt do Veo).
+- `media.py`: `_load_media_ai` agora retorna também as instruções (sem query extra); helper `_with_instructions` prefixa o perfil nos 3 endpoints (generate-image, ai-edit, generate-clip).
+- `AIConfigView`: textarea (máx 500, contador) no card de IA de Mídia.
+- Avaliação prévia (consistency-auditor): 3 ajustes incorporados — cap de tamanho (WARN-1), helper único reusando `_load_media_ai` (WARN-2), campo nos 2 ramos do GET + load fora do `if configured` (WARN-3). Verificação: build OK; pytest 25 passed. Pendente: migration 105 no Oracle.
+
+## 2026-06-12 — fix(media): endpoint Gemini v1beta + recursos de mídia nos forms de produto (local)
+
+### #2 — Erro 400 na geração de imagem
+- **Causa:** o service usava o endpoint **`v1`** do Gemini, que rejeita `generationConfig.responseModalities` → 400. Corrigido para **`v1beta`** (`GEMINI_URL`). Mensagens de erro agora mostram o motivo real (ex.: quota/billing) via `_api_error_detail`.
+- **Diagnóstico:** com `v1beta` o request passa, mas a chave free-tier do usuário retorna **429 (quota 0)** — geração de imagem/vídeo do Gemini/Veo **exige billing habilitado** (não funciona no nível gratuito). Comunicado ao usuário.
+
+### #1 — Recursos de mídia nos forms de produto (PG e CMIG)
+Os 3 recursos (gerar foto IA, gerar clip IA, drag-drop) que só existiam no wizard de anúncios foram levados para os forms de produto, via o componente compartilhado `ProductPhotosCard.vue` (usado por Pg/Cmig Product e Composite forms).
+- **Composable novo `useMediaAi.js`** (B3 do auditor): centraliza generatePhoto/startClip/pollClip/loadClips/clearTimers (cleanup no unmount). `AnunciosView` **refatorado** para usá-lo (removida a duplicação).
+- **`ProductPhotosCard.vue` reescrito**: drag-drop (vuedraggable, item-key=url) no lugar dos chevrons; botões "Criar foto (IA)" e "Criar clip (IA)" (via composable, com product_type/product_id); correção no upload (abre `ImageCorrectionModal` com spec genérico 1:1/1200 em vez de só rejeitar); lista de clips gerados. Contrato `modelValue=[{url,...}]` preservado.
+- **Forms** PG/CMIG (simples e composto) passam `product-type`/`product-id` (null na criação).
+- **Backend (B1):** `/media/generate-image` usa `rec_px = ... or 1200` (upscale mínimo quando não há marketplace) — sem `target_px`.
+
+### Auditoria
+- Avaliação prévia: 3 BLOQUEADORES (B1/B2/B3) — todos incorporados antes de codar.
+- Fechamento (quality-guardian + consistency-auditor): **APROVADO, sem CRITICAL/HIGH**. Ajustes LOW aplicados: reset de `aiPhoto` no openWizard; props nos forms compostos.
+- Follow-up: role guard/rate-limit nos endpoints pagos; expurgo de mídia antiga; dedupe de URLs.
+- Verificação: `npm run build` OK; `pytest -m "not integration"` 25 passed.
+
+## 2026-06-12 — feat(media): Fase C — gerar clip/vídeo por IA (Veo) no wizard (local, não enviado)
+
+#4 (clip): botão "Criar clip (IA)" no wizard, geração assíncrona via Veo (Google), com prompt padrão configurável por marketplace.
+
+- Migration `Scripts SQL/104_media_clip_jobs.sql`: coluna `media_video_model` em `ai_configs` + tabela `media_clip_jobs` (persiste a operação long-running para sobreviver a reload e listar clips). Modelos: `AIConfig.media_video_model`, `MediaClipJob`.
+- `ai_config`: provider de vídeo (`MEDIA_VIDEO_MODELS`, Veo) + GET/PUT; renomeado `MEDIA_MODELS`→`MEDIA_IMAGE_MODELS`. `AIConfigView`: select de modelo de vídeo.
+- `media_ai_service`: `start_video`/`video_status`/`download_video` (Veo v1beta long-running; download com limite de 100 MB).
+- `routers/media.py`: `POST /media/generate-clip` (inicia, persiste job, cota de 3 simultâneos/usuário), `GET /media/clip-status/{job_id}` (poll; ao concluir baixa e salva o mp4), `GET /media/clips` (lista/recupera). Aspecto do clip vem do spec do marketplace.
+- `DEFAULT_MEDIA_SPECS.clip.ai_prompt` (prompt padrão) editável na `MarketplaceSettingsView`; usado como sugestão no `AnunciosView`.
+- `AnunciosView`: painel "Criar clip (IA)" + polling (teto ~10min, timers cancelados ao reabrir) + lista "Clips gerados" (preview + download). ML aceita vídeo só por YouTube → o clip é asset para download/uso manual.
+
+### Auditoria de fechamento
+- quality-guardian pegou **1 CRITICAL** (vazamento da `x-goog-api-key` em redirect do `download_video`) + HIGH (timers de polling órfãos; endpoint pago sem cota). **Corrigidos**: `download_video` segue redirects manualmente validando o host (allowlist Google + IP público) a cada salto; timers de polling rastreados/cancelados; cota de 3 clips simultâneos por usuário; guard de `user_id` reforçado (anti-IDOR); re-checagem do job antes do download (anti-corrida). Verificado: hosts externos/http rejeitados.
+- consistency-auditor: NÃO BLOQUEADO — todas as 8 recomendações da avaliação prévia atendidas.
+- **Follow-up:** rate limit em `generate-image`/`ai-edit` (imagens, mais baratas); expurgo periódico de mp4 antigos (retenção).
+- Verificação: `npm run build` OK; `pytest -m "not integration"` 25 passed. Pendente: migrations 102/103/104 no Oracle.
+
+## 2026-06-12 — feat(media): Fase B.3 — correção de imagem ao padrão do marketplace (local, não enviado)
+
+#3 das melhorias: ao subir foto no wizard de anúncios, mostra o padrão do marketplace e, se a imagem estiver fora do padrão, oferece correção.
+
+- Backend `POST /api/v1/media/ai-edit` (routers/media.py): outpaint por IA — recebe a imagem já no formato alvo (cliente adiciona borda branca), a IA preenche; limite de upload (15 MB, `file.read(MAX+1)`→413), valida extensão (`_IMG_EXTS`), upscale ao px do marketplace, salva via `_save_image`. Reusa helpers da B.2.
+- `composables/useImageStandard.js`: `validateImage` (compara dimensões/proporção/MB/formato com o spec), `cropToAspect` e `padToAspect` (canvas, sem custo).
+- `components/common/ImageCorrectionModal.vue`: modal **reutilizável** (props imageSpec/uploadUrl, sem acoplamento a anúncio) — opções Ajustar (crop) / Adicionar borda / Estender com IA (com confirmação de custo) / Usar como está; em erro de IA mantém aberto.
+- `AnunciosView`: input "Enviar foto do computador" + texto do padrão (do marketplace da conta) → valida; fora do padrão abre o modal; dentro do padrão sobe direto.
+
+### Auditoria de fechamento
+- quality-guardian + consistency-auditor: **NÃO BLOQUEADO**, sem CRITICAL/HIGH; as 6 recomendações da avaliação prévia foram atendidas (limite de tamanho, confirmação de custo, spec de selectedAccount.platform, modal reutilizável, reuso de _IMG_EXTS, não fechar em erro). UploadFile não passa por _fetch_image (sem vetor de traversal/SSRF).
+- Aplicado fix LOW: revoke de object URL no erro do loadImage.
+- Follow-up LOW: extrair helper de upload (duplicado view/modal) e constante do texto de custo ao plugar o modal em PG/CMIG forms.
+- Verificação: `npm run build` OK; `pytest -m "not integration"` 25 passed.
+
+---
+
+## 2026-06-12 — feat(marketplace-settings): Fase A — Config de Marketplaces + drag-drop de fotos (local, não enviado)
+
+Primeira fase da feature de configuração de marketplaces (das 5 melhorias solicitadas). Fases B/C (IA imagem/vídeo) ficam para depois.
+
+### #1 Página de Config de Marketplaces (Super Admin)
+- Migration `Scripts SQL/102_marketplace_settings.sql` (idempotente): tabela `marketplace_settings` (1 linha/marketplace, `settings_json` CLOB flexível, unique em marketplace).
+- Modelo `MarketplaceSetting` em `models/integration.py`.
+- Router `routers/marketplace_settings.py` (`/api/v1/marketplace-settings`): GET autenticado, PUT só `require_role("admin")`. Padrão do `ai_config` (singleton + JSON, sem prefixo extra no main). Registrado em `main.py`.
+- Menu key `config_marketplaces` em `routers/profiles.py` (MENU_CATALOG) + sidebar (v-if da seção + RouterLink) + rota `/settings/marketplaces` (role:'admin').
+- View `FRONTEND/src/views/settings/MarketplaceSettingsView.vue` — abas por marketplace (ML, Shopee, Amazon, TikTok Shop, Magalu).
+
+### #2 Formatos de mídia por marketplace
+- `DEFAULT_MEDIA_SPECS` no router com os formatos recomendados (pesquisados) por marketplace — mesclados na leitura, editáveis na tela (imagem: proporção/px/MB/formatos/fundo; clip: proporção/seg/MB/formato/entrega).
+
+### #5 Drag-and-drop de fotos
+- `AnunciosView.vue`: reordenação de fotos do wizard trocada dos botões ◀▶ (`moveImage`, removido) por **arrastar** com `vuedraggable` (já instalado). Capa = 1ª foto.
+
+### Processo / Auditoria
+- Avaliação prévia (consistency-auditor) sobre o plano pegou 2 CRÍTICOS antes de codar: #5 mirava `ImageUploader.vue` (código morto) → redirecionado ao `AnunciosView.vue` real; menu_key precisava em profiles.py + sidebar → feito nos dois.
+- Auditoria de fechamento (quality-guardian + consistency-auditor): NÃO BLOQUEADO, sem CRITICAL/HIGH. Removida função órfã `moveImage`; prefixo documentado no CLAUDE.md.
+- Verificação: `npm run build` OK; `pytest -m "not integration"` 25 passed (2 pré-existentes). Pendente: rodar migration 102 no Oracle ao subir.
+
+> **Local apenas** — não commitado/enviado a pedido do usuário.
+
+---
+
+## 2026-06-12 — refactor(anuncios): helper _sync_fiscal_for_sku unifica padrão fiscal por SKU (local, não enviado)
+
+Centralizou o padrão "monta payload → register_or_update_fiscal_information → trata retorno/erro" que estava repetido em 5 fluxos. Novo helper `async _sync_fiscal_for_sku(access_token, product, sku, cmig_crt, fiscal_overrides) -> str|None` (retorna aviso em falha, None em sucesso/sem-NCM; best-effort, não propaga).
+
+Call-sites unificados: `publish_anuncio` (create), `publish_anuncio_with_variations`, `publish_anuncios_as_family`, `update_anuncio` (update), `sync_listing`. O endpoint dedicado de fiscal-information ficou de fora (contrato diferente: retorna resultado bruto + 400 sem NCM).
+
+Melhorias de observabilidade (avaliadas pelo consistency-auditor antes de implementar):
+- Mensagem de erro unificada ("Erro ao sincronizar fiscal_information") e chave única `fiscal_sync_warning` em todos os fluxos.
+- Variação agora agrega avisos por SKU (dedupe + 5 primeiros + "… e mais N") no response — antes engolia falhas silenciosamente.
+- Família anexa `fiscal_sync_warning` ao item de `results` do produto que falhar.
+
+Auditoria: consistency-auditor (prévia, sobre o plano) aprovou com 4 cuidados — todos incorporados (chave única, dedupe/truncate, captura antes do append, mensagem canônica). quality-guardian (fechamento) NÃO BLOQUEADO, sem CRITICAL/HIGH, confirmou ausência de shadowing. Testes: `pytest -m "not integration"` 25 passed; teste funcional do helper nos 4 caminhos OK.
+
+> **Local apenas** — não commitado/enviado a pedido do usuário (aguardando outras alterações antes de atualizar GitHub + servidor).
+
+---
+
 ## 2026-06-12 — fix(anuncios): paridade do publish-as-family + regra de avaliação prévia
 
 ### publish-as-family

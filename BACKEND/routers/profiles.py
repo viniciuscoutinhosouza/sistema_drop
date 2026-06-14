@@ -21,6 +21,7 @@ MENU_CATALOG: list[dict] = [
     {"key": "cmig_reports",     "label": "Relatórios CMIG",          "section": "MINHAS CONTAS"},
     {"key": "full_cnpjs",       "label": "CNPJs FULL",               "section": "MINHAS CONTAS"},
     {"key": "anuncios",         "label": "Anúncios",                 "section": "OPERAÇÕES"},
+    {"key": "campanha_ads",     "label": "Campanha ADS",             "section": "OPERAÇÕES"},
     {"key": "atendimento",      "label": "Atendimento",              "section": "OPERAÇÕES"},
     {"key": "financeiro",       "label": "Financeiro",               "section": "OPERAÇÕES"},
     {"key": "pedidos",          "label": "Pedidos",                  "section": "OPERAÇÕES"},
@@ -50,6 +51,7 @@ MENU_CATALOG: list[dict] = [
     {"key": "config_email",       "label": "Servidor de E-mail",     "section": "ADMINISTRAÇÃO"},
     {"key": "config_ncm",         "label": "Tabela NCM",             "section": "ADMINISTRAÇÃO"},
     {"key": "config_ai",          "label": "Configuração de IA",     "section": "ADMINISTRAÇÃO"},
+    {"key": "config_marketplaces","label": "Config. de Marketplaces","section": "ADMINISTRAÇÃO"},
     {"key": "config_api_console", "label": "Console de API",         "section": "ADMINISTRAÇÃO"},
     {"key": "config_perfis",      "label": "Gestão de Perfis",       "section": "ADMINISTRAÇÃO"},
 ]

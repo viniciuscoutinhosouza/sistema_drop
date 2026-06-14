@@ -72,11 +72,16 @@
           </template>
 
           <!-- OPERAÇÕES (GC / AC) -->
-          <template v-if="canSee('anuncios') || canSee('atendimento') || canSee('financeiro') || canSee('pedidos') || canSee('catalog') || canSee('pedido_manual') || canSee('devolucoes') || canSee('estoque')">
+          <template v-if="canSee('anuncios') || canSee('campanha_ads') || canSee('atendimento') || canSee('financeiro') || canSee('pedidos') || canSee('catalog') || canSee('pedido_manual') || canSee('devolucoes') || canSee('estoque')">
             <li class="nav-header">OPERAÇÕES</li>
             <li v-if="canSee('anuncios')" class="nav-item">
               <RouterLink to="/anuncios" class="nav-link" :class="{ active: route.path.startsWith('/anuncios') }">
                 <i class="nav-icon fas fa-tag"></i><p>Anúncios</p>
+              </RouterLink>
+            </li>
+            <li v-if="canSee('campanha_ads')" class="nav-item">
+              <RouterLink to="/campanha-ads" class="nav-link" :class="{ active: route.path.startsWith('/campanha-ads') }">
+                <i class="nav-icon fas fa-bullhorn"></i><p>Campanha ADS</p>
               </RouterLink>
             </li>
             <li v-if="canSee('atendimento')" class="nav-item">
@@ -218,7 +223,7 @@
           </template>
 
           <!-- ADMINISTRAÇÃO -->
-          <template v-if="canSee('config_usuarios') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_api_console') || canSee('config_perfis')">
+          <template v-if="canSee('config_usuarios') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_api_console') || canSee('config_perfis')">
             <li class="nav-header">ADMINISTRAÇÃO</li>
             <li class="nav-item" :class="{ 'menu-open': settingsOpen }">
               <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') }" @click.prevent="settingsOpen = !settingsOpen">
@@ -249,6 +254,12 @@
                 <li v-if="canSee('config_ai')" class="nav-item">
                   <RouterLink to="/settings/ai-config" class="nav-link" :class="{ active: route.path === '/settings/ai-config' }">
                     <i class="far fa-circle nav-icon"></i><p>Configuração de IA</p>
+                  </RouterLink>
+                </li>
+                <li v-if="canSee('config_marketplaces')" class="nav-item">
+                  <RouterLink to="/settings/marketplaces" class="nav-link" :class="{ active: route.path === '/settings/marketplaces' }">
+                    <i class="far fa-circle nav-icon"></i>
+                    <p>Config. de Marketplaces <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
                   </RouterLink>
                 </li>
                 <li v-if="canSee('config_api_console')" class="nav-item">
@@ -323,7 +334,7 @@ const roleLabel = computed(() => {
 // Mapa legado: qual menu_key cada role vê por padrão (sem perfil configurado)
 const _legacyMenus = {
   admin: new Set([
-    'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',
+    'cmig','integrations','cmig_reports','full_cnpjs','anuncios','campanha_ads','atendimento','financeiro',
     'pedidos','catalog','pedido_manual','devolucoes','estoque',
     'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
     'pg','separacao','ag_retorno','inventario','inventario_criar','rotinas',
@@ -331,7 +342,7 @@ const _legacyMenus = {
     'config_usuarios','config_email','config_eship','config_ncm','config_ai','config_api_console','config_perfis',
   ]),
   ac: new Set([
-    'cmig','integrations','cmig_reports','full_cnpjs','anuncios','atendimento','financeiro',
+    'cmig','integrations','cmig_reports','full_cnpjs','anuncios','campanha_ads','atendimento','financeiro',
     'pedidos','catalog','pedido_manual','devolucoes','estoque',
     'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
     'inventario',

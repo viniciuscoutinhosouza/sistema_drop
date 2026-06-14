@@ -80,6 +80,7 @@ const CmigCompositeFormView     = () => import('@/views/cmig-products/CmigCompos
 
 // Anúncios (AC)
 const AnunciosView = () => import('@/views/anuncios/AnunciosView.vue')
+const CampaignAdsView = () => import('@/views/campanha-ads/CampaignAdsView.vue')
 
 // Relatórios CMIG (AC)
 const CmigReportsView = () => import('@/views/cmig-reports/CmigReportsView.vue')
@@ -109,6 +110,7 @@ const MessagesView = () => import('@/views/messages/MessagesView.vue')
 // Configuração IA
 const AIConfigView = () => import('@/views/settings/AIConfigView.vue')
 const EmailConfigView = () => import('@/views/settings/EmailConfigView.vue')
+const MarketplaceSettingsView = () => import('@/views/settings/MarketplaceSettingsView.vue')
 const EShipConfigView = () => import('@/views/integrations/eship/EShipConfigView.vue')
 
 // Console de API do Marketplace — Admin only
@@ -236,6 +238,9 @@ const routes = [
       // Anúncios — AC
       { path: 'anuncios', component: AnunciosView, meta: { title: 'Anúncios', role: 'ac' } },
 
+      // Campanha ADS — AC
+      { path: 'campanha-ads', component: CampaignAdsView, meta: { title: 'Campanha ADS', role: 'ac' } },
+
       // Relatórios CMIG — AC
       { path: 'cmig-reports', component: CmigReportsView, meta: { title: 'Relatórios CMIG', role: 'ac' } },
 
@@ -244,6 +249,9 @@ const routes = [
 
       // Configuração IA — Admin
       { path: 'settings/ai-config', component: AIConfigView, meta: { title: 'Configuração de IA', role: 'admin' } },
+
+      // Configuração de Marketplaces — Super Admin
+      { path: 'settings/marketplaces', component: MarketplaceSettingsView, meta: { title: 'Config. de Marketplaces', role: 'admin' } },
 
       // Servidor de E-mail (SMTP) — Admin
       { path: 'settings/email', component: EmailConfigView, meta: { title: 'Servidor de E-mail', role: 'admin' } },

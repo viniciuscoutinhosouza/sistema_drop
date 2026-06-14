@@ -244,6 +244,7 @@ BLING_CLIENT_SECRET=
 | `/api/v1/anuncios` | Anúncios importados do ML |
 | `/api/v1/simulator` | Simulador de preço |
 | `/api/v1/separation` | Separação (Carrinho Gaiola, pedidos não-FULL) |
+| `/api/v1/marketplace-settings` | Config por marketplace (Super Admin) |
 
 ---
 
@@ -320,6 +321,7 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0003](docs/decisions/ADR-0003-jwt-localstorage.md) — JWT em localStorage
 - [ADR-0004](DOCs/decisions/ADR-0004-stock-ssot-fases.md) — Estoque SSOT + reserva FULL + snapshots
 - [ADR-0005](DOCs/decisions/ADR-0005-separacao-picking-cart.md) — Separação: Carrinho Gaiola + estados separated/shipped
+- [ADR-0006](DOCs/decisions/ADR-0006-metricas-marketplace-live-vs-snapshot.md) — Métricas de marketplace: live passthrough vs. snapshot diário
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 
