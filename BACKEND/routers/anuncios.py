@@ -175,6 +175,40 @@ def _build_fiscal_payload_from_product(
     )
 
 
+async def _sync_fiscal_for_sku(
+    access_token: str,
+    product,
+    sku: str,
+    cmig_crt: int | None,
+    fiscal_overrides: dict | None = None,
+) -> str | None:
+    """Cadastra/atualiza o fiscal_information do SKU no ML (Faturador). Best-effort.
+
+    Centraliza o padrão repetido nos fluxos de publicação/edição de anúncio.
+    Retorna uma mensagem de aviso em caso de falha (ou retorno não-ok do ML);
+    `None` em sucesso ou quando o produto não tem dados fiscais mínimos (sem NCM).
+    A resolução de SKU e CRT continua a cargo do chamador (variam por fluxo).
+    """
+    payload = _build_fiscal_payload_from_product(
+        product, str(sku), cmig_crt, fiscal_overrides=fiscal_overrides
+    )
+    if not payload:
+        return None
+    try:
+        fr = await ml_service.register_or_update_fiscal_information(
+            access_token, str(sku), payload
+        )
+        if not fr.get("ok"):
+            logger.warning("fiscal_information SKU %s falhou: %s", sku, fr.get("body"))
+            return fr.get("error") or "Erro ao sincronizar fiscal_information"
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Exceção em register_or_update_fiscal_information SKU %s: %s", sku, exc
+        )
+        return f"Exceção ao sincronizar fiscal: {exc}"
+
+
 def _parse_fiscal_json(raw) -> dict:
     """Aceita string JSON ou dict; retorna dict (vazio em erro)."""
     if not raw:
@@ -2521,21 +2555,15 @@ async def publish_anuncio_with_variations(
     # 2.6) fiscal_information por SKU de cada variação (Faturador NFe) — best-effort
     cmig_crt = await _resolve_cmig_crt(account, db)
     fiscal_overrides = _parse_fiscal_json(body.get("fiscal_json"))
+    fiscal_warnings: list[str] = []
     for _lv in loaded_list:  # nome != _l/_h/_w/_kg (usados nas dimensões abaixo)
         _p = _lv.get("product")
         _sku = _lv.get("sku")
         if not _p or not _sku:
             continue
-        _fiscal_payload = _build_fiscal_payload_from_product(
-            _p, str(_sku), cmig_crt, fiscal_overrides=fiscal_overrides
-        )
-        if _fiscal_payload:
-            try:
-                await ml_service.register_or_update_fiscal_information(
-                    access_token, str(_sku), _fiscal_payload
-                )
-            except Exception as exc:
-                logger.warning("fiscal_information variação SKU %s falhou: %s", _sku, exc)
+        _warn = await _sync_fiscal_for_sku(access_token, _p, _sku, cmig_crt, fiscal_overrides)
+        if _warn:
+            fiscal_warnings.append(f"{_sku}: {_warn}")
 
     # 3) Persiste ProductListing
     thumbnail = ml_item.get("secure_thumbnail") or ml_item.get("thumbnail") or (
@@ -2587,7 +2615,14 @@ async def publish_anuncio_with_variations(
     await db.commit()
     await db.refresh(listing)
 
-    return _serialize_listing(listing)
+    response = _serialize_listing(listing)
+    if fiscal_warnings:
+        deduped = list(dict.fromkeys(fiscal_warnings))
+        msg = "; ".join(deduped[:5])
+        if len(deduped) > 5:
+            msg += f"; … e mais {len(deduped) - 5}"
+        response["fiscal_sync_warning"] = msg
+    return response
 
 
 @router.put("/{listing_id}/variations")
@@ -3448,29 +3483,10 @@ async def publish_anuncio(
             or getattr(prod, "sku", None)
         )
         if sku_for_fiscal:
-            fiscal_payload = _build_fiscal_payload_from_product(
-                prod,
-                str(sku_for_fiscal),
-                cmig_crt,
+            fiscal_sync_warning = await _sync_fiscal_for_sku(
+                access_token, prod, sku_for_fiscal, cmig_crt,
                 fiscal_overrides=_parse_fiscal_json(body.get("fiscal_json")),
             )
-            if fiscal_payload:
-                try:
-                    fr = await ml_service.register_or_update_fiscal_information(
-                        access_token, str(sku_for_fiscal), fiscal_payload
-                    )
-                    if not fr.get("ok"):
-                        fiscal_sync_warning = fr.get("error") or "Erro ao cadastrar fiscal_information"
-                        logging.getLogger(__name__).warning(
-                            "fiscal_information sync falhou para SKU %s: %s",
-                            sku_for_fiscal, fr.get("body"),
-                        )
-                except Exception as exc:
-                    fiscal_sync_warning = f"Exceção ao sincronizar fiscal: {exc}"
-                    logging.getLogger(__name__).warning(
-                        "Exceção em register_or_update_fiscal_information SKU %s: %s",
-                        sku_for_fiscal, exc,
-                    )
 
         if description and platform_item_id:
             try:
@@ -3776,20 +3792,12 @@ async def publish_anuncios_as_family(
 
             # fiscal_information por SKU (Faturador NFe) — best-effort
             sku_for_fiscal = getattr(prod, "sku", None) or getattr(prod, "sku_cmig", None)
+            fiscal_warn = None
             if sku_for_fiscal:
-                _fp = _build_fiscal_payload_from_product(
-                    prod, str(sku_for_fiscal), cmig_crt,
+                fiscal_warn = await _sync_fiscal_for_sku(
+                    access_token, prod, sku_for_fiscal, cmig_crt,
                     fiscal_overrides=_parse_fiscal_json(p_input.get("fiscal_json")),
                 )
-                if _fp:
-                    try:
-                        await ml_service.register_or_update_fiscal_information(
-                            access_token, str(sku_for_fiscal), _fp
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "fiscal_information família SKU %s falhou: %s", sku_for_fiscal, exc
-                        )
 
             thumbnail = (
                 ml_item.get("secure_thumbnail")
@@ -3836,12 +3844,15 @@ async def publish_anuncios_as_family(
             )
             db.add(listing)
             await db.flush()
-            results.append({
+            _res_item = {
                 "product_id": product_id,
                 "ok": True,
                 "listing_id": listing.id,
                 "platform_item_id": platform_item_id,
-            })
+            }
+            if fiscal_warn:
+                _res_item["fiscal_sync_warning"] = fiscal_warn
+            results.append(_res_item)
         except HTTPException as exc:
             err_msg = str(exc.detail)
             logger.error(
@@ -4094,29 +4105,10 @@ async def update_anuncio(
                 or getattr(_product, "sku", None)
             )
             if sku_for_fiscal:
-                fiscal_payload = _build_fiscal_payload_from_product(
-                    _product,
-                    str(sku_for_fiscal),
-                    _cmig_crt,
+                fiscal_sync_warning = await _sync_fiscal_for_sku(
+                    _access_token, _product, sku_for_fiscal, _cmig_crt,
                     fiscal_overrides=_parse_fiscal_json(body.get("fiscal_json") or listing.fiscal_json),
                 )
-                if fiscal_payload:
-                    try:
-                        fr = await ml_service.register_or_update_fiscal_information(
-                            _access_token, str(sku_for_fiscal), fiscal_payload
-                        )
-                        if not fr.get("ok"):
-                            fiscal_sync_warning = fr.get("error") or "Erro ao sincronizar fiscal_information"
-                            logger.warning(
-                                "fiscal_information sync falhou para SKU %s: %s",
-                                sku_for_fiscal, fr.get("body"),
-                            )
-                    except Exception as exc:
-                        fiscal_sync_warning = f"Exceção ao sincronizar fiscal: {exc}"
-                        logger.warning(
-                            "Exceção em register_or_update_fiscal_information SKU %s: %s",
-                            sku_for_fiscal, exc,
-                        )
 
     await db.commit()
 
@@ -4897,29 +4889,10 @@ async def sync_listing_to_ml(
         or getattr(product, "sku", None)
     )
     if sku_for_fiscal:
-        fiscal_payload = _build_fiscal_payload_from_product(
-            product,
-            str(sku_for_fiscal),
-            cmig_crt,
+        fiscal_sync_warning = await _sync_fiscal_for_sku(
+            access_token, product, sku_for_fiscal, cmig_crt,
             fiscal_overrides=_parse_fiscal_json(listing.fiscal_json),
         )
-        if fiscal_payload:
-            try:
-                fr = await ml_service.register_or_update_fiscal_information(
-                    access_token, str(sku_for_fiscal), fiscal_payload
-                )
-                if not fr.get("ok"):
-                    fiscal_sync_warning = fr.get("error") or "Erro ao sincronizar fiscal_information"
-                    logger.warning(
-                        "fiscal_information sync falhou (sync_listing) SKU %s: %s",
-                        sku_for_fiscal, fr.get("body"),
-                    )
-            except Exception as exc:
-                fiscal_sync_warning = f"Exceção ao sincronizar fiscal: {exc}"
-                logger.warning(
-                    "Exceção em register_or_update_fiscal_information SKU %s: %s",
-                    sku_for_fiscal, exc,
-                )
 
     listing.last_sync_at = datetime.now(UTC)
     await db.commit()

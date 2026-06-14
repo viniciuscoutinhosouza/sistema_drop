@@ -39,6 +39,8 @@
                   <ProductPhotosCard
                     v-model="pictures"
                     :upload-url="isEdit ? `/cmigs/${cmigId}/products/${route.params.id}/photos` : ''"
+                    product-type="cmig"
+                    :product-id="isEdit ? route.params.id : null"
                   />
 
                   <div class="row">

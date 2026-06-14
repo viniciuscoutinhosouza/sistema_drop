@@ -90,6 +90,12 @@ class AIConfig(Base):
     model_name = Column(String(100), default="claude-sonnet-4-6")
     global_instructions = Column(Text)
     is_active = Column(Boolean, nullable=False, default=False)
+    # IA de mídia (imagens) — independente do provider de chat acima.
+    media_provider = Column(String(20), default="google")  # google (Gemini / Nano Banana)
+    media_api_key = Column(String(2000))  # base64
+    media_image_model = Column(String(100), default="gemini-2.5-flash-image")
+    media_video_model = Column(String(100), default="veo-3.1-fast-generate-preview")
+    media_instructions = Column(Text)  # perfil/instruções base p/ todos os prompts de mídia
     created_at = Column(TIMESTAMP(timezone=True), server_default=sa_text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True),

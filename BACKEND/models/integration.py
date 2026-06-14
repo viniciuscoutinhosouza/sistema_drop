@@ -161,3 +161,46 @@ class MarketplaceMetricDaily(Base):
     __table_args__ = (
         UniqueConstraint("account_id", "metric_date", name="uq_mmd_account_date"),
     )
+
+
+class MarketplaceSetting(Base):
+    """Configuração por marketplace (Super Admin). 1 linha por marketplace;
+    `settings_json` (CLOB) guarda config flexível (formatos de mídia, prompts, etc.)
+    para permitir novos campos sem migration. NÃO guardar credenciais aqui."""
+
+    __tablename__ = "marketplace_settings"
+
+    id = Column(Integer, primary_key=True)
+    marketplace = Column(String(20), nullable=False, unique=True)
+    settings_json = Column(String)  # CLOB (JSON)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True),
+        server_default=text("SYSTIMESTAMP"),
+        onupdate=text("SYSTIMESTAMP"),
+    )
+
+
+class MediaClipJob(Base):
+    """Geração assíncrona de clip/vídeo por IA (Veo). Persiste a operation
+    long-running para sobreviver a reload, consultar status e listar os clips
+    gerados (o resultado é pago — não pode se perder)."""
+
+    __tablename__ = "media_clip_jobs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    operation = Column(String(500), nullable=False)
+    marketplace = Column(String(20))
+    product_type = Column(String(10))   # 'pg' | 'cmig' | None — associa o clip ao produto
+    product_id = Column(Integer)
+    prompt = Column(String(1100))
+    status = Column(String(20), nullable=False, default="running")  # running|done|failed
+    video_url = Column(String(1000))
+    error = Column(String(500))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True),
+        server_default=text("SYSTIMESTAMP"),
+        onupdate=text("SYSTIMESTAMP"),
+    )

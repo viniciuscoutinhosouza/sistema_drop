@@ -32,6 +32,8 @@
                 <ProductPhotosCard
                   v-model="pictures"
                   :upload-url="isEdit ? `/pg/${route.params.id}/photos` : ''"
+                  product-type="pg"
+                  :product-id="isEdit ? route.params.id : null"
                 />
 
                 <div class="row">

@@ -25,6 +25,19 @@ AVAILABLE_MODELS = {
     "anthropic": ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
 }
 
+# IA de mídia — separada dos modelos de chat acima.
+MEDIA_IMAGE_MODELS = {
+    "google": ["gemini-2.5-flash-image"],  # Nano Banana
+    "openai": ["gpt-image-1"],
+}
+MEDIA_VIDEO_MODELS = {
+    "google": [
+        "veo-3.1-fast-generate-preview",
+        "veo-3.1-generate-preview",
+        "veo-3.0-generate-001",
+    ],
+}
+
 
 def _mask_key(key: str | None) -> str:
     if not key:
@@ -66,6 +79,13 @@ async def get_ai_config(
             "global_instructions": "",
             "is_active": False,
             "available_models": AVAILABLE_MODELS,
+            "media_provider": "google",
+            "media_api_key_masked": "",
+            "media_image_model": "gemini-2.5-flash-image",
+            "media_video_model": "veo-3.1-fast-generate-preview",
+            "media_instructions": "",
+            "media_available_models": MEDIA_IMAGE_MODELS,
+            "media_available_video_models": MEDIA_VIDEO_MODELS,
         }
     return {
         "configured": True,
@@ -76,6 +96,13 @@ async def get_ai_config(
         "global_instructions": cfg.global_instructions or "",
         "is_active": cfg.is_active,
         "available_models": AVAILABLE_MODELS,
+        "media_provider": cfg.media_provider or "google",
+        "media_api_key_masked": _mask_key(cfg.media_api_key),
+        "media_image_model": cfg.media_image_model or "gemini-2.5-flash-image",
+        "media_video_model": cfg.media_video_model or "veo-3.1-fast-generate-preview",
+        "media_instructions": cfg.media_instructions or "",
+        "media_available_models": MEDIA_IMAGE_MODELS,
+        "media_available_video_models": MEDIA_VIDEO_MODELS,
     }
 
 
@@ -91,6 +118,14 @@ async def update_ai_config(
     global_instructions = body.get("global_instructions", "")
     is_active = body.get("is_active", False)
     raw_key = body.get("api_key", "")  # vazio = não alterar
+    # IA de mídia (imagens)
+    media_provider = body.get("media_provider", "google")
+    media_image_model = body.get("media_image_model", "gemini-2.5-flash-image")
+    media_video_model = body.get("media_video_model", "veo-3.1-fast-generate-preview")
+    # Instruções/perfil de mídia (até 2000). Para imagem o Gemini aceita; para clip,
+    # a composição do prompt reduz as instruções p/ caber no cap do Veo (~1024).
+    media_instructions = (body.get("media_instructions") or "")[:2000]
+    raw_media_key = body.get("media_api_key", "")  # vazio = não alterar
 
     result = await db.execute(select(AIConfig))
     cfg = result.scalar_one_or_none()
@@ -101,17 +136,29 @@ async def update_ai_config(
             model_name=model_name,
             global_instructions=global_instructions,
             is_active=is_active,
+            media_provider=media_provider,
+            media_image_model=media_image_model,
+            media_video_model=media_video_model,
+            media_instructions=media_instructions,
         )
         if raw_key:
             cfg.api_key = _encode_key(raw_key)
+        if raw_media_key:
+            cfg.media_api_key = _encode_key(raw_media_key)
         db.add(cfg)
     else:
         cfg.provider = provider
         cfg.model_name = model_name
         cfg.global_instructions = global_instructions
         cfg.is_active = is_active
+        cfg.media_provider = media_provider
+        cfg.media_image_model = media_image_model
+        cfg.media_video_model = media_video_model
+        cfg.media_instructions = media_instructions
         if raw_key:
             cfg.api_key = _encode_key(raw_key)
+        if raw_media_key:
+            cfg.media_api_key = _encode_key(raw_media_key)
 
     await db.commit()
     await db.refresh(cfg)

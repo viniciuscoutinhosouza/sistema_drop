@@ -88,20 +88,92 @@
                     ></textarea>
                     <small class="text-muted">Base para todas as contas. Cada CMIG pode complementar com instruções próprias.</small>
                   </div>
-
-                  <!-- Botões -->
-                  <div class="d-flex" style="gap:8px">
-                    <button class="btn btn-success" @click="save" :disabled="saving">
-                      <i :class="['fas', saving ? 'fa-spinner fa-spin' : 'fa-save', 'mr-1']"></i>
-                      {{ saving ? 'Salvando...' : 'Salvar Configuração' }}
-                    </button>
-                    <button class="btn btn-outline-secondary" @click="testConnection" :disabled="testing || !configExists">
-                      <i :class="['fas', testing ? 'fa-spinner fa-spin' : 'fa-plug', 'mr-1']"></i>
-                      {{ testing ? 'Testando...' : 'Testar Conexão' }}
-                    </button>
-                  </div>
                 </template>
               </div>
+            </div>
+
+            <!-- IA de Mídia (imagens) — Fase B -->
+            <div class="card card-outline card-info">
+              <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-image mr-2"></i>IA de Mídia (imagens)</h3>
+              </div>
+              <div class="card-body">
+                <p class="text-muted small">
+                  Usada para gerar/editar fotos de anúncios (ex.: redimensionar com borda por IA,
+                  criar foto a partir de um prompt). Chave independente da IA de atendimento.
+                </p>
+                <div class="form-group">
+                  <label class="font-weight-bold">Provedor de imagem</label>
+                  <select v-model="form.media_provider" class="form-control" @change="onMediaProviderChange">
+                    <option value="google">Google — Gemini (Nano Banana)</option>
+                    <option value="openai">OpenAI — gpt-image-1</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label class="font-weight-bold">API Key (mídia)</label>
+                  <div class="input-group">
+                    <input
+                      :type="showMediaKey ? 'text' : 'password'"
+                      class="form-control"
+                      v-model="form.media_api_key"
+                      :placeholder="existingMediaKeyMasked || 'Cole a API Key de imagem (vazio = manter atual)'"
+                    />
+                    <div class="input-group-append">
+                      <button class="btn btn-outline-secondary" type="button" @click="showMediaKey = !showMediaKey">
+                        <i :class="showMediaKey ? 'fas fa-eye-slash' : 'fas fa-eye'"></i>
+                      </button>
+                    </div>
+                  </div>
+                  <small class="text-muted">
+                    {{ form.media_provider === 'google' ? 'Obtida em aistudio.google.com/app/apikey' : 'Obtida em platform.openai.com/api-keys' }}
+                  </small>
+                </div>
+                <div class="form-group">
+                  <label class="font-weight-bold">Modelo de imagem</label>
+                  <select v-model="form.media_image_model" class="form-control">
+                    <option v-for="m in mediaModels" :key="m" :value="m">{{ m }}</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label class="font-weight-bold">Modelo de vídeo (clips)</label>
+                  <select v-model="form.media_video_model" class="form-control">
+                    <option v-for="m in mediaVideoModels" :key="m" :value="m">{{ m }}</option>
+                  </select>
+                  <small class="text-muted">Veo (Google) — usa a mesma chave acima. Vídeo custa por segundo (~US$0,03/s).</small>
+                </div>
+                <div class="form-group">
+                  <label class="font-weight-bold">Instruções / Perfil de Mídia</label>
+                  <textarea
+                    v-model="form.media_instructions"
+                    class="form-control"
+                    rows="5"
+                    maxlength="2000"
+                    placeholder="Perfil/estilo aplicado a TODOS os prompts de foto e clip. Ex.: fundo branco, iluminação de estúdio, estilo clean da marca, sem texto na imagem."
+                  ></textarea>
+                  <small class="text-muted">
+                    Adicionado no início de todo prompt de geração de imagem/clip. Máx. 2000 caracteres
+                    ({{ (form.media_instructions || '').length }}/2000).
+                    <em>No clip (vídeo), o prompt total é limitado a ~1024 — instruções muito longas são reduzidas para preservar o seu prompt.</em>
+                  </small>
+                </div>
+                <p class="text-warning small mb-0">
+                  <i class="fas fa-exclamation-triangle mr-1"></i>
+                  Geração de imagem por IA tem <strong>custo por imagem</strong> (~US$0,03 no Gemini).
+                </p>
+              </div>
+            </div>
+
+            <!-- Ações (salvam TODAS as configurações acima) -->
+            <div class="d-flex align-items-center mb-3" style="gap:8px">
+              <button class="btn btn-success" @click="save" :disabled="saving">
+                <i :class="['fas', saving ? 'fa-spinner fa-spin' : 'fa-save', 'mr-1']"></i>
+                {{ saving ? 'Salvando...' : 'Salvar Configuração' }}
+              </button>
+              <button class="btn btn-outline-secondary" @click="testConnection" :disabled="testing || !configExists">
+                <i :class="['fas', testing ? 'fa-spinner fa-spin' : 'fa-plug', 'mr-1']"></i>
+                {{ testing ? 'Testando...' : 'Testar Conexão' }}
+              </button>
+              <small class="text-muted">Salva atendimento e mídia.</small>
             </div>
           </div>
 
@@ -165,13 +237,24 @@ const loading = ref(true)
 const saving = ref(false)
 const testing = ref(false)
 const showKey = ref(false)
+const showMediaKey = ref(false)
 const currentConfig = ref({})
 const configExists = computed(() => currentConfig.value?.configured)
 const existingKeyMasked = computed(() => currentConfig.value?.api_key_masked || '')
+const existingMediaKeyMasked = computed(() => currentConfig.value?.media_api_key_masked || '')
 
 const MODELS = {
   openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
   anthropic: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
+}
+
+const MEDIA_MODELS = {
+  google: ['gemini-2.5-flash-image'],
+  openai: ['gpt-image-1'],
+}
+
+const MEDIA_VIDEO_MODELS = {
+  google: ['veo-3.1-fast-generate-preview', 'veo-3.1-generate-preview', 'veo-3.0-generate-001'],
 }
 
 const form = ref({
@@ -180,12 +263,23 @@ const form = ref({
   model_name: 'claude-sonnet-4-6',
   global_instructions: '',
   is_active: false,
+  media_provider: 'google',
+  media_api_key: '',
+  media_image_model: 'gemini-2.5-flash-image',
+  media_video_model: 'veo-3.1-fast-generate-preview',
+  media_instructions: '',
 })
 
 const availableModels = computed(() => MODELS[form.value.provider] || [])
+const mediaModels = computed(() => MEDIA_MODELS[form.value.media_provider] || [])
+const mediaVideoModels = computed(() => MEDIA_VIDEO_MODELS[form.value.media_provider] || MEDIA_VIDEO_MODELS.google)
 
 function onProviderChange() {
   form.value.model_name = MODELS[form.value.provider]?.[1] || ''
+}
+
+function onMediaProviderChange() {
+  form.value.media_image_model = MEDIA_MODELS[form.value.media_provider]?.[0] || ''
 }
 
 onMounted(async () => {
@@ -198,6 +292,11 @@ onMounted(async () => {
       form.value.global_instructions = data.global_instructions
       form.value.is_active = data.is_active
     }
+    // Mídia (sempre disponível, mesmo sem config de chat)
+    form.value.media_provider = data.media_provider || 'google'
+    form.value.media_image_model = data.media_image_model || 'gemini-2.5-flash-image'
+    form.value.media_video_model = data.media_video_model || 'veo-3.1-fast-generate-preview'
+    form.value.media_instructions = data.media_instructions || ''
   } catch (e) {
     toast.error('Erro ao carregar configuração de IA.')
   } finally {
@@ -210,6 +309,7 @@ async function save() {
   try {
     const payload = { ...form.value }
     if (!payload.api_key) delete payload.api_key  // não sobrescrever se vazio
+    if (!payload.media_api_key) delete payload.media_api_key  // idem mídia
     await api.put('/ai-config/', payload)
     toast.success('Configuração de IA salva com sucesso!')
     // Recarrega para atualizar a chave mascarada

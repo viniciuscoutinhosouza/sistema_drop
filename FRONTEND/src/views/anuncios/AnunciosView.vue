@@ -773,43 +773,136 @@
                   </div>
                 </div>
 
+                <!-- Enviar foto do computador (com checagem de padrão) -->
+                <div class="form-group">
+                  <label class="small">Enviar foto do computador</label>
+                  <input ref="photoFileInput" type="file" accept="image/*" class="form-control form-control-sm" @change="onPhotoFileSelected" />
+                  <small v-if="mktImageSpec" class="text-muted">
+                    Padrão {{ selectedAccount?.platform_label || selectedAccount?.platform || '' }}:
+                    {{ mktImageSpec.aspect }}, rec. {{ mktImageSpec.rec_px }}px<span v-if="mktImageSpec.max_mb">, máx {{ mktImageSpec.max_mb }}MB</span>.
+                    Fora do padrão, oferecemos ajuste automático.
+                  </small>
+                </div>
+
                 <div v-if="wf.pictures.length > 0">
                   <h6 class="text-muted small text-uppercase mb-1">Fotos selecionadas ({{ wf.pictures.length }}/12)</h6>
-                  <div class="d-flex flex-wrap">
-                    <div v-for="(img, i) in wf.pictures" :key="i" class="mr-2 mb-2 position-relative" style="width:70px"
-                      @mouseenter="startWizardPreview($event, img)"
-                      @mouseleave="stopWizardPreview"
-                    >
-                      <img :src="img" style="width:70px;height:70px;object-fit:cover;border-radius:4px;border:2px solid #007bff;display:block" />
-                      <!-- Badge posição / capa -->
-                      <span
-                        class="position-absolute d-flex align-items-center justify-content-center text-white rounded"
-                        style="top:2px;left:2px;min-width:18px;height:18px;font-size:9px;padding:0 3px;line-height:1"
-                        :style="i === 0 ? 'background:#007bff' : 'background:rgba(0,0,0,0.55)'"
-                        :title="i === 0 ? 'Foto de capa' : `Posição ${i+1}`"
-                      >{{ i === 0 ? '★' : i + 1 }}</span>
-                      <!-- Botão remover -->
-                      <button class="btn btn-danger position-absolute" style="top:-6px;right:-6px;width:20px;height:20px;padding:0;line-height:1;border-radius:50%;font-size:10px" @click="removeImage(i)"><i class="fas fa-times"></i></button>
-                      <!-- Botões mover -->
-                      <button
-                        v-if="i > 0"
-                        class="position-absolute"
-                        style="bottom:2px;left:2px;width:20px;height:20px;padding:0;border:none;border-radius:3px;font-size:9px;background:rgba(0,0,0,0.55);color:#fff;cursor:pointer"
-                        title="Mover para esquerda"
-                        @click="moveImage(i, -1)"
-                      ><i class="fas fa-chevron-left"></i></button>
-                      <button
-                        v-if="i < wf.pictures.length - 1"
-                        class="position-absolute"
-                        style="bottom:2px;right:2px;width:20px;height:20px;padding:0;border:none;border-radius:3px;font-size:9px;background:rgba(0,0,0,0.55);color:#fff;cursor:pointer"
-                        title="Mover para direita"
-                        @click="moveImage(i, 1)"
-                      ><i class="fas fa-chevron-right"></i></button>
+                  <p class="text-muted mb-1" style="font-size:11px">
+                    <i class="fas fa-arrows-alt mr-1"></i>Arraste as fotos para reordenar. A primeira (★) é a capa.
+                  </p>
+                  <draggable v-model="wf.pictures" :item-key="el => el" class="d-flex flex-wrap" :animation="150">
+                    <template #item="{ element: img, index: i }">
+                      <div class="mr-2 mb-2 position-relative" style="width:70px;cursor:move"
+                        @mouseenter="startWizardPreview($event, img)"
+                        @mouseleave="stopWizardPreview"
+                      >
+                        <img :src="img" style="width:70px;height:70px;object-fit:cover;border-radius:4px;border:2px solid #007bff;display:block" />
+                        <!-- Badge posição / capa -->
+                        <span
+                          class="position-absolute d-flex align-items-center justify-content-center text-white rounded"
+                          style="top:2px;left:2px;min-width:18px;height:18px;font-size:9px;padding:0 3px;line-height:1"
+                          :style="i === 0 ? 'background:#007bff' : 'background:rgba(0,0,0,0.55)'"
+                          :title="i === 0 ? 'Foto de capa' : `Posição ${i+1}`"
+                        >{{ i === 0 ? '★' : i + 1 }}</span>
+                        <!-- Botão remover -->
+                        <button class="btn btn-danger position-absolute" style="top:-6px;right:-6px;width:20px;height:20px;padding:0;line-height:1;border-radius:50%;font-size:10px" @click="removeImage(i)"><i class="fas fa-times"></i></button>
+                      </div>
+                    </template>
+                  </draggable>
+                </div>
+                <div v-if="wf.pictures.length === 0" class="text-muted small">Nenhuma foto selecionada.</div>
+
+                <!-- Criar foto por IA (Fase B.2) -->
+                <div class="mt-3 border-top pt-2">
+                  <button v-if="!aiPhoto.open" class="btn btn-sm btn-outline-info" @click="openAiPhoto">
+                    <i class="fas fa-magic mr-1"></i> Criar foto (IA)
+                  </button>
+                  <div v-else class="border rounded p-2 bg-light">
+                    <label class="small font-weight-bold mb-1">Prompt para a IA gerar uma nova foto</label>
+                    <textarea v-model="aiPhoto.prompt" class="form-control form-control-sm" rows="3"
+                      placeholder="Ex.: foto do produto em fundo branco, vista frontal, iluminação de estúdio, alta nitidez."></textarea>
+                    <div class="custom-control custom-checkbox mt-1">
+                      <input type="checkbox" class="custom-control-input" id="aiBrief" v-model="aiPhoto.includeBrief" />
+                      <label class="custom-control-label small" for="aiBrief">Incluir ficha técnica/descrição do produto no contexto</label>
+                    </div>
+                    <div class="custom-control custom-checkbox">
+                      <input type="checkbox" class="custom-control-input" id="aiRef" v-model="aiPhoto.useSelectedAsRef" />
+                      <label class="custom-control-label small" for="aiRef">Usar as fotos já selecionadas como referência</label>
+                    </div>
+                    <p class="text-warning small mb-1 mt-1">
+                      <i class="fas fa-exclamation-triangle mr-1"></i>Gera 1 imagem por IA — <strong>custo por imagem</strong> (~US$0,03).
+                    </p>
+                    <button class="btn btn-sm btn-info" :disabled="aiPhoto.loading || !aiPhoto.prompt.trim()" @click="generateAiPhoto">
+                      <i :class="['fas', aiPhoto.loading ? 'fa-spinner fa-spin' : 'fa-magic', 'mr-1']"></i>
+                      {{ aiPhoto.loading ? 'Gerando...' : 'Gerar imagem' }}
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary ml-1" :disabled="aiPhoto.loading" @click="aiPhoto.open = false">Cancelar</button>
+                  </div>
+                </div>
+
+                <!-- Criar clip por IA (Fase C) -->
+                <div class="mt-2 border-top pt-2">
+                  <button v-if="!aiClip.open" class="btn btn-sm btn-outline-info" @click="openAiClip">
+                    <i class="fas fa-film mr-1"></i> Criar clip (IA)
+                  </button>
+                  <div v-else class="border rounded p-2 bg-light">
+                    <label class="small font-weight-bold mb-1">Prompt para a IA gerar um clip de vídeo</label>
+                    <textarea v-model="aiClip.prompt" class="form-control form-control-sm" rows="3"
+                      placeholder="Descreva o clip desejado (movimento de câmera, cenário, etc.)"></textarea>
+                    <div class="custom-control custom-checkbox mt-1">
+                      <input type="checkbox" class="custom-control-input" id="clipBrief" v-model="aiClip.includeBrief" />
+                      <label class="custom-control-label small" for="clipBrief">Incluir ficha técnica/descrição do produto</label>
+                    </div>
+                    <small class="text-muted d-block">Usa a 1ª foto selecionada como referência (se houver).</small>
+                    <p class="text-warning small mb-1 mt-1">
+                      <i class="fas fa-exclamation-triangle mr-1"></i>Vídeo por IA tem <strong>custo por segundo</strong> (~US$0,15–0,30/clip) e leva ~30–60s.
+                      O ML aceita vídeo só via YouTube — o clip gerado fica para download/uso manual.
+                    </p>
+                    <button class="btn btn-sm btn-info" :disabled="aiClip.loading || !aiClip.prompt.trim()" @click="generateAiClip">
+                      <i :class="['fas', aiClip.loading ? 'fa-spinner fa-spin' : 'fa-film', 'mr-1']"></i>
+                      {{ aiClip.loading ? 'Iniciando...' : 'Gerar clip' }}
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary ml-1" :disabled="aiClip.loading" @click="aiClip.open = false">Cancelar</button>
+                  </div>
+
+                  <div v-if="generatedClips.length" class="mt-2">
+                    <h6 class="text-muted small text-uppercase mb-1">Clips gerados</h6>
+                    <div class="d-flex flex-wrap" style="gap:8px">
+                      <div v-for="c in generatedClips" :key="c.job_id" class="text-center position-relative" style="width:150px">
+                        <div v-if="c.status === 'done' && c.url" style="position:relative;cursor:pointer" @click="clipPreview = c">
+                          <video :src="c.url" muted style="width:150px;height:95px;background:#000;border-radius:4px;object-fit:cover;display:block"></video>
+                          <span class="position-absolute" style="top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-size:22px;text-shadow:0 0 6px #000"><i class="fas fa-play-circle"></i></span>
+                        </div>
+                        <div v-else class="d-flex align-items-center justify-content-center" style="width:150px;height:95px;background:#f1f1f1;border-radius:4px;font-size:11px;padding:4px">
+                          <span v-if="c.status === 'running'"><i class="fas fa-spinner fa-spin mr-1"></i>gerando...</span>
+                          <span v-else class="text-danger">{{ c.error || 'falhou' }}</span>
+                        </div>
+                        <button type="button" class="btn btn-danger position-absolute"
+                          style="top:-6px;right:-6px;width:20px;height:20px;padding:0;line-height:1;border-radius:50%;font-size:10px"
+                          title="Excluir clip" @click="removeClip(c.job_id)">
+                          <i class="fas fa-times"></i>
+                        </button>
+                        <a v-if="c.status === 'done' && c.url" :href="c.url" download class="btn btn-sm btn-outline-primary mt-1" style="font-size:10px;padding:1px 6px">
+                          <i class="fas fa-download mr-1"></i>Baixar
+                        </a>
+                      </div>
                     </div>
                   </div>
                 </div>
-                <div v-if="wf.pictures.length === 0" class="text-muted small">Nenhuma foto selecionada.</div>
+
+                <ClipPreviewModal v-if="clipPreview" :url="clipPreview.url" :prompt="clipPreview.prompt" @close="clipPreview = null" />
               </div>
+
+              <!-- Modal de correção de imagem ao padrão (Fase B.3) -->
+              <ImageCorrectionModal
+                v-if="correction.open"
+                :file="correction.file"
+                :image-spec="mktImageSpec || {}"
+                :marketplace="selectedAccount?.platform || ''"
+                :marketplace-label="selectedAccount?.platform_label || selectedAccount?.platform || ''"
+                upload-url="/anuncios/upload-image"
+                @done="onCorrectionDone"
+                @cancel="correction.open = false"
+              />
 
               <!-- ABA 5 — Descrição, Envio & Garantia -->
               <div v-if="wizardStep === 5">
@@ -1751,6 +1844,11 @@ import { shippingModeStyle as smStyle } from '@/utils/constants'
 import { isValidEan13, generateEan13 } from '@/utils/ean'
 import PublishCategoryPicker from '@/components/catalog/PublishCategoryPicker.vue'
 import { persistCategoryToProduct } from '@/composables/usePublishCategory'
+import draggable from 'vuedraggable'
+import ImageCorrectionModal from '@/components/common/ImageCorrectionModal.vue'
+import ClipPreviewModal from '@/components/common/ClipPreviewModal.vue'
+import { validateImage } from '@/composables/useImageStandard'
+import { useMediaAi } from '@/composables/useMediaAi'
 
 const toast = useToast()
 
@@ -2102,6 +2200,135 @@ const wizardEanInvalid = computed(() => {
 // Photos
 const extraImageUrl = ref('')
 
+// Geração de foto por IA (Fase B.2)
+const aiPhoto = ref({ open: false, prompt: '', includeBrief: true, useSelectedAsRef: true, loading: false })
+
+function openAiPhoto() {
+  aiPhoto.value.open = true
+}
+
+// Upload de foto com checagem de padrão (Fase B.3)
+const photoFileInput = ref(null)
+const mktImageSpec = ref(null)
+const correction = ref({ open: false, file: null })
+
+async function loadMktImageSpec() {
+  mktImageSpec.value = null
+  const mp = selectedAccount.value?.platform
+  if (!mp) return
+  try {
+    const { data } = await api.get(`/marketplace-settings/${mp}`)
+    mktImageSpec.value = data?.settings?.media?.image || null
+    mktClipPrompt.value = data?.settings?.media?.clip?.ai_prompt || ''
+  } catch { /* silencioso — sem spec, upload segue sem checagem */ }
+}
+
+async function uploadPhotoFile(file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  const { data } = await api.post('/anuncios/upload-image', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+  if (data?.url) { wf.value.pictures.push(data.url); toast.success('Foto adicionada.') }
+}
+
+async function onPhotoFileSelected(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  if (wf.value.pictures.length >= 12) {
+    toast.warning('Máximo de 12 fotos.')
+    if (photoFileInput.value) photoFileInput.value.value = ''
+    return
+  }
+  try {
+    const spec = mktImageSpec.value
+    const res = spec ? await validateImage(file, spec) : null
+    if (spec && res && !res.ok) {
+      correction.value = { open: true, file }  // fora do padrão → modal
+    } else {
+      await uploadPhotoFile(file)              // dentro do padrão → upload direto
+    }
+  } catch (err) {
+    toast.error(err?.response?.data?.detail || 'Erro ao enviar a imagem')
+  } finally {
+    if (photoFileInput.value) photoFileInput.value.value = ''
+  }
+}
+
+function onCorrectionDone(url) {
+  if (url && wf.value.pictures.length < 12) wf.value.pictures.push(url)
+  correction.value.open = false
+}
+
+// Geração de mídia por IA (Fase B.2/C) — centralizada no composable useMediaAi
+const mediaAi = useMediaAi()
+const generatedClips = mediaAi.clips  // alias para o template
+const aiClip = ref({ open: false, prompt: '', includeBrief: true, loading: false })
+const mktClipPrompt = ref('')
+const clipPreview = ref(null)
+
+async function removeClip(jobId) {
+  if (!confirm('Excluir este clip? Esta ação não pode ser desfeita.')) return
+  try {
+    await mediaAi.deleteClip(jobId)
+    if (clipPreview.value?.job_id === jobId) clipPreview.value = null
+  } catch (e) {
+    toast.error(e?.response?.data?.detail || 'Erro ao excluir o clip')
+  }
+}
+
+function openAiClip() {
+  aiClip.value.open = true
+  if (!aiClip.value.prompt) aiClip.value.prompt = mktClipPrompt.value || ''
+}
+
+async function generateAiClip() {
+  const prompt = aiClip.value.prompt.trim()
+  if (!prompt) return
+  aiClip.value.loading = true
+  try {
+    await mediaAi.startClip({
+      prompt,
+      marketplace: selectedAccount.value?.platform || null,
+      productType: wf.value.product_type || null,
+      productId: wf.value.product_id || null,
+      includeBrief: aiClip.value.includeBrief,
+      sourceUrl: wf.value.pictures[0] || null,
+    })
+    aiClip.value.open = false
+    aiClip.value.prompt = ''
+  } catch (e) {
+    toast.error(e?.response?.data?.detail || 'Erro ao iniciar o clip')
+  } finally {
+    aiClip.value.loading = false
+  }
+}
+
+async function generateAiPhoto() {
+  const prompt = aiPhoto.value.prompt.trim()
+  if (!prompt) return
+  if (wf.value.pictures.length >= 12) { toast.warning('Máximo de 12 fotos.'); return }
+  aiPhoto.value.loading = true
+  try {
+    const data = await mediaAi.generatePhoto({
+      prompt,
+      marketplace: selectedAccount.value?.platform || null,
+      productType: wf.value.product_type || null,
+      productId: wf.value.product_id || null,
+      includeBrief: aiPhoto.value.includeBrief,
+      sourceUrls: aiPhoto.value.useSelectedAsRef ? wf.value.pictures : [],
+    })
+    if (data?.url) {
+      wf.value.pictures.push(data.url)
+      toast.success('Imagem gerada e adicionada às fotos.')
+      aiPhoto.value.open = false
+      aiPhoto.value.prompt = ''
+    }
+  } catch (e) {
+    toast.error(e?.response?.data?.detail || 'Erro ao gerar imagem por IA')
+  } finally {
+    aiPhoto.value.loading = false
+  }
+}
+
 function toggleImage(url) {
   if (wf.value.pictures.includes(url)) {
     wf.value.pictures = wf.value.pictures.filter(u => u !== url)
@@ -2157,13 +2384,6 @@ function stopWizardPreview() {
   wizardImgPreview.value.show = false
 }
 
-function moveImage(i, dir) {
-  const pics = wf.value.pictures
-  const target = i + dir
-  if (target < 0 || target >= pics.length) return
-  ;[pics[i], pics[target]] = [pics[target], pics[i]]
-}
-
 async function openWizard(listing) {
   wizardStep.value = 1
   wizard.value = { show: true, isEdit: !!listing, listingId: listing?.id || null, saving: false, error: '', originalSku: listing?.sku || '' }
@@ -2172,6 +2392,13 @@ async function openWizard(listing) {
   wizardFiscal.value = { ncm: '', ean: '', cest: '', gtin: '', csosn: null }
   productSearch.value = ''
   extraImageUrl.value = ''
+  correction.value = { open: false, file: null }
+  aiPhoto.value = { open: false, prompt: '', includeBrief: true, useSelectedAsRef: true, loading: false }
+  aiClip.value = { open: false, prompt: '', includeBrief: true, loading: false }
+  mediaAi.clearTimers()  // cancela pollings antigos antes de recarregar
+  mediaAi.clips.value = []
+  loadMktImageSpec()     // carrega o padrão de imagem + prompt de clip do marketplace
+  mediaAi.loadClips()    // recupera clips gerados (incl. polling dos que estão running)
 
   await Promise.all([loadCmigProductsForWizard(), loadPgProductsForWizard()])
 
