@@ -62,6 +62,7 @@ from routers import (
     campaign_ads,
     catalog,
     cfop,
+    claims,
     cmig_reports,
     cmigs,
     dashboard,
@@ -74,6 +75,7 @@ from routers import (
     invoices,
     listings,
     manual_orders,
+    message_templates,
     messages,
     ncm,
     notifications,
@@ -120,6 +122,8 @@ app.include_router(goes.router, prefix=f"{PREFIX}/goes", tags=["GOs"])
 app.include_router(cmigs.router, prefix=f"{PREFIX}/cmigs", tags=["CMIGs"])
 app.include_router(anuncios.router, prefix=f"{PREFIX}/anuncios", tags=["Anuncios"])
 app.include_router(campaign_ads.router, prefix=f"{PREFIX}/campaign-ads", tags=["CampaignAds"])
+app.include_router(claims.router)
+app.include_router(message_templates.router)
 app.include_router(
     product_categories.router,
     prefix=f"{PREFIX}/product-categories",

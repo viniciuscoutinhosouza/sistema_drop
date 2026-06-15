@@ -17,10 +17,10 @@ import services.ai_service as ai_svc
 import services.messages_service as msg_svc
 from database import get_db
 from dependencies import get_current_user
-from models.cmig import CMIG, CMIGAdministrator
 from models.integration import MarketplaceAccount
 from models.messages import AIConfig, CMIGAIConfig, ConversationMessage, ConversationThread
 from models.user import User
+from services.atendimento_access import get_accessible_account_ids as _get_accessible_account_ids
 
 router = APIRouter(prefix="/api/v1/messages", tags=["messages"])
 logger = logging.getLogger(__name__)
@@ -29,26 +29,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-async def _get_accessible_account_ids(db: AsyncSession, user: User) -> list[int]:
-    """Retorna IDs de contas que o usuário pode ver."""
-    if user.role == "admin":
-        result = await db.execute(
-            select(MarketplaceAccount.id).where(MarketplaceAccount.is_active == True)
-        )
-        return [r[0] for r in result.all()]
-    if user.role == "ac":
-        result = await db.execute(
-            select(MarketplaceAccount.id)
-            .join(CMIG, MarketplaceAccount.cmig_id == CMIG.id)
-            .join(CMIGAdministrator, CMIGAdministrator.cmig_id == CMIG.id)
-            .where(CMIGAdministrator.user_id == user.id)
-        )
-        return [r[0] for r in result.all()]
-    raise HTTPException(
-        status_code=403, detail="Acesso à central de atendimento apenas para AC e admin."
-    )
 
 
 def _serialize_thread(t: ConversationThread) -> dict:

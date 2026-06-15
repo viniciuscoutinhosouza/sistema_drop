@@ -1,5 +1,21 @@
 <template>
   <div>
+    <!-- Abas: Mensagens | Reclamações -->
+    <ul class="nav nav-tabs mb-2">
+      <li class="nav-item">
+        <a class="nav-link" :class="{ active: activeTab === 'messages' }" href="#" @click.prevent="activeTab = 'messages'">
+          <i class="fas fa-comments mr-1"></i>Mensagens
+        </a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link" :class="{ active: activeTab === 'claims' }" href="#" @click.prevent="activeTab = 'claims'">
+          <i class="fas fa-gavel mr-1"></i>Reclamações
+          <span v-if="claimsOpen > 0" class="badge badge-danger ml-1">{{ claimsOpen }}</span>
+        </a>
+      </li>
+    </ul>
+
+    <div v-show="activeTab === 'messages'">
     <!-- Filtros superiores -->
     <div class="card card-outline card-primary mb-2">
       <div class="card-header py-2 d-flex flex-wrap gap-2 align-items-center">
@@ -204,6 +220,9 @@
                 {{ store.loadingAI ? 'Gerando...' : 'Sugerir com IA' }}
               </button>
               <div style="gap:6px" class="d-flex">
+                <button class="btn btn-sm btn-outline-secondary" title="Mensagens Prontas" @click="showTemplates = true">
+                  <i class="fas fa-comment-dots"></i>
+                </button>
                 <button v-if="replyText" class="btn btn-sm btn-outline-secondary" @click="replyText = ''; store.aiSuggestion = ''">
                   Limpar
                 </button>
@@ -221,6 +240,13 @@
         </template>
       </div>
     </div>
+    </div><!-- /aba Mensagens -->
+
+    <div v-show="activeTab === 'claims'">
+      <ClaimsTab :accounts="accounts" @open-count="claimsOpen = $event" />
+    </div>
+
+    <TemplatesModal v-if="showTemplates" @close="showTemplates = false" @use="applyTemplate" />
   </div>
 </template>
 
@@ -231,10 +257,19 @@ import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import { formatDateTime } from '@/utils/formatters'
 import { useSocket } from '@/composables/useSocket'
+import ClaimsTab from '@/components/atendimento/ClaimsTab.vue'
+import TemplatesModal from '@/components/atendimento/TemplatesModal.vue'
 
 const store = useMessagesStore()
 const toast = useToast()
 
+const activeTab = ref('messages')
+const claimsOpen = ref(0)
+const showTemplates = ref(false)
+function applyTemplate(body) {
+  replyText.value = (replyText.value ? replyText.value + '\n' : '') + body
+  showTemplates.value = false
+}
 const accounts = ref([])
 const activeId = ref(null)
 const replyText = ref('')

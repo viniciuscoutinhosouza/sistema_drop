@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-06-14 — feat(atendimento): apresentação da lista de reclamações + Histórico de Ações em PT-BR (local, não enviado)
+
+Igualando à referência (Mercado Turbo):
+- Lista de reclamações: **foto de capa do anúncio** (coluna `thumbnail` na tabela claims — migration `108_claims_thumbnail.sql`), **Tipo** ("Reclamação Comprador/Vendedor"), **Estágio**, **Status** (Aberto/Fechado, colorido) e **Última Interação**. Placeholder quando sem foto.
+- Foto buscada do `OrderItem` interno e, quando ausente, **do item no ML** (`get_item_thumbnail`; e `get_order_item_id` quando não há pedido casado). 3/4 abertas resolveram; resto cai no placeholder.
+- **Histórico de Ações 100% em PT-BR**: `ACTION_NAME_PT` cobre todos os action_names vistos (send_message_to_*, generate_return*, refund, allow_partial_refund, return_review*, create_new_resolution, disallow_return, set_culpability, change_typification, open_none, etc.); papéis traduzidos (`ROLE_PT`: Vendedor/Comprador/Mediador) e status (Aberto/Fechado). Rótulo recalculado no serializer (corrige registros antigos sem re-sync). Card do histórico mostra Ação/Quem/Estágio/Status/Data.
+- Verificação ao vivo: re-sync das contas OK; "não mapeados: nenhum"; opened com thumbnail 3/4; `npm run build` OK.
+
+## 2026-06-14 — fix(atendimento): sync de reclamações não cobria todas as contas (DPY-4011) (local, não enviado)
+
+Sintoma: reclamações "não eram encontradas" — só a conta sincronizada manualmente tinha dados (parciais).
+Causa raiz: `claims_sync` mantinha UMA sessão Oracle aberta durante dezenas de chamadas HTTP ao ML (lentas) → o ATP derrubava a conexão ociosa (`DPY-4011 / WinError 10054`) → rollback do lote inteiro. Além disso, enriquecia TODAS as reclamações (incl. fechadas), ~4 chamadas cada, tornando o job lento demais p/ cobrir as contas.
+Correção: HTTP feito FORA do banco; **uma transação curta por claim**; enriquecimento (detalhe/reputação/mensagens/histórico) só para **abertas** (fechadas = resumo); `asyncio.gather` nas 4 leituras da aberta; dedupe de mensagens por hash com 1 query. Frontend: "Sincronizar" sem conta selecionada agora cobre **todas as contas acessíveis**.
+Verificação ao vivo: sync de 5 contas sem erro (7–30s cada), 113 claims gravados; ML MIG com 3 abertas (= o esperado), LPS com 1. Conta CA FITNESS precisa reconectar (invalid_grant).
+
+## 2026-06-14 — feat(atendimento): Reclamações sub-fase 3 — Mensagens Prontas + modais dedicados (local, não enviado)
+
+- Templates "Mensagens Prontas" (§2.8): tabela `message_templates` (já na migration 107), `routers/message_templates.py` (CRUD escopado por usuário/CMIG, com `get_accessible_cmig_ids` novo em atendimento_access), `composables/useMessageTemplates.js`, `components/atendimento/TemplatesModal.vue` (gerenciar + usar). Botão de Mensagens Prontas no compositor das DUAS abas (Mensagens e Reclamações).
+- Modais dedicados das ações de reclamação (§3.5), substituindo prompt/confirm/alert: Reembolso Parcial (valor), Revisar Devolução (Tudo Certo / Há um Problema + nota), Código de Rastreio, confirmação genérica (reembolso total/mediação/etiqueta), Detalhes da Devolução, Resolução Esperada — em ClaimsTab.
+- Verificação: backend importa OK (4 rotas templates); `npm run build` OK; `pytest -m "not integration"` = 25 passed, 2 failed (pré-existentes).
+- NÃO incluído (precisa de integração externa / definição): Cálculo de Frete dos Correios (API/credenciais Correios), Carrinho do Comprador e Informações da Entrega standalone na aba Mensagens, e Código de Rastreio standalone do pós-venda. Reportado ao usuário.
+
+> **Local apenas.** Não enviado a GitHub/servidor.
+
+## 2026-06-14 — feat(atendimento): Reclamações (claims ML) por conta CMIG — sub-fases 1+2 (local, não enviado)
+
+Atendimento agora atende mensagens E reclamações pós-venda do ML, persistindo tudo no BD. Avaliação prévia do consistency-auditor aplicada (auth via get_accessible_account_ids — não require_menu_permission; checagem por-recurso; auditoria triggered_by_user_id; idempotência de refund; webhook em background). Ver ADR-0007.
+
+- DB: migration `107_claims.sql` (idempotente) + `models/claim.py`: `claims`, `claim_messages` (2 canais comprador/mediador), `claim_actions` (histórico + auditoria local), `message_templates`.
+- `services/claims_service.py`: leituras tolerantes (search/detail/actions-history/affects-reputation/messages/returns) + escritas (send_message, execute_claim_action) + mapas PT (stage/reason/action/reputation).
+- `services/atendimento_access.py`: helper de escopo extraído e compartilhado entre messages e claims (refatorado messages.py p/ usá-lo).
+- `tasks/claims_sync.py`: `sync_all_claims` (scheduler 15min) + `sync_account_claims` (on-demand/webhook); upsert claims/mensagens(hash)/ações; enriquecimento best-effort via Order. Webhook tópico `claims` em webhooks.py.
+- `routers/claims.py` (prefix /api/v1/claims): stats, list, detail (2 canais + histórico), sync, returns, POST messages (responder), POST actions/{action} (dispatcher: refund/partial-refund/open-dispute/return-review/allow-return/send-tracking — valida available_actions, bloqueia refund duplicado, audita user_id). Registrado em main.py.
+- Frontend: `MessagesView` vira abas (Mensagens | Reclamações c/ badge). `components/atendimento/ClaimsTab.vue` (3 colunas: lista+filtro / detalhe c/ header+IDs copiáveis+badge reputação+ações+2 canais+resposta 350ch / histórico). `composables/useClaims.js`.
+- ADR-0007 (claim ML vs Return físico).
+- Verificação: backend importa OK (7 rotas claims, models registrados); messages/webhooks refatorados OK; `pytest -m "not integration"` = 25 passed, 2 failed (pré-existentes); `npm run build` OK.
+- PENDENTE: sub-fase 3 (auxiliares de mensagem: templates "Mensagens Prontas" CRUD, código de rastreio, cálculo de frete, carrinho, info de entrega) + modais dedicados (hoje refund/partial/return-review usam confirm/prompt). Rodar migration 107 no Oracle. Confirmar ao vivo paths dos POSTs de ação e tópico de webhook `claims`.
+
+> **Local apenas.** Não enviado a GitHub/servidor.
+
+## 2026-06-14 — chore(media): desabilitar geração de clips por IA (kill switch)
+
+A geração de clips por IA (Veo) foi desligada a pedido. Visualização/exclusão dos clips já gerados continua ativa.
+
+- `routers/media.py`: `POST /generate-clip` levanta 403 imediatamente (kill switch authoritative — impede custo mesmo via API direta). Implementação preservada abaixo do bloqueio para reabilitar facilmente.
+- `composables/useMediaAi.js`: `export const CLIP_GENERATION_ENABLED = false`; `startClip` vira no-op (toast de aviso) quando desabilitado.
+- `ProductPhotosCard.vue` e `AnunciosView.vue`: botões "Criar clip (IA)" ocultos via `v-if="CLIP_GENERATION_ENABLED"`.
+- Reabilitar: trocar a flag para `true` + remover o `raise` no endpoint.
+- Verificação: media.py sintaxe OK; `npm run build` OK.
+
 ## 2026-06-14 — feat(campaign-ads): Raio-X do anúncio + detalhe de campanha (fase 2) (local, não enviado)
 
 Os 2 recursos deixados fora de escopo na fase 1 do módulo Campanha ADS. Avaliação prévia do consistency-auditor aplicada — pegou 1 CRITICAL: a URL de detalhe de campanha da §9.2 do levantamento (sem advertiser) está na lista de descontinuados; usei a forma COM `advertiser_id` no path + `api-version: 2`.

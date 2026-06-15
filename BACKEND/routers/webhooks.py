@@ -79,6 +79,8 @@ async def ml_webhook(
         return await _handle_ml_messages(db, body, ml_user_id)
     if topic == "questions":
         return await _handle_ml_questions(db, body, ml_user_id)
+    if topic == "claims":
+        return await _handle_ml_claims(db, body, ml_user_id)
 
     # Only process order notifications
     if "orders" not in resource and topic != "orders_v2":
@@ -159,6 +161,27 @@ async def _handle_ml_messages(db, body: dict, ml_user_id: str):
     # Sincroniza em background sem bloquear a resposta 200
     asyncio.create_task(sync_account_messages(account.id))
     return {"status": "ok", "pack_id": pack_id}
+
+
+async def _handle_ml_claims(db, body: dict, ml_user_id: str):
+    """Webhook claims: identifica a conta e dispara o sync de reclamações em background."""
+    import asyncio
+
+    from tasks.claims_sync import sync_account_claims
+
+    result = await db.execute(
+        select(MarketplaceAccount).where(
+            MarketplaceAccount.platform_user_id == ml_user_id,
+            MarketplaceAccount.platform == "mercadolivre",
+            MarketplaceAccount.is_active == True,  # noqa: E712
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        return {"status": "no_integration"}
+
+    asyncio.create_task(sync_account_claims(account.id))
+    return {"status": "ok"}
 
 
 async def _handle_ml_questions(db, body: dict, ml_user_id: str):

@@ -102,6 +102,16 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    from tasks.claims_sync import sync_all_claims
+
+    scheduler.add_job(
+        sync_all_claims,
+        IntervalTrigger(minutes=15),
+        id="sync_claims",
+        name="Sync Reclamações (claims) ML",
+        replace_existing=True,
+    )
+
     from tasks.sync_reputation import refresh_ml_reputation
 
     scheduler.add_job(
