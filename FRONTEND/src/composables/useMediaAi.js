@@ -9,6 +9,11 @@ import { useToast } from '@/composables/useToast'
 
 const MAX_POLLS = 120  // ~10 min a 5s
 
+// Kill switch da geração de clips por IA (custo por segundo). Quando false, os
+// botões "Criar clip (IA)" ficam ocultos e startClip vira no-op; o backend também
+// bloqueia /generate-clip (403). A visualização/exclusão dos clips já gerados segue ativa.
+export const CLIP_GENERATION_ENABLED = false
+
 export function useMediaAi() {
   const toast = useToast()
   const clips = ref([])
@@ -61,6 +66,10 @@ export function useMediaAi() {
     prompt, marketplace = null, productType = null, productId = null,
     includeBrief = true, sourceUrl = null,
   }) {
+    if (!CLIP_GENERATION_ENABLED) {
+      toast.warning('A geração de clips por IA está desabilitada.')
+      return null
+    }
     const { data } = await api.post('/media/generate-clip', {
       prompt,
       marketplace,

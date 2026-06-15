@@ -839,8 +839,8 @@
                   </div>
                 </div>
 
-                <!-- Criar clip por IA (Fase C) -->
-                <div class="mt-2 border-top pt-2">
+                <!-- Criar clip por IA (Fase C) — desabilitado (kill switch) -->
+                <div v-if="CLIP_GENERATION_ENABLED" class="mt-2 border-top pt-2">
                   <button v-if="!aiClip.open" class="btn btn-sm btn-outline-info" @click="openAiClip">
                     <i class="fas fa-film mr-1"></i> Criar clip (IA)
                   </button>
@@ -1848,7 +1848,7 @@ import draggable from 'vuedraggable'
 import ImageCorrectionModal from '@/components/common/ImageCorrectionModal.vue'
 import ClipPreviewModal from '@/components/common/ClipPreviewModal.vue'
 import { validateImage } from '@/composables/useImageStandard'
-import { useMediaAi } from '@/composables/useMediaAi'
+import { useMediaAi, CLIP_GENERATION_ENABLED } from '@/composables/useMediaAi'
 
 const toast = useToast()
 

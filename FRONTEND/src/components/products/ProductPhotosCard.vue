@@ -65,7 +65,7 @@
     <button type="button" class="btn btn-sm btn-outline-info ml-1" @click="aiPhoto.open = !aiPhoto.open">
       <i class="fas fa-magic mr-1"></i>Criar foto (IA)
     </button>
-    <button type="button" class="btn btn-sm btn-outline-info ml-1" @click="openAiClip">
+    <button v-if="CLIP_GENERATION_ENABLED" type="button" class="btn btn-sm btn-outline-info ml-1" @click="openAiClip">
       <i class="fas fa-film mr-1"></i>Criar clip (IA)
     </button>
     <small class="text-muted d-block mt-1" style="font-size:11px">
@@ -161,7 +161,7 @@ import draggable from 'vuedraggable'
 import ImageCorrectionModal from '@/components/common/ImageCorrectionModal.vue'
 import ClipPreviewModal from '@/components/common/ClipPreviewModal.vue'
 import { validateImage } from '@/composables/useImageStandard'
-import { useMediaAi } from '@/composables/useMediaAi'
+import { useMediaAi, CLIP_GENERATION_ENABLED } from '@/composables/useMediaAi'
 
 const MAX_PX = 1200
 const GENERIC_SPEC = { aspect: '1:1', rec_px: 1200, min_px: 500, max_mb: 8, formats: ['JPG', 'PNG', 'WEBP', 'GIF'] }

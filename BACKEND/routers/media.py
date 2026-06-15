@@ -332,7 +332,16 @@ async def generate_clip(
 ):
     """Inicia a geração de um clip de vídeo por IA (Veo). Assíncrono: retorna um
     job_id; o cliente consulta /clip-status/{job_id}. Custo por segundo — confirmar antes.
+
+    DESABILITADO: a geração de clips por IA está desligada (kill switch). Os clips
+    já gerados continuam visíveis/exclusíveis via /clips. Para reabilitar, remover
+    o bloqueio abaixo.
     """
+    raise HTTPException(
+        status_code=403,
+        detail="A geração de clips por IA está desabilitada.",
+    )
+
     prompt = (body.get("prompt") or "").strip()[:MAX_PROMPT_CHARS]
     if not prompt:
         raise HTTPException(status_code=400, detail="Informe o prompt para gerar o clip.")
