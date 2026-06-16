@@ -7,9 +7,10 @@ import base64
 import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 import services.ai_service as ai_svc
+import services.ml_items as ml_items
 import services.messages_service as msg_svc
 from database import task_db
 from models.integration import MarketplaceAccount
@@ -57,10 +58,15 @@ async def sync_account_messages(account_id: int):
         seller_id = account.platform_user_id
         if not seller_id:
             return
+        token = account.access_token
 
         await _sync_post_sale_messages(db, account, seller_id)
         await _sync_pre_sale_questions(db, account, seller_id)
         await _reconcile_answered_questions(db, account)
+
+    # Backfill de foto/permalink do anúncio — HTTP FORA da sessão de BD (evita
+    # segurar a conexão Oracle durante chamadas lentas), em transações curtas.
+    await _backfill_thread_items(account_id, token)
 
 
 async def sync_question_by_id(account_id: int, question_id: str):
@@ -329,6 +335,26 @@ async def _upsert_post_sale_thread(
         ):
             unread += 1
 
+    # Enriquece com o anúncio e o comprador a partir do Order/OrderItem (sem HTTP).
+    from models.order import Order, OrderItem
+
+    item_id = item_title = item_thumb = None
+    order = (
+        await db.execute(
+            select(Order).where(
+                Order.account_id == account.id, Order.platform_order_id == str(pack_id)
+            )
+        )
+    ).scalars().first()
+    if order:
+        if order.buyer_name:
+            buyer_nickname = buyer_nickname or order.buyer_name
+        oi = (
+            await db.execute(select(OrderItem).where(OrderItem.order_id == order.id).limit(1))
+        ).scalars().first()
+        if oi:
+            item_id, item_title, item_thumb = oi.ml_item_id, oi.title, oi.thumbnail_url
+
     if not thread:
         thread = ConversationThread(
             marketplace_account_id=account.id,
@@ -338,6 +364,9 @@ async def _upsert_post_sale_thread(
             platform_order_id=str(pack_data.get("order_id") or ""),
             buyer_platform_id=buyer_id,
             buyer_nickname=buyer_nickname,
+            item_id=item_id,
+            item_title=item_title,
+            item_thumbnail=item_thumb,
             status="open",
             unread_count=unread,
             last_message_at=last_msg_at,
@@ -349,6 +378,9 @@ async def _upsert_post_sale_thread(
         thread.buyer_nickname = buyer_nickname or thread.buyer_nickname
         thread.last_message_at = last_msg_at or thread.last_message_at
         thread.unread_count = max(thread.unread_count, unread)
+        thread.item_id = thread.item_id or item_id
+        thread.item_title = thread.item_title or item_title
+        thread.item_thumbnail = thread.item_thumbnail or item_thumb
 
     # Upserta mensagens individuais
     for m in ml_messages:
@@ -391,6 +423,67 @@ async def _upsert_post_sale_thread(
     # Auto-resposta IA (se ativada e última mensagem é do comprador)
     if ml_messages and unread > 0:
         await _maybe_auto_respond(db, thread, account)
+
+
+async def _backfill_thread_items(account_id: int, token: str):
+    """Preenche foto/permalink do anúncio nas threads com item_id mas sem esses
+    campos. HTTP fora da sessão de BD; 1 transação curta por thread."""
+    if not token:
+        return
+    async with task_db() as db:
+        rows = (
+            await db.execute(
+                select(
+                    ConversationThread.id,
+                    ConversationThread.item_id,
+                    ConversationThread.item_title,
+                    ConversationThread.item_thumbnail,
+                    ConversationThread.item_permalink,
+                    ConversationThread.buyer_platform_id,
+                    ConversationThread.buyer_nickname,
+                ).where(
+                    ConversationThread.marketplace_account_id == account_id,
+                    (
+                        (ConversationThread.item_id.isnot(None))
+                        & (
+                            (ConversationThread.item_thumbnail.is_(None))
+                            | (ConversationThread.item_permalink.is_(None))
+                            | (ConversationThread.item_title.is_(None))
+                        )
+                    )
+                    | (
+                        (ConversationThread.buyer_nickname.is_(None))
+                        & (ConversationThread.buyer_platform_id.isnot(None))
+                    ),
+                ).limit(100)
+            )
+        ).all()
+    for tid, item_id, item_title, thumb, permalink, buyer_id, buyer_nick in rows:
+        values = {}
+        if item_id and (not thumb or not permalink or not item_title):
+            try:
+                meta = await ml_items.get_item_meta(token, item_id)
+            except Exception:  # noqa: BLE001
+                meta = {}
+            if not thumb and meta.get("thumbnail"):
+                values["item_thumbnail"] = meta["thumbnail"]
+            if not permalink and meta.get("permalink"):
+                values["item_permalink"] = meta["permalink"]
+            if not item_title and meta.get("title"):
+                values["item_title"] = meta["title"]
+        if not buyer_nick and buyer_id:
+            try:
+                nick = await ml_items.get_user_nickname(token, buyer_id)
+            except Exception:  # noqa: BLE001
+                nick = None
+            if nick:
+                values["buyer_nickname"] = nick
+        if values:
+            async with task_db() as db:
+                await db.execute(
+                    update(ConversationThread).where(ConversationThread.id == tid).values(**values)
+                )
+                await db.commit()
 
 
 async def _sync_pre_sale_questions(db, account: MarketplaceAccount, seller_id: str):

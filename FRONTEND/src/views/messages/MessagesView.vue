@@ -115,16 +115,27 @@
               </div>
               <span v-if="thread.unread_count > 0" class="badge badge-danger badge-pill">{{ thread.unread_count }}</span>
             </div>
-            <div class="mt-1">
-              <span :class="['d-block small', thread.unread_count > 0 ? 'font-weight-bold' : '']">
-                {{ thread.buyer_nickname || 'Comprador' }}
-              </span>
-              <span v-if="thread.item_title" class="d-block small text-muted text-truncate" style="max-width:200px">
-                {{ thread.item_title }}
-              </span>
-              <span class="d-block small text-muted text-truncate" style="max-width:200px">
-                {{ thread.last_message_preview || '...' }}
-              </span>
+            <div class="d-flex mt-1" style="gap:8px">
+              <div class="msg-thumb">
+                <img v-if="thread.item_thumbnail" :src="thread.item_thumbnail" alt="" />
+                <div v-else class="msg-thumb-ph"><i class="fas fa-image"></i></div>
+              </div>
+              <div class="flex-grow-1" style="min-width:0">
+                <span :class="['d-block small', thread.unread_count > 0 ? 'font-weight-bold' : '']">
+                  <i class="fas fa-user mr-1 text-muted"></i>{{ thread.buyer_nickname || 'Comprador' }}
+                </span>
+                <a v-if="thread.item_title && thread.item_permalink" :href="thread.item_permalink"
+                  target="_blank" rel="noopener" class="d-block small text-truncate" style="max-width:200px"
+                  @click.stop :title="thread.item_title">
+                  <i class="fas fa-tag mr-1"></i>{{ thread.item_title }}
+                </a>
+                <span v-else-if="thread.item_title" class="d-block small text-muted text-truncate" style="max-width:200px" :title="thread.item_title">
+                  <i class="fas fa-tag mr-1"></i>{{ thread.item_title }}
+                </span>
+                <span class="d-block small text-muted text-truncate" style="max-width:200px">
+                  {{ thread.last_message_preview || '...' }}
+                </span>
+              </div>
             </div>
             <div class="d-flex justify-content-between mt-1">
               <small class="text-muted">{{ timeAgo(thread.last_message_at) }}</small>
@@ -437,6 +448,12 @@ function timeAgo(isoStr) {
 <style scoped>
 .thread-item:hover { background: #f4f6f9; }
 .thread-active { background: #e8f0fe !important; border-left: 3px solid #4e73df; }
+.msg-thumb { width: 48px; height: 48px; flex: 0 0 48px; }
+.msg-thumb img { width: 48px; height: 48px; object-fit: cover; border: 1px solid #e3e6ea; border-radius: 6px; }
+.msg-thumb-ph {
+  width: 48px; height: 48px; border: 1px solid #e3e6ea; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center; color: #c4c9d0; background: #f7f8fa;
+}
 .thread-unread { background: #fff8e1; }
 
 .message-bubble {

@@ -27,8 +27,10 @@ class ConversationThread(Base):
     platform_order_id = Column(String(100))  # order_id (pós-venda)
     buyer_platform_id = Column(String(100))
     buyer_nickname = Column(String(200))
-    item_id = Column(String(100))  # para pré-venda
+    item_id = Column(String(100))  # anúncio (pré-venda e pós-venda enriquecido)
     item_title = Column(String(500))
+    item_thumbnail = Column(String(1000))  # foto de capa do anúncio
+    item_permalink = Column(String(1000))  # link do anúncio no marketplace
     status = Column(
         String(30), nullable=False, default="open"
     )  # open | pending_reply | closed | answered

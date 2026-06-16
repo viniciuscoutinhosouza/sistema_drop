@@ -42,6 +42,8 @@ def _serialize_thread(t: ConversationThread) -> dict:
         "buyer_nickname": t.buyer_nickname,
         "item_id": t.item_id,
         "item_title": t.item_title,
+        "item_thumbnail": t.item_thumbnail,
+        "item_permalink": t.item_permalink,
         "status": t.status,
         "unread_count": t.unread_count,
         "is_archived": t.is_archived,

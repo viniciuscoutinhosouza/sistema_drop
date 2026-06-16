@@ -205,24 +205,11 @@ async def get_order_item_id(access_token: str, order_id: str) -> str | None:
 
 
 async def get_item_thumbnail(access_token: str, item_id: str) -> str | None:
-    """Foto de capa do anúncio (item ML). Usado para a lista de reclamações."""
-    if not item_id:
-        return None
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{ML_API_BASE}/items/{item_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"attributes": "secure_thumbnail,thumbnail,pictures"},
-        )
-    if resp.status_code != 200:
-        return None
-    data = resp.json() if resp.text else {}
-    thumb = data.get("secure_thumbnail") or data.get("thumbnail")
-    if not thumb:
-        pics = data.get("pictures") or []
-        if pics:
-            thumb = pics[0].get("secure_url") or pics[0].get("url")
-    return thumb
+    """Foto de capa do anúncio (item ML). Delegado ao helper neutro ml_items."""
+    import services.ml_items as ml_items
+
+    meta = await ml_items.get_item_meta(access_token, item_id)
+    return meta.get("thumbnail")
 
 
 # ── Escritas (levantam em falha) ─────────────────────────────────────────────
