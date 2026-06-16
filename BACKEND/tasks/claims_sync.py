@@ -12,7 +12,7 @@ aberta durante as chamadas HTTP (lentas) fazia o ATP derrubar a conexão ociosa
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, select, update
 
@@ -28,12 +28,21 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_dt(s):
+    """Parseia data do ML como timezone-aware (assume UTC se vier sem offset)."""
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s)
     except (TypeError, ValueError):
         return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def _aware(dt):
+    """Normaliza um datetime (ex.: lido do Oracle, naive) para aware em UTC."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 def _players(claim: dict) -> tuple[dict, dict]:
@@ -265,7 +274,7 @@ async def _apply_claim_messages(db, claim: Claim, msgs):
         await db.execute(select(ClaimMessage.platform_hash).where(ClaimMessage.claim_id == claim.id))
     ).all()
     existing_hashes = {r[0] for r in rows if r[0]}
-    last_at = claim.last_message_at
+    last_at = _aware(claim.last_message_at)
     for m in msgs:
         sender = m.get("sender_role")
         receiver = m.get("receiver_role")

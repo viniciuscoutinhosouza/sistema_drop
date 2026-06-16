@@ -4,6 +4,10 @@
 
 ---
 
+## 2026-06-16 — fix(atendimento): timezone no sync de claims (offset-naive vs aware)
+
+O sync de reclamações falhava a cada 15 min em claims cujo `last_message_at` (lido do Oracle, naive) era comparado com a data da mensagem do ML (aware) — `can't compare offset-naive and offset-aware datetimes` (ex.: claim 5527113570). Correção em `tasks/claims_sync.py`: `_parse_dt` retorna sempre tz-aware (assume UTC se sem offset) e novo helper `_aware()` normaliza o valor vindo do banco antes da comparação. Verificado: sync conta 2 sem erro (28 claims), claim 5527113570 atualizado.
+
 ## 2026-06-16 — feat(atendimento): anúncio (foto + link) e comprador na lista de Mensagens (local, não enviado)
 
 A lista de conversas (aba Mensagens) não mostrava o anúncio nem o comprador. Avaliação prévia do consistency-auditor aplicada (sem HTTP na sessão de BD; helper compartilhado; placeholder + link condicional).
