@@ -248,7 +248,7 @@ onMounted(() => { load(); refreshStats() })
             <div v-else-if="!claims.length" class="text-center text-muted py-4">Nenhuma reclamação.</div>
             <a v-for="c in claims" :key="c.id" href="#"
               class="list-group-item list-group-item-action border-bottom d-flex"
-              :class="{ active: selected && selected.id === c.id }"
+              :class="{ 'cl-active': selected && selected.id === c.id }"
               @click.prevent="openClaim(c)">
               <div class="claim-thumb mr-2">
                 <img v-if="c.thumbnail" :src="c.thumbnail" alt="" />
@@ -261,6 +261,9 @@ onMounted(() => { load(); refreshStats() })
                   <strong :class="c.status === 'opened' ? 'text-warning' : 'text-muted'">{{ c.status_label }}</strong>
                 </div>
                 <div class="text-muted">Última Interação: {{ c.last_interaction ? formatDateTime(c.last_interaction) : '—' }}</div>
+                <div v-if="c.mandatory_due_date" class="text-danger font-weight-bold mt-1">
+                  <i class="fas fa-exclamation-triangle mr-1"></i>Ação obrigatória até {{ formatDateTime(c.mandatory_due_date) }}
+                </div>
               </div>
             </a>
           </div>
@@ -322,7 +325,7 @@ onMounted(() => { load(); refreshStats() })
               <div v-for="m in channelMessages" :key="m.id" class="mb-2"
                 :class="m.sender_role === 'respondent' ? 'text-right' : ''">
                 <div class="d-inline-block p-2 rounded small"
-                  :class="m.sender_role === 'respondent' ? 'bg-primary text-white' : 'bg-light border'"
+                  :class="m.sender_role === 'respondent' ? 'cl-bubble-me' : 'bg-light border'"
                   style="max-width:85%">
                   <div v-if="m.sender_role !== 'respondent'" class="font-weight-bold">
                     {{ m.sender_role === 'mediator' ? 'Mediador' : (selected.buyer_nickname || 'Comprador') }}
@@ -464,4 +467,7 @@ onMounted(() => { load(); refreshStats() })
   width: 56px; height: 56px; border: 1px solid #e3e6ea; border-radius: 6px;
   display: flex; align-items: center; justify-content: center; color: #c4c9d0; background: #f7f8fa;
 }
+/* Azul claro: seleção da lista e bolha de mensagem do vendedor */
+.cl-active { background: #e8f0fe !important; color: inherit !important; }
+.cl-bubble-me { background: #e8f0fe; border: 1px solid #cfe0fb; color: #1f2d3d; }
 </style>

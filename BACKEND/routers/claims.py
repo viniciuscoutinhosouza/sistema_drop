@@ -42,6 +42,13 @@ ACTION_TO_AVAILABLE = {
 
 
 def _serialize_claim(c: Claim) -> dict:
+    actions = json.loads(c.available_actions_json) if c.available_actions_json else []
+    # Prazo da ação OBRIGATÓRIA mais próxima (para alerta em vermelho na lista).
+    mandatory_due = None
+    for a in actions:
+        if a.get("mandatory") and a.get("due_date"):
+            if mandatory_due is None or a["due_date"] < mandatory_due:
+                mandatory_due = a["due_date"]
     return {
         "id": c.id,
         "platform_claim_id": c.platform_claim_id,
@@ -70,7 +77,8 @@ def _serialize_claim(c: Claim) -> dict:
         "order_id": c.order_id,
         "has_return": bool(c.has_return),
         "related_return_id": c.related_return_id,
-        "available_actions": json.loads(c.available_actions_json) if c.available_actions_json else [],
+        "available_actions": actions,
+        "mandatory_due_date": mandatory_due,
         "due_date": c.due_date.isoformat() if c.due_date else None,
         "ml_date_created": c.ml_date_created.isoformat() if c.ml_date_created else None,
         "ml_last_updated": c.ml_last_updated.isoformat() if c.ml_last_updated else None,

@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-16 — feat(atendimento): anúncio (foto + link) e comprador na lista de Mensagens (local, não enviado)
+
+A lista de conversas (aba Mensagens) não mostrava o anúncio nem o comprador. Avaliação prévia do consistency-auditor aplicada (sem HTTP na sessão de BD; helper compartilhado; placeholder + link condicional).
+
+- `services/ml_items.py` (novo, neutro): `get_item_meta` (foto/permalink/título) e `get_user_nickname`. `claims_service.get_item_thumbnail` agora delega a ele (sem duplicação).
+- `conversation_threads`: colunas `item_thumbnail`, `item_permalink` (migration `109`). `item_id`/`item_title` já existiam.
+- `messages_sync._upsert_post_sale_thread`: enriquece via Order/OrderItem (título/foto/`item_id`) e usa `order.buyer_name` como fallback do comprador — tudo do BD, sem HTTP.
+- `messages_sync._backfill_thread_items`: preenche foto/permalink/título (item ML) e nickname do comprador — HTTP FORA da sessão de BD, 1 tx curta por thread; cobre pós-venda E perguntas.
+- `routers/messages.py _serialize_thread`: + `item_thumbnail`, `item_permalink`.
+- `MessagesView.vue`: item da lista com foto (placeholder se ausente) + comprador + título do anúncio com link (`target=_blank`, só quando há permalink).
+- Verificação ao vivo: sync conta 2 → thread com comprador (MARIANIUDACOSTA), título (Step Ajustável…), foto e permalink preenchidos. `pytest -m "not integration"` 25/2 (pré-existentes); `npm run build` OK. Migration 109 aplicada na ATP compartilhada.
+
 ## 2026-06-14 — feat(atendimento): apresentação da lista de reclamações + Histórico de Ações em PT-BR (local, não enviado)
 
 Igualando à referência (Mercado Turbo):
