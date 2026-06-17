@@ -181,39 +181,8 @@ async def _push(db, cmig_ids: set[int], pg_ids: set[int]) -> None:
 
 
 async def _read_stock(db, listing: ProductListing) -> int:
-    """Lê stock_quantity atual do produto vinculado ao listing."""
-    if listing.cmig_product_id:
-        qty = (
-            await db.execute(
-                select(CMIGProduct.stock_quantity)
-                .where(CMIGProduct.id == listing.cmig_product_id)
-            )
-        ).scalar_one_or_none()
-        return max(0, int(qty or 0))
+    """Disponível a enviar ao ML: LOCAL (estoque-reservado); se 0, cai p/ o FULL
+    (só pausa quando LOCAL e FULL = 0). Lógica única em full_stock_service."""
+    from services.full_stock_service import available_to_push
 
-    if listing.catalog_product_id:
-        qty = (
-            await db.execute(
-                select(CatalogProduct.stock_quantity)
-                .where(CatalogProduct.id == listing.catalog_product_id)
-            )
-        ).scalar_one_or_none()
-        return max(0, int(qty or 0))
-
-    if listing.product_id:
-        dp = (
-            await db.execute(
-                select(DropshipperProduct)
-                .where(DropshipperProduct.id == listing.product_id)
-            )
-        ).scalar_one_or_none()
-        if dp and dp.catalog_product_id:
-            qty = (
-                await db.execute(
-                    select(CatalogProduct.stock_quantity)
-                    .where(CatalogProduct.id == dp.catalog_product_id)
-                )
-            ).scalar_one_or_none()
-            return max(0, int(qty or 0))
-
-    return 0
+    return await available_to_push(db, listing)

@@ -16,14 +16,14 @@
           <div class="col-md-4">
             <select class="form-control form-control-sm" v-model="filterCmigId" @change="load">
               <option :value="null">Todas as CMIGs</option>
-              <option v-for="c in cmigs" :key="c.id" :value="c.id">{{ c.name }}</option>
+              <option v-for="c in cmigs" :key="c.id" :value="c.id">{{ cmigLabel(c) }}</option>
             </select>
           </div>
           <div class="col-md-4">
             <select class="form-control form-control-sm" v-model="filterAccountId" @change="load">
               <option :value="null">Todas as contas</option>
               <option v-for="a in filteredAccounts" :key="a.id" :value="a.id">
-                {{ a.nickname || a.ml_user_id || a.id }}
+                {{ accountLabel(a) }}
               </option>
             </select>
           </div>
@@ -100,7 +100,7 @@
               <label class="small font-weight-bold">CMIG *</label>
               <select class="form-control form-control-sm" v-model="form.cmig_id" @change="onCmigChange">
                 <option :value="null">Selecionar...</option>
-                <option v-for="c in cmigs" :key="c.id" :value="c.id">{{ c.name }}</option>
+                <option v-for="c in cmigs" :key="c.id" :value="c.id">{{ cmigLabel(c) }}</option>
               </select>
             </div>
             <div class="form-group">
@@ -108,7 +108,7 @@
               <select class="form-control form-control-sm" v-model="form.marketplace_account_id" :disabled="!form.cmig_id">
                 <option :value="null">Selecionar...</option>
                 <option v-for="a in modalAccounts" :key="a.id" :value="a.id">
-                  {{ a.nickname || a.ml_user_id || a.id }}
+                  {{ accountLabel(a) }}
                 </option>
               </select>
             </div>
@@ -171,14 +171,21 @@ const modalAccounts = computed(() => {
   return accounts.value.filter(a => a.cmig_id === form.value.cmig_id)
 })
 
+function cmigLabel(c) {
+  return c ? (c.company_name || c.trade_name || `CMIG #${c.id}`) : ''
+}
+
+function accountLabel(a) {
+  return a ? (a.description || a.platform_username || a.platform_user_id || `#${a.id}`) : ''
+}
+
 function accountName(id) {
-  const a = accounts.value.find(x => x.id === id)
-  return a ? (a.nickname || a.ml_user_id || `#${id}`) : `#${id}`
+  return accountLabel(accounts.value.find(x => x.id === id)) || `#${id}`
 }
 
 function cmigName(id) {
   const c = cmigs.value.find(x => x.id === id)
-  return c ? c.name : `#${id}`
+  return c ? cmigLabel(c) : `#${id}`
 }
 
 function formatCnpj(v) {

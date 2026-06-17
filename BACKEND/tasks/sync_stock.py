@@ -166,52 +166,8 @@ def _append_error(stats: dict, listing: ProductListing, error: str, action: str)
 
 
 async def _compute_product_stock(db: AsyncSyncSession, listing: ProductListing) -> int:
-    """Calcula o estoque disponível (físico - reservado) do produto vinculado ao listing."""
+    """Disponível a enviar ao ML: LOCAL (estoque-reservado); se 0, cai p/ o FULL
+    (só pausa quando LOCAL e FULL = 0). Lógica única em full_stock_service."""
+    from services.full_stock_service import available_to_push
 
-    if listing.catalog_product_id and not listing.product_id:
-        result = await db.execute(
-            select(
-                CatalogProduct.stock_quantity,
-                CatalogProduct.reserved_quantity,
-            ).where(CatalogProduct.id == listing.catalog_product_id)
-        )
-        row = result.one_or_none()
-        if row is None:
-            return 0
-        physical, reserved = row
-        return max(0, int(physical or 0) - int(reserved or 0))
-
-    if listing.cmig_product_id and not listing.product_id:
-        result = await db.execute(
-            select(
-                CMIGProduct.stock_quantity,
-                CMIGProduct.reserved_quantity,
-            ).where(CMIGProduct.id == listing.cmig_product_id)
-        )
-        row = result.one_or_none()
-        if row is None:
-            return 0
-        physical, reserved = row
-        return max(0, int(physical or 0) - int(reserved or 0))
-
-    if listing.product_id:
-        result = await db.execute(
-            select(DropshipperProduct).where(DropshipperProduct.id == listing.product_id)
-        )
-        product = result.scalar_one_or_none()
-        if product is None:
-            return 0
-        if product.catalog_product_id:
-            result = await db.execute(
-                select(
-                    CatalogProduct.stock_quantity,
-                    CatalogProduct.reserved_quantity,
-                ).where(CatalogProduct.id == product.catalog_product_id)
-            )
-            row = result.one_or_none()
-            if row is None:
-                return 0
-            physical, reserved = row
-            return max(0, int(physical or 0) - int(reserved or 0))
-
-    return 0
+    return await available_to_push(db, listing)
