@@ -679,6 +679,108 @@ async def validate_return(
         logger.error("validate_return return=%s approved=%s: %s", return_obj.id, approved, exc)
 
 
+# ─── Devolução NF-e-driven (Fase B): usa a QTD da NF-e de devolução ──────────
+# Diferente de receive/validate_customer_return (que usam a qtd do PEDIDO), estas
+# operam item a item pela quantidade REAL da NF-e (devolução parcial). `items` são
+# os InvoiceItem da NF-e de devolução, já casados (catalog_product_id/cmig_product_id).
+
+
+async def receive_return_items(db: AsyncSession, return_obj: Return, items: list) -> int:
+    """Recebe a devolução pela QTD da NF-e → pending_validation_quantity. Idempotente.
+    Retorna a qtd total recebida (0 se nada casou)."""
+    if await _already_has_return_movement(db, return_obj.id, "receive_return"):
+        return 0
+    total = 0
+    for item in items:
+        qty = int(item.quantity or 0)
+        if qty <= 0:
+            continue
+        if item.catalog_product_id:
+            await db.execute(
+                update(CatalogProduct)
+                .where(CatalogProduct.id == item.catalog_product_id)
+                .values(pending_validation_quantity=CatalogProduct.pending_validation_quantity + qty)
+            )
+            _log(db, product_type="pg", product_id=item.catalog_product_id,
+                 return_id=return_obj.id, movement_type="receive_return", qty=qty,
+                 field="pending_validation_quantity", delta=qty)
+            total += qty
+        elif item.cmig_product_id:
+            await db.execute(
+                update(CMIGProduct)
+                .where(CMIGProduct.id == item.cmig_product_id)
+                .values(pending_validation_quantity=CMIGProduct.pending_validation_quantity + qty)
+            )
+            _log(db, product_type="cmig", product_id=item.cmig_product_id,
+                 return_id=return_obj.id, movement_type="receive_return", qty=qty,
+                 field="pending_validation_quantity", delta=qty)
+            total += qty
+    return total
+
+
+async def validate_return_items(
+    db: AsyncSession, return_obj: Return, items: list, approved: bool, user_id: int | None = None
+) -> None:
+    """Valida a devolução NF-e-driven pela QTD da NF-e. Idempotente.
+    - approved=True  → pending−, stock_quantity+ (volta ao vendável).
+    - approved=False → pending−, unfit_quantity+ (fora do vendável; a nota de descarte
+      é gerada pelo router como documento fiscal SEM efeito no estoque vendável).
+    NÃO commita — o chamador (router) orquestra a transação e faz o commit."""
+    movement_type = "validate_ok" if approved else "validate_unfit"
+    if await _already_has_return_movement(db, return_obj.id, movement_type):
+        return
+    _pg_ids: set[int] = set()
+    _cmig_ids: set[int] = set()
+    for item in items:
+        qty = int(item.quantity or 0)
+        if qty <= 0:
+            continue
+        if item.catalog_product_id:
+            vals = (
+                {
+                    "pending_validation_quantity": CatalogProduct.pending_validation_quantity - qty,
+                    "stock_quantity": CatalogProduct.stock_quantity + qty,
+                }
+                if approved
+                else {
+                    "pending_validation_quantity": CatalogProduct.pending_validation_quantity - qty,
+                    "unfit_quantity": CatalogProduct.unfit_quantity + qty,
+                }
+            )
+            await db.execute(
+                update(CatalogProduct).where(CatalogProduct.id == item.catalog_product_id).values(**vals)
+            )
+            _log(db, product_type="pg", product_id=item.catalog_product_id,
+                 return_id=return_obj.id, movement_type=movement_type, qty=qty,
+                 field="stock_quantity" if approved else "unfit_quantity",
+                 delta=qty if approved else qty, created_by=user_id)
+            _pg_ids.add(item.catalog_product_id)
+        elif item.cmig_product_id:
+            vals = (
+                {
+                    "pending_validation_quantity": CMIGProduct.pending_validation_quantity - qty,
+                    "stock_quantity": CMIGProduct.stock_quantity + qty,
+                }
+                if approved
+                else {
+                    "pending_validation_quantity": CMIGProduct.pending_validation_quantity - qty,
+                    "unfit_quantity": CMIGProduct.unfit_quantity + qty,
+                }
+            )
+            await db.execute(
+                update(CMIGProduct).where(CMIGProduct.id == item.cmig_product_id).values(**vals)
+            )
+            _log(db, product_type="cmig", product_id=item.cmig_product_id,
+                 return_id=return_obj.id, movement_type=movement_type, qty=qty,
+                 field="stock_quantity" if approved else "unfit_quantity",
+                 delta=qty if approved else qty, created_by=user_id)
+            _cmig_ids.add(item.cmig_product_id)
+
+    if approved and (_pg_ids or _cmig_ids):
+        from services.stock_sync_service import schedule_push
+        schedule_push(_cmig_ids, _pg_ids)
+
+
 # ─── Recompute de reservas a partir da trilha de auditoria ───────────────────
 
 async def recompute_reservations_from_movements(db) -> dict:

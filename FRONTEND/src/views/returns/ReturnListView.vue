@@ -13,9 +13,14 @@
         <h3 class="card-title mb-0">
           {{ isUgoOrAdmin ? 'Devoluções (todos os usuários)' : 'Minhas Devoluções' }}
         </h3>
-        <RouterLink v-if="!isUgoOrAdmin" to="/returns/new" class="btn btn-sm btn-primary">
-          <i class="fas fa-plus mr-1"></i> Nova Devolução
-        </RouterLink>
+        <div class="d-flex gap-2">
+          <button v-if="isUgoOrAdmin" class="btn btn-sm btn-outline-primary" @click="showImportModal = true">
+            <i class="fas fa-file-import mr-1"></i> Importar XML de Devolução
+          </button>
+          <RouterLink v-if="!isUgoOrAdmin" to="/returns/new" class="btn btn-sm btn-primary">
+            <i class="fas fa-plus mr-1"></i> Nova Devolução
+          </RouterLink>
+        </div>
       </div>
 
       <!-- Tabs -->
@@ -94,6 +99,9 @@
                 <span :class="r.return_type === 'cancelled_order' ? 'badge badge-secondary' : 'badge badge-light border'">
                   {{ r.return_type === 'cancelled_order' ? 'Ped. Cancelado' : 'Devolução' }}
                 </span>
+                <span v-if="r.devolution_invoice_id" class="badge badge-info ml-1" title="Devolução vinculada a NF-e">
+                  <i class="fas fa-file-invoice"></i> NF-e
+                </span>
               </td>
               <td>
                 <span :class="`badge badge-${statusColor(r.status)}`">{{ statusLabel(r.status) }}</span>
@@ -126,6 +134,12 @@
         </div>
       </div>
     </div>
+
+    <DevolutionXmlImportModal
+      v-if="showImportModal"
+      @close="showImportModal = false"
+      @imported="onImported"
+    />
   </div>
 </template>
 
@@ -133,10 +147,12 @@
 import { ref, computed, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { formatDateTime } from '@/utils/formatters'
+import DevolutionXmlImportModal from '@/components/returns/DevolutionXmlImportModal.vue'
 
 const returns = ref([])
 const loading = ref(true)
 const activeTab = ref('')
+const showImportModal = ref(false)
 const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
@@ -211,6 +227,13 @@ function setTab(tab) {
 function changePage(p) {
   page.value = p
   load()
+}
+
+function onImported() {
+  showImportModal.value = false
+  page.value = 1
+  load()
+  loadPendingCount()
 }
 
 onMounted(() => {

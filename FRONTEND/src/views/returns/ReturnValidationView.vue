@@ -50,6 +50,41 @@
         </div>
       </div>
 
+      <!-- NF-e de devolução -->
+      <div v-if="ret.devolution_invoice_id" class="card mb-3">
+        <div class="card-header">
+          <h3 class="card-title">
+            <i class="fas fa-file-invoice mr-2 text-info"></i>
+            NF-e de Devolução #{{ devInvoice?.nfe_number || ret.devolution_invoice_id }}
+          </h3>
+        </div>
+        <div class="card-body">
+          <p v-if="ret.referenced_access_key" class="small mb-2">
+            <strong>NF-e de venda referenciada:</strong>
+            <code>{{ ret.referenced_access_key }}</code>
+          </p>
+          <p class="small text-muted mb-2">
+            A quantidade abaixo (da NF-e) será a que volta ao estoque (apto) ou vai para descarte (inapto).
+          </p>
+          <table class="table table-sm mb-0" v-if="devInvoice?.items?.length">
+            <thead class="thead-light">
+              <tr><th>Item</th><th>SKU/EAN</th><th>Casado</th><th class="text-right">Qtd</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="it in devInvoice.items" :key="it.id">
+                <td>{{ it.description }}</td>
+                <td><small>{{ it.sku || it.ean || '—' }}</small></td>
+                <td>
+                  <span v-if="it.catalog_product_id || it.cmig_product_id" class="badge badge-success">Sim</span>
+                  <span v-else class="badge badge-warning">Não</span>
+                </td>
+                <td class="text-right">{{ Number(it.quantity) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- Formulário de validação -->
       <div class="card">
         <div class="card-header">
@@ -172,6 +207,7 @@ const router = useRouter()
 const toast = useToast()
 
 const ret = ref(null)
+const devInvoice = ref(null)
 const loading = ref(true)
 const notes = ref('')
 const photos = ref([])
@@ -188,6 +224,14 @@ async function load() {
       ret.value = null
     } else {
       ret.value = data
+      if (data.devolution_invoice_id) {
+        try {
+          const { data: inv } = await api.get(`/invoices/${data.devolution_invoice_id}`)
+          devInvoice.value = inv
+        } catch {
+          devInvoice.value = null
+        }
+      }
     }
   } catch {
     ret.value = null

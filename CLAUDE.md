@@ -324,6 +324,7 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0006](DOCs/decisions/ADR-0006-metricas-marketplace-live-vs-snapshot.md) — Métricas de marketplace: live passthrough vs. snapshot diário
 - [ADR-0007](DOCs/decisions/ADR-0007-claims-vs-return-fisico.md) — Reclamações (claims ML) como subsistema próprio, distinto da Devolução física
 - [ADR-0008](DOCs/decisions/ADR-0008-nfe-batch-mensal-e-anuncio-full-quando-local-zero.md) — Sync mensal de NF-e (batch ML) + anúncio não-FULL anuncia FULL quando LOCAL=0
+- [ADR-0009](DOCs/decisions/ADR-0009-devolucao-nfe-driven.md) — Devolução NF-e-driven: NF-e fiscal-only (stock_updated=False) + contadores de inspeção como fonte canônica
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 

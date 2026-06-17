@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-17 — feat(returns): Devolução NF-e-driven (Fase B) — import XML + inspeção apto/não-apto + descarte (local, não enviado)
+
+Devolução agora pode ser dirigida por NF-e. Fluxo: operador importa o XML da NF-e de devolução → casa o pedido original pela NF-e referenciada (`refNFe → Order.nfe_key`, fallback SKU/EAN) → devolução entra em inspeção (`pending_validation_quantity` pela QTD da NF-e, suporta parcial) → operador marca apto (volta a `stock_quantity`) ou não-apto (`unfit_quantity` + nota de descarte sem SEFAFZ).
+
+Backend:
+- `models/return_.py`: colunas `devolution_invoice_id`, `discard_invoice_id`, `referenced_access_key` (migration `110_returns_nfe.sql`, idempotente — **ainda não aplicada ao ATP**).
+- `services/fiscal/nfe_xml_parser.py`: parse de `referenced_keys` (refNFe, 44 díg.) e `sku` (cProd).
+- `services/stock_reservation_service.py`: `receive_return_items` (pending+, idempotente) e `validate_return_items` (apto: pending−/stock+; não-apto: pending−/unfit+; não commita — router orquestra).
+- `routers/returns.py`: `POST /returns/import-xml` (Form cmig_id + File, `_check_cmig_access`, valida CNPJ↔CMIG, limite 5 MB/MIME); `_ingest_devolution`; `_create_discard_note`; `validate_return_endpoint` ramifica em `devolution_invoice_id` (escopo via `_check_cmig_access`); `_serialize` expandido.
+
+Frontend: `components/returns/DevolutionXmlImportModal.vue` (novo), `ReturnListView.vue` (botão importar + badge NF-e), `ReturnValidationView.vue` (card da NF-e com itens/chave referenciada).
+
+Decisão-chave (ADR-0009): NF-e de devolução e nota de descarte são **fiscal-only** (`stock_updated=False`) → inertes ao recompute event-sourced; os contadores UPDATE-direto (pending/apto/unfit) são a fonte canônica. Evita dupla contagem e preserva o portão de inspeção.
+
+Auditoria de fechamento (quality-guardian + consistency-auditor + adr-consistency-checker):
+- **CRÍTICO (ADR) corrigido**: premissa invertida — `stock_updated=True` é condição de INCLUSÃO no recompute. Devolução apta seria contada em dobro (nfe_in + UPDATE direto). Fix: `stock_updated=False` na NF-e de devolução e na nota de descarte.
+- **HIGH (consistency) corrigido**: faltava validar CNPJ↔CMIG no import (paridade com import-xml-saida). Fix: validação + `_check_cmig_access`.
+- **HIGH (quality) — caminho NF-e corrigido**: escopo por galpão na validação NF-e (`_check_cmig_access(inv.cmig_id)`). Gap **pré-existente** nos endpoints legados (`/pending-validation`, `GET /{id}`, `PUT /{id}/status`) permanece — registrado na ADR-0009 como pendência.
+- MEDIUM/LOW: try/except+rollback+log no ingest; removido commit redundante no caminho legado; docstring "não commita".
+- Gap conhecido (sem bloqueio): falta sync ML só-devoluções (entrada hoje é só upload de XML).
+
+Verificação: AST+import OK; `npm run build` OK; pytest 25 passed / 2 falhas pré-existentes (test_orders, mock `.scalar`). **Falta aplicar a migration 110 ao Oracle ATP** (afeta dev+prod) e validar o fluxo ponta-a-ponta pela UI — ambos pendentes de autorização do usuário.
+
+## 2026-06-17 — ops: reativação de anúncios pausados por falta de LOCAL com estoque no FULL
+
+Operação one-off (conta 2): identificados 11 anúncios não-FULL com último push 0 (pausados por falta de LOCAL) e FULL>0. Confirmado status no ML e reativados via `reactivate_item` com a qtd do FULL. Resultado: 7 reativados, 3 já ativos, 1 erro transitório do ML (MLB4702333349 — kvsclient; será reativado no próximo sync_stock). Não houve mudança de código.
+
 ## 2026-06-17 — Auditoria de fechamento do lote fiscal/estoque + correções
 
 Rodada quality-guardian + consistency-auditor + adr-consistency-checker. Achados HIGH corrigidos antes do deploy:

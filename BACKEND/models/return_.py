@@ -18,6 +18,10 @@ class Return(Base):
     security_code = Column(String(100))
     status = Column(String(30), nullable=False, default="analyzing")
     return_type = Column(String(20), default="customer")
+    # Devolução NF-e-driven (Fase B):
+    devolution_invoice_id = Column(Integer, ForeignKey("invoices.id"))  # NF-e de devolução (entrada)
+    discard_invoice_id = Column(Integer, ForeignKey("invoices.id"))  # nota de descarte (não-apto)
+    referenced_access_key = Column(String(50))  # chave da NF-e de venda referenciada (refNFe)
     supplier_notes = Column(String)
     credit_amount = Column(Numeric(15, 2))
     validation_notes = Column(String)

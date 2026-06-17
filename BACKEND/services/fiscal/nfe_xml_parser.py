@@ -171,6 +171,7 @@ def parse_nfe_xml(xml_content: str | bytes) -> dict:
         "issue_date": _parse_dt(ide.get("dhEmi") or ide.get("dEmi")),
         "exit_date": _parse_dt(ide.get("dhSaiEnt") or ide.get("dSaiEnt")),
         "natureza_operacao": ide.get("natOp") or "",
+        "referenced_keys": _parse_nfref(ide),  # chaves de NF-e referenciadas (ex.: venda na devolução)
         "emit": _parse_party(emit),
         "dest": _parse_party(dest),
         "items": [_parse_item(d) for d in det_list],
@@ -178,6 +179,19 @@ def parse_nfe_xml(xml_content: str | bytes) -> dict:
         "transport": _parse_transport(transp),
         "additional_info": (inf_adic.get("infCpl") or "")[:2000],
     }
+
+
+def _parse_nfref(ide: dict) -> list[str]:
+    """Extrai as chaves de NF-e referenciadas (ide/NFref/refNFe) — 44 dígitos cada.
+    Na devolução, é a chave da NF-e de venda original."""
+    keys: list[str] = []
+    for ref in _ensure_list(ide.get("NFref")):
+        if not isinstance(ref, dict):
+            continue
+        k = (ref.get("refNFe") or "").strip()
+        if len(k) == 44:
+            keys.append(k)
+    return keys
 
 
 def _parse_party(party: dict) -> dict:
