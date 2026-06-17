@@ -122,6 +122,16 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    from tasks.ml_fiscal_sync import sync_ml_fiscal_current_month
+
+    scheduler.add_job(
+        sync_ml_fiscal_current_month,
+        CronTrigger(hour=6, minute=0),  # diário ~03:00 BRT
+        id="sync_ml_fiscal",
+        name="Sync NF-e do mês (Faturador ML) — todas as notas + remessa FULL",
+        replace_existing=True,
+    )
+
     from tasks.prune_logs import prune_job_executions
 
     scheduler.add_job(

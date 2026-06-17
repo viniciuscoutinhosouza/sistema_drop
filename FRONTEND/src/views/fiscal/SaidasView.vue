@@ -8,6 +8,14 @@
             <small class="text-muted">NF-e do módulo fiscal + NF-e do Faturador do Mercado Livre, por pedido e por CMIG</small>
           </div>
           <div class="col-sm-7 text-right">
+            <input type="month" v-model="syncMonth" class="form-control d-inline-block mr-1"
+                   style="width:150px" :disabled="syncingAll" title="Mês a sincronizar (todas as NF-e)" />
+            <button class="btn btn-outline-success mr-2" :disabled="syncingAll || loading || !syncMonth"
+                    title="Baixa do ML TODAS as NF-e do mês (venda, remessa/FULL, devolução, retorno) — fecha a sequência"
+                    @click="syncAllNfe">
+              <i class="fas mr-1" :class="syncingAll ? 'fa-spinner fa-spin' : 'fa-cloud-download-alt'"></i>
+              {{ syncingAll ? 'Sincronizando…' : 'Sincronizar todas (mês)' }}
+            </button>
             <button class="btn btn-outline-primary mr-2" :disabled="syncing || loading"
                     title="Busca no Mercado Livre as NF-e ainda não consultadas (inclui Retorno Simbólico de pedidos Full)"
                     @click="syncMl">
@@ -21,6 +29,9 @@
             <button class="btn btn-outline-secondary mr-2" :disabled="exporting" @click="doExport('danfe')">
               <i class="fas mr-1" :class="exporting === 'danfe' ? 'fa-spinner fa-spin' : 'fa-file-pdf'"></i>
               Exportar DANFEs
+            </button>
+            <button class="btn btn-outline-info mr-2" @click="showImport = true">
+              <i class="fas fa-file-import mr-1"></i> Importar XML de Saída
             </button>
             <RouterLink to="/fiscal/invoices/new?direction=out" class="btn btn-primary">
               <i class="fas fa-plus mr-1"></i> Nova Saída
@@ -101,10 +112,10 @@
             <table v-else class="table table-hover table-sm mb-0">
               <thead>
                 <tr>
-                  <th v-if="!filters.cmig_id">CMIG</th>
-                  <th>Nº / Série</th>
-                  <th>Tipo</th>
-                  <th>Emissão</th>
+                  <th v-if="!filters.cmig_id" role="button" @click="setSort('cmig')">CMIG <i class="fas" :class="sortIcon('cmig')"></i></th>
+                  <th role="button" @click="setSort('numero')">Nº / Série <i class="fas" :class="sortIcon('numero')"></i></th>
+                  <th role="button" @click="setSort('tipo')">Tipo <i class="fas" :class="sortIcon('tipo')"></i></th>
+                  <th role="button" @click="setSort('emissao')">Emissão <i class="fas" :class="sortIcon('emissao')"></i></th>
                   <th>Destinatário</th>
                   <th>Origem</th>
                   <th>Pedido</th>
@@ -199,6 +210,13 @@
         </div>
       </div>
     </section>
+
+    <XmlImportModal
+      v-if="showImport"
+      direction="out"
+      :default-cmig-id="filters.cmig_id"
+      @close="showImport = false"
+      @imported="onImported" />
   </div>
 </template>
 
@@ -210,6 +228,7 @@ import { useCmigStore } from '@/stores/cmig'
 import { useToast } from '@/composables/useToast'
 import { fmt } from '@/views/fiscal/_helpers'
 import api from '@/composables/useApi'
+import XmlImportModal from '@/components/fiscal/XmlImportModal.vue'
 
 const fiscalStore = useFiscalStore()
 const cmigStore = useCmigStore()
@@ -219,6 +238,14 @@ const { cmigs } = storeToRefs(cmigStore)
 
 const pageSize = 30
 const byCmig = ref([])
+const showImport = ref(false)
+
+function onImported(data) {
+  showImport.value = false
+  if (data?.is_full_remessa) toast.success('Remessa para o FULL importada: estoque LOCAL baixado e FULL creditado.')
+  else toast.success('XML de saída importado.')
+  reload()
+}
 const exporting = ref(null)
 const docLoading = ref({})
 const syncing = ref(false)
@@ -240,9 +267,27 @@ const filters = reactive({
   search: '',
   date_from: '',
   date_to: '',
+  sort_by: null,
+  sort_dir: 'desc',
   page: 1,
   page_size: pageSize,
 })
+
+function setSort(col) {
+  if (filters.sort_by === col) {
+    filters.sort_dir = filters.sort_dir === 'asc' ? 'desc' : 'asc'
+  } else {
+    filters.sort_by = col
+    filters.sort_dir = 'asc'
+  }
+  filters.page = 1
+  reload()
+}
+
+function sortIcon(col) {
+  if (filters.sort_by !== col) return 'fa-sort text-muted'
+  return filters.sort_dir === 'asc' ? 'fa-sort-up' : 'fa-sort-down'
+}
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
@@ -261,6 +306,24 @@ async function reload() {
     byCmig.value = data.by_cmig || []
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao carregar NF-e de saída')
+  }
+}
+
+// Sincroniza TODAS as NF-e do mês (batch do Faturador ML — inclui remessa/FULL)
+const syncMonth = ref(new Date().toISOString().slice(0, 7)) // 'YYYY-MM'
+const syncingAll = ref(false)
+async function syncAllNfe() {
+  syncingAll.value = true
+  try {
+    const params = { period: (syncMonth.value || '').replace('-', '') }
+    if (filters.cmig_id) params.cmig_id = filters.cmig_id
+    const data = await fiscalStore.syncMlFiscal(params)
+    toast.info(`Sincronização de ${data.accounts} conta(s) iniciada para ${syncMonth.value}. As notas aparecem em instantes…`)
+    setTimeout(reload, 6000)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao sincronizar todas as NF-e')
+  } finally {
+    syncingAll.value = false
   }
 }
 

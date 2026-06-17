@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-06-17 — Auditoria de fechamento do lote fiscal/estoque + correções
+
+Rodada quality-guardian + consistency-auditor + adr-consistency-checker. Achados HIGH corrigidos antes do deploy:
+- Overselling: `available_to_push` (full_stock_service) — fallback p/ FULL quando LOCAL=0 só ocorre se NÃO houver anúncio `is_full` ativo do mesmo produto+conta (evita anunciar o saldo FULL 2x).
+- Unificação: `_compute_product_stock` (sync_stock) e `_read_stock` (stock_sync_service) agora delegam a `available_to_push` (LOCAL = stock − reserved nos dois; elimina a divergência de reserved_quantity).
+- Gating: `import_xml` (entrada) passou a exigir `require_menu_permission("fiscal_entradas")` (paridade com saída).
+- `sync_ml_fiscal` retém referência do task de background (`_BG_TASKS`) — evita coleta pelo GC.
+- ADR-0008 criado: documenta o batch mensal de NF-e e a exceção ao ADR-0004 (anúncio não-FULL anuncia FULL quando LOCAL=0).
+Veredito final: LIBERADO (sem CRITICAL/HIGH). pytest 25/2 (pré-existentes).
+
+## 2026-06-17 — fix(stock): não pausar anúncio com LOCAL=0 mas FULL>0 (local, não enviado)
+
+Após remessa LOCAL→FULL, anúncios não-FULL ficavam com LOCAL=0; o push de estoque enviava 0 ao ML e o ML pausava — ignorando o FULL. Regra correta: só pausar quando LOCAL E FULL estão ambos zerados.
+- `services/full_stock_service.available_for_product(db, account_id, cmig_product_id, catalog_product_id)`: disponível no FULL (qty-reserved) do produto na conta (soma cmig+pg).
+- `tasks/sync_stock._compute_product_stock` e `services/stock_sync_service._read_stock`: quando o disponível LOCAL é 0, retornam o disponível do FULL em vez de 0 — assim o anúncio NÃO é pausado; só vai a 0 (pausa) quando LOCAL e FULL = 0. Anúncios já pausados reativam no próximo sync_stock (qty>0).
+- Caveat: o anúncio não-FULL passa a anunciar a qtd do FULL quando o LOCAL zera (atende ao pedido do usuário). Se houver um anúncio FULL separado p/ o mesmo produto+conta, há risco de anunciar a mesma unidade 2x — avaliar com dados reais.
+- Verificação: edições revisadas (ProductListing.account_id confirmado); import/pytest PENDENTE (classificador de Bash indisponível no momento).
+
+## 2026-06-17 — feat(fiscal): sincronizar todas as NF-e do mês (remessa FULL) — Fase A (local, não enviado)
+
+A "Sincronizar NF-e do ML" da tela Saídas era dirigida por pedido → notas de REMESSA para o FULL (sem pedido) não vinham → furo na sequência. Avaliação prévia do consistency-auditor aplicada (mapa tipo→estoque corrigido p/ não dar dupla contagem). Faseado: Fase A = Saídas (remessa/retorno FULL); Fase B (futura) = módulo de Devoluções NF-e-driven.
+
+- `ml_service.download_invoices_batch(token, seller_id, start, end)`: baixa o lote do Faturador (`batch_request/period/stream`, sale/return/full/others=all) e devolve os XMLs do mês. (Testado ao vivo: pegou 97 XMLs de maio/conta 2.)
+- `routers/invoices.py`: novo `POST /outbound/sync-ml-fiscal?period=AAAAMM&cmig_id` — dispara, em background e SEQUENCIAL por conta (batch é sensível a 429), `_sync_ml_fiscal_account`. HTTP do zip FORA da sessão de BD; 1 tx curta por nota. Classifica nota como FULL via `is_full_cnpj` (dest/emit) e direção pela CFOP (1/2/3=retorno → LOCAL↑+FULL↓; 5/6/7=remessa → LOCAL↓+FULL↑). Não-FULL é PULADO (venda já vem do cache de pedido; devolução = Fase B). Dedup da lista `/outbound` por chave de acesso.
+- Frontend: `SaidasView` com seletor de mês + botão "Sincronizar todas (mês)" (store `syncMlFiscal`).
+- Verificação: backend importa OK; `npm run build` OK; `pytest` 25/2 (pré-existentes).
+- ⚠️ Achados ao vivo (PENDENTE validar via UI): o batch do ML é instável sob carga (retornou 500 em junho e 429 após chamadas repetidas) — o código trata (retorna vazio/retry); ~32 docs/mês são CT-e/eventos (não-NFe) e são pulados; a classificação remessa/retorno por CFOP precisa ser confirmada com notas reais (validação end-to-end bloqueada pelo 429 nos testes).
+- Rotina diária: `tasks/ml_fiscal_sync.sync_ml_fiscal_current_month` (scheduler `sync_ml_fiscal`, CronTrigger 06:00 UTC ≈ 03:00 BRT) — sincroniza o MÊS ATUAL (BRT) de todas as contas ML ativas, sequencial por conta; idempotente (dedup por chave) → se errar um dia, corrige no outro.
+- Detecção de FUROS de sequência: `_sync_ml_fiscal_account` coleta os números de NF-e por série do lote e calcula os faltantes em [min,max]; loga os furos (WARNING) e devolve `gaps` no resultado — para serem buscados numa próxima sincronização. Classificação de direção por CFOP (1/2/3=entrada→retorno; 5/6/7=saída→remessa).
+
+## 2026-06-17 — feat(fiscal): ordenação das listas de Saídas e Entradas (local, não enviado)
+
+Cabeçalhos clicáveis (asc/desc) por CMIG, Nº/Série, Tipo e Emissão.
+- `routers/invoices.py`: `list_invoices` (Entradas) ganhou `sort_by`/`sort_dir` (cmig→cmig_id, numero→nfe_number, tipo→inbound_source, emissao→issue_date; order_by com nullslast + created_at desc de desempate). `list_outbound_invoices` (Saídas) ordena a lista mesclada (fiscal+ML) em memória antes de paginar (cmig→cmig_name, numero→nfe_number, tipo→nfe_type_label, emissao→issue_date).
+- Frontend: `SaidasView.vue` (CMIG, Nº/Série, Tipo, Emissão) e `EntradasView.vue` (Nº/Número, Emissão, Origem=Tipo) com `setSort`/`sortIcon` e ícones fa-sort. Em Entradas não há coluna CMIG (é filtro), então a ordenação por CMIG fica só em Saídas.
+- Verificação: backend importa OK; `npm run build` OK.
+
+## 2026-06-17 — feat(fiscal): importar XML de Saída + remessa para o FULL (local, não enviado)
+
+FISCAL > Saídas ganhou "Importar XML de Saída". Quando o destinatário é um CNPJ FULL cadastrado, é remessa: baixa LOCAL + crédito FULL. Avaliação prévia do consistency-auditor aplicada (3 HIGH incorporados). Sem migration — reusa toda a máquina FULL existente.
+
+- `services/fiscal/nfe_xml_parser.py`: passa a extrair `sku` (cProd) do item.
+- `routers/invoices.py`: novo `POST /invoices/import-xml-saida` (gating fiscal_saidas): valida EMITENTE==CMIG, dedupe access_key (409), upsert destinatário (`_upsert_recipient`, is_customer), cria Invoice direction=out status=authorized (inbound_source='xml_upload' — valor aceito pelo CHECK chk_inv_inbound_source; a saída distingue-se por direction='out'); itens criados via `_invoice_item_from_parsed` e CASADOS via `_resolve_item_match` (seta source_type+FK — necessário p/ baixa LOCAL e crédito FULL). Baixa LOCAL via `_apply_stock_movement` (event-sourced nfe_out); se `is_full_cnpj(destinatário)`, credita FULL via `apply_nfe_saida_to_full`. Retorna casados/não-casados + is_full_remessa. (+logger no módulo).
+- Frontend: `XmlImportModal.vue` parametrizado por `direction` (in/out); `SaidasView.vue` com botão "Importar XML de Saída" + resultado (remessa FULL, casados/sem-match).
+- Já existente (verificado, sem código): venda FULL→baixa FULL; FLEX/AGÊNCIA→baixa LOCAL (`reserve_stock` por shipping_mode, ADR-0004).
+- Decisões do usuário: match só por SKU/EAN (sem variantes); nenhum XML de envio ao FULL é emitido pelo sistema (todos vêm do marketplace e são importados).
+- Verificação: backend importa OK (rota registrada); `npm run build` OK; `pytest -m "not integration"` 25/2 (pré-existentes). Teste end-to-end requer um XML real de remessa.
+- Fixes pós-teste com XML real: (a) `inbound_source='xml_upload'` (CHECK chk_inv_inbound_source não aceitava 'xml_upload_out'); (b) `full_stock_service._adjust_full_stock` faz `flush` após criar linha — XML com o mesmo produto em vários itens não gera 2 INSERT (ORA-00001 UIX_FULL_STOCK_PRODUCT); (c) `_already_has_full_movement` usa `.first()` (NF-e multi-item tem vários `full_in` → `scalar_one_or_none` quebrava); (d) `import_xml_saida` agora é atômico (um commit após LOCAL+FULL, rollback em falha — antes commitava LOCAL antes do FULL, deixando NF-e meio-aplicada). Recuperação: creditado FULL nas 3 saídas já importadas (#182/#183 ok, #184 com 13 itens).
+
 ## 2026-06-16 — fix(atendimento): timezone no sync de claims (offset-naive vs aware)
 
 O sync de reclamações falhava a cada 15 min em claims cujo `last_message_at` (lido do Oracle, naive) era comparado com a data da mensagem do ML (aware) — `can't compare offset-naive and offset-aware datetimes` (ex.: claim 5527113570). Correção em `tasks/claims_sync.py`: `_parse_dt` retorna sempre tz-aware (assume UTC se sem offset) e novo helper `_aware()` normaliza o valor vindo do banco antes da comparação. Verificado: sync conta 2 sem erro (28 claims), claim 5527113570 atualizado.

@@ -237,6 +237,7 @@ def _parse_item(det: dict) -> dict:
         "ncm": prod.get("NCM") or "",
         "cest": prod.get("CEST") or "",
         "description": prod.get("xProd") or "",
+        "sku": (prod.get("cProd") or "").strip(),  # código do produto (SKU do emitente)
         "ean": (prod.get("cEAN") or "").replace("SEM GTIN", "") or "",
         "unit": prod.get("uCom") or "UN",
         "quantity": _to_dec(prod.get("qCom"), Decimal("1")),

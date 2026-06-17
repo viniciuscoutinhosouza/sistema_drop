@@ -10,7 +10,7 @@ Fluxo:
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.fiscal import Invoice, InvoiceItem
@@ -68,6 +68,116 @@ async def resolve_full_product(db: AsyncSession, order, item) -> tuple[str | Non
             return "pg", cat_pid
 
     return None, None
+
+
+async def available_for_product(
+    db: AsyncSession,
+    account_id: int,
+    *,
+    cmig_product_id: int | None = None,
+    catalog_product_id: int | None = None,
+) -> int:
+    """Disponível no FULL (qty - reserved_qty) do produto nesta conta ML.
+
+    Soma as linhas CMIG e PG (o FULL pode estar atribuído ao produto CMIG mesmo
+    para anúncio PG). Usado para NÃO pausar anúncio que zerou no LOCAL mas tem FULL."""
+    conds = []
+    if cmig_product_id:
+        conds.append((FullStock.product_type == "cmig") & (FullStock.product_id == cmig_product_id))
+    if catalog_product_id:
+        conds.append((FullStock.product_type == "pg") & (FullStock.product_id == catalog_product_id))
+    if not conds:
+        return 0
+    rows = (
+        await db.execute(
+            select(FullStock.qty, FullStock.reserved_qty).where(
+                FullStock.marketplace_account_id == account_id, or_(*conds)
+            )
+        )
+    ).all()
+    return sum(max(0, int(q or 0) - int(r or 0)) for q, r in rows)
+
+
+async def available_to_push(db: AsyncSession, listing) -> int:
+    """Quantidade a enviar ao ML para um anúncio NÃO-FULL.
+
+    LOCAL disponível = stock_quantity - reserved_quantity. Se LOCAL = 0, cai para o
+    disponível do FULL (regra: só pausa quando LOCAL e FULL = 0) — MAS apenas quando
+    NÃO existir um anúncio is_full ATIVO para o mesmo produto+conta (senão o saldo
+    FULL seria anunciado em dois lugares → risco de venda dupla)."""
+    from models.cmig import CMIGProduct
+    from models.product import CatalogProduct, DropshipperProduct, ProductListing
+
+    local = 0
+    cmig_pid = listing.cmig_product_id
+    cat_pid = listing.catalog_product_id
+
+    if listing.catalog_product_id and not listing.product_id:
+        row = (
+            await db.execute(
+                select(CatalogProduct.stock_quantity, CatalogProduct.reserved_quantity).where(
+                    CatalogProduct.id == listing.catalog_product_id
+                )
+            )
+        ).one_or_none()
+        if row is not None:
+            local = max(0, int(row[0] or 0) - int(row[1] or 0))
+    elif listing.cmig_product_id and not listing.product_id:
+        row = (
+            await db.execute(
+                select(CMIGProduct.stock_quantity, CMIGProduct.reserved_quantity).where(
+                    CMIGProduct.id == listing.cmig_product_id
+                )
+            )
+        ).one_or_none()
+        if row is not None:
+            local = max(0, int(row[0] or 0) - int(row[1] or 0))
+    elif listing.product_id:
+        dp = (
+            await db.execute(
+                select(DropshipperProduct).where(DropshipperProduct.id == listing.product_id)
+            )
+        ).scalar_one_or_none()
+        if dp and dp.catalog_product_id:
+            cat_pid = dp.catalog_product_id
+            row = (
+                await db.execute(
+                    select(CatalogProduct.stock_quantity, CatalogProduct.reserved_quantity).where(
+                        CatalogProduct.id == dp.catalog_product_id
+                    )
+                )
+            ).one_or_none()
+            if row is not None:
+                local = max(0, int(row[0] or 0) - int(row[1] or 0))
+
+    if local > 0:
+        return local
+
+    # LOCAL = 0: só cai para o FULL se NÃO houver anúncio FULL ativo do mesmo produto+conta.
+    prod_conds = []
+    if cmig_pid:
+        prod_conds.append(ProductListing.cmig_product_id == cmig_pid)
+    if cat_pid:
+        prod_conds.append(ProductListing.catalog_product_id == cat_pid)
+    if prod_conds:
+        has_full = (
+            await db.execute(
+                select(ProductListing.id)
+                .where(
+                    ProductListing.account_id == listing.account_id,
+                    ProductListing.is_full == True,  # noqa: E712
+                    ProductListing.status == "published",
+                    or_(*prod_conds),
+                )
+                .limit(1)
+            )
+        ).first()
+        if has_full:
+            return 0  # FULL já é anunciado pelo anúncio FULL → não duplicar
+
+    return await available_for_product(
+        db, listing.account_id, cmig_product_id=cmig_pid, catalog_product_id=cat_pid
+    )
 
 
 async def is_full_cnpj(db: AsyncSession, cnpj: str, cmig_id: int) -> FullCnpj | None:
@@ -132,18 +242,24 @@ async def _adjust_full_stock(
                 reserved_qty=0,
             )
         )
+        # Flush imediato: se o mesmo produto aparecer em outro item da mesma NF-e,
+        # a próxima iteração encontra esta linha e soma (evita 2 INSERTs com a
+        # mesma chave → ORA-00001 UIX_FULL_STOCK_PRODUCT).
+        await db.flush()
 
 
 async def _already_has_full_movement(
     db: AsyncSession, invoice_id: int, movement_type: str
 ) -> bool:
+    # Uma NF-e multi-item gera VÁRIOS movimentos full_in (1 por item) — usar
+    # .first() (scalar_one_or_none quebraria com MultipleResultsFound).
     result = await db.execute(
-        select(StockMovement).where(
+        select(StockMovement.id).where(
             StockMovement.invoice_id == invoice_id,
             StockMovement.movement_type == movement_type,
-        )
+        ).limit(1)
     )
-    return result.scalar_one_or_none() is not None
+    return result.first() is not None
 
 
 def _log(

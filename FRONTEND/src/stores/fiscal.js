@@ -45,6 +45,12 @@ export const useFiscalStore = defineStore('fiscal', () => {
     return data
   }
 
+  // Sincroniza TODAS as NF-e do mês (batch do Faturador ML) — inclui remessa/FULL
+  async function syncMlFiscal(params = {}) {
+    const { data } = await api.post('/invoices/outbound/sync-ml-fiscal', null, { params })
+    return data
+  }
+
   // Exporta um .zip com XMLs ou DANFEs das NF-e de saída filtradas
   async function exportOutbound(kind, filters = {}) {
     const { data, headers } = await api.get('/invoices/outbound/export', {
@@ -144,7 +150,7 @@ export const useFiscalStore = defineStore('fiscal', () => {
 
   return {
     invoices, total, loading, currentInvoice,
-    fetchInvoices, fetchInvoice, fetchOutbound, exportOutbound, syncMlOutbound,
+    fetchInvoices, fetchInvoice, fetchOutbound, exportOutbound, syncMlOutbound, syncMlFiscal,
     createInvoice, updateInvoice, deleteInvoice,
     addItem, updateItem, deleteItem,
     calculateTaxes, transmit, finalizeNoSefaz, cancel, correctionLetter, sendEmail, refreshStatus,

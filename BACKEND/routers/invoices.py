@@ -1,5 +1,6 @@
 import io as _io
 import json as _json
+import logging
 import re as _re
 import uuid as _uuid
 import zipfile as _zipfile
@@ -14,7 +15,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from database import get_db
+import asyncio
+
+from database import get_db, task_db
 from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem
@@ -28,6 +31,10 @@ from services.fiscal import dfe_service, focus_service
 from services.fiscal.icms_table import compute_difal, get_icms_rate
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
 from services.fiscal.tax_calculator import calculate_item_taxes, suggest_cfop
+
+logger = logging.getLogger(__name__)
+
+_BG_TASKS: set = set()  # retém tasks de background (evita coleta prematura pelo GC)
 
 router = APIRouter()
 
@@ -271,6 +278,8 @@ async def list_invoices(
     manifestation: str | None = Query(None),
     inbound_source: str | None = Query(None),
     search: str | None = Query(None),
+    sort_by: str | None = Query(None),  # cmig | numero | tipo | emissao
+    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -318,7 +327,19 @@ async def list_invoices(
     total_stmt = select(func.count()).select_from(stmt.subquery())
     total = (await db.execute(total_stmt)).scalar() or 0
 
-    stmt = stmt.order_by(Invoice.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    _SORT_COLS = {
+        "cmig": Invoice.cmig_id,
+        "numero": Invoice.nfe_number,
+        "tipo": Invoice.inbound_source,
+        "emissao": Invoice.issue_date,
+    }
+    sort_col = _SORT_COLS.get(sort_by)
+    if sort_col is not None:
+        ordering = sort_col.asc() if sort_dir == "asc" else sort_col.desc()
+        stmt = stmt.order_by(ordering.nullslast(), Invoice.created_at.desc())
+    else:
+        stmt = stmt.order_by(Invoice.created_at.desc())
+    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
     rows = (await db.execute(stmt)).scalars().all()
 
     # Carregar Persons em batch
@@ -589,6 +610,8 @@ async def list_outbound_invoices(
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
     search: str | None = Query(None),
+    sort_by: str | None = Query(None),  # cmig | numero | tipo | emissao
+    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(30, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -605,6 +628,23 @@ async def list_outbound_invoices(
         db, accessible, cmig_id, source, status, date_from, date_to, search
     )
 
+    # Dedup por chave de acesso: a NF-e pode vir tanto como Invoice (source=fiscal,
+    # ex.: criada pelo sync de todas as NF-e) quanto do cache de pedido (source=ml).
+    # A linha 'fiscal' tem prioridade. Linhas sem chave (rascunhos) são mantidas.
+    seen: dict[str, int] = {}
+    deduped: list[dict] = []
+    for r in rows:
+        ak = (r.get("access_key") or "").strip()
+        if ak and len(ak) == 44:
+            if ak not in seen:
+                seen[ak] = len(deduped)
+                deduped.append(r)
+            elif r.get("source") == "fiscal" and deduped[seen[ak]].get("source") != "fiscal":
+                deduped[seen[ak]] = r
+        else:
+            deduped.append(r)
+    rows = deduped
+
     # Resumo por CMIG sobre o conjunto filtrado completo
     by_cmig: dict[int, dict] = {}
     for r in rows:
@@ -619,6 +659,22 @@ async def list_outbound_invoices(
         )
         b["count"] += 1
         b["total"] += r["total"] or 0.0
+
+    def _num(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    _SORT_KEYS = {
+        "cmig": lambda r: (r.get("cmig_name") or "").lower(),
+        "numero": lambda r: _num(r.get("nfe_number")),
+        "tipo": lambda r: (r.get("nfe_type_label") or "").lower(),
+        "emissao": lambda r: str(r.get("issue_date") or ""),
+    }
+    keyfn = _SORT_KEYS.get(sort_by)
+    if keyfn:
+        rows.sort(key=keyfn, reverse=(sort_dir == "desc"))
 
     total = len(rows)
     start = (page - 1) * page_size
@@ -2003,7 +2059,7 @@ async def import_xml(
     update_stock: bool = Form(False),
     xml_file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_menu_permission("fiscal_entradas")),
 ):
     """Importa um XML de NFe (recebida de fornecedor) como Invoice de entrada."""
     cmig = await _check_cmig_access(cmig_id, current_user, db)
@@ -2139,6 +2195,455 @@ async def import_xml(
         "total_invoice": float(inv.total_invoice or 0),
         "stock_update": stock_result if update_stock else None,
     }
+
+
+# ── Importação de XML (saída / remessa para FULL) ─────────────────────────────
+
+
+def _invoice_item_from_parsed(invoice_id: int, it_data: dict) -> InvoiceItem:
+    """Cria um InvoiceItem a partir de um item parseado do XML (mapeamento fiscal)."""
+    return InvoiceItem(
+        invoice_id=invoice_id,
+        item_number=it_data.get("item_number") or 1,
+        cfop=it_data.get("cfop") or None,
+        ncm=it_data.get("ncm") or None,
+        cest=it_data.get("cest") or None,
+        description=it_data.get("description") or "(sem descrição)",
+        sku=it_data.get("sku") or None,
+        ean=it_data.get("ean") or None,
+        unit=it_data.get("unit") or "UN",
+        quantity=it_data.get("quantity") or Decimal("0"),
+        unit_value=it_data.get("unit_value") or Decimal("0"),
+        total_value=it_data.get("total_value") or Decimal("0"),
+        discount=it_data.get("discount") or Decimal("0"),
+        freight_value=it_data.get("freight_value") or Decimal("0"),
+        insurance_value=it_data.get("insurance_value") or Decimal("0"),
+        other_value=it_data.get("other_value") or Decimal("0"),
+        origin=it_data.get("origin") or 0,
+        icms_cst=it_data.get("icms_cst") or None,
+        icms_csosn=it_data.get("icms_csosn") or None,
+        icms_base=it_data.get("icms_base") or Decimal("0"),
+        icms_aliquota=it_data.get("icms_aliquota") or Decimal("0"),
+        icms_value=it_data.get("icms_value") or Decimal("0"),
+        icms_st_base=it_data.get("icms_st_base") or Decimal("0"),
+        icms_st_aliquota=it_data.get("icms_st_aliquota") or Decimal("0"),
+        icms_st_value=it_data.get("icms_st_value") or Decimal("0"),
+        ipi_cst=it_data.get("ipi_cst") or None,
+        ipi_aliquota=it_data.get("ipi_aliquota") or Decimal("0"),
+        ipi_value=it_data.get("ipi_value") or Decimal("0"),
+        pis_cst=it_data.get("pis_cst") or None,
+        pis_aliquota=it_data.get("pis_aliquota") or Decimal("0"),
+        pis_value=it_data.get("pis_value") or Decimal("0"),
+        cofins_cst=it_data.get("cofins_cst") or None,
+        cofins_aliquota=it_data.get("cofins_aliquota") or Decimal("0"),
+        cofins_value=it_data.get("cofins_value") or Decimal("0"),
+        additional_info=it_data.get("additional_info") or None,
+    )
+
+
+async def _resolve_item_match(item: InvoiceItem, cmig_id: int | None, db: AsyncSession) -> bool:
+    """Casa o item a um produto (PG por SKU→EAN; CMIG por EAN no cmig_id) e grava
+    `source_type` + FK. NÃO muta estoque (event-sourced). Retorna True se casou.
+
+    Necessário tanto para a baixa LOCAL (recompute filtra PG por source_type='pg')
+    quanto para o crédito FULL (apply_nfe_saida_to_full casa por FK)."""
+    from services.fiscal.stock_apply import _find_cmig, _find_pg
+
+    pg = await _find_pg(item, db)
+    if pg:
+        item.source_type = "pg"
+        item.catalog_product_id = pg.id
+        return True
+    cmig = await _find_cmig(item, cmig_id, db)
+    if cmig:
+        item.source_type = "cmig"
+        item.cmig_product_id = cmig.id
+        return True
+    return False
+
+
+async def _upsert_recipient(parsed_dest: dict, cmig_id: int, db: AsyncSession) -> Person:
+    """Cria/atualiza Person (destinatário) a partir do bloco dest do XML de saída."""
+    document = parsed_dest.get("document") or ""
+    if not document:
+        raise HTTPException(
+            status_code=422, detail="XML não contém documento (CNPJ/CPF) do destinatário"
+        )
+    existing = (
+        await db.execute(
+            select(Person).where(and_(Person.cmig_id == cmig_id, Person.document == document))
+        )
+    ).scalar_one_or_none()
+    if existing:
+        if not existing.is_customer:
+            existing.is_customer = True
+        if not existing.ie and parsed_dest.get("ie"):
+            existing.ie = parsed_dest["ie"]
+        return existing
+    person = Person(
+        cmig_id=cmig_id,
+        name=parsed_dest.get("name") or "Destinatário",
+        trade_name=parsed_dest.get("trade_name") or None,
+        document=document,
+        person_type="PJ" if len(_normalize_cnpj(document)) == 14 else "PF",
+        ie=parsed_dest.get("ie") or None,
+        is_customer=True,
+        street=parsed_dest.get("street") or None,
+        address_number=parsed_dest.get("number") or None,
+        neighborhood=parsed_dest.get("neighborhood") or None,
+        city=parsed_dest.get("city") or None,
+        state=parsed_dest.get("state") or None,
+        zip_code=parsed_dest.get("zip_code") or None,
+    )
+    db.add(person)
+    await db.flush()
+    return person
+
+
+@router.post("/import-xml-saida", status_code=201)
+async def import_xml_saida(
+    cmig_id: int = Form(...),
+    xml_file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("fiscal_saidas")),
+):
+    """Importa um XML de NFe de SAÍDA emitida pela CMIG.
+
+    Dá baixa no estoque LOCAL (event-sourced). Se o destinatário for um CNPJ FULL
+    cadastrado, é uma remessa: credita o estoque FULL da conta correspondente.
+    """
+    from services.full_stock_service import apply_nfe_saida_to_full, is_full_cnpj
+
+    cmig = await _check_cmig_access(cmig_id, current_user, db)
+
+    content = await xml_file.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="Arquivo XML vazio")
+    try:
+        parsed = parse_nfe_xml(content)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    access_key = parsed.get("access_key") or ""
+    if not access_key or len(access_key) != 44:
+        raise HTTPException(status_code=422, detail="Chave de acesso inválida ou ausente no XML")
+
+    # Na saída, o EMITENTE é a CMIG.
+    emit_cnpj = _normalize_cnpj(parsed.get("emit", {}).get("document", ""))
+    cmig_cnpj = _normalize_cnpj(cmig.cnpj)
+    if emit_cnpj and cmig_cnpj and emit_cnpj != cmig_cnpj:
+        raise HTTPException(
+            status_code=422,
+            detail=f"XML emitido pelo CNPJ {emit_cnpj}, mas a CMIG selecionada é {cmig_cnpj}",
+        )
+
+    existing = (
+        await db.execute(select(Invoice).where(Invoice.access_key == access_key))
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"NFe já importada (Invoice #{existing.id})")
+
+    dest = parsed.get("dest", {}) or {}
+    recipient = await _upsert_recipient(dest, cmig_id, db)
+    dest_document = dest.get("document") or ""
+
+    full_cnpj = await is_full_cnpj(db, dest_document, cmig_id)
+    totals = parsed.get("totals", {})
+    transport = parsed.get("transport", {})
+
+    inv = Invoice(
+        cmig_id=cmig_id,
+        direction="out",
+        purpose="remessa" if full_cnpj else "venda",
+        model=parsed.get("model") or "55",
+        serie=parsed.get("serie"),
+        nfe_number=parsed.get("nfe_number"),
+        access_key=access_key,
+        person_id=recipient.id,
+        natureza_operacao=parsed.get("natureza_operacao")
+        or ("Remessa para depósito (FULL)" if full_cnpj else "Venda"),
+        issue_date=parsed.get("issue_date"),
+        exit_date=parsed.get("exit_date"),
+        status="authorized",  # XML já autorizado pelo marketplace
+        # 'xml_upload' é o valor permitido pelo CHECK chk_inv_inbound_source;
+        # a saída se distingue da entrada por direction='out'.
+        inbound_source="xml_upload",
+        manifestation="not_required",
+        freight_modality=transport.get("freight_modality"),
+        additional_info=parsed.get("additional_info") or None,
+        total_products=totals.get("total_products") or Decimal("0"),
+        total_freight=totals.get("total_freight") or Decimal("0"),
+        total_insurance=totals.get("total_insurance") or Decimal("0"),
+        total_discount=totals.get("total_discount") or Decimal("0"),
+        total_other=totals.get("total_other") or Decimal("0"),
+        total_icms=totals.get("total_icms") or Decimal("0"),
+        total_icms_st=totals.get("total_icms_st") or Decimal("0"),
+        total_pis=totals.get("total_pis") or Decimal("0"),
+        total_cofins=totals.get("total_cofins") or Decimal("0"),
+        total_ipi=totals.get("total_ipi") or Decimal("0"),
+        total_invoice=totals.get("total_invoice") or Decimal("0"),
+        created_by_user_id=current_user.id,
+    )
+    db.add(inv)
+    await db.flush()
+
+    matched, unmatched = [], []
+    for it_data in parsed.get("items", []):
+        item = _invoice_item_from_parsed(inv.id, it_data)
+        db.add(item)
+        await db.flush()
+        if await _resolve_item_match(item, cmig_id, db):
+            matched.append(item.description)
+        else:
+            unmatched.append(item.description)
+
+    # Baixa LOCAL (event-sourced) + crédito FULL em UMA transação atômica:
+    # se o FULL falhar, nada é persistido (a NF-e pode ser reimportada).
+    full_result = None
+    try:
+        stock = await _apply_stock_movement(inv, db)
+        if full_cnpj:
+            full_result = await apply_nfe_saida_to_full(db, inv, full_cnpj.marketplace_account_id)
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        logger.exception("[import-xml-saida] falha ao aplicar estoque/FULL")
+        raise HTTPException(status_code=500, detail=f"Falha ao aplicar estoque/FULL: {exc}")
+
+    try:
+        from services.stock_sync_service import schedule_push
+
+        schedule_push(stock.get("cmig_ids", set()), stock.get("pg_ids", set()))
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "invoice_id": inv.id,
+        "access_key": access_key,
+        "direction": "out",
+        "is_full_remessa": bool(full_cnpj),
+        "full_account_id": full_cnpj.marketplace_account_id if full_cnpj else None,
+        "full_credit": full_result,
+        "recipient": {"id": recipient.id, "name": recipient.name, "document": recipient.document},
+        "items_count": len(parsed.get("items", [])),
+        "matched_count": len(matched),
+        "unmatched": unmatched,
+        "stock_movement": stock,
+    }
+
+
+# ── Sincronização de TODAS as NF-e do mês (batch do Faturador ML) ─────────────
+# Fecha a sequência (todas as notas viram registro) e move estoque das notas de
+# FULL: remessa (LOCAL↓+FULL↑) e retorno/retirada (LOCAL↑+FULL↓). Venda/devolução/
+# CC-e/CT-e são só registradas (venda já baixa pelo pedido; devolução = Fase B).
+
+
+async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, month: int, user_id: int) -> dict:
+    """Background: baixa o lote de NF-e do mês de uma conta ML e cria os registros
+    que faltam. HTTP do zip FORA da sessão de BD; uma transação curta por nota."""
+    import calendar as _cal
+
+    from services.full_stock_service import (
+        apply_nfe_entrada_from_full,
+        apply_nfe_saida_to_full,
+        is_full_cnpj,
+    )
+
+    async with task_db() as db:
+        acc = (
+            await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
+        ).scalar_one_or_none()
+        if not acc or not acc.access_token or not acc.platform_user_id:
+            return {"account_id": account_id, "created": 0, "skipped": 0, "full_moved": 0}
+        token, seller_id = acc.access_token, acc.platform_user_id
+
+    start = f"{year}{month:02d}01"
+    last = _cal.monthrange(year, month)[1]
+    end = f"{year}{month:02d}{last:02d}"
+    entries = await _ml.download_invoices_batch(token, seller_id, start, end)
+
+    created = skipped = full_moved = 0
+    seq: dict[int, set[int]] = {}  # série → números de NF-e vistos no lote (p/ furos)
+    # O zip do ML não separa por tipo (vem tudo em "emitidas_mercado_livre/"), então
+    # classificamos pela própria nota: o sinal confiável é o CNPJ FULL (destinatário =
+    # remessa para o FULL; emitente = retorno/retirada do FULL). Notas NÃO-FULL são
+    # puladas (venda já vem pelo cache de pedido; devolução é a Fase B).
+    for _category, _name, xml_bytes in entries:
+        try:
+            parsed = parse_nfe_xml(xml_bytes)
+        except Exception:  # noqa: BLE001
+            continue
+        access_key = parsed.get("access_key") or ""
+        if len(access_key) != 44:
+            continue
+        # Coleta nº por série (todas as NF-e do lote) para detectar furos depois.
+        _s, _n = parsed.get("serie"), parsed.get("nfe_number")
+        if _s is not None and _n is not None:
+            try:
+                seq.setdefault(int(_s), set()).add(int(_n))
+            except (TypeError, ValueError):
+                pass
+        try:
+            async with task_db() as db:
+                dest = parsed.get("dest", {}) or {}
+                emit = parsed.get("emit", {}) or {}
+                full_dest = await is_full_cnpj(db, dest.get("document") or "", cmig_id)
+                full_emit = await is_full_cnpj(db, emit.get("document") or "", cmig_id)
+                full = full_dest or full_emit
+                if not full:
+                    skipped += 1  # não-FULL: venda (cache) / devolução (Fase B) / outros
+                    continue
+
+                exists = (
+                    await db.execute(select(Invoice.id).where(Invoice.access_key == access_key))
+                ).scalar_one_or_none()
+                if exists:
+                    skipped += 1
+                    continue
+
+                # Direção pela CFOP (não pela posição do CNPJ): 1/2/3 = entrada (retorno
+                # do FULL → LOCAL↑+FULL↓); 5/6/7 = saída (remessa p/ FULL → LOCAL↓+FULL↑).
+                first_cfop = next(
+                    (str(it.get("cfop") or "") for it in parsed.get("items", []) if it.get("cfop")),
+                    "",
+                )
+                full_account_id = full.marketplace_account_id
+                if first_cfop[:1] in ("1", "2", "3"):
+                    direction, purpose, party, move = "in", "retorno", emit, "full_in"
+                else:
+                    direction, purpose, party, move = "out", "remessa", dest, "full_out"
+
+                person = (
+                    await _upsert_recipient(party, cmig_id, db)
+                    if direction == "out"
+                    else await _upsert_supplier(party, cmig_id, db)
+                )
+                totals = parsed.get("totals", {})
+                transport = parsed.get("transport", {})
+                inv = Invoice(
+                    cmig_id=cmig_id,
+                    direction=direction,
+                    purpose=purpose,
+                    model=parsed.get("model") or "55",
+                    serie=parsed.get("serie"),
+                    nfe_number=parsed.get("nfe_number"),
+                    access_key=access_key,
+                    person_id=person.id,
+                    natureza_operacao=parsed.get("natureza_operacao"),
+                    issue_date=parsed.get("issue_date"),
+                    exit_date=parsed.get("exit_date"),
+                    status="authorized",
+                    inbound_source="xml_upload",
+                    manifestation="not_required",
+                    freight_modality=transport.get("freight_modality"),
+                    additional_info=parsed.get("additional_info") or None,
+                    total_products=totals.get("total_products") or Decimal("0"),
+                    total_freight=totals.get("total_freight") or Decimal("0"),
+                    total_insurance=totals.get("total_insurance") or Decimal("0"),
+                    total_discount=totals.get("total_discount") or Decimal("0"),
+                    total_other=totals.get("total_other") or Decimal("0"),
+                    total_icms=totals.get("total_icms") or Decimal("0"),
+                    total_icms_st=totals.get("total_icms_st") or Decimal("0"),
+                    total_pis=totals.get("total_pis") or Decimal("0"),
+                    total_cofins=totals.get("total_cofins") or Decimal("0"),
+                    total_ipi=totals.get("total_ipi") or Decimal("0"),
+                    total_invoice=totals.get("total_invoice") or Decimal("0"),
+                    created_by_user_id=user_id,
+                )
+                db.add(inv)
+                await db.flush()
+                for it_data in parsed.get("items", []):
+                    item = _invoice_item_from_parsed(inv.id, it_data)
+                    db.add(item)
+                    await db.flush()
+                    await _resolve_item_match(item, cmig_id, db)
+
+                if move == "full_out":
+                    await _apply_stock_movement(inv, db)
+                    await apply_nfe_saida_to_full(db, inv, full_account_id)
+                    full_moved += 1
+                else:  # full_in
+                    await _apply_stock_movement(inv, db)
+                    await apply_nfe_entrada_from_full(db, inv, full_account_id)
+                    full_moved += 1
+
+                await db.commit()
+                created += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[sync-ml-fiscal] nota ...%s: %s", access_key[-6:], e)
+
+    # Furos de sequência: números faltando dentro do intervalo [min,max] de cada série.
+    gaps: dict[int, list[int]] = {}
+    for serie, nums in seq.items():
+        if len(nums) < 2:
+            continue
+        lo, hi = min(nums), max(nums)
+        missing = [n for n in range(lo, hi + 1) if n not in nums]
+        if missing:
+            gaps[serie] = missing[:100]  # limita o log
+    if gaps:
+        logger.warning(
+            "[sync-ml-fiscal] conta %s %s/%s FUROS de sequência (sincronizar de novo): %s",
+            account_id, month, year, gaps,
+        )
+    logger.info(
+        "[sync-ml-fiscal] conta %s %s/%s: criadas=%s puladas=%s full=%s furos=%s",
+        account_id, month, year, created, skipped, full_moved, sum(len(v) for v in gaps.values()),
+    )
+    return {
+        "account_id": account_id,
+        "created": created,
+        "skipped": skipped,
+        "full_moved": full_moved,
+        "gaps": gaps,
+    }
+
+
+@router.post("/outbound/sync-ml-fiscal")
+async def sync_ml_fiscal(
+    period: str = Query(..., regex=r"^\d{6}$"),  # AAAAMM
+    cmig_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Dispara (em background) a sincronização de TODAS as NF-e do mês das contas
+    ML da CMIG via batch do Faturador — incluindo as notas de remessa para o FULL
+    que o sync por pedido não enxerga. Frontend recarrega a lista após alguns segundos."""
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if not accessible:
+        return {"started": 0, "accounts": 0, "period": period}
+    cmig_ids = [cmig_id] if cmig_id is not None else accessible
+    if cmig_id is not None and cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+
+    year, month = int(period[:4]), int(period[4:6])
+    if not (1 <= month <= 12):
+        raise HTTPException(status_code=422, detail="Período inválido (use AAAAMM).")
+
+    accounts = (
+        await db.execute(
+            select(MarketplaceAccount).where(
+                MarketplaceAccount.cmig_id.in_(cmig_ids),
+                MarketplaceAccount.platform == "mercadolivre",
+                MarketplaceAccount.is_active == True,  # noqa: E712
+                MarketplaceAccount.access_token.isnot(None),
+            )
+        )
+    ).scalars().all()
+    pairs = [(acc.id, acc.cmig_id) for acc in accounts]
+
+    async def _run():
+        # Sequencial (não paralelo) — o batch do Faturador é sensível a rate limit (429).
+        for acc_id, acc_cmig in pairs:
+            try:
+                await _sync_ml_fiscal_account(acc_id, acc_cmig, year, month, current_user.id)
+            except Exception as e:  # noqa: BLE001
+                logger.error("[sync-ml-fiscal] conta %s: %s", acc_id, e)
+
+    task = asyncio.create_task(_run())
+    _BG_TASKS.add(task)  # retém referência (evita coleta pelo GC)
+    task.add_done_callback(_BG_TASKS.discard)
+    return {"started": len(pairs), "accounts": len(pairs), "period": period}
 
 
 # ── Geração de NFe a partir de Pedido (saída automática) ─────────────────────

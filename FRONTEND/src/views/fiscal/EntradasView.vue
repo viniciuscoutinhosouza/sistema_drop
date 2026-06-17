@@ -85,10 +85,10 @@
             <table v-else class="table table-hover mb-0">
               <thead>
                 <tr>
-                  <th>Chave / Número</th>
-                  <th>Emissão</th>
+                  <th role="button" @click="setSort('numero')">Chave / Número <i class="fas" :class="sortIcon('numero')"></i></th>
+                  <th role="button" @click="setSort('emissao')">Emissão <i class="fas" :class="sortIcon('emissao')"></i></th>
                   <th>Fornecedor</th>
-                  <th>Origem</th>
+                  <th role="button" @click="setSort('tipo')">Origem <i class="fas" :class="sortIcon('tipo')"></i></th>
                   <th>Manifestação</th>
                   <th class="text-right">Total</th>
                   <th>Status</th>
@@ -188,9 +188,27 @@ const filters = reactive({
   search: '',
   date_from: '',
   date_to: '',
+  sort_by: null,
+  sort_dir: 'desc',
   page: 1,
   page_size: pageSize,
 })
+
+function setSort(col) {
+  if (filters.sort_by === col) {
+    filters.sort_dir = filters.sort_dir === 'asc' ? 'desc' : 'asc'
+  } else {
+    filters.sort_by = col
+    filters.sort_dir = 'asc'
+  }
+  filters.page = 1
+  reload()
+}
+
+function sortIcon(col) {
+  if (filters.sort_by !== col) return 'fa-sort text-muted'
+  return filters.sort_dir === 'asc' ? 'fa-sort-up' : 'fa-sort-down'
+}
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 

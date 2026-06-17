@@ -3,19 +3,23 @@
     <div class="modal-dialog modal-lg">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title"><i class="fas fa-file-import mr-2"></i>Importar XML de NFe</h5>
+          <h5 class="modal-title"><i class="fas fa-file-import mr-2"></i>{{ isOut ? 'Importar XML de Saída' : 'Importar XML de NFe' }}</h5>
           <button type="button" class="close" @click="$emit('close')"><span>&times;</span></button>
         </div>
 
         <div class="modal-body">
-          <p class="text-muted small">
+          <p class="text-muted small" v-if="isOut">
+            Faça upload do XML de NFe de saída (modelo 55) emitida pela CMIG. Se o destinatário
+            for um CNPJ FULL cadastrado, é uma remessa: baixa do estoque LOCAL e crédito no FULL.
+          </p>
+          <p class="text-muted small" v-else>
             Faça upload de um arquivo XML de NFe (modelo 55) recebida de um fornecedor.
             O sistema cria a entrada e o fornecedor automaticamente.
           </p>
 
           <!-- CMIG -->
           <div class="form-group">
-            <label class="small mb-1">CMIG destinatária <span class="text-danger">*</span></label>
+            <label class="small mb-1">{{ isOut ? 'CMIG emitente' : 'CMIG destinatária' }} <span class="text-danger">*</span></label>
             <select v-model="cmigId" class="form-control" :disabled="uploading">
               <option :value="null">Selecione...</option>
               <option v-for="c in cmigs" :key="c.id" :value="c.id">
@@ -46,8 +50,8 @@
             </div>
           </div>
 
-          <!-- Atualizar estoque -->
-          <div class="form-check mt-3">
+          <!-- Atualizar estoque (só entrada; saída sempre baixa) -->
+          <div class="form-check mt-3" v-if="!isOut">
             <input id="chk-update-stock" type="checkbox" class="form-check-input"
                    v-model="updateStock" :disabled="uploading">
             <label for="chk-update-stock" class="form-check-label">
@@ -62,12 +66,27 @@
           <div v-if="result" class="alert alert-success mt-3">
             <h6><i class="fas fa-check-circle mr-1"></i>NFe importada com sucesso!</h6>
             <p class="mb-1 small">
-              <strong>Invoice #{{ result.invoice_id }}</strong> — Fornecedor:
-              <strong>{{ result.supplier.name }}</strong>
+              <strong>Invoice #{{ result.invoice_id }}</strong> —
+              {{ isOut ? 'Destinatário' : 'Fornecedor' }}:
+              <strong>{{ (result.recipient || result.supplier || {}).name }}</strong>
             </p>
-            <p class="mb-1 small">{{ result.items_count }} {{ result.items_count === 1 ? 'item' : 'itens' }} —
-              Total: <strong>{{ formatCurrency(result.total_invoice) }}</strong></p>
-            <p v-if="result.stock_update" class="mb-0 small">
+            <p v-if="isOut && result.is_full_remessa" class="mb-1">
+              <span class="badge badge-primary"><i class="fas fa-warehouse mr-1"></i>Remessa para o FULL</span>
+            </p>
+            <p class="mb-1 small">
+              {{ result.items_count }} {{ result.items_count === 1 ? 'item' : 'itens' }}
+              <template v-if="isOut"> —
+                <span class="badge badge-success">{{ result.matched_count }} casados</span>
+                <span v-if="result.unmatched && result.unmatched.length" class="badge badge-warning ml-1">
+                  {{ result.unmatched.length }} sem match
+                </span>
+              </template>
+              <template v-else> — Total: <strong>{{ formatCurrency(result.total_invoice) }}</strong></template>
+            </p>
+            <p v-if="isOut && result.unmatched && result.unmatched.length" class="mb-0 small text-muted">
+              Sem match (não baixaram estoque): {{ result.unmatched.join(', ') }}
+            </p>
+            <p v-if="!isOut && result.stock_update" class="mb-0 small">
               Estoque atualizado:
               <span class="badge badge-success">{{ result.stock_update.matched }} produtos</span>
               <span v-if="result.stock_update.unmatched" class="badge badge-warning ml-1">
@@ -107,7 +126,10 @@ import { fmt } from '@/views/fiscal/_helpers'
 const emit = defineEmits(['close', 'imported'])
 const props = defineProps({
   defaultCmigId: { type: Number, default: null },
+  direction: { type: String, default: 'in' },  // 'in' (entrada) | 'out' (saída)
 })
+
+const isOut = computed(() => props.direction === 'out')
 
 const cmigStore = useCmigStore()
 const { cmigs } = storeToRefs(cmigStore)
@@ -152,11 +174,12 @@ async function submit() {
 
   const formData = new FormData()
   formData.append('cmig_id', cmigId.value)
-  formData.append('update_stock', updateStock.value)
+  if (!isOut.value) formData.append('update_stock', updateStock.value)
   formData.append('xml_file', file.value)
 
   try {
-    const { data } = await api.post('/invoices/import-xml', formData, {
+    const endpoint = isOut.value ? '/invoices/import-xml-saida' : '/invoices/import-xml'
+    const { data } = await api.post(endpoint, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     result.value = data

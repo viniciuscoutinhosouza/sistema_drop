@@ -2429,6 +2429,57 @@ async def get_invoices_by_order(access_token: str, seller_id: str, order_id: str
     return {}
 
 
+async def download_invoices_batch(
+    access_token: str, seller_id: str, start: str, end: str
+) -> list[tuple[str, str, bytes]]:
+    """Baixa TODAS as NF-e do vendedor no período (todos os tipos) via batch do
+    Faturador ML e devolve [(categoria, nome_no_zip, xml_bytes)].
+
+    `categoria` é o 1º segmento da pasta no zip (o ML agrupa por tipo:
+    sale/return/full/others); fica "" se o zip for plano.
+
+    start/end no formato YYYYMMDD. Inclui venda, devolução, retorno, e as notas
+    de FULL (inbound/symbolic/removal) — que NÃO vêm pelo fluxo por pedido.
+    Retorna [] em erro (tolerante)."""
+    import io as _io
+    import zipfile as _zip
+
+    url = (
+        f"{ML_API_BASE}/users/{seller_id}/invoices/sites/MLB"
+        f"/batch_request/period/stream"
+    )
+    params = {
+        "start": start,
+        "end": end,
+        "sale": "all",
+        "return": "all",
+        "full": "all",
+        "others": "all",
+        "file_types": "xml",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+            resp = await client.get(
+                url, headers={"Authorization": f"Bearer {access_token}"}, params=params
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[ML] batch invoices erro de rede: %s", e)
+        return []
+    if resp.status_code != 200:
+        logger.warning("[ML] batch invoices status=%s: %s", resp.status_code, resp.text[:200])
+        return []
+    out: list[tuple[str, str, bytes]] = []
+    try:
+        with _zip.ZipFile(_io.BytesIO(resp.content)) as zf:
+            for name in zf.namelist():
+                if name.lower().endswith(".xml"):
+                    category = name.split("/")[0].lower() if "/" in name else ""
+                    out.append((category, name, zf.read(name)))
+    except _zip.BadZipFile:
+        logger.warning("[ML] batch invoices: resposta não é um zip válido (%s bytes)", len(resp.content))
+    return out
+
+
 async def get_invoice_by_id(access_token: str, seller_id: str, invoice_id: str) -> dict:
     """Fetch a specific invoice by invoice_id."""
     try:
