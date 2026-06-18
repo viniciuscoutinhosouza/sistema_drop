@@ -10,7 +10,7 @@ Fluxo:
 
 import logging
 
-from sqlalchemy import case, or_, select
+from sqlalchemy import case, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.fiscal import Invoice, InvoiceItem
@@ -558,3 +558,35 @@ async def apply_full_order_shipped(db: AsyncSession, order: Order) -> None:
         await _adjust_full_stock(db, ptype, pid, account_id, -qty, release_reserved=True)
         _log(db, product_type=ptype, product_id=pid,
              movement_type="full_out", qty=qty, delta=-qty, order_id=order.id)
+
+
+async def reconcile_full_dispatched(db: AsyncSession, limit: int = 2000) -> dict:
+    """Pedidos FULL shipped/delivered que ainda NÃO baixaram o FULL (sem full_out) →
+    aplica a baixa (idempotente). Cobre o caso de o shipment_status ter virado
+    shipped/delivered fora do webhook (ex.: via _refresh_shipments no sync de pedidos),
+    onde confirm_dispatch não disparava. Roda no sync e como backfill one-off."""
+    q = (
+        select(Order)
+        .where(
+            Order.shipping_mode == "full",
+            Order.shipment_status.in_(["shipped", "delivered"]),
+            ~exists(
+                select(StockMovement.id).where(
+                    StockMovement.order_id == Order.id,
+                    StockMovement.movement_type == "full_out",
+                )
+            ),
+        )
+        .limit(limit)
+    )
+    orders = (await db.execute(q)).scalars().all()
+    applied = 0
+    for o in orders:
+        try:
+            await apply_full_order_shipped(db, o)
+            await db.commit()
+            applied += 1
+        except Exception:  # noqa: BLE001
+            await db.rollback()
+            logger.exception("reconcile_full_dispatched order=%s", o.id)
+    return {"candidates": len(orders), "applied": applied}

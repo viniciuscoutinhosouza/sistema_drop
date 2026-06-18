@@ -1860,6 +1860,14 @@ async def _refresh_shipments(
                 pass
             _apply_shipment_to_order(order, sd, costs)
             updated += 1
+            # Pedido FULL que chegou a shipped/delivered → baixa o FULL (idempotente).
+            # _apply_shipment_to_order não dispara isso sozinho (diferente do webhook).
+            if order.shipping_mode == "full" and (order.shipment_status or "") in {"shipped", "delivered"}:
+                try:
+                    from services.stock_reservation_service import confirm_dispatch
+                    await confirm_dispatch(db, order)
+                except Exception:
+                    pass
         except Exception:
             pass
         await _asyncio.sleep(0.1)

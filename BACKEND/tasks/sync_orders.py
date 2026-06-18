@@ -68,6 +68,17 @@ async def sync_all_orders():
                     stats["errors"] += 1
                     print(f"[SYNC] Error refreshing shipments: {e}")
 
+            # Baixa do FULL para pedidos shipped/delivered que não baixaram (rede de
+            # segurança: shipment_status pode ter virado delivered fora do webhook).
+            try:
+                from services.full_stock_service import reconcile_full_dispatched
+
+                rec = await reconcile_full_dispatched(db)
+                stats["full_dispatched_applied"] = rec.get("applied", 0)
+            except Exception as e:
+                stats["errors"] += 1
+                print(f"[SYNC] Error reconciling FULL dispatched: {e}")
+
         result.set(stats)
 
 
