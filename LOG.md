@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-06-18 — fix(full): vendas FULL não baixavam o estoque (commit f98bf20) — deployado
+
+Bug: vendas FULL reservavam (`full_reserve`) mas nunca baixavam o `qty` (`full_out`). O `shipment_status` virava shipped/delivered via `_refresh_shipments` (sync de pedidos), que NÃO chamava `confirm_dispatch` — só o webhook chamava, no seu próprio caminho. Detectado no SKU 5276 (CMIG#3): qty 146 / reserved 124, zero `full_out`.
+
+- `full_stock_service.reconcile_full_dispatched()`: pedidos FULL shipped/delivered sem `full_out` → `apply_full_order_shipped` (idempotente). Backfill + rede de segurança.
+- `tasks/sync_orders` chama `reconcile_full_dispatched` após `_refresh_shipments`.
+- `_refresh_shipments` dispara `confirm_dispatch` quando pedido FULL fica shipped/delivered (cobre o botão manual de refresh também).
+
+**Backfill aplicado em produção:** 94 pedidos processados, 88 `full_out` criados, 207 un. SKU 5276 corrigido (qty 146→24, reserved 124→2). **6 pedidos pendentes** por terem item **SKU 5253 ("Faixa Elástica Azul-claro") não cadastrado** no catálogo (PG/CMIG) — após cadastrar o produto, a reconciliação do sync baixa automaticamente.
+
 ## 2026-06-18 — feat(full): estoque FULL sempre por produto CMIG (ADR-0010) — local, não enviado
 
 Reformulação do controle de estoque FULL. Antes a remessa creditava o FULL na chave do produto **PG** e a venda reservava na chave **CMIG** → "Reserva FULL sem entrada" e FULL não isolável por CMIG (27 linhas pg / 3 cmig em produção; 18 produtos sem CMIGProduct).
