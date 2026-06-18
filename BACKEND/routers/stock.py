@@ -26,6 +26,7 @@ async def stock_summary(
     scope: str = Query(None, regex="^(pg|cmig)$"),
     warehouse_id: int = Query(None),
     cmig_id: int = Query(None),
+    show_zeroed: bool = Query(False),  # incluir produtos zerados (local e full)
     sort_by: str = Query("name", regex="^(sku|name|physical|available)$"),
     sort_dir: str = Query("asc", regex="^(asc|desc)$"),
     current_user: User = Depends(get_current_user),
@@ -100,7 +101,9 @@ async def stock_summary(
             | (CatalogProduct.pending_validation_quantity > 0)
             | (CatalogProduct.unfit_quantity > 0)
         )
-        if full_pg_ids:
+        if show_zeroed:
+            pass  # mostra todos os PG (inclui zerados)
+        elif full_pg_ids:
             q_pg = q_pg.where(local_pg_filter | CatalogProduct.id.in_(full_pg_ids))
         else:
             q_pg = q_pg.where(local_pg_filter)
@@ -127,6 +130,8 @@ async def stock_summary(
                 "name": row.title,
                 "warehouse_id": row.warehouse_id,
                 "cmig_id": None,
+                "cmig_name": None,
+                "is_full_mirror": False,
                 "physical": physical,
                 "reserved": reserved,
                 "available": max(0, physical - reserved),
@@ -150,6 +155,9 @@ async def stock_summary(
                 CMIGProduct.awaiting_return_quantity,
                 CMIGProduct.pending_validation_quantity,
                 CMIGProduct.unfit_quantity,
+                CMIGProduct.is_full_mirror,
+                CMIG.trade_name,
+                CMIG.company_name,
             )
             .join(CMIG, CMIG.id == CMIGProduct.cmig_id)
         )
@@ -160,7 +168,9 @@ async def stock_summary(
             | (CMIGProduct.pending_validation_quantity > 0)
             | (CMIGProduct.unfit_quantity > 0)
         )
-        if full_cmig_ids:
+        if show_zeroed:
+            pass  # mostra todos os CMIG (inclui zerados)
+        elif full_cmig_ids:
             q_cmig = q_cmig.where(local_cmig_filter | CMIGProduct.id.in_(full_cmig_ids))
         else:
             q_cmig = q_cmig.where(local_cmig_filter)
@@ -191,6 +201,8 @@ async def stock_summary(
                 "name": row.title,
                 "warehouse_id": row.warehouse_id,
                 "cmig_id": row.cmig_id,
+                "cmig_name": row.trade_name or row.company_name or f"CMIG {row.cmig_id}",
+                "is_full_mirror": bool(row.is_full_mirror),
                 "physical": physical,
                 "reserved": reserved,
                 "available": max(0, physical - reserved),

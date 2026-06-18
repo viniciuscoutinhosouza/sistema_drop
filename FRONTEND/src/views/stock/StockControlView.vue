@@ -66,6 +66,18 @@
             <i class="fas fa-sync-alt"></i>
           </button>
 
+          <!-- Mostrar produtos zerados (local e FULL) -->
+          <button
+            type="button"
+            class="btn btn-sm"
+            :class="showZeroed ? 'btn-secondary' : 'btn-outline-secondary'"
+            @click="toggleZeroed"
+            title="Inclui produtos com estoque zerado (local e FULL)"
+          >
+            <i class="fas" :class="showZeroed ? 'fa-eye' : 'fa-eye-slash'"></i>
+            Mostrar zerados
+          </button>
+
           <!-- Atualiza FULL no ML para a CMIG selecionada (AC, UGO, admin) -->
           <button
             v-if="cmigId"
@@ -129,6 +141,10 @@
                   <span :class="item.product_type === 'pg' ? 'badge badge-primary' : 'badge badge-info'">
                     {{ item.product_type === 'pg' ? 'PG' : 'CMIG' }}
                   </span>
+                  <div v-if="item.product_type === 'cmig'" class="small text-muted mt-1" style="line-height:1.1">
+                    {{ item.cmig_name }}
+                    <span v-if="item.is_full_mirror" class="badge badge-light border" style="color:#6f42c1" title="Registro de estoque FULL (espelho do PG)">FULL</span>
+                  </div>
                 </td>
                 <td class="text-center font-weight-bold">{{ item.physical }}</td>
                 <td class="text-center">
@@ -295,6 +311,7 @@ const warehouseId = ref(null)
 const cmigId = ref(null)
 const sortBy = ref('name')
 const sortDir = ref('asc')
+const showZeroed = ref(false)
 
 const warehouses = ref([])
 const cmigs = ref([])
@@ -411,6 +428,12 @@ function applyFilters() {
   load()
 }
 
+function toggleZeroed() {
+  showZeroed.value = !showZeroed.value
+  page.value = 1
+  load()
+}
+
 async function load() {
   loading.value = true
   const params = {
@@ -423,6 +446,7 @@ async function load() {
   if (scope.value) params.scope = scope.value
   if (warehouseId.value) params.warehouse_id = warehouseId.value
   if (cmigId.value) params.cmig_id = cmigId.value
+  if (showZeroed.value) params.show_zeroed = true
   try {
     const { data } = await api.get('/stock/summary', { params })
     items.value = data.items

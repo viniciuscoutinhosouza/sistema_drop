@@ -783,6 +783,15 @@ async def delete_cmig_product(
     if not product:
         raise HTTPException(status_code=404, detail="Produto CMIG não encontrado")
 
+    # Espelho FULL: registro interno que segura o estoque FULL — não pode ser excluído
+    # nem desativado (senão o FULL fica órfão). Gerencie o produto pelo PG vinculado.
+    if getattr(product, "is_full_mirror", False):
+        raise HTTPException(
+            status_code=400,
+            detail="Este é o registro de estoque FULL (espelho do produto PG) e não pode "
+                   "ser excluído. Gerencie o produto pelo cadastro PG correspondente.",
+        )
+
     # Verificar pedidos internos via PG vinculado
     has_sales = False
     if product.pg_product_id:

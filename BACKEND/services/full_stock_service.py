@@ -205,6 +205,7 @@ async def resolve_full_cmig_product(
         csosn=pg.csosn,
         category_id=pg.category_id,
         pg_product_id=pg.id,
+        is_full_mirror=True,  # espelho só p/ o FULL — protegido de exclusão (ADR-0010)
     )
     db.add(cp)
     await db.flush()

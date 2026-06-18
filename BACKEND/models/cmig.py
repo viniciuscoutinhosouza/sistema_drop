@@ -101,6 +101,9 @@ class CMIGProduct(Base):
     source_variation_id = Column(String(100), nullable=True)
     is_composite = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=True)
+    # Espelho FULL: CMIGProduto auto-criado só para segurar o estoque FULL de um
+    # produto cujo anúncio é vinculado ao PG (ADR-0010). Protegido de exclusão.
+    is_full_mirror = Column(Boolean, nullable=False, default=False)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
