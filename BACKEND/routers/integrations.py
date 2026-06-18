@@ -28,7 +28,7 @@ from config import get_settings
 from database import get_db
 from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIGAdministrator
-from models.integration import AccountBalance, MarketplaceAccount, OTPVerification
+from models.integration import AccountBalance, MarketplaceAccount
 from models.product import DropshipperProduct, ProductListing
 from models.user import AccountAdministrator, User
 from services import bling_service, ml_service, shopee_service
@@ -173,7 +173,7 @@ async def list_accounts(
     return [_serialize_account(acc, is_owner) for acc, is_owner in accounts.values()]
 
 
-# ─── Criar CONTA com verificação OTP ─────────────────────────────────────────
+# ─── Criar CONTA ──────────────────────────────────────────────────────────────
 
 
 @router.post("", status_code=201)
@@ -185,7 +185,6 @@ async def create_account(
     """
     Cria/registra uma nova CONTA de marketplace.
     Body: platform, description, email, phone
-    Após criação, o sistema envia OTP para confirmar o vínculo.
     """
     platform = body.get("platform")
     email = body.get("email", "")
@@ -205,7 +204,6 @@ async def create_account(
     )
     existing = dup.scalar_one_or_none()
     if existing:
-        # Conta já existe — verificar se este AC já é co-admin
         admin_check = await db.execute(
             select(AccountAdministrator).where(
                 AccountAdministrator.account_id == existing.id,
@@ -214,7 +212,6 @@ async def create_account(
         )
         if admin_check.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Você já administra esta conta")
-        # Adicionar este AC como co-admin (sem OTP duplicado)
         db.add(
             AccountAdministrator(
                 user_id=current_user.id,
@@ -225,7 +222,6 @@ async def create_account(
         await db.commit()
         return {"id": existing.id, "message": "Conta vinculada como co-administrador"}
 
-    # Nova CONTA — inativa até completar OAuth
     account = MarketplaceAccount(
         owner_id=current_user.id,
         platform=platform,
@@ -233,16 +229,13 @@ async def create_account(
         email=email,
         phone=phone,
         cmig_id=body.get("cmig_id") or None,
-        otp_verified=False,
+        otp_verified=True,
         is_active=False,
     )
     db.add(account)
     await db.flush()
 
-    # Criar saldo operacional zerado
     db.add(AccountBalance(account_id=account.id))
-
-    # Registrar AC como owner e primeiro administrador
     db.add(
         AccountAdministrator(
             user_id=current_user.id,
@@ -251,44 +244,12 @@ async def create_account(
         )
     )
 
-    # Gerar OTP de verificação
-    otp_code = _generate_otp()
-    expires = datetime.now(UTC) + timedelta(minutes=15)
-    db.add(
-        OTPVerification(
-            account_id=account.id,
-            code=otp_code,
-            channel="email",
-            destination=email,
-            expires_at=expires,
-        )
-    )
-
     await db.commit()
-
-    # Envia o OTP por e-mail (se o SMTP estiver configurado e ativo).
-    from services import email_service
-
-    sent = False
-    if email:
-        sent = await email_service.send_otp_email(db, email, otp_code, platform)
-
-    if not sent:
-        # Fallback/DEV: exibe o OTP no log do backend quando o e-mail não foi enviado.
-        print(f"\n{'=' * 50}")
-        print(f"  OTP para conta '{email}' [{platform}]: {otp_code}")
-        print("  Válido por 15 minutos. (e-mail não enviado — verifique config SMTP)")
-        print(f"{'=' * 50}\n")
 
     return {
         "id": account.id,
-        "message": (
-            "Conta criada. Enviamos um código de verificação para o seu e-mail."
-            if sent
-            else "Conta criada. Verifique o e-mail/WhatsApp para confirmar o vínculo."
-        ),
-        "otp_required": True,
-        "otp_sent": sent,
+        "message": "Conta criada com sucesso.",
+        "otp_required": False,
     }
 
 
@@ -299,42 +260,8 @@ async def verify_otp(
     current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Confirma o vínculo da CONTA via código OTP."""
+    """Verificação OTP desabilitada — retorna sucesso imediatamente."""
     account = await _assert_ac_can_access(account_id, current_user.id, db)
-    code = body.get("code", "").strip()
-
-    otp_result = await db.execute(
-        select(OTPVerification)
-        .where(
-            OTPVerification.account_id == account_id,
-            OTPVerification.code == code,
-            OTPVerification.is_used == False,
-        )
-        .order_by(OTPVerification.id.desc())
-    )
-    otp = otp_result.scalars().first()
-    if not otp:
-        # DEV: mostrar OTPs ativos para diagnóstico
-        all_otps = await db.execute(
-            select(OTPVerification).where(
-                OTPVerification.account_id == account_id,
-                OTPVerification.is_used == False,
-            )
-        )
-        active = all_otps.scalars().all()
-        if active:
-            print(f"\n[OTP DEBUG] Códigos ativos para account_id={account_id}:")
-            for o in active:
-                print(f"  código={o.code}  expira={o.expires_at}  canal={o.channel}")
-            print()
-        else:
-            print(f"\n[OTP DEBUG] Nenhum OTP ativo para account_id={account_id}\n")
-        raise HTTPException(status_code=400, detail="Código OTP inválido")
-    expires = otp.expires_at if otp.expires_at.tzinfo else otp.expires_at.replace(tzinfo=UTC)
-    if expires < datetime.now(UTC):
-        raise HTTPException(status_code=400, detail="Código OTP expirado")
-
-    otp.is_used = True
     account.otp_verified = True
     await db.commit()
     return {"message": "Conta verificada com sucesso"}
@@ -346,47 +273,8 @@ async def resend_otp(
     current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Gera um novo OTP e invalida os anteriores."""
-    account = await _assert_ac_can_access(account_id, current_user.id, db)
-    if account.otp_verified:
-        raise HTTPException(status_code=400, detail="Conta já verificada")
-
-    # NÃO invalida os códigos anteriores: cada um continua válido até expirar
-    # naturalmente (15 min). Isso evita que o reenvio mate justamente o código que
-    # o usuário acabou de receber por e-mail e está digitando.
-    otp_code = _generate_otp()
-    expires = datetime.now(UTC) + timedelta(minutes=15)
-    db.add(
-        OTPVerification(
-            account_id=account_id,
-            code=otp_code,
-            channel="email",
-            destination=account.email or "",
-            expires_at=expires,
-        )
-    )
-    await db.commit()
-
-    from services import email_service
-
-    sent = False
-    if account.email:
-        sent = await email_service.send_otp_email(db, account.email, otp_code, account.platform)
-
-    if not sent:
-        print(f"\n{'=' * 50}")
-        print(f"  NOVO OTP para conta '{account.email}' [{account.platform}]: {otp_code}")
-        print("  Válido por 15 minutos. (e-mail não enviado — verifique config SMTP)")
-        print(f"{'=' * 50}\n")
-
-    return {
-        "message": (
-            "Novo código enviado para o seu e-mail."
-            if sent
-            else "Novo código OTP gerado. Verifique o e-mail/WhatsApp."
-        ),
-        "otp_sent": sent,
-    }
+    """Verificação OTP desabilitada — retorna sucesso imediatamente."""
+    return {"message": "OK", "otp_sent": False}
 
 
 # ─── Co-administração ─────────────────────────────────────────────────────────

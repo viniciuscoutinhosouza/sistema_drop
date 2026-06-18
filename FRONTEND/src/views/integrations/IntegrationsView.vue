@@ -69,15 +69,8 @@
               <i class="fas fa-sync mr-1"></i>Última sinc: {{ formatDateTime(acc.last_sync_at) }}
             </p>
 
-            <!-- Status OTP -->
-            <div v-if="!acc.otp_verified" class="alert alert-warning py-2 mb-2">
-              <i class="fas fa-exclamation-triangle mr-1"></i>
-              Verificação pendente.
-              <button class="btn btn-xs btn-warning ml-2" @click="openOtpModal(acc)">Verificar OTP</button>
-            </div>
-
             <!-- Status OAuth / conexão -->
-            <div v-else>
+            <div>
               <!-- Alerta: token revogado / precisa reconectar -->
               <div v-if="acc.requires_reauth" class="alert alert-danger py-2 mb-2">
                 <i class="fas fa-exclamation-circle mr-1"></i>
@@ -153,62 +146,12 @@
               <label>Descrição (opcional)</label>
               <input v-model="newContaForm.description" class="form-control" placeholder="Ex: Loja Principal ML" />
             </div>
-            <p class="text-muted small mb-0">
-              <i class="fas fa-info-circle mr-1"></i>
-              Após cadastrar, você receberá um código OTP para confirmar o vínculo da conta.
-            </p>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="modal.newConta = false">Cancelar</button>
             <button class="btn btn-primary" :disabled="savingNewConta" @click="createConta">
               <i v-if="savingNewConta" class="fas fa-spinner fa-spin mr-1"></i>
               {{ savingNewConta ? 'Cadastrando...' : 'Cadastrar Conta' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ─── Modal: Verificar OTP ──────────────────────────────────────────── -->
-    <div v-if="modal.otp" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title"><i class="fas fa-shield-alt mr-2"></i> Verificar Código OTP</h5>
-            <button class="close" @click="modal.otp = false"><span>&times;</span></button>
-          </div>
-          <div class="modal-body">
-            <div v-if="otpError" class="alert alert-danger py-2">
-              <i class="fas fa-exclamation-circle mr-1"></i>{{ otpError }}
-            </div>
-            <div v-if="otpResent" class="alert alert-success py-2">
-              <i class="fas fa-check-circle mr-1"></i>Novo código gerado! Consulte o terminal do backend (uvicorn).
-            </div>
-            <p>
-              Digite o código de 6 dígitos enviado para
-              <strong>{{ otpTarget?.email }}</strong>.
-            </p>
-            <p class="text-muted small">
-              <i class="fas fa-info-circle mr-1"></i>
-              Em ambiente de desenvolvimento, consulte o log do backend para obter o código gerado.
-            </p>
-            <div class="form-group">
-              <label>Código OTP <span class="text-danger">*</span></label>
-              <input v-model="otpCode" type="text" class="form-control text-center"
-                     maxlength="6" placeholder="000000"
-                     style="font-size:1.5rem;letter-spacing:.5rem;font-weight:bold" />
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn btn-secondary" @click="modal.otp = false">Cancelar</button>
-            <button class="btn btn-outline-warning" :disabled="resendingOtp" @click="resendOtp">
-              <i v-if="resendingOtp" class="fas fa-spinner fa-spin mr-1"></i>
-              <i v-else class="fas fa-redo mr-1"></i>
-              {{ resendingOtp ? 'Reenviando...' : 'Reenviar Código' }}
-            </button>
-            <button class="btn btn-success" :disabled="verifyingOtp || otpCode.length !== 6" @click="verifyOtp">
-              <i v-if="verifyingOtp" class="fas fa-spinner fa-spin mr-1"></i>
-              {{ verifyingOtp ? 'Verificando...' : 'Confirmar' }}
             </button>
           </div>
         </div>
@@ -398,7 +341,7 @@ function openCollab(acc) {
   collabModal.value = { visible: true, id: acc.id, label }
 }
 
-const modal   = ref({ newConta: false, otp: false, bling: false, edit: false })
+const modal   = ref({ newConta: false, bling: false, edit: false })
 const syncing = ref({})   // { [account_id]: 'orders' | 'listings' | false }
 
 // Nova CONTA
@@ -417,12 +360,6 @@ const editError  = ref('')
 const savingEdit = ref(false)
 
 // OTP
-const otpTarget    = ref(null)
-const otpCode      = ref('')
-const otpError     = ref('')
-const otpResent    = ref(false)
-const verifyingOtp = ref(false)
-const resendingOtp = ref(false)
 
 // Bling
 const blingTarget  = ref(null)
@@ -544,55 +481,11 @@ async function createConta() {
     const { data } = await api.post('/accounts', newContaForm.value)
     modal.value.newConta = false
     await loadAccounts()
-    if (data.otp_required) {
-      const created = accounts.value.find(a => a.id === data.id)
-      if (created) openOtpModal(created)
-      toast('Conta criada! Insira o código OTP para ativar.', 'info')
-    } else {
-      toast('Conta vinculada como co-administrador.', 'success')
-    }
+    toast(data.message || 'Conta criada com sucesso!', 'success')
   } catch (err) {
     newContaError.value = err.response?.data?.detail || 'Erro ao criar conta'
   } finally {
     savingNewConta.value = false
-  }
-}
-
-function openOtpModal(account) {
-  otpTarget.value = account
-  otpCode.value = ''
-  otpError.value = ''
-  otpResent.value = false
-  modal.value.otp = true
-}
-
-async function resendOtp() {
-  resendingOtp.value = true
-  otpError.value = ''
-  otpResent.value = false
-  try {
-    await api.post(`/accounts/${otpTarget.value.id}/resend-otp`)
-    otpCode.value = ''
-    otpResent.value = true
-  } catch (err) {
-    otpError.value = err.response?.data?.detail || 'Erro ao reenviar código'
-  } finally {
-    resendingOtp.value = false
-  }
-}
-
-async function verifyOtp() {
-  verifyingOtp.value = true
-  otpError.value = ''
-  try {
-    await api.post(`/accounts/${otpTarget.value.id}/verify-otp`, { code: otpCode.value })
-    modal.value.otp = false
-    toast('Conta verificada com sucesso!', 'success')
-    await loadAccounts()
-  } catch (err) {
-    otpError.value = err.response?.data?.detail || 'Código inválido ou expirado'
-  } finally {
-    verifyingOtp.value = false
   }
 }
 
