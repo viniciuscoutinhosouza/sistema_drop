@@ -432,6 +432,12 @@
                         <span>Frete:</span>
                         <span class="small">pago pelo comprador</span>
                       </div>
+                      <!-- Custo do produto vinculado (descontado da Receita Líq.) -->
+                      <div class="d-flex justify-content-between text-danger">
+                        <span>Custo do produto:</span>
+                        <span v-if="pricingCalc(a).product_cost > 0">−{{ formatCurrency(pricingCalc(a).product_cost) }}</span>
+                        <span v-else class="text-muted small" title="Produto vinculado sem custo cadastrado">sem custo</span>
+                      </div>
                       <div style="border-top:1px solid #e2e8f0;margin:4px 0"></div>
                       <div class="d-flex justify-content-between font-weight-bold" style="color:#16a34a">
                         <span>Receita Líq.:</span>
@@ -3634,6 +3640,12 @@ function effectivePrice(listing) {
 
 function pricingCalc(listing) {
   const price = effectivePrice(listing)
+  // Custo do produto vinculado (PG/CMIG). Quando disponível, é descontado da Receita Líq.
+  const productCost = Number(listing.product_cost) || 0
+  const _net = (netMl) => {
+    const m = netMl - productCost
+    return { margin: m.toFixed(2), marginPct: price > 0 ? ((m / price) * 100).toFixed(2) : '0.00' }
+  }
 
   // Priority 1: live fetch (sempre mais fresco que o cache do BD)
   const real = listingCosts.value[listing.id]
@@ -3645,8 +3657,8 @@ function pricingCalc(listing) {
       fixed_fee:       real.fixed_fee,
       shipping_cost:   real.shipping_cost,
       shipping_detail: real.shipping_detail ?? null,
-      margin:          real.net_revenue.toFixed(2),
-      marginPct:       real.margin_pct.toFixed(2),
+      product_cost:    productCost,
+      ..._net(real.net_revenue),
       isReal:          true,
     }
   }
@@ -3663,8 +3675,8 @@ function pricingCalc(listing) {
       fixed_fee:       0,
       shipping_cost:   listing.shipping_cost ?? 0,
       shipping_detail: null,
-      margin:          Number(listing.net_revenue ?? 0).toFixed(2),
-      marginPct:       Number(listing.margin_pct ?? 0).toFixed(2),
+      product_cost:    productCost,
+      ..._net(Number(listing.net_revenue ?? 0)),
       isReal:          true,
       isStale,
       cachedAt:        listing.costs_cached_at,
@@ -3674,7 +3686,6 @@ function pricingCalc(listing) {
   // Estimativa estática enquanto dados não chegaram
   const rate = _ML_FEES[listing.listing_type] ?? 11
   const fee = price * rate / 100
-  const margin = price - fee
   return {
     rate,
     fee:             fee.toFixed(2),
@@ -3682,8 +3693,8 @@ function pricingCalc(listing) {
     fixed_fee:       0,
     shipping_cost:   0,
     shipping_detail: null,
-    margin:          margin.toFixed(2),
-    marginPct:       price > 0 ? ((margin / price) * 100).toFixed(2) : '0.00',
+    product_cost:    productCost,
+    ..._net(price - fee),
     isReal:          false,
   }
 }

@@ -637,10 +637,18 @@ def _serialize_listing(
                 )
             ],
         }
+    # Custo do produto vinculado (PG ou CMIG) — usado na estimativa de margem na UI.
+    product_cost = None
+    if listing.catalog_product and listing.catalog_product.cost_price is not None:
+        product_cost = float(listing.catalog_product.cost_price)
+    elif listing.cmig_product and getattr(listing.cmig_product, "cost_price", None) is not None:
+        product_cost = float(listing.cmig_product.cost_price)
+
     return {
         "id": listing.id,
         "account_id": listing.account_id,
         "platform_item_id": listing.platform_item_id,
+        "product_cost": product_cost,
         "permalink": listing.permalink,
         "thumbnail": listing.thumbnail,
         "sku": listing.sku,
