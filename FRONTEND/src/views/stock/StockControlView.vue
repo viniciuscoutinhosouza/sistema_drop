@@ -355,21 +355,26 @@ async function syncFullStock() {
   if (!cmigId.value || syncingFull.value) return
   syncingFull.value = true
   try {
+    // Conferência: compara o FULL do sistema (NF-e) com o ML; não sobrescreve.
     const { data } = await api.post(`/stock/cmig/${cmigId.value}/sync-full`)
-    const synced = data.listings_synced || 0
-    const pools = data.unique_pools || 0
-    const dups = data.duplicate_listings || 0
-    const errs = (data.errors || []).length
+    const checked = data.listings_checked || 0
     const accts = data.accounts_processed || 0
-    let msg = `${synced} anúncio(s) FULL em ${accts} conta(s) → ${pools} pool(s) de estoque distintos.`
-    if (dups > 0) msg += ` ${dups} anúncio(s) compartilham pool (não somados de novo).`
-    if (errs > 0) msg += ` ${errs} erro(s) — veja o console para detalhes.`
+    const drift = (data.drift || []).length
+    const errs = (data.errors || []).length
+    let msg = `${checked} anúncio(s) FULL conferidos em ${accts} conta(s).`
+    if (drift > 0) {
+      msg += ` ${drift} divergência(s) com o ML`
+      msg += data.resync_triggered ? ' — re-sincronização de NF-e disparada (aguarde e confira de novo).' : '.'
+      console.warn('[sync-full] divergências:', data.drift)
+    } else {
+      msg += ' Sem divergências com o ML. ✅'
+    }
     if (errs > 0) {
       console.warn('[sync-full] erros:', data.errors)
-      toast.warning(msg)
-    } else {
-      toast.success(msg)
+      msg += ` ${errs} erro(s) — veja o console.`
     }
+    if (drift > 0 || errs > 0) toast.warning(msg)
+    else toast.success(msg)
     await load()
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao atualizar estoque FULL.')

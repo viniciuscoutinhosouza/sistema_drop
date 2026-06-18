@@ -4,6 +4,11 @@
 **Status:** Aceito (implementado — Fase A)
 **Decisores:** Vinicius (proprietário)
 
+> **Nota (ADR-0010):** a partir do ADR-0010, o estoque FULL é keyed SEMPRE por produto CMIG
+> (`product_type='cmig'`). A redação PG-cêntrica abaixo (`full_stock` por pg/cmig) descreve o
+> estado legado pré-migração; `available_to_push`/`available_for_product` agora resolvem o
+> CMIGProduto espelho. A regra "anúncio não-FULL anuncia FULL quando LOCAL=0" permanece válida.
+
 ## Contexto
 
 Duas decisões surgiram ao corrigir o furo de sequência de NF-e e a pausa indevida

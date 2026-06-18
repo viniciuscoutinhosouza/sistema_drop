@@ -103,11 +103,31 @@ async def load_full_per_account_map(
     if not pg_ids and not cmig_ids:
         return {}
 
+    # FULL é sempre do CMIG (ADR-0010). Para exibir o FULL num card de produto PG,
+    # seguimos o vínculo pg_product_id → CMIGProduct(s) espelho e somamos o FULL deles
+    # sob a chave ('pg', pg_id). cmig_to_pg permite reatribuir as linhas CMIG ao PG.
+    cmig_to_pg: dict[int, int] = {}
+    if pg_ids:
+        for cmig_pid, pg_pid in (
+            await db.execute(
+                select(CMIGProduct.id, CMIGProduct.pg_product_id).where(
+                    CMIGProduct.pg_product_id.in_(pg_ids)
+                )
+            )
+        ).all():
+            cmig_to_pg[int(cmig_pid)] = int(pg_pid)
+
+    query_cmig_ids = set(cmig_ids) | set(cmig_to_pg.keys())
+
     clauses = []
-    if cmig_ids:
-        clauses.append((FullStock.product_type == "cmig") & FullStock.product_id.in_(cmig_ids))
+    if query_cmig_ids:
+        clauses.append(
+            (FullStock.product_type == "cmig") & FullStock.product_id.in_(list(query_cmig_ids))
+        )
     if pg_ids:
         clauses.append((FullStock.product_type == "pg") & FullStock.product_id.in_(pg_ids))
+    if not clauses:
+        return {}
     type_filter = clauses[0] if len(clauses) == 1 else or_(*clauses)
 
     q = select(
@@ -122,13 +142,27 @@ async def load_full_per_account_map(
         if account_ids:
             q = q.where(FullStock.marketplace_account_id.in_(account_ids))
 
+    cmig_requested = set(cmig_ids)
+
+    def _add(out, key, acct, qty, rqty):
+        slot = out.setdefault(key, {}).setdefault(
+            int(acct), {"qty": 0, "reserved_qty": 0}
+        )
+        slot["qty"] += int(qty or 0)
+        slot["reserved_qty"] += int(rqty or 0)
+
     out: dict[tuple[str, int], dict[int, dict]] = {}
     for ptype, pid, acct, qty, rqty in (await db.execute(q)).all():
-        key = (ptype, int(pid))
-        out.setdefault(key, {})[int(acct)] = {
-            "qty": int(qty or 0),
-            "reserved_qty": int(rqty or 0),
-        }
+        pid = int(pid)
+        if ptype == "cmig":
+            # Linha CMIG diretamente pedida → chave CMIG.
+            if pid in cmig_requested:
+                _add(out, ("cmig", pid), acct, qty, rqty)
+            # Linha CMIG espelho de um PG pedido → também soma sob a chave do PG.
+            if pid in cmig_to_pg:
+                _add(out, ("pg", cmig_to_pg[pid]), acct, qty, rqty)
+        else:  # 'pg' (legado, pré-migração)
+            _add(out, ("pg", pid), acct, qty, rqty)
     return out
 
 

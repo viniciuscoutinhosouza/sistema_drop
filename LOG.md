@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-06-18 — feat(full): estoque FULL sempre por produto CMIG (ADR-0010) — local, não enviado
+
+Reformulação do controle de estoque FULL. Antes a remessa creditava o FULL na chave do produto **PG** e a venda reservava na chave **CMIG** → "Reserva FULL sem entrada" e FULL não isolável por CMIG (27 linhas pg / 3 cmig em produção; 18 produtos sem CMIGProduct).
+
+Regra (dono): FULL é sempre do CMIG; não existe FULL para PG. `qty` = remessas REAIS − vendas enviadas − retornos REAIS; venda reserva/baixa no envio (atual); simbólicas não movem (ADR-0009). Sync do ML = conferência.
+
+- `services/full_stock_service.py`: novo `resolve_full_cmig_product()` (cmig_product_id → listing → pg_product_id → EAN/SKU → **auto-cria** CMIGProduct espelho do PG, idempotente) + `_cmig_id_for_account()`. `apply_nfe_saida_to_full`/`apply_nfe_entrada_from_full`/`resolve_full_product` passam a resolver SEMPRE CMIG (nunca grava 'pg'). `available_to_push` resolve o espelho p/ anúncio só-PG.
+- `services/stock_view.py`: `load_full_per_account_map` segue `pg_product_id` → card do PG mostra o FULL do CMIG espelho.
+- `routers/stock.py`: `/cmig/{id}/sync-full` virou **conferência** (compara sistema × ML, reporta `drift`, dispara re-sync de NF-e em background; não sobrescreve). Novo `POST /stock/migrate-full-pg-to-cmig?dry_run=` (migração idempotente das linhas pg→cmig, auto-cria espelhos, agrega por (cmig,conta) preservando reserved, movimento `full_migrate`).
+- `routers/invoices.py`: detecção de furos de sequência de NF-e agora **cross-mês** (une lote + persistidos por série/CMIG).
+- Frontend `StockControlView.vue`: botão "Atualizar Estoque FULL" mostra conferência/drift.
+- `DOCs/decisions/ADR-0010-full-sempre-cmig.md` + `Scripts SQL/100_full_cmig.sql` (âncora).
+
+Verificação: import OK; pytest 25 passed / 2 falhas pré-existentes (test_orders). **Pendente:** `npm run build`, auditoria de fechamento, rodar migração dry-run→apply em produção (autorizada) e deploy.
+
+---
+
 ## 2026-06-17 — fix(fiscal): NF-e "Retorno Simbólico" não movimenta estoque (LOCAL nem FULL) + reparo de dados
 
 Bug: o sync fiscal movimentava estoque com base em NF-e de **Retorno Simbólico de Depósito** (CFOP 1949). Após a remessa 706 (inv #185) creditar o FULL corretamente (+569 em 12 produtos PG, conta 2/EBAZAR), 37 notas "Retorno Simbólico" debitaram o FULL de volta a ~0 (e inflaram o LOCAL via `nfe_in`). Regra confirmada pelo dono: **só remessa e retorno REAL movimentam estoque; simbólico é fiscal puro**.

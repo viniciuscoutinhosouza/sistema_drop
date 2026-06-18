@@ -199,36 +199,24 @@ async def stock_summary(
                 "unfit": int(row.unfit_quantity or 0),
             })
 
-    # Agrupa full_stock por (product_type, product_id), respeitando o escopo
-    # de CMIG do usuário/filtro (evita vazar FULL de outras CMIGs).
-    full_q = select(
-        FullStock.product_type,
-        FullStock.product_id,
-        FullStock.marketplace_account_id,
-        FullStock.qty,
-    )
-    if full_scope_account_ids is not None:
-        if not full_scope_account_ids:
-            full_rows = []
-        else:
-            full_q = full_q.where(
-                FullStock.marketplace_account_id.in_(full_scope_account_ids)
-            )
-            full_rows = (await db.execute(full_q)).all()
-    else:
-        full_rows = (await db.execute(full_q)).all()
-    full_map: dict[tuple, dict] = {}
-    for fr in full_rows:
-        key = (fr.product_type, fr.product_id)
-        if key not in full_map:
-            full_map[key] = {}
-        full_map[key][fr.marketplace_account_id] = int(fr.qty or 0)
+    # FULL por (product_type, product_id) — reusa o SSOT load_full_per_account_map,
+    # que segue o vínculo pg_product_id (FULL do CMIG espelho aparece no card do PG).
+    # Mantém paridade com o card/anúncios/pedidos. Escopo de conta evita vazar FULL.
+    from services.stock_view import load_full_per_account_map
 
+    if full_scope_account_ids is not None and not full_scope_account_ids:
+        full_map = {}  # escopo CMIG sem contas → nenhum FULL (evita carregar tudo)
+    else:
+        full_map = await load_full_per_account_map(
+            db,
+            pg_ids=[it["product_id"] for it in items if it["product_type"] == "pg"],
+            cmig_ids=[it["product_id"] for it in items if it["product_type"] == "cmig"],
+            account_ids=full_scope_account_ids,
+        )
     for item in items:
-        key = (item["product_type"], item["product_id"])
-        acct_map = full_map.get(key, {})
-        item["full_stock"] = acct_map
-        item["full_stock_total"] = sum(acct_map.values())
+        acct_map = full_map.get((item["product_type"], item["product_id"]), {})
+        item["full_stock"] = {acct: int(d.get("qty", 0) or 0) for acct, d in acct_map.items()}
+        item["full_stock_total"] = sum(item["full_stock"].values())
 
     sort_keys = {
         "sku": lambda i: (i.get("sku") or "").lower(),
@@ -251,30 +239,33 @@ async def stock_summary(
 @router.post("/cmig/{cmig_id}/sync-full")
 async def sync_full_stock_for_cmig(
     cmig_id: int,
+    background_tasks: BackgroundTasks,
+    resync_on_drift: bool = Query(True),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Re-lê o estoque FULL no Mercado Livre para todos os anúncios fulfillment da CMIG
-    e regrava `full_stock` (e `listing.qty_full`) com o valor canônico do ML.
+    """CONFERÊNCIA do estoque FULL contra o Mercado Livre (ADR-0010).
 
-    - AC: precisa ser administrador da CMIG.
-    - UGO/admin/GO: liberado.
-    - Itera as contas ML da CMIG. Para cada conta, pega listings publicados com
-      `logistic_type='fulfillment'` ou `is_full=true`, busca em lote em /items
-      e usa `available_quantity` como verdade absoluta do ML.
-    - `full_stock` é zerado antes para essa CMIG (linhas das contas dela) e
-      reconstruído com a soma por (product_type, product_id, account_id).
+    O `qty` do FULL é canônico via NF-e (remessas REAIS − vendas enviadas − retornos),
+    mantido em `full_stock` por produto **CMIG**. Este endpoint NÃO sobrescreve o `qty`:
+    ele lê o `available_quantity` do ML e COMPARA com o nosso disponível
+    (qty − reserved) por produto CMIG/conta, reportando divergências (`drift`).
+    Quando há divergência e `resync_on_drift`, dispara em background a re-sincronização
+    das NF-e do mês corrente (que ajusta o `qty`). FULL é sempre do CMIG: anúncios
+    só-PG resolvem o CMIGProduct espelho (auto-criado se necessário).
     """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
     from services import ml_service
     from models.integration import MarketplaceAccount
     from models.product import ProductListing
+    from services.full_stock_service import resolve_full_cmig_product
 
     if current_user.role not in ("ugo", "admin", "ac", "go"):
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
-    cmig = (
-        await db.execute(select(CMIG).where(CMIG.id == cmig_id))
-    ).scalar_one_or_none()
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
 
@@ -293,7 +284,7 @@ async def sync_full_stock_for_cmig(
             select(MarketplaceAccount).where(
                 MarketplaceAccount.cmig_id == cmig_id,
                 MarketplaceAccount.platform == "mercadolivre",
-                MarketplaceAccount.is_active == True,
+                MarketplaceAccount.is_active == True,  # noqa: E712
             )
         )
     ).scalars().all()
@@ -302,32 +293,21 @@ async def sync_full_stock_for_cmig(
         "cmig_id": cmig_id,
         "accounts_processed": 0,
         "accounts_skipped": 0,
-        "listings_synced": 0,
-        "listings_errors": 0,
-        "unique_pools": 0,        # N pools de estoque distintos no ML
-        "duplicate_listings": 0,  # listings que compartilham pool (não somam de novo)
+        "listings_checked": 0,
+        "unique_pools": 0,
+        "drift": [],          # [{account_id, cmig_product_id, ml_available, sistema_available, diff}]
+        "resync_triggered": False,
         "errors": [],
     }
 
-    # Reseta full_stock das contas da CMIG (mantemos só as linhas que reconstruirmos)
-    account_ids = [a.id for a in accounts]
-    if account_ids:
-        await db.execute(
-            update(FullStock)
-            .where(FullStock.marketplace_account_id.in_(account_ids))
-            .values(qty=0)
-        )
+    drift_accounts: set[int] = set()
 
     for account in accounts:
         try:
             access_token = await _ensure_token(account, db)
         except HTTPException as exc:
             summary["accounts_skipped"] += 1
-            summary["errors"].append({
-                "account_id": account.id,
-                "stage": "token",
-                "error": exc.detail,
-            })
+            summary["errors"].append({"account_id": account.id, "stage": "token", "error": exc.detail})
             continue
 
         listings = (
@@ -338,12 +318,11 @@ async def sync_full_stock_for_cmig(
                     ProductListing.platform_item_id.isnot(None),
                     or_(
                         ProductListing.logistic_type == "fulfillment",
-                        ProductListing.is_full == True,
+                        ProductListing.is_full == True,  # noqa: E712
                     ),
                 )
             )
         ).scalars().all()
-
         if not listings:
             summary["accounts_processed"] += 1
             continue
@@ -351,96 +330,179 @@ async def sync_full_stock_for_cmig(
         item_ids = [lst.platform_item_id for lst in listings if lst.platform_item_id]
         try:
             ml_items = await ml_service.get_items_bulk(access_token, item_ids)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             summary["accounts_skipped"] += 1
-            summary["errors"].append({
-                "account_id": account.id,
-                "stage": "ml_fetch",
-                "error": str(exc),
-            })
+            summary["errors"].append({"account_id": account.id, "stage": "ml_fetch", "error": str(exc)})
             continue
-
         ml_by_id = {it.get("id"): it for it in ml_items if it.get("id")}
 
-        # Deduplica por pool de estoque do ML:
-        #   - listings com mesmo `user_product_id` compartilham o MESMO pool no galpão
-        #     ML (catálogo, family/optin) — devem ser contados UMA vez por pool.
-        #   - listings sem `user_product_id` (não-catálogo) são pools independentes,
-        #     cada MLB é seu próprio pool → chave fallback é o platform_item_id.
-        # seen_pools mapeia (product_type, product_id, pool_key) → qty
-        seen_pools: dict[tuple[str, int, str], int] = {}
-
+        # available_quantity do ML por pool → produto CMIG (FULL é sempre do CMIG).
+        seen_pools: dict[tuple[int, str], int] = {}
         for lst in listings:
             ml_item = ml_by_id.get(lst.platform_item_id)
             if not ml_item:
-                summary["listings_errors"] += 1
                 summary["errors"].append({
-                    "account_id": account.id,
-                    "listing_id": lst.id,
-                    "platform_item_id": lst.platform_item_id,
-                    "stage": "ml_item_missing",
-                    "error": "Item não retornou em /items (pode ter sido pausado/removido).",
+                    "account_id": account.id, "listing_id": lst.id,
+                    "platform_item_id": lst.platform_item_id, "stage": "ml_item_missing",
+                    "error": "Item não retornou em /items (pausado/removido?).",
                 })
                 continue
-
             available_qty = int(ml_item.get("available_quantity") or 0)
             user_product_id = ml_item.get("user_product_id")
-            pool_key = (
-                f"UP:{user_product_id}" if user_product_id
-                else f"MLB:{lst.platform_item_id}"
+            pool_key = f"UP:{user_product_id}" if user_product_id else f"MLB:{lst.platform_item_id}"
+            lst.qty_full = available_qty  # snapshot p/ referência
+
+            cp = await resolve_full_cmig_product(
+                db, cmig_id=cmig_id,
+                cmig_product_id=lst.cmig_product_id,
+                catalog_product_id=lst.catalog_product_id,
+                ml_item_id=lst.platform_item_id, account_id=account.id,
+                create=True,
             )
-
-            lst.qty_full = available_qty
-
-            if lst.cmig_product_id:
-                ptype, pid = "cmig", lst.cmig_product_id
-            elif lst.catalog_product_id:
-                ptype, pid = "pg", lst.catalog_product_id
-            else:
-                # listing sem produto vinculado: qty_full atualizado mas sem agregar
-                summary["listings_synced"] += 1
+            if not cp:
                 continue
-
-            k = (ptype, pid, pool_key)
-            if k in seen_pools:
-                summary["duplicate_listings"] += 1
-            else:
+            summary["listings_checked"] += 1
+            k = (cp.id, pool_key)
+            if k not in seen_pools:
                 seen_pools[k] = available_qty
-            summary["listings_synced"] += 1
 
-        # Soma pools únicos por (product_type, product_id) dentro da conta
-        agg: dict[tuple[str, int], int] = {}
-        for (ptype, pid, _pool_key), qty in seen_pools.items():
-            agg[(ptype, pid)] = agg.get((ptype, pid), 0) + qty
+        ml_by_cmig: dict[int, int] = {}
+        for (cmig_pid, _pool), qty in seen_pools.items():
+            ml_by_cmig[cmig_pid] = ml_by_cmig.get(cmig_pid, 0) + qty
         summary["unique_pools"] += len(seen_pools)
 
-        # Upsert full_stock para essa conta
-        for (ptype, pid), qty in agg.items():
-            existing = (
+        # Compara ML vs sistema (qty − reserved) por produto CMIG.
+        for cmig_pid, ml_avail in ml_by_cmig.items():
+            row = (
                 await db.execute(
-                    select(FullStock).where(
-                        FullStock.product_type == ptype,
-                        FullStock.product_id == pid,
+                    select(FullStock.qty, FullStock.reserved_qty).where(
+                        FullStock.product_type == "cmig",
+                        FullStock.product_id == cmig_pid,
                         FullStock.marketplace_account_id == account.id,
                     )
                 )
-            ).scalar_one_or_none()
-            if existing:
-                existing.qty = qty
-            else:
-                db.add(
-                    FullStock(
-                        product_type=ptype,
-                        product_id=pid,
-                        marketplace_account_id=account.id,
-                        qty=qty,
-                    )
-                )
+            ).first()
+            sis_avail = max(0, int(row[0] or 0) - int(row[1] or 0)) if row else 0
+            if ml_avail != sis_avail:
+                summary["drift"].append({
+                    "account_id": account.id, "cmig_product_id": cmig_pid,
+                    "ml_available": ml_avail, "sistema_available": sis_avail,
+                    "diff": ml_avail - sis_avail,
+                })
+                drift_accounts.add(account.id)
 
         summary["accounts_processed"] += 1
 
     await db.commit()
+
+    # Divergência → re-sincroniza as NF-e do mês corrente em background (ajusta o qty).
+    if resync_on_drift and drift_accounts:
+        now_brt = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        for acc_id in drift_accounts:
+            background_tasks.add_task(
+                _resync_account_month, acc_id, cmig_id, now_brt.year, now_brt.month, current_user.id
+            )
+        summary["resync_triggered"] = True
+
     return summary
+
+
+async def _resync_account_month(account_id: int, cmig_id: int, year: int, month: int, user_id: int):
+    """Wrapper para disparar a re-sync de NF-e de uma conta/mês em background."""
+    from routers.invoices import _sync_ml_fiscal_account
+
+    try:
+        await _sync_ml_fiscal_account(account_id, cmig_id, year, month, user_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("[sync-full] re-sync NF-e falhou (conta %s %s/%s)", account_id, month, year)
+
+
+@router.post("/migrate-full-pg-to-cmig")
+async def migrate_full_pg_to_cmig(
+    dry_run: bool = Query(True),
+    current_user: User = Depends(require_menu_permission("estoque")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Migração one-off (ADR-0010): converte `full_stock` product_type='pg' → 'cmig'.
+
+    FULL é sempre do CMIG. Auto-cria o CMIGProduct espelho quando faltar; agrega por
+    (cmig_product, conta) preservando `reserved_qty`; faz merge na linha CMIG existente
+    ou converte a linha PG in place. `dry_run=True` (default) só relata (rollback);
+    `dry_run=False` aplica. Idempotente (rerodar não acha mais linhas PG)."""
+    from services.full_stock_service import _cmig_id_for_account, resolve_full_cmig_product
+
+    pg_rows = (
+        await db.execute(select(FullStock).where(FullStock.product_type == "pg"))
+    ).scalars().all()
+    report: dict = {
+        "dry_run": dry_run, "pg_rows": len(pg_rows), "auto_created": 0,
+        "merged": 0, "converted": 0, "deleted_rows": 0, "targets": 0, "skipped": [],
+    }
+
+    # Agrega por (cmig_product_alvo, conta) ANTES de escrever (evita ORA-00001 no índice
+    # único quando vários PG resolvem para o mesmo CMIG+conta).
+    targets: dict[tuple[int, int], dict] = {}
+    for fs in pg_rows:
+        cmig_id = await _cmig_id_for_account(db, fs.marketplace_account_id)
+        if not cmig_id:
+            report["skipped"].append({"fs_id": fs.id, "reason": "conta sem cmig"})
+            continue
+        cp = await resolve_full_cmig_product(
+            db, cmig_id=cmig_id, catalog_product_id=fs.product_id, create=False
+        )
+        if not cp:
+            cp = await resolve_full_cmig_product(
+                db, cmig_id=cmig_id, catalog_product_id=fs.product_id, create=True
+            )
+            if cp:
+                report["auto_created"] += 1
+        if not cp:
+            report["skipped"].append({"fs_id": fs.id, "pg_id": fs.product_id, "reason": "sem PG resolvível"})
+            continue
+        t = targets.setdefault((cp.id, fs.marketplace_account_id), {"qty": 0, "reserved": 0, "rows": []})
+        t["qty"] += int(fs.qty or 0)
+        t["reserved"] += int(fs.reserved_qty or 0)
+        t["rows"].append(fs)
+
+    report["targets"] = len(targets)
+    for (cmig_pid, acct), t in targets.items():
+        existing = (
+            await db.execute(
+                select(FullStock).where(
+                    FullStock.product_type == "cmig",
+                    FullStock.product_id == cmig_pid,
+                    FullStock.marketplace_account_id == acct,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing:
+            existing.qty = int(existing.qty or 0) + t["qty"]
+            existing.reserved_qty = int(existing.reserved_qty or 0) + t["reserved"]
+            for fs in t["rows"]:
+                db.delete(fs)  # síncrono
+                report["deleted_rows"] += 1
+            report["merged"] += 1
+        else:
+            first = t["rows"][0]
+            first.product_type = "cmig"
+            first.product_id = cmig_pid
+            first.qty = t["qty"]
+            first.reserved_qty = t["reserved"]
+            for fs in t["rows"][1:]:
+                db.delete(fs)  # síncrono
+                report["deleted_rows"] += 1
+            report["converted"] += 1
+        db.add(StockMovement(  # síncrono — rastro da migração
+            product_type="cmig", product_id=cmig_pid, movement_type="full_migrate",
+            qty=t["qty"], field_affected="full_stock", delta=0,
+        ))
+
+    if dry_run:
+        await db.rollback()
+    else:
+        await db.commit()
+    logger.info("[migrate-full-pg-to-cmig] %s", {k: v for k, v in report.items() if k != "skipped"})
+    return report
 
 
 async def _ensure_token(account, db: AsyncSession) -> str:

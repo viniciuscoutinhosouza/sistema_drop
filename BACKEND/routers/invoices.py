@@ -2596,15 +2596,28 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
         except Exception as e:  # noqa: BLE001
             logger.warning("[sync-ml-fiscal] nota ...%s: %s", access_key[-6:], e)
 
-    # Furos de sequência: números faltando dentro do intervalo [min,max] de cada série.
+    # Furos de sequência (cross-mês): une os números vistos no lote com TODOS os já
+    # persistidos no DB para a mesma série/CMIG, e acha o que falta no [min,max] global.
+    # Assim um furo que pertence a outro mês também é detectado (sincronizar de novo).
     gaps: dict[int, list[int]] = {}
-    for serie, nums in seq.items():
-        if len(nums) < 2:
-            continue
-        lo, hi = min(nums), max(nums)
-        missing = [n for n in range(lo, hi + 1) if n not in nums]
-        if missing:
-            gaps[serie] = missing[:100]  # limita o log
+    async with task_db() as db:
+        for serie, nums in seq.items():
+            db_nums = (
+                await db.execute(
+                    select(Invoice.nfe_number).where(
+                        Invoice.cmig_id == cmig_id,
+                        Invoice.serie == serie,
+                        Invoice.nfe_number.isnot(None),
+                    )
+                )
+            ).scalars().all()
+            allnums = set(nums) | {int(n) for n in db_nums if n is not None}
+            if len(allnums) < 2:
+                continue
+            lo, hi = min(allnums), max(allnums)
+            missing = [n for n in range(lo, hi + 1) if n not in allnums]
+            if missing:
+                gaps[serie] = missing[:200]
     if gaps:
         logger.warning(
             "[sync-ml-fiscal] conta %s %s/%s FUROS de sequência (sincronizar de novo): %s",

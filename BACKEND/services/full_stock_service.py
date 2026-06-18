@@ -10,7 +10,7 @@ Fluxo:
 
 import logging
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.fiscal import Invoice, InvoiceItem
@@ -27,47 +27,190 @@ logger = logging.getLogger(__name__)
 async def resolve_full_product(db: AsyncSession, order, item) -> tuple[str | None, int | None]:
     """Resolve (product_type, product_id) para um item de pedido FULL.
 
-    FULL pertence à conta CMIG: mesmo quando o anúncio está vinculado a um PG,
-    no fulfillment o produto foi transferido para a CMIG. Por isso preferimos o
-    `cmig_product_id` do anúncio (ProductListing por ml_item_id + account_id),
-    caindo para PG só quando não há vínculo CMIG. Mantém a atribuição do FULL
-    consistente com o `sync-full` (que também resolve via listing.cmig_product_id).
-    """
-    from models.product import ProductListing
-
-    if getattr(item, "ml_item_id", None) and order.account_id:
-        cmig_pid = (
-            await db.execute(
-                select(ProductListing.cmig_product_id).where(
-                    ProductListing.platform_item_id == item.ml_item_id,
-                    ProductListing.account_id == order.account_id,
-                    ProductListing.cmig_product_id.isnot(None),
-                )
-            )
-        ).scalar_one_or_none()
-        if cmig_pid:
-            return "cmig", cmig_pid
-
-    if getattr(item, "cmig_product_id", None):
-        return "cmig", item.cmig_product_id
-
-    if getattr(item, "catalog_product_id", None):
-        return "pg", item.catalog_product_id
-
-    if getattr(item, "ml_item_id", None) and order.account_id:
-        cat_pid = (
-            await db.execute(
-                select(ProductListing.catalog_product_id).where(
-                    ProductListing.platform_item_id == item.ml_item_id,
-                    ProductListing.account_id == order.account_id,
-                    ProductListing.catalog_product_id.isnot(None),
-                )
-            )
-        ).scalar_one_or_none()
-        if cat_pid:
-            return "pg", cat_pid
-
+    FULL é SEMPRE do produto CMIG (ADR-0010). Resolve o CMIGProduct (auto-criando o
+    espelho do PG se necessário) e retorna sempre ('cmig', id) ou (None, None).
+    `order.cmig_id` costuma ser NULL → deriva o cmig pela conta."""
+    cmig_id = getattr(order, "cmig_id", None) or await _cmig_id_for_account(db, order.account_id)
+    cp = await resolve_full_cmig_product(
+        db,
+        cmig_id=cmig_id,
+        cmig_product_id=getattr(item, "cmig_product_id", None),
+        catalog_product_id=getattr(item, "catalog_product_id", None),
+        ean=getattr(item, "ean", None),
+        sku=getattr(item, "sku", None),
+        ml_item_id=getattr(item, "ml_item_id", None),
+        account_id=order.account_id,
+        create=True,
+    )
+    if cp:
+        return "cmig", cp.id
     return None, None
+
+
+async def _cmig_id_for_account(db: AsyncSession, account_id: int | None) -> int | None:
+    """CMIG dona da conta ML (Order.cmig_id costuma ser NULL → derivar da conta)."""
+    if not account_id:
+        return None
+    from models.integration import MarketplaceAccount
+
+    return (
+        await db.execute(
+            select(MarketplaceAccount.cmig_id).where(MarketplaceAccount.id == account_id)
+        )
+    ).scalar_one_or_none()
+
+
+async def resolve_full_cmig_product(
+    db: AsyncSession,
+    *,
+    cmig_id: int | None,
+    cmig_product_id: int | None = None,
+    catalog_product_id: int | None = None,
+    ean: str | None = None,
+    sku: str | None = None,
+    ml_item_id: str | None = None,
+    account_id: int | None = None,
+    create: bool = True,
+):
+    """Resolve o CMIGProduct dono do estoque FULL (FULL é SEMPRE do CMIG).
+
+    Ordem: cmig_product_id direto → ProductListing(ml_item_id, account) → por
+    pg_product_id dentro do cmig → por EAN/SKU dentro do cmig → (se create) auto-cria
+    espelhando o PG. Retorna o CMIGProduct ou None. Ver ADR-0010."""
+    from models.cmig import CMIGProduct
+    from models.product import CatalogProduct, ProductListing
+
+    # 1) FK direta.
+    if cmig_product_id:
+        cp = (
+            await db.execute(select(CMIGProduct).where(CMIGProduct.id == cmig_product_id))
+        ).scalar_one_or_none()
+        if cp:
+            return cp
+
+    # 2) Via anúncio (venda): ml_item_id + conta → cmig_product_id; captura PG de fallback.
+    if ml_item_id and account_id:
+        lst = (
+            await db.execute(
+                select(ProductListing.cmig_product_id, ProductListing.catalog_product_id).where(
+                    ProductListing.platform_item_id == ml_item_id,
+                    ProductListing.account_id == account_id,
+                )
+            )
+        ).first()
+        if lst:
+            if lst[0]:
+                cp = (
+                    await db.execute(select(CMIGProduct).where(CMIGProduct.id == lst[0]))
+                ).scalar_one_or_none()
+                if cp:
+                    return cp
+            if not catalog_product_id and lst[1]:
+                catalog_product_id = lst[1]
+
+    if not cmig_id:
+        return None
+
+    # 3) Por vínculo pg_product_id dentro do CMIG (preferir o que tem link).
+    if catalog_product_id:
+        cp = (
+            await db.execute(
+                select(CMIGProduct)
+                .where(CMIGProduct.cmig_id == cmig_id, CMIGProduct.pg_product_id == catalog_product_id)
+                .order_by(CMIGProduct.id)
+            )
+        ).first()
+        if cp:
+            return cp[0]
+
+    # 4) Por EAN/SKU dentro do CMIG (.first() — pode haver mais de um; determinístico:
+    # prefere o que tem pg_product_id, depois menor id).
+    pg = None
+    if catalog_product_id:
+        pg = (
+            await db.execute(select(CatalogProduct).where(CatalogProduct.id == catalog_product_id))
+        ).scalar_one_or_none()
+    _ean = (ean or (pg.ean if pg else None) or "").strip()
+    _sku = (sku or (pg.sku if pg else None) or "").strip()
+    if _ean:
+        cp = (
+            await db.execute(
+                select(CMIGProduct)
+                .where(CMIGProduct.cmig_id == cmig_id, CMIGProduct.ean == _ean)
+                .order_by(
+                    case((CMIGProduct.pg_product_id.is_(None), 1), else_=0),
+                    CMIGProduct.id,
+                )
+            )
+        ).first()
+        if cp:
+            return cp[0]
+
+    if not create:
+        return None
+
+    # 5) Auto-criar espelhando o PG. Precisa do CatalogProduct de origem.
+    if pg is None and (_sku or _ean):
+        cond = []
+        if _sku:
+            cond.append(CatalogProduct.sku == _sku)
+        if _ean:
+            cond.append(CatalogProduct.ean == _ean)
+        pg = (
+            await db.execute(select(CatalogProduct).where(or_(*cond)))
+        ).scalars().first()
+    if pg is None:
+        logger.warning(
+            "resolve_full_cmig_product: sem PG de origem (cmig=%s cat=%s ean=%s sku=%s) — não cria",
+            cmig_id, catalog_product_id, _ean, _sku,
+        )
+        return None
+
+    # Re-SELECT dentro da transação (idempotência sob concorrência: sem unique em
+    # (cmig_id, pg_product_id), dois caminhos poderiam criar o espelho 2x).
+    ex_conds = [CMIGProduct.pg_product_id == pg.id]
+    if pg.ean:
+        ex_conds.append(CMIGProduct.ean == pg.ean)
+    if pg.sku:
+        # sku_cmig=pg.sku é o que vamos inserir; checar tb evita violar uq_cmigprod_sku
+        # quando já existe um CMIGProduct com esse sku_cmig (sem pg_product_id/ean batendo).
+        ex_conds.append(CMIGProduct.sku_cmig == pg.sku)
+    existing = (
+        await db.execute(
+            select(CMIGProduct)
+            .where(CMIGProduct.cmig_id == cmig_id, or_(*ex_conds))
+            .order_by(case((CMIGProduct.pg_product_id == pg.id, 0), else_=1), CMIGProduct.id)
+        )
+    ).first()
+    if existing:
+        return existing[0]
+
+    cp = CMIGProduct(
+        cmig_id=cmig_id,
+        sku_cmig=pg.sku,  # uq_cmigprod_sku é (cmig_id, sku_cmig); pg.sku é único global
+        title=pg.title,
+        description=pg.description,
+        brand=pg.brand,
+        model=pg.model,
+        ean=pg.ean,
+        cost_price=pg.cost_price,
+        stock_quantity=0,
+        weight_kg=pg.weight_kg,
+        height_cm=pg.height_cm,
+        width_cm=pg.width_cm,
+        length_cm=pg.length_cm,
+        ncm=pg.ncm,
+        cest=pg.cest,
+        origin=pg.origin,
+        csosn=pg.csosn,
+        category_id=pg.category_id,
+        pg_product_id=pg.id,
+    )
+    db.add(cp)
+    await db.flush()
+    logger.info("resolve_full_cmig_product: auto-criado CMIGProduct #%s (cmig=%s espelho de PG #%s)",
+                cp.id, cmig_id, pg.id)
+    return cp
 
 
 async def available_for_product(
@@ -152,6 +295,17 @@ async def available_to_push(db: AsyncSession, listing) -> int:
 
     if local > 0:
         return local
+
+    # FULL é sempre do CMIG: se o anúncio é só-PG, resolve o CMIG espelho (sem criar)
+    # para enxergar o saldo FULL correto.
+    if not cmig_pid and cat_pid:
+        cmig_id = await _cmig_id_for_account(db, listing.account_id)
+        if cmig_id:
+            espelho = await resolve_full_cmig_product(
+                db, cmig_id=cmig_id, catalog_product_id=cat_pid, create=False
+            )
+            if espelho:
+                cmig_pid = espelho.id
 
     # LOCAL = 0: só cai para o FULL se NÃO houver anúncio FULL ativo do mesmo produto+conta.
     prod_conds = []
@@ -313,16 +467,20 @@ async def apply_nfe_saida_to_full(
         qty = int(item.quantity or 0)
         if qty <= 0:
             continue
-        if item.cmig_product_id:
-            await _adjust_full_stock(db, "cmig", item.cmig_product_id, marketplace_account_id, qty)
-            _log(db, product_type="cmig", product_id=item.cmig_product_id,
-                 movement_type="full_in", qty=qty, delta=qty, invoice_id=invoice.id)
-            count += 1
-        elif item.catalog_product_id:
-            await _adjust_full_stock(db, "pg", item.catalog_product_id, marketplace_account_id, qty)
-            _log(db, product_type="pg", product_id=item.catalog_product_id,
-                 movement_type="full_in", qty=qty, delta=qty, invoice_id=invoice.id)
-            count += 1
+        # FULL é SEMPRE do CMIG (auto-cria espelho do PG se necessário) — ADR-0010.
+        cp = await resolve_full_cmig_product(
+            db, cmig_id=invoice.cmig_id,
+            cmig_product_id=item.cmig_product_id,
+            catalog_product_id=item.catalog_product_id,
+            ean=item.ean, sku=item.sku,
+        )
+        if not cp:
+            logger.warning("apply_nfe_saida_to_full: item s/ CMIG resolvível (inv=%s)", invoice.id)
+            continue
+        await _adjust_full_stock(db, "cmig", cp.id, marketplace_account_id, qty)
+        _log(db, product_type="cmig", product_id=cp.id,
+             movement_type="full_in", qty=qty, delta=qty, invoice_id=invoice.id)
+        count += 1
     return {"full_in_items": count, "marketplace_account_id": marketplace_account_id}
 
 
@@ -349,16 +507,21 @@ async def apply_nfe_entrada_from_full(
         qty = int(item.quantity or 0)
         if qty <= 0:
             continue
-        if item.cmig_product_id:
-            await _adjust_full_stock(db, "cmig", item.cmig_product_id, marketplace_account_id, -qty)
-            _log(db, product_type="cmig", product_id=item.cmig_product_id,
-                 movement_type="full_return_out", qty=qty, delta=-qty, invoice_id=invoice.id)
-            count += 1
-        elif item.catalog_product_id:
-            await _adjust_full_stock(db, "pg", item.catalog_product_id, marketplace_account_id, -qty)
-            _log(db, product_type="pg", product_id=item.catalog_product_id,
-                 movement_type="full_return_out", qty=qty, delta=-qty, invoice_id=invoice.id)
-            count += 1
+        # FULL é SEMPRE do CMIG. No retorno NÃO auto-criamos (não há entrada a debitar
+        # de um produto inexistente no FULL) — create=False.
+        cp = await resolve_full_cmig_product(
+            db, cmig_id=invoice.cmig_id,
+            cmig_product_id=item.cmig_product_id,
+            catalog_product_id=item.catalog_product_id,
+            ean=item.ean, sku=item.sku, create=False,
+        )
+        if not cp:
+            logger.warning("apply_nfe_entrada_from_full: item s/ CMIG resolvível (inv=%s)", invoice.id)
+            continue
+        await _adjust_full_stock(db, "cmig", cp.id, marketplace_account_id, -qty)
+        _log(db, product_type="cmig", product_id=cp.id,
+             movement_type="full_return_out", qty=qty, delta=-qty, invoice_id=invoice.id)
+        count += 1
     return {"full_return_items": count, "marketplace_account_id": marketplace_account_id}
 
 
