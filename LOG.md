@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-06-18 — feat(full): espelho CMIG protegido + lista mostra zerados e identifica a CMIG (commit 48579c7) — deployado
+
+Os CMIGProdutos espelho (auto-criados só p/ segurar o FULL) podiam ser "excluídos" — na prática `delete_cmig_product` os DESATIVAVA (is_active=False) quando o PG tinha vendas — sumindo das listas e deixando o FULL órfão ("parecem excluídos e não podem ser excluídos"). E produtos zerados sumiam da lista.
+
+- `cmig_products.is_full_mirror` (migration 101): marca os espelhos (assinatura pg_product_id + source_listing_id NULL + sku_cmig=pg.sku). `resolve_full_cmig_product` seta na auto-criação. **37 espelhos marcados** em prod.
+- `delete_cmig_product`: bloqueia exclusão/desativação de espelho (HTTP 400 — segura o FULL; gerenciar pelo PG).
+- `/stock/summary`: param `show_zeroed` + `cmig_name`/`is_full_mirror` nas linhas. PG e CMIG seguem em linhas separadas (vários CMIGs podem ter o mesmo produto no FULL).
+- `StockControlView`: botão "Mostrar zerados" + identifica a CMIG em cada linha CMIG (badge "FULL" no espelho).
+
+Decisões do dono: manter PG (local, mesmo zerado) e CMIG (full); linhas separadas; toggle p/ zerados; identificar a CMIG. Verificação: pytest 25/2 (pré-existentes), build OK, deploy OK (backend lê is_full_mirror sem ORA-00904), 0 espelhos desativados a reparar.
+
 ## 2026-06-18 — fix(full): vendas FULL não baixavam o estoque (commit f98bf20) — deployado
 
 Bug: vendas FULL reservavam (`full_reserve`) mas nunca baixavam o `qty` (`full_out`). O `shipment_status` virava shipped/delivered via `_refresh_shipments` (sync de pedidos), que NÃO chamava `confirm_dispatch` — só o webhook chamava, no seu próprio caminho. Detectado no SKU 5276 (CMIG#3): qty 146 / reserved 124, zero `full_out`.
