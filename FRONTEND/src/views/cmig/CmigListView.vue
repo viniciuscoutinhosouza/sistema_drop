@@ -101,7 +101,7 @@ import CollaboratorsModal from '@/components/common/CollaboratorsModal.vue'
 const router = useRouter()
 const cmigStore = useCmigStore()
 const authStore = useAuthStore()
-const { cmigs, loading } = storeToRefs(cmigStore)
+const { allCmigs: cmigs, loading } = storeToRefs(cmigStore)
 
 const isAC    = computed(() => authStore.user?.role === 'ac')
 const isAdmin = computed(() => authStore.user?.role === 'admin')
@@ -115,5 +115,5 @@ function openCollab(cmig) {
   collabModal.value = { visible: true, id: cmig.id, label: cmig.company_name }
 }
 
-onMounted(() => cmigStore.fetchCmigs())
+onMounted(() => cmigStore.fetchAllCmigs())
 </script>

@@ -138,11 +138,25 @@
                   :title="selectedPgIds.has(product.id) ? 'Desselecionar' : 'Selecionar para agrupar'"
                 />
               </div>
+              <!-- Ícone: produto já publicado nesta conta (vínculo PG) -->
+              <div
+                v-if="publishedFor(product, 'pg')"
+                class="position-absolute"
+                style="top:6px;right:6px;z-index:2;cursor:pointer"
+                title="Já publicado nesta conta — ver anúncios"
+                @click.stop="openPublishedModal(product, 'pg')"
+              >
+                <span class="badge badge-success" style="font-size:11px;box-shadow:0 1px 3px rgba(0,0,0,.3)">
+                  <i class="fas fa-bullhorn"></i> {{ publishedFor(product, 'pg').length }}
+                </span>
+              </div>
               <RouterLink :to="`/catalog/${product.id}`">
                 <div style="height:130px;background:#f8f9fa;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px 4px 0 0">
                   <img
                     :src="product.image_url || 'https://via.placeholder.com/300x200?text=Sem+Foto'"
-                    style="max-height:100%;max-width:100%;object-fit:contain"
+                    :style="isSoldOut(product)
+                      ? 'max-height:100%;max-width:100%;object-fit:contain;filter:grayscale(1);opacity:.45'
+                      : 'max-height:100%;max-width:100%;object-fit:contain'"
                     :alt="product.title"
                   />
                 </div>
@@ -165,6 +179,16 @@
               </div>
               <div class="card-footer p-1">
                 <button
+                  v-if="isSoldOut(product)"
+                  class="btn btn-secondary btn-sm btn-block"
+                  style="font-size:11px;padding:3px 6px"
+                  disabled
+                  title="Sem estoque — produto esgotado"
+                >
+                  <i class="fas fa-ban mr-1"></i> Esgotado
+                </button>
+                <button
+                  v-else
                   class="btn btn-success btn-sm btn-block"
                   style="font-size:11px;padding:3px 6px"
                   :disabled="!selectedAccountId"
@@ -260,10 +284,24 @@
                       :title="selectedCmigIds.has(product.id) ? 'Desselecionar' : 'Selecionar para agrupar'"
                     />
                   </div>
+                  <!-- Ícone: produto já publicado nesta conta (vínculo CMIG) -->
+                  <div
+                    v-if="publishedFor(product, 'cmig')"
+                    class="position-absolute"
+                    style="top:6px;right:6px;z-index:2;cursor:pointer"
+                    title="Já publicado nesta conta — ver anúncios"
+                    @click.stop="openPublishedModal(product, 'cmig')"
+                  >
+                    <span class="badge badge-success" style="font-size:11px;box-shadow:0 1px 3px rgba(0,0,0,.3)">
+                      <i class="fas fa-bullhorn"></i> {{ publishedFor(product, 'cmig').length }}
+                    </span>
+                  </div>
                   <div style="height:130px;background:#f8f9fa;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px 4px 0 0">
                     <img
                       :src="getCmigThumb(product) || 'https://via.placeholder.com/300x200?text=Sem+Foto'"
-                      style="max-height:100%;max-width:100%;object-fit:contain"
+                      :style="isSoldOut(product)
+                        ? 'max-height:100%;max-width:100%;object-fit:contain;filter:grayscale(1);opacity:.45'
+                        : 'max-height:100%;max-width:100%;object-fit:contain'"
                       :alt="product.title"
                     />
                   </div>
@@ -288,6 +326,16 @@
                   </div>
                   <div class="card-footer p-1">
                     <button
+                      v-if="isSoldOut(product)"
+                      class="btn btn-secondary btn-sm btn-block"
+                      style="font-size:11px;padding:3px 6px"
+                      disabled
+                      title="Sem estoque — produto esgotado"
+                    >
+                      <i class="fas fa-ban mr-1"></i> Esgotado
+                    </button>
+                    <button
+                      v-else
                       class="btn btn-success btn-sm btn-block"
                       style="font-size:11px;padding:3px 6px"
                       :disabled="!selectedAccountId"
@@ -322,6 +370,63 @@
     :products="agruparModal.products"
     @close="onAgruparClose"
   />
+
+  <!-- ── Modal: Anúncios já publicados (métricas) ── -->
+  <div v-if="publishedModal.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.55);z-index:1060">
+    <div class="modal-dialog modal-xl">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="fas fa-bullhorn mr-2 text-success"></i>Anúncios publicados — {{ publishedModal.title }}</h5>
+          <button type="button" class="close" @click="publishedModal.show = false"><span>&times;</span></button>
+        </div>
+        <div class="modal-body p-0">
+          <table class="table table-sm table-hover mb-0">
+            <thead class="thead-light">
+              <tr>
+                <th style="width:64px">Foto</th>
+                <th style="width:160px">Nº do anúncio</th>
+                <th>Título</th>
+                <th class="text-center" style="width:100px">Visitas (7d)</th>
+                <th class="text-center" style="width:90px">Vendas</th>
+                <th class="text-center" style="width:110px">Conversão</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="l in publishedModal.listings" :key="l.listing_id">
+                <td>
+                  <div style="width:48px;height:48px;background:#f8f9fa;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:4px">
+                    <img :src="l.thumbnail || 'https://via.placeholder.com/48?text=%E2%80%94'" style="max-width:100%;max-height:100%;object-fit:contain" />
+                  </div>
+                </td>
+                <td>
+                  <a v-if="l.permalink" :href="l.permalink" target="_blank" rel="noopener">
+                    {{ l.platform_item_id }} <i class="fas fa-external-link-alt" style="font-size:9px"></i>
+                  </a>
+                  <span v-else>{{ l.platform_item_id }}</span>
+                  <span v-if="l.status && l.status !== 'published'" class="badge badge-light border ml-1" style="font-size:9px">{{ l.status }}</span>
+                </td>
+                <td style="font-size:12px">{{ l.title }}</td>
+                <td class="text-center">{{ l.visits_7d }}</td>
+                <td class="text-center font-weight-bold">{{ l.sold_quantity }}</td>
+                <td class="text-center">
+                  <span :class="l.conversion != null && l.conversion > 0 ? 'text-success font-weight-bold' : 'text-muted'">
+                    {{ l.conversion != null ? l.conversion + '%' : '—' }}
+                  </span>
+                </td>
+              </tr>
+              <tr v-if="!publishedModal.listings.length">
+                <td colspan="6" class="text-center text-muted py-3">Nenhum anúncio publicado.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <small class="text-muted mr-auto">Conversão = vendas ÷ visitas (7 dias).</small>
+          <button class="btn btn-secondary" @click="publishedModal.show = false">Fechar</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ── Modal: Pré-validação de categoria para 'Anúncio com Variações' ── -->
   <div v-if="variationsCategoryModal.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.55);z-index:1060">
@@ -1052,6 +1157,34 @@ watch(derivedCmigId, () => {
 watch(catalogTab, (tab) => {
   if (tab === 'cmig') loadCmigProducts()
 })
+
+// ── Anúncios já publicados na conta selecionada (ícone no card + modal) ───────
+const publishedMap = ref({ pg: {}, cmig: {} })
+async function loadPublished() {
+  if (!selectedAccountId.value) { publishedMap.value = { pg: {}, cmig: {} }; return }
+  try {
+    const { data } = await api.get('/catalog/published', { params: { account_id: selectedAccountId.value } })
+    publishedMap.value = { pg: data.pg || {}, cmig: data.cmig || {} }
+  } catch {
+    publishedMap.value = { pg: {}, cmig: {} }
+  }
+}
+watch(selectedAccountId, loadPublished)
+
+function publishedFor(product, type) {
+  const map = type === 'cmig' ? publishedMap.value.cmig : publishedMap.value.pg
+  return (map && map[product.id]) || null
+}
+function isSoldOut(product) {
+  return Number(product?.stock_quantity || 0) <= 0
+}
+
+const publishedModal = reactive({ show: false, title: '', listings: [] })
+function openPublishedModal(product, type) {
+  publishedModal.title = product.title || product.sku_cmig || product.sku || ''
+  publishedModal.listings = publishedFor(product, type) || []
+  publishedModal.show = true
+}
 
 function getCmigThumb(p) {
   if (p.images && p.images.length) return p.images[0].url

@@ -169,18 +169,20 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
 
 @router.get("")
 async def list_cmigs(
+    include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Por padrão só CMIGs ativas (todos os dropdowns seletores). A tela de gestão
+    # passa include_inactive=true para ver/gerenciar as inativas também.
+    base = select(CMIG) if include_inactive else select(CMIG).where(CMIG.is_active == True)  # noqa: E712
     if current_user.role == "admin":
-        result = await db.execute(select(CMIG))
+        result = await db.execute(base)
     elif current_user.role == "ugo":
-        result = await db.execute(
-            select(CMIG).where(CMIG.warehouse_id == current_user.warehouse_id)
-        )
+        result = await db.execute(base.where(CMIG.warehouse_id == current_user.warehouse_id))
     elif current_user.role == "ac":
         subq = select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == current_user.id)
-        result = await db.execute(select(CMIG).where(CMIG.id.in_(subq)))
+        result = await db.execute(base.where(CMIG.id.in_(subq)))
     else:
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 

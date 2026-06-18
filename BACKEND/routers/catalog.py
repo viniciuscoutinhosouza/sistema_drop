@@ -1,13 +1,74 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
-from dependencies import require_menu_permission
+from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIGProduct
-from models.product import CatalogProduct, CatalogProductImage, Category
+from models.product import CatalogProduct, CatalogProductImage, Category, ProductListing
+from models.user import User
 
 router = APIRouter()
+
+
+@router.get("/published")
+async def list_published_by_account(
+    account_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Anúncios já publicados na conta, agrupados por produto PG e por produto CMIG.
+
+    Usado no Catálogo para marcar (ícone) os produtos já publicados na conta/CMIG
+    selecionada e abrir o modal de métricas (visitas 7d, vendas, conversão).
+    """
+    # Valida que o usuário tem acesso a esta conta (evita vazar métricas entre contas).
+    from routers.anuncios import _get_account_or_403
+
+    await _get_account_or_403(account_id, current_user, db)
+
+    rows = (
+        await db.execute(
+            select(ProductListing)
+            .options(
+                selectinload(ProductListing.catalog_product),
+                selectinload(ProductListing.cmig_product),
+            )
+            .where(
+                ProductListing.account_id == account_id,
+                ProductListing.platform_item_id.isnot(None),
+            )
+        )
+    ).scalars().all()
+
+    pg: dict[int, list] = {}
+    cmig: dict[int, list] = {}
+    for l in rows:
+        title = l.title_override
+        if not title and l.catalog_product:
+            title = l.catalog_product.title
+        if not title and l.cmig_product:
+            title = l.cmig_product.title
+        visits = int(l.visits_7d or 0)
+        sold = int(l.sold_quantity or 0)
+        item = {
+            "listing_id": l.id,
+            "platform_item_id": l.platform_item_id,
+            "permalink": l.permalink,
+            "thumbnail": l.thumbnail,
+            "title": title or l.sku or l.platform_item_id,
+            "visits_7d": visits,
+            "sold_quantity": sold,
+            "conversion": round(sold / visits * 100, 2) if visits > 0 else None,
+            "status": l.status,
+        }
+        if l.catalog_product_id:
+            pg.setdefault(l.catalog_product_id, []).append(item)
+        if l.cmig_product_id:
+            cmig.setdefault(l.cmig_product_id, []).append(item)
+
+    return {"pg": pg, "cmig": cmig}
 
 
 @router.get("")
