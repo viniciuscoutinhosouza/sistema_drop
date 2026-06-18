@@ -300,6 +300,10 @@ async def apply_nfe_saida_to_full(
     O decremento de galpão já é feito pelo stock_calculator via evento nfe_out.
     Idempotente: verifica stock_movements por invoice_id antes de agir.
     """
+    from services.fiscal.fiscal_rules import is_simbolica
+
+    if is_simbolica(invoice.natureza_operacao):
+        return {"full_in_items": 0, "simbolica": True}
     if await _already_has_full_movement(db, invoice.id, "full_in"):
         return {"full_in_items": 0, "already_applied": True}
 
@@ -332,6 +336,10 @@ async def apply_nfe_entrada_from_full(
     O incremento de galpão já é feito pelo stock_calculator via evento nfe_in.
     Idempotente: verifica stock_movements por invoice_id antes de agir.
     """
+    from services.fiscal.fiscal_rules import is_simbolica
+
+    if is_simbolica(invoice.natureza_operacao):
+        return {"full_return_items": 0, "simbolica": True}
     if await _already_has_full_movement(db, invoice.id, "full_return_out"):
         return {"full_return_items": 0, "already_applied": True}
 

@@ -466,11 +466,18 @@ async def recompute_all_stock_endpoint(
         async with task_db() as db:
             # Reativa stock_updated nas NF-e de entrada já finalizadas/autorizadas,
             # pois o replay usa essa flag para incluir a NF-e nos eventos de estoque.
+            # EXCLUI as notas que devem ficar inertes ao recompute (senão a flag em
+            # massa as ressuscitaria): devolução (Fase B — fonte canônica é o Return)
+            # e movimentação SIMBÓLICA (regra is_simbolica — não movimenta estoque).
+            _nat = func.lower(func.coalesce(Invoice.natureza_operacao, ""))
             await db.execute(
                 update(Invoice)
                 .where(
                     Invoice.direction == "in",
                     Invoice.status.in_(("finalized", "authorized")),
+                    func.coalesce(Invoice.purpose, "") != "devolucao",
+                    _nat.notlike("%simbolic%"),
+                    _nat.notlike("%simbólic%"),
                 )
                 .values(stock_updated=True)
             )

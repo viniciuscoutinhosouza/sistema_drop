@@ -1486,6 +1486,11 @@ async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
     """
     from services.fiscal.stock_calculator import recompute_after_invoice_change
 
+    # Guard central: NF-e simbólica não movimenta estoque (não seta stock_updated,
+    # logo fica inerte ao recompute event-sourced). Protege TODOS os call-sites.
+    if _is_simbolica(inv.natureza_operacao):
+        return {"cmig_ids": set(), "pg_ids": set(), "simbolica": True}
+
     if inv.stock_updated:
         return {
             "cmig_recomputed": 0,
@@ -1559,7 +1564,7 @@ async def finalize_invoice_no_sefaz(
                 is_full_cnpj,
             )
             _person = (await db.execute(select(Person).where(Person.id == inv.person_id))).scalar_one_or_none()
-            if _person and _person.document:
+            if _person and _person.document and not _is_simbolica(inv.natureza_operacao):
                 _full_cnpj = await is_full_cnpj(db, _person.document, inv.cmig_id)
                 if _full_cnpj:
                     if inv.direction == "out":
@@ -1930,6 +1935,14 @@ def _normalize_cnpj(s: str) -> str:
     return _re.sub(r"\D", "", s or "")
 
 
+def _is_simbolica(natureza: str | None) -> bool:
+    """Alias local p/ a regra compartilhada (services.fiscal.fiscal_rules.is_simbolica).
+    NF-e simbólica NÃO movimenta estoque (nem LOCAL nem FULL)."""
+    from services.fiscal.fiscal_rules import is_simbolica
+
+    return is_simbolica(natureza)
+
+
 async def _upsert_supplier(parsed_emit: dict, cmig_id: int, db: AsyncSession) -> Person:
     """Cria ou atualiza Person (fornecedor) a partir do bloco emit do XML."""
     document = parsed_emit.get("document") or ""
@@ -2178,9 +2191,10 @@ async def import_xml(
         )
         db.add(item)
 
-    # Atualizar estoque (opcional)
+    # Atualizar estoque (opcional). NF-e simbólica NÃO movimenta estoque, mesmo
+    # com update_stock marcado (mantém stock_updated=False → inerte ao recompute).
     stock_result = {"matched": 0, "unmatched": 0}
-    if update_stock:
+    if update_stock and not _is_simbolica(inv.natureza_operacao):
         stock_result = await _update_stock_from_items(items_data, cmig_id, db)
         inv.stock_updated = True
 
@@ -2400,11 +2414,17 @@ async def import_xml_saida(
     # Baixa LOCAL (event-sourced) + crédito FULL em UMA transação atômica:
     # se o FULL falhar, nada é persistido (a NF-e pode ser reimportada).
     full_result = None
+    simbolica = _is_simbolica(inv.natureza_operacao)
     try:
-        stock = await _apply_stock_movement(inv, db)
-        if full_cnpj:
-            full_result = await apply_nfe_saida_to_full(db, inv, full_cnpj.marketplace_account_id)
-        await db.commit()
+        if simbolica:
+            # Remessa/saída simbólica: registra a NF-e mas NÃO movimenta estoque.
+            stock = {"cmig_ids": set(), "pg_ids": set(), "simbolica": True}
+            await db.commit()
+        else:
+            stock = await _apply_stock_movement(inv, db)
+            if full_cnpj:
+                full_result = await apply_nfe_saida_to_full(db, inv, full_cnpj.marketplace_account_id)
+            await db.commit()
     except Exception as exc:  # noqa: BLE001
         await db.rollback()
         logger.exception("[import-xml-saida] falha ao aplicar estoque/FULL")
@@ -2462,7 +2482,7 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
     end = f"{year}{month:02d}{last:02d}"
     entries = await _ml.download_invoices_batch(token, seller_id, start, end)
 
-    created = skipped = full_moved = 0
+    created = skipped = full_moved = simbolicas = 0
     seq: dict[int, set[int]] = {}  # série → números de NF-e vistos no lote (p/ furos)
     # O zip do ML não separa por tipo (vem tudo em "emitidas_mercado_livre/"), então
     # classificamos pela própria nota: o sinal confiável é o CNPJ FULL (destinatário =
@@ -2558,7 +2578,11 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                     await db.flush()
                     await _resolve_item_match(item, cmig_id, db)
 
-                if move == "full_out":
+                if _is_simbolica(inv.natureza_operacao):
+                    # Nota simbólica: registra (mantém a sequência fiscal) mas NÃO
+                    # movimenta estoque — stock_updated fica False (fora do recompute).
+                    simbolicas += 1
+                elif move == "full_out":
                     await _apply_stock_movement(inv, db)
                     await apply_nfe_saida_to_full(db, inv, full_account_id)
                     full_moved += 1
@@ -2587,14 +2611,16 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
             account_id, month, year, gaps,
         )
     logger.info(
-        "[sync-ml-fiscal] conta %s %s/%s: criadas=%s puladas=%s full=%s furos=%s",
-        account_id, month, year, created, skipped, full_moved, sum(len(v) for v in gaps.values()),
+        "[sync-ml-fiscal] conta %s %s/%s: criadas=%s puladas=%s full=%s simbolicas=%s furos=%s",
+        account_id, month, year, created, skipped, full_moved, simbolicas,
+        sum(len(v) for v in gaps.values()),
     )
     return {
         "account_id": account_id,
         "created": created,
         "skipped": skipped,
         "full_moved": full_moved,
+        "simbolicas": simbolicas,
         "gaps": gaps,
     }
 

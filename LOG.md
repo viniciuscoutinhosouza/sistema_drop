@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-06-17 — fix(fiscal): NF-e "Retorno Simbólico" não movimenta estoque (LOCAL nem FULL) + reparo de dados
+
+Bug: o sync fiscal movimentava estoque com base em NF-e de **Retorno Simbólico de Depósito** (CFOP 1949). Após a remessa 706 (inv #185) creditar o FULL corretamente (+569 em 12 produtos PG, conta 2/EBAZAR), 37 notas "Retorno Simbólico" debitaram o FULL de volta a ~0 (e inflaram o LOCAL via `nfe_in`). Regra confirmada pelo dono: **só remessa e retorno REAL movimentam estoque; simbólico é fiscal puro**.
+
+Diagnóstico (read-only em produção, autorizado): a 706 estava correta; o estorno veio das simbólicas. CFOP não discrimina (1949 aparece em simbólico E em retorno real), então a fonte é a `natureza_operacao`.
+
+Correção de código (guard centralizado):
+- Novo `services/fiscal/fiscal_rules.py::is_simbolica(natureza)` (NFKD + lower + substring "simbolic").
+- Guard nas funções de baixo nível (cobre todos os call-sites): `_apply_stock_movement` (invoices.py), `apply_nfe_saida_to_full`/`apply_nfe_entrada_from_full` (full_stock_service.py), `update_stock_from_invoice` (dfe_service.py); import-xml entrada com `not _is_simbolica`.
+- `POST /stock/recompute-all` (stock.py): o UPDATE em massa de `stock_updated=True` passou a **excluir** notas `purpose='devolucao'` (Fase B) e simbólicas — senão as ressuscitaria (dupla contagem).
+
+Reparo de dados (produção, autorizado, idempotente — `sandbox/repair_simbolicas.py`): re-creditado FULL +569 nos 12 produtos (conta 2), removidos os 110 movimentos `full_return_out` errôneos, 37 notas simbólicas → `stock_updated=False` + recompute LOCAL. O #177 (retorno REAL) foi corretamente preservado. FULL da remessa 706 restaurado (169/171=100, 170=90, 172=60, 173=61, etc.).
+
+Auditoria: quality-guardian (2 CRITICAL iniciais — finalize movia LOCAL, import-xml entrada sem guard — corrigidos) + consistency-auditor (achou e corrigimos o HIGH do recompute-all). Veredito final: LIBERADO. pytest 25/2 (pré-existentes).
+
+---
+
 ## 2026-06-17 — feat(returns): Devolução NF-e-driven (Fase B) — import XML + inspeção apto/não-apto + descarte (local, não enviado)
 
 Devolução agora pode ser dirigida por NF-e. Fluxo: operador importa o XML da NF-e de devolução → casa o pedido original pela NF-e referenciada (`refNFe → Order.nfe_key`, fallback SKU/EAN) → devolução entra em inspeção (`pending_validation_quantity` pela QTD da NF-e, suporta parcial) → operador marca apto (volta a `stock_quantity`) ou não-apto (`unfit_quantity` + nota de descarte sem SEFAFZ).

@@ -368,6 +368,11 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
                 "pg_recomputed": 0,
                 "already_updated": True,
             }
+        # NF-e simbólica não movimenta estoque (não seta stock_updated).
+        from services.fiscal.fiscal_rules import is_simbolica
+
+        if is_simbolica(inv.natureza_operacao):
+            return {"cmig_recomputed": 0, "pg_recomputed": 0, "simbolica": True}
 
         result = await recompute_after_invoice_change(inv, db)
         inv.stock_updated = True
