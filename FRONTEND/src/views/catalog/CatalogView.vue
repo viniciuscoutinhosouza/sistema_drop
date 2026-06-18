@@ -1123,9 +1123,11 @@ const derivedCmigId = computed(() => selectedAccount.value?.cmig_id ?? null)
 const activeCmig    = computed(() => cmigs.value.find(c => c.id === derivedCmigId.value) ?? null)
 
 const filteredCmigProducts = computed(() => {
-  if (cmigFilter.value === 'kit')    return cmigProducts.value.filter(p => p.is_composite)
-  if (cmigFilter.value === 'simple') return cmigProducts.value.filter(p => !p.is_composite)
-  return cmigProducts.value
+  let list = cmigProducts.value
+  if (cmigFilter.value === 'kit')    list = list.filter(p => p.is_composite)
+  if (cmigFilter.value === 'simple') list = list.filter(p => !p.is_composite)
+  // Estoque positivo primeiro, zerados por último (mantém a ordem original dentro de cada grupo).
+  return [...list].sort((a, b) => (isSoldOut(a) ? 1 : 0) - (isSoldOut(b) ? 1 : 0))
 })
 
 async function loadCmigs() {

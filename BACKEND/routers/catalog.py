@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -92,12 +92,14 @@ async def list_catalog(
     if category_id:
         query = query.where(CatalogProduct.category_id == category_id)
 
+    # Estoque positivo primeiro, zerados por último (depois aplica o sort escolhido).
+    stock_order = case((CatalogProduct.stock_quantity > 0, 0), else_=1)
     if sort == "cheapest":
-        query = query.order_by(CatalogProduct.cost_price.asc())
+        query = query.order_by(stock_order, CatalogProduct.cost_price.asc())
     elif sort == "expensive":
-        query = query.order_by(CatalogProduct.cost_price.desc())
+        query = query.order_by(stock_order, CatalogProduct.cost_price.desc())
     else:
-        query = query.order_by(CatalogProduct.created_at.desc())
+        query = query.order_by(stock_order, CatalogProduct.created_at.desc())
 
     count_q = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_q)).scalar()
