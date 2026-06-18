@@ -63,7 +63,7 @@
                     <RouterLink :to="`/cmigs/${cmig.id}`" class="btn btn-sm btn-outline-info mr-1" title="Detalhes">
                       <i class="fas fa-eye"></i>
                     </RouterLink>
-                    <RouterLink v-if="isAC" :to="`/cmigs/${cmig.id}/edit`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
+                    <RouterLink v-if="isAC || isAdmin" :to="`/cmigs/${cmig.id}/edit`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
                       <i class="fas fa-edit"></i>
                     </RouterLink>
                     <button v-if="canManage(cmig)" class="btn btn-sm btn-outline-secondary"

@@ -226,7 +226,7 @@ const routes = [
       { path: 'cmigs', component: CmigListView, meta: { title: 'Contas MIG' } },
       { path: 'cmigs/new', component: CmigFormView, meta: { title: 'Nova CMIG', role: 'ac' } },
       { path: 'cmigs/:id', component: CmigDetailView, meta: { title: 'CMIG' } },
-      { path: 'cmigs/:id/edit', component: CmigFormView, meta: { title: 'Editar CMIG', role: 'ac' } },
+      { path: 'cmigs/:id/edit', component: CmigFormView, meta: { title: 'Editar CMIG', role: ['ac', 'admin'] } },
 
       // Produtos CMIG
       { path: 'cmig-products',                        component: CmigProductListView,   meta: { title: 'Produtos CMIG' } },
