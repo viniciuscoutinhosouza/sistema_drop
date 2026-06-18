@@ -93,21 +93,26 @@ async def load_full_per_account_map(
     pg_ids: Iterable[int] = (),
     cmig_ids: Iterable[int] = (),
     account_ids: Iterable[int] | None = None,
+    follow_pg_link: bool = True,
 ) -> dict[tuple[str, int], dict[int, dict]]:
     """Pré-carrega FullStock em batch.
 
     Retorna {(product_type, product_id): {account_id: {qty, reserved_qty}}}.
+
+    `follow_pg_link=True` (card de produto/anúncio): o FULL do CMIGProduct espelho é
+    espelhado também sob a chave ('pg', pg_id) — útil quando o anúncio aponta para o PG.
+    `follow_pg_link=False` (lista de Controle de Estoque): cada FULL aparece SÓ na sua
+    chave real (CMIG), evitando exibir o mesmo FULL na linha PG e na linha CMIG.
     """
     pg_ids = list({int(i) for i in pg_ids if i})
     cmig_ids = list({int(i) for i in cmig_ids if i})
     if not pg_ids and not cmig_ids:
         return {}
 
-    # FULL é sempre do CMIG (ADR-0010). Para exibir o FULL num card de produto PG,
-    # seguimos o vínculo pg_product_id → CMIGProduct(s) espelho e somamos o FULL deles
-    # sob a chave ('pg', pg_id). cmig_to_pg permite reatribuir as linhas CMIG ao PG.
+    # FULL é sempre do CMIG (ADR-0010). Quando follow_pg_link, seguimos o vínculo
+    # pg_product_id → CMIGProduct(s) espelho e somamos o FULL deles sob ('pg', pg_id).
     cmig_to_pg: dict[int, int] = {}
-    if pg_ids:
+    if pg_ids and follow_pg_link:
         for cmig_pid, pg_pid in (
             await db.execute(
                 select(CMIGProduct.id, CMIGProduct.pg_product_id).where(

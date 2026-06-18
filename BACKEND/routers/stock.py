@@ -207,11 +207,14 @@ async def stock_summary(
     if full_scope_account_ids is not None and not full_scope_account_ids:
         full_map = {}  # escopo CMIG sem contas → nenhum FULL (evita carregar tudo)
     else:
+        # follow_pg_link=False: o FULL aparece SÓ na linha do produto CMIG (FULL é do
+        # CMIG). Sem isso, o mesmo FULL apareceria na linha PG e na CMIG (duplicado).
         full_map = await load_full_per_account_map(
             db,
             pg_ids=[it["product_id"] for it in items if it["product_type"] == "pg"],
             cmig_ids=[it["product_id"] for it in items if it["product_type"] == "cmig"],
             account_ids=full_scope_account_ids,
+            follow_pg_link=False,
         )
     for item in items:
         acct_map = full_map.get((item["product_type"], item["product_id"]), {})
