@@ -17,7 +17,7 @@ Regra (dono): FULL é sempre do CMIG; não existe FULL para PG. `qty` = remessas
 - Frontend `StockControlView.vue`: botão "Atualizar Estoque FULL" mostra conferência/drift.
 - `DOCs/decisions/ADR-0010-full-sempre-cmig.md` + `Scripts SQL/100_full_cmig.sql` (âncora).
 
-Verificação: import OK; pytest 25 passed / 2 falhas pré-existentes (test_orders). **Pendente:** `npm run build`, auditoria de fechamento, rodar migração dry-run→apply em produção (autorizada) e deploy.
+Verificação: import OK; pytest 25 passed / 2 falhas pré-existentes (test_orders); `npm run build` OK. Auditoria de fechamento (quality+consistency+adr): 3 HIGH corrigidos (uq_cmigprod_sku no re-SELECT; índice único `uix_cmigprod_cmig_pg` p/ concorrência; `stock_summary` reusa `load_full_per_account_map` p/ paridade). **Deployado** (commit 6c1bc96). **Migração aplicada em produção:** 27 linhas pg→cmig (18 espelhos auto-criados, 25 convertidas, 2 mescladas), reservas (125) preservadas; full_stock final = 28 linhas cmig / 1099 un, zero linhas pg. Índice único criado.
 
 ---
 
