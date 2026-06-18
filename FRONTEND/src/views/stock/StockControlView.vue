@@ -137,14 +137,13 @@
                 <td><code>{{ item.sku || '—' }}</code></td>
                 <td>{{ item.name }}</td>
                 <td><small class="text-muted">{{ item.ean || '—' }}</small></td>
-                <td class="text-center">
+                <td class="text-center text-nowrap">
                   <span :class="item.product_type === 'pg' ? 'badge badge-primary' : 'badge badge-info'">
                     {{ item.product_type === 'pg' ? 'PG' : 'CMIG' }}
                   </span>
-                  <div v-if="item.product_type === 'cmig'" class="small text-muted mt-1" style="line-height:1.1">
+                  <span v-if="item.product_type === 'cmig' && item.cmig_name" class="small text-muted ml-1">
                     {{ item.cmig_name }}
-                    <span v-if="item.is_full_mirror" class="badge badge-light border" style="color:#6f42c1" title="Registro de estoque FULL (espelho do PG)">FULL</span>
-                  </div>
+                  </span>
                 </td>
                 <td class="text-center font-weight-bold">{{ item.physical }}</td>
                 <td class="text-center">
