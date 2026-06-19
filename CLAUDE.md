@@ -243,6 +243,7 @@ BLING_CLIENT_SECRET=
 | `/api/v1/cmigs` | CMIGs e produtos CMIG |
 | `/api/v1/anuncios` | Anúncios importados do ML |
 | `/api/v1/simulator` | Simulador de preço |
+| `/api/v1/competitor-analysis` | Análise de Concorrência (ML + IA) |
 | `/api/v1/separation` | Separação (Carrinho Gaiola, pedidos não-FULL) |
 | `/api/v1/marketplace-settings` | Config por marketplace (Super Admin) |
 
@@ -326,6 +327,7 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0008](DOCs/decisions/ADR-0008-nfe-batch-mensal-e-anuncio-full-quando-local-zero.md) — Sync mensal de NF-e (batch ML) + anúncio não-FULL anuncia FULL quando LOCAL=0
 - [ADR-0009](DOCs/decisions/ADR-0009-devolucao-nfe-driven.md) — Devolução NF-e-driven: NF-e fiscal-only (stock_updated=False) + contadores de inspeção como fonte canônica
 - [ADR-0010](DOCs/decisions/ADR-0010-full-sempre-cmig.md) — Estoque FULL é sempre do produto CMIG (auto-criação de espelho do PG); sync ML vira conferência
+- [ADR-0011](DOCs/decisions/ADR-0011-estudos-assincronos-ia-ml.md) — Estudos assíncronos IA+ML (job in-process por request + estudo persistido como memória)
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 

@@ -63,6 +63,7 @@ from routers import (
     catalog,
     cfop,
     claims,
+    competitor_analysis,
     cmig_reports,
     cmigs,
     dashboard,
@@ -130,6 +131,7 @@ app.include_router(
     tags=["ProductMarketplaceCategories"],
 )
 app.include_router(simulator.router, prefix=f"{PREFIX}/simulator", tags=["Simulator"])
+app.include_router(competitor_analysis.router, prefix=f"{PREFIX}/competitor-analysis", tags=["CompetitorAnalysis"])
 app.include_router(people.router, prefix=f"{PREFIX}/people", tags=["People"])
 app.include_router(
     fiscal_config.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/fiscal-config", tags=["FiscalConfig"]

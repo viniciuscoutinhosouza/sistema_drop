@@ -87,6 +87,7 @@ const CmigReportsView = () => import('@/views/cmig-reports/CmigReportsView.vue')
 
 // Simulador ML
 const SimuladorView = () => import('@/views/simulator/SimuladorView.vue')
+const CompetitorAnalysisView = () => import('@/views/analysis/CompetitorAnalysisView.vue')
 
 // Pessoas (Clientes / Fornecedores)
 const PeopleListView = () => import('@/views/people/PeopleListView.vue')
@@ -268,6 +269,8 @@ const routes = [
 
       // Simulador ML — todos os usuários
       { path: 'simulator', component: SimuladorView, meta: { title: 'Simulador ML' } },
+      // Análise de Concorrência (ML + IA)
+      { path: 'analysis/competitor', component: CompetitorAnalysisView, meta: { title: 'Análise de Concorrência' } },
 
       // Pessoas (Clientes/Fornecedores) — AC, UGO, Admin
       { path: 'people',         component: PeopleListView, meta: { title: 'Pessoas' } },

@@ -1018,7 +1018,7 @@ async def get_items_bulk(access_token: str, item_ids: list[str]) -> list[dict]:
             resp = await client.get(
                 f"{ML_API_BASE}/items",
                 headers={"Authorization": f"Bearer {access_token}"},
-                params={"ids": ",".join(chunk), "attributes": "id,title,price,available_quantity,sold_quantity,status,listing_type_id,category_id,thumbnail,permalink,seller_sku,shipping,pictures,attributes,catalog_product_id,catalog_listing,item_condition,variations,user_product_id,family_name,family_id"},
+                params={"ids": ",".join(chunk), "attributes": "id,title,price,available_quantity,sold_quantity,status,listing_type_id,category_id,thumbnail,permalink,seller_sku,shipping,pictures,attributes,catalog_product_id,catalog_listing,item_condition,variations,user_product_id,family_name,family_id,date_created,start_time,seller_id"},
             )
             if resp.status_code != 200:
                 continue
@@ -1026,6 +1026,97 @@ async def get_items_bulk(access_token: str, item_ids: list[str]) -> list[dict]:
                 if entry.get("code") == 200:
                     results.append(entry["body"])
     return results
+
+
+# ── Catálogo / concorrentes (Análise de Concorrência) ─────────────────────────
+
+
+async def search_catalog_products(access_token: str, query: str, site_id: str = "MLB") -> list[dict]:
+    """Busca produtos de CATÁLOGO do ML por texto. Retorna results[] com id (PRODUCT_ID)."""
+    if not query:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/products/search",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"status": "active", "site_id": site_id, "q": query},
+            )
+        if resp.status_code != 200:
+            return []
+        return (resp.json() or {}).get("results", []) or []
+    except Exception:
+        return []
+
+
+async def get_catalog_product(access_token: str, product_id: str) -> dict:
+    """Dados de um produto de catálogo, incluindo buy_box_winner."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/products/{product_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        return resp.json() if resp.status_code == 200 else {}
+    except Exception:
+        return {}
+
+
+async def get_catalog_product_items(access_token: str, product_id: str) -> list[dict]:
+    """Publicações que disputam um produto de catálogo (concorrentes)."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/products/{product_id}/items",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        if resp.status_code != 200:
+            return []
+        return (resp.json() or {}).get("results", []) or []
+    except Exception:
+        return []
+
+
+async def get_price_to_win(access_token: str, item_id: str, version: str = "v2") -> dict:
+    """price_to_win de um item SEU já publicado (preço p/ vencer + boosts). Fase 2."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/items/{item_id}/price_to_win",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"version": version},
+            )
+        return resp.json() if resp.status_code == 200 else {}
+    except Exception:
+        return {}
+
+
+async def get_items_visit_stats_range(
+    access_token: str, item_ids: list, days: int = 30
+) -> dict:
+    """Visitas por item nos últimos `days` dias (variação do get_items_visit_stats)."""
+    if not item_ids:
+        return {}
+    date_to = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    date_from = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    per_item: dict[str, int] = {}
+    async with httpx.AsyncClient(timeout=30) as client:
+        for i in range(0, len(item_ids), 50):
+            batch = item_ids[i : i + 50]
+            ids_str = ",".join(str(x) for x in batch)
+            url = f"{ML_API_BASE}/items/visits?ids={ids_str}&date_from={date_from}&date_to={date_to}"
+            try:
+                resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+            except Exception:
+                continue
+            if resp.status_code != 200:
+                continue
+            payload = resp.json()
+            for entry in payload if isinstance(payload, list) else [payload]:
+                iid = str(entry.get("item_id", ""))
+                if iid:
+                    per_item[iid] = entry.get("total_visits", 0)
+    return per_item
 
 
 async def get_items_descriptions(access_token: str, item_ids: list[str]) -> dict[str, str]:

@@ -63,19 +63,40 @@ async def generate_reply(
         raise HTTPException(status_code=400, detail=f"Provedor de IA desconhecido: {provider}")
 
 
+async def complete(
+    provider: str,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    *,
+    max_tokens: int = 4000,
+    timeout: int = 90,
+) -> str:
+    """Completion genérico (1 mensagem do usuário). Usado por features que precisam de
+    saída longa/estruturada (ex.: Análise de Concorrência). Retorna o texto puro."""
+    history = [{"role": "user", "content": user_content}]
+    if provider == "openai":
+        return await _generate_openai(api_key, model, system_prompt, history, max_tokens, timeout)
+    elif provider == "anthropic":
+        return await _generate_anthropic(api_key, model, system_prompt, history, max_tokens, timeout)
+    raise HTTPException(status_code=400, detail=f"Provedor de IA desconhecido: {provider}")
+
+
 async def _generate_openai(
-    api_key: str, model: str, system_prompt: str, history: list[dict]
+    api_key: str, model: str, system_prompt: str, history: list[dict],
+    max_tokens: int = DEFAULT_MAX_TOKENS, timeout: int = TIMEOUT
 ) -> str:
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history)
 
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
             OPENAI_URL,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": model, "messages": messages, "max_tokens": DEFAULT_MAX_TOKENS},
+            json={"model": model, "messages": messages, "max_tokens": max_tokens},
         )
 
     if resp.status_code != 200:
@@ -87,17 +108,18 @@ async def _generate_openai(
 
 
 async def _generate_anthropic(
-    api_key: str, model: str, system_prompt: str, history: list[dict]
+    api_key: str, model: str, system_prompt: str, history: list[dict],
+    max_tokens: int = DEFAULT_MAX_TOKENS, timeout: int = TIMEOUT
 ) -> str:
     payload: dict = {
         "model": model,
-        "max_tokens": DEFAULT_MAX_TOKENS,
+        "max_tokens": max_tokens,
         "messages": history,
     }
     if system_prompt:
         payload["system"] = system_prompt
 
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
             ANTHROPIC_URL,
             headers={

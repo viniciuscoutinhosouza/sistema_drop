@@ -44,6 +44,13 @@
             </RouterLink>
           </li>
 
+          <li class="nav-item">
+            <RouterLink to="/analysis/competitor" class="nav-link" :class="{ active: route.path === '/analysis/competitor' }">
+              <i class="nav-icon fas fa-search-dollar"></i>
+              <p>Análise de Concorrência</p>
+            </RouterLink>
+          </li>
+
           <!-- ══ MENUS DINÂMICOS (perfil de acesso) ══════════════════════════ -->
 
           <!-- MINHAS CONTAS (GC / AC) -->
