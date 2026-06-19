@@ -13,8 +13,11 @@ import asyncio
 import base64
 import json
 import logging
+import re
+from collections import Counter
 from datetime import UTC, datetime
 
+import httpx
 from sqlalchemy import select
 
 import services.ai_service as ai_svc
@@ -30,7 +33,80 @@ logger = logging.getLogger(__name__)
 
 _BG_TASKS: set = set()  # mantém referência dos tasks (evita coleta pelo GC)
 
-MAX_COMPETITORS = 15
+MAX_COMPETITORS = 15          # top N concorrentes enriquecidos (reputação/visitas)
+SEARCH_TARGET = 180           # total de anúncios a coletar no /search (3 páginas × 60)
+TOP_KEYWORDS = 30             # palavras-chave mais frequentes a retornar
+TOP_CATEGORIES = 3            # categorias mais frequentes a retornar
+
+# Stop-words PT-BR + ruído de marketplace (filtradas das keywords).
+_STOPWORDS_PT: set[str] = {
+    "de", "do", "da", "dos", "das", "para", "com", "em", "no", "na", "nos", "nas",
+    "um", "uma", "e", "ou", "a", "o", "os", "as", "por", "se", "que", "ao", "até",
+    "mais", "menos", "novo", "nova", "original", "garantia", "oferta", "promoção",
+    "frete", "grátis", "gratis", "kit", "und", "pçs", "pcs", "unid", "un", "p/",
+    "n/", "c/", "s/", "r$", "reais", "envio", "imediato", "pronta", "entrega",
+}
+
+
+def _tokenize_keywords(items: list[dict]) -> list[dict]:
+    """Conta as palavras mais frequentes em título + marca + modelo dos anúncios.
+
+    Mantém specs técnicas (8gb, 512gb, i5, fhd) por serem keywords valiosas.
+    Remove stop-words PT-BR, pontuação e tokens com menos de 2 caracteres.
+    """
+    counter: Counter[str] = Counter()
+    for it in items:
+        parts: list[str] = []
+        if it.get("title"):
+            parts += re.split(r"[\s\-\/\+\|\(\)\[\]]+", it["title"].lower())
+        if it.get("brand"):
+            parts.append(it["brand"].lower())
+        if it.get("model"):
+            parts += re.split(r"[\s\-]+", it["model"].lower())
+        for w in parts:
+            w = w.strip(".,;:!?\"'`")
+            if len(w) >= 2 and w not in _STOPWORDS_PT:
+                counter[w] += 1
+    return [{"word": w, "count": c} for w, c in counter.most_common(TOP_KEYWORDS)]
+
+
+async def _top_categories_with_names(items: list[dict]) -> list[dict]:
+    """Top categorias por frequência, enriquecidas com o nome (via /categories/{id})."""
+    counter: Counter[str] = Counter(
+        it["category_id"] for it in items if it.get("category_id")
+    )
+    top = counter.most_common(TOP_CATEGORIES)
+    total = len(items) or 1
+    out: list[dict] = []
+    async with httpx.AsyncClient(timeout=10) as client:
+        for cat_id, count in top:
+            name = cat_id
+            try:
+                r = await client.get(f"{ml.ML_API_BASE}/categories/{cat_id}")
+                if r.status_code == 200:
+                    name = r.json().get("name") or cat_id
+            except Exception:  # noqa: BLE001
+                pass
+            out.append({
+                "id": cat_id,
+                "name": name,
+                "count": count,
+                "pct": round(count * 100 / total, 1),
+            })
+    return out
+
+
+def _price_block(prices: list[float]) -> dict:
+    """min/max/avg de uma lista de preços (ignora None)."""
+    vals = [float(p) for p in prices if p is not None]
+    if not vals:
+        return {"min": None, "max": None, "avg": None, "count": 0}
+    return {
+        "min": round(min(vals), 2),
+        "max": round(max(vals), 2),
+        "avg": round(sum(vals) / len(vals), 2),
+        "count": len(vals),
+    }
 
 
 def schedule_analysis(analysis_id: int) -> None:
@@ -145,11 +221,17 @@ async def _load_inputs(analysis_id: int) -> dict | None:
 
 
 async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
-    """Coleta os dados do ML (categoria, catálogo, concorrentes, preços, visitas, reputação)."""
+    """Estudo de mercado do ML baseado em busca por texto (/sites/MLB/search).
+
+    Coleta até SEARCH_TARGET (180) anúncios, enriquece com vendas/data/visitas,
+    calcula estatísticas (categorias, keywords, frete, preço) e seleciona o top 10
+    por vendas com reputação. Mantém o contrato anterior (category, attributes,
+    competitors, commission, price_stats, errors) e adiciona `search_study`.
+    """
     from services.ml_auth import get_valid_token
 
     out: dict = {"category": None, "attributes": [], "catalog": None, "competitors": [],
-                 "commission": None, "errors": []}
+                 "commission": None, "errors": [], "search_study": None}
     title = product.get("title") or ""
 
     try:
@@ -169,7 +251,7 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
         out["errors"].append(f"token: {e}")
         return out
 
-    # Categoria + atributos (domain_discovery é público; usamos o título).
+    # Categoria + atributos sugeridos (domain_discovery público) — contexto p/ a IA.
     try:
         cats = await ml.search_categories(title)
         if cats:
@@ -183,83 +265,118 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         out["errors"].append(f"categoria: {e}")
 
-    # Catálogo + concorrentes
-    comp_ids: list[str] = []
+    # 1) Busca os 180 anúncios por texto
+    listings: list[dict] = []
     try:
-        products = await ml.search_catalog_products(token, title)
-        if products:
-            pid = products[0].get("id")
-            cat_prod = await ml.get_catalog_product(token, pid)
-            out["catalog"] = {
-                "product_id": pid,
-                "name": cat_prod.get("name"),
-                "buy_box_winner": cat_prod.get("buy_box_winner"),
-            }
-            items = await ml.get_catalog_product_items(token, pid)
-            comp_ids = [it.get("item_id") for it in items if it.get("item_id")][:MAX_COMPETITORS]
+        listings = await ml.search_ml_listings(title, token, target_count=SEARCH_TARGET)
     except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"catalogo: {e}")
+        out["errors"].append(f"search: {e}")
 
-    # Detalhe dos concorrentes
-    details = []
-    if comp_ids:
-        try:
-            details = await ml.get_items_bulk(token, comp_ids)
-        except Exception as e:  # noqa: BLE001
-            out["errors"].append(f"items: {e}")
-    visits = {}
+    if not listings:
+        out["errors"].append("nenhum anúncio retornado na busca")
+        out["search_study"] = {"query": title, "total_found": 0}
+        return out
+
+    item_ids = [it["item_id"] for it in listings if it.get("item_id")]
+
+    # 2) Enriquece com vendas + data de cadastro + atributos (bulk /items)
     try:
-        visits = await ml.get_items_visit_stats_range(token, comp_ids, days=30) if comp_ids else {}
+        details = await ml.get_items_bulk(token, item_ids)
+        by_id = {str(d.get("id")): d for d in details}
+        for it in listings:
+            d = by_id.get(str(it["item_id"]))
+            if not d:
+                continue
+            it["sold_quantity"] = int(d.get("sold_quantity") or 0)
+            it["date_created"] = d.get("date_created") or d.get("start_time")
+            if not it.get("brand"):
+                it["brand"] = ml._extract_item_attr(d.get("attributes") or [], "BRAND")
+            if not it.get("model"):
+                it["model"] = ml._extract_item_attr(d.get("attributes") or [], "MODEL")
+    except Exception as e:  # noqa: BLE001
+        out["errors"].append(f"items: {e}")
+
+    # 3) Enriquece com visitas (30 dias) de todos os itens
+    visits: dict = {}
+    try:
+        visits = await ml.get_items_visit_stats_range(token, item_ids, days=30)
     except Exception as e:  # noqa: BLE001
         out["errors"].append(f"visitas: {e}")
 
-    # Reputação dos vendedores distintos (top)
+    # 4) Calcula velocidade por anúncio (days_live, sales_per_day, visits_per_day)
+    now = datetime.now(UTC)
+    for it in listings:
+        sold = int(it.get("sold_quantity") or 0)
+        created = it.get("date_created")
+        days_live = None
+        if created:
+            try:
+                dt = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                days_live = max(1, (now - dt).days)
+            except Exception:  # noqa: BLE001
+                pass
+        it["days_live"] = days_live
+        it["sales_per_day"] = round(sold / days_live, 3) if days_live else None
+        v30 = visits.get(str(it["item_id"]))
+        it["visits_30d"] = v30
+        it["visits_per_day"] = round(v30 / 30, 1) if v30 else None
+
+    # 5) Estatísticas agregadas
+    free = [it for it in listings if it.get("free_shipping")]
+    no_free = [it for it in listings if not it.get("free_shipping")]
+    full = [it for it in listings if it.get("logistic_type") == "fulfillment"]
+
+    top_categories = await _top_categories_with_names(listings)
+    top_keywords = _tokenize_keywords(listings)
+
+    search_study = {
+        "query": title,
+        "total_found": len(listings),
+        "pages_fetched": (len(listings) + 49) // 50,
+        "top_categories": top_categories,
+        "top_keywords": top_keywords,
+        "shipping_stats": {
+            "free_shipping_count": len(free),
+            "no_free_shipping_count": len(no_free),
+            "full_count": len(full),
+            "free_shipping_pct": round(len(free) * 100 / len(listings), 1),
+            "full_pct": round(len(full) * 100 / len(listings), 1),
+        },
+        "price_stats": {
+            "with_free_shipping": _price_block([it.get("price") for it in free]),
+            "without_free_shipping": _price_block([it.get("price") for it in no_free]),
+            "overall": _price_block([it.get("price") for it in listings]),
+        },
+    }
+
+    # 6) Top 10 por vendas → enriquece com reputação do vendedor
+    top10 = sorted(listings, key=lambda c: (c.get("sold_quantity") or 0), reverse=True)[:10]
     rep_cache: dict[str, dict] = {}
-    for d in details:
-        sid = str(d.get("seller_id") or "")
-        if sid and sid not in rep_cache and len(rep_cache) < 12:
+    for it in top10:
+        sid = str(it.get("seller_id") or "")
+        if sid and sid not in rep_cache:
             try:
                 rep_cache[sid] = await ml.get_seller_reputation(token, sid)
             except Exception:  # noqa: BLE001
                 rep_cache[sid] = {}
+        it["seller_reputation"] = rep_cache.get(sid)
 
-    now = datetime.now(UTC)
-    competitors = []
-    for d in details:
-        sold = int(d.get("sold_quantity") or 0)
-        created = d.get("date_created") or d.get("start_time")
-        days_live = None
-        per_day = None
-        if created:
-            try:
-                dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-                days_live = max(1, (now - dt).days)
-                per_day = round(sold / days_live, 3)
-            except Exception:
-                pass
-        iid = str(d.get("id"))
-        competitors.append({
-            "item_id": iid,
-            "title": d.get("title"),
-            "price": d.get("price"),
-            "sold_quantity": sold,
-            "date_created": created,
-            "days_live": days_live,
-            "sales_per_day": per_day,
-            "visits_30d": visits.get(iid),
-            "listing_type_id": d.get("listing_type_id"),
-            "free_shipping": ((d.get("shipping") or {}).get("free_shipping")),
-            "logistic_type": ((d.get("shipping") or {}).get("logistic_type")),
-            "seller_id": d.get("seller_id"),
-            "seller_reputation": rep_cache.get(str(d.get("seller_id") or "")),
-            "thumbnail": d.get("thumbnail"),
-            "permalink": d.get("permalink"),
-        })
-    competitors.sort(key=lambda c: (c["sold_quantity"] or 0), reverse=True)
-    out["competitors"] = competitors
+    search_study["top10_by_sales"] = top10
+    # all_results_raw: versão enxuta dos 180 (sem objetos pesados) para memória/IA
+    search_study["all_results_raw"] = [
+        {k: it.get(k) for k in (
+            "item_id", "title", "price", "category_id", "sold_quantity",
+            "free_shipping", "logistic_type", "brand", "model",
+            "days_live", "sales_per_day", "visits_30d", "permalink",
+        )}
+        for it in listings
+    ]
 
-    # Comissão na mediana de preço dos concorrentes (âncora de custo p/ a IA)
-    prices = sorted([c["price"] for c in competitors if c.get("price")])
+    out["search_study"] = search_study
+    out["competitors"] = top10  # contrato anterior: top 10 enriquecido
+
+    # 7) Comissão na mediana de preço (âncora de custo p/ a IA)
+    prices = sorted([it["price"] for it in listings if it.get("price")])
     if prices and out.get("category"):
         median = prices[len(prices) // 2]
         try:
@@ -275,9 +392,13 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
 _SYSTEM_PROMPT = (
     "Você é um especialista sênior em vendas no Mercado Livre (categorias, SEO de título, "
     "precificação, buy box, Mercado Envios/Full e Product Ads). Receberá os dados de um produto "
-    "do vendedor e dados REAIS coletados do ML (categoria sugerida, atributos, concorrentes com "
-    "preço/vendas/visitas/reputação/data de cadastro, comissão). Faça um estudo de concorrência "
-    "ACIONÁVEL e responda SOMENTE com um JSON válido (sem texto fora do JSON, sem markdown), no schema:\n"
+    "do vendedor e dados REAIS coletados do ML a partir de uma BUSCA por texto: até 180 anúncios "
+    "(3 páginas), com um estudo de mercado em ml.estudo_mercado contendo as TOP categorias (com "
+    "contagem), as TOP 30 palavras-chave de título/marca/modelo, estatísticas de frete grátis e "
+    "Full, e faixas de preço (mín/máx/médio) separadas por quem oferece frete grátis e quem não "
+    "oferece. Também recebe o top 10 por vendas (com visitas/dia, vendas/dia, data de cadastro e "
+    "reputação) e a comissão. Faça um estudo de concorrência ACIONÁVEL e responda SOMENTE com um "
+    "JSON válido (sem texto fora do JSON, sem markdown), no schema:\n"
     "{\n"
     '  "best_title": "título otimizado <=60 chars",\n'
     '  "model_field": "o que preencher no campo Modelo",\n'
@@ -290,10 +411,11 @@ _SYSTEM_PROMPT = (
     "}\n"
     "Regras: a previsão deve usar a VELOCIDADE (sales_per_day) e visitas dos concorrentes + a posição "
     "de preço escolhida; dê FAIXAS (min,max) e confiança. Respeite a margem de contribuição desejada "
-    "sobre o custo ao sugerir preço (desconte comissão e frete). Em top_competitors, comente CADA UM "
-    "dos até 10 concorrentes mais relevantes recebidos em ml.concorrentes, usando o item_id EXATO de "
-    "cada um (não invente item_id, não invente links). Considere o comentário/prompt do usuário e o "
-    "histórico/anotações."
+    "sobre o custo ao sugerir preço (desconte comissão e frete). Use as TOP palavras-chave do mercado "
+    "(ml.estudo_mercado.top_keywords) para compor o best_title; use as faixas de preço por frete para "
+    "calibrar o price_range. Em top_competitors, comente CADA UM dos até 10 concorrentes recebidos em "
+    "ml.concorrentes, usando o item_id EXATO de cada um (não invente item_id, não invente links). "
+    "Considere o comentário/prompt do usuário e o histórico/anotações."
 )
 
 
@@ -329,10 +451,15 @@ async def _run_analysis(analysis_id: int) -> None:
             "ml": {
                 "categoria_sugerida": ml_data.get("category"),
                 "atributos": ml_data.get("attributes"),
-                "catalogo": ml_data.get("catalog"),
                 "estatisticas_preco": ml_data.get("price_stats"),
                 "comissao": ml_data.get("commission"),
                 "concorrentes": ml_data.get("competitors"),
+                "estudo_mercado": {
+                    # remove all_results_raw do payload da IA (180 itens = muito token);
+                    # a IA usa os agregados + top10. O raw fica salvo no result_json.
+                    k: v for k, v in (ml_data.get("search_study") or {}).items()
+                    if k != "all_results_raw"
+                },
             },
         }
         user_content = (

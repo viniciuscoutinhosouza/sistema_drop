@@ -1447,6 +1447,104 @@ async def get_category_shipping_preferences(category_id: str) -> dict:
     return resp.json() if resp.status_code == 200 else {}
 
 
+def _extract_item_attr(attributes: list, attr_id: str) -> str | None:
+    """Extrai o value_name de um atributo (ex.: BRAND, MODEL) de um item do ML."""
+    for a in attributes or []:
+        if a.get("id") == attr_id:
+            v = (a.get("value_name") or "").strip()
+            return v or None
+    return None
+
+
+def _normalize_search_item(it: dict) -> dict:
+    """Normaliza um item do /sites/MLB/search para o formato do estudo de concorrência."""
+    shipping = it.get("shipping") or {}
+    seller = it.get("seller") or {}
+    attrs = it.get("attributes") or []
+    return {
+        "item_id": it.get("id"),
+        "title": it.get("title"),
+        "price": it.get("price"),
+        "original_price": it.get("original_price"),
+        "currency_id": it.get("currency_id"),
+        "available_quantity": it.get("available_quantity"),
+        "sold_quantity": it.get("sold_quantity") or 0,  # search costuma vir 0; enriquecer depois
+        "condition": it.get("condition"),
+        "listing_type_id": it.get("listing_type_id"),
+        "category_id": it.get("category_id"),
+        "domain_id": it.get("domain_id"),
+        "catalog_product_id": it.get("catalog_product_id"),
+        "catalog_listing": it.get("catalog_listing"),
+        "official_store_id": it.get("official_store_id"),
+        "permalink": it.get("permalink"),
+        "thumbnail": it.get("thumbnail"),
+        "free_shipping": bool(shipping.get("free_shipping")),
+        "logistic_type": shipping.get("logistic_type"),
+        "shipping_mode": shipping.get("mode"),
+        "seller_id": seller.get("id"),
+        "seller_nickname": seller.get("nickname"),
+        "seller_power_status": seller.get("power_seller_status"),
+        "brand": _extract_item_attr(attrs, "BRAND"),
+        "model": _extract_item_attr(attrs, "MODEL"),
+    }
+
+
+async def search_ml_listings(
+    query: str,
+    access_token: str | None = None,
+    target_count: int = 180,
+    page_size: int = 50,
+    site_id: str = "MLB",
+) -> list[dict]:
+    """Busca anúncios reais no ML por texto (/sites/{site}/search), paginando por offset.
+
+    O ML limita `limit` a 50 por página e `offset` a 1000. Buscamos páginas
+    sucessivas até reunir `target_count` itens (ou esgotar resultados).
+    Retorna lista de itens normalizados (ver _normalize_search_item).
+    """
+    if not query:
+        return []
+    page_size = min(page_size, 50)
+    headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
+    collected: list[dict] = []
+    seen_ids: set[str] = set()
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        offset = 0
+        while len(collected) < target_count and offset <= 1000:
+            try:
+                resp = await client.get(
+                    f"{ML_API_BASE}/sites/{site_id}/search",
+                    headers=headers,
+                    params={"q": query, "offset": offset, "limit": page_size},
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[ML] search_ml_listings offset=%s erro: %s", offset, e)
+                break
+            if resp.status_code != 200:
+                logger.warning(
+                    "[ML] search_ml_listings status=%s offset=%s: %s",
+                    resp.status_code, offset, resp.text[:200],
+                )
+                break
+            data = resp.json()
+            results = data.get("results") or []
+            if not results:
+                break
+            for it in results:
+                iid = it.get("id")
+                if iid and iid not in seen_ids:
+                    seen_ids.add(iid)
+                    collected.append(_normalize_search_item(it))
+            paging = data.get("paging") or {}
+            total = paging.get("total") or paging.get("primary_results") or 0
+            offset += page_size
+            if offset >= total:
+                break
+
+    return collected[:target_count]
+
+
 async def search_categories(query: str, site_id: str = "MLB") -> list[dict]:
     """
     Busca categorias ML via domain_discovery/search (único endpoint público disponível).

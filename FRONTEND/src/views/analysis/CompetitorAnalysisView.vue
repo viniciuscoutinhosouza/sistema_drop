@@ -55,7 +55,126 @@
         </div>
       </div>
 
-      <!-- Resultado -->
+      <!-- ══ ESTUDO DE MERCADO (dados reais da busca no ML) ══ -->
+      <template v-if="searchStudy">
+        <div class="row">
+          <!-- Top categorias -->
+          <div class="col-md-4">
+            <div class="card card-outline card-primary h-100">
+              <div class="card-header py-2">
+                <h3 class="card-title">Top categorias <small class="text-muted">({{ searchStudy.total_found }} anúncios)</small></h3>
+              </div>
+              <div class="card-body p-2">
+                <table class="table table-sm mb-0">
+                  <tbody>
+                    <tr v-for="cat in (searchStudy.top_categories || [])" :key="cat.id">
+                      <td>{{ cat.name }} <small class="text-muted">({{ cat.id }})</small></td>
+                      <td class="text-right" style="white-space:nowrap">
+                        <span class="badge badge-primary">{{ cat.count }}×</span>
+                        <small class="text-muted ml-1">{{ cat.pct }}%</small>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Frete / Full + Preços -->
+          <div class="col-md-8">
+            <div class="card card-outline card-info h-100">
+              <div class="card-header py-2"><h3 class="card-title">Frete, Full e faixas de preço</h3></div>
+              <div class="card-body p-2">
+                <div class="row text-center mb-2">
+                  <div class="col">
+                    <div class="h5 mb-0 text-success">{{ searchStudy.shipping_stats?.free_shipping_count }}</div>
+                    <small class="text-muted">c/ frete grátis ({{ searchStudy.shipping_stats?.free_shipping_pct }}%)</small>
+                  </div>
+                  <div class="col">
+                    <div class="h5 mb-0 text-secondary">{{ searchStudy.shipping_stats?.no_free_shipping_count }}</div>
+                    <small class="text-muted">sem frete grátis</small>
+                  </div>
+                  <div class="col">
+                    <div class="h5 mb-0 text-primary">{{ searchStudy.shipping_stats?.full_count }}</div>
+                    <small class="text-muted">no Full ({{ searchStudy.shipping_stats?.full_pct }}%)</small>
+                  </div>
+                </div>
+                <table class="table table-sm mb-0">
+                  <thead class="thead-light"><tr>
+                    <th>Grupo</th><th class="text-center">Mín</th><th class="text-center">Médio</th><th class="text-center">Máx</th><th class="text-center">Qtd</th>
+                  </tr></thead>
+                  <tbody>
+                    <tr>
+                      <td><span class="badge badge-success">Com frete grátis</span></td>
+                      <td class="text-center">{{ money(searchStudy.price_stats?.with_free_shipping?.min) }}</td>
+                      <td class="text-center"><strong>{{ money(searchStudy.price_stats?.with_free_shipping?.avg) }}</strong></td>
+                      <td class="text-center">{{ money(searchStudy.price_stats?.with_free_shipping?.max) }}</td>
+                      <td class="text-center">{{ searchStudy.price_stats?.with_free_shipping?.count }}</td>
+                    </tr>
+                    <tr>
+                      <td><span class="badge badge-secondary">Sem frete grátis</span></td>
+                      <td class="text-center">{{ money(searchStudy.price_stats?.without_free_shipping?.min) }}</td>
+                      <td class="text-center"><strong>{{ money(searchStudy.price_stats?.without_free_shipping?.avg) }}</strong></td>
+                      <td class="text-center">{{ money(searchStudy.price_stats?.without_free_shipping?.max) }}</td>
+                      <td class="text-center">{{ searchStudy.price_stats?.without_free_shipping?.count }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Top 30 palavras-chave -->
+        <div class="card card-outline card-secondary">
+          <div class="card-header py-2"><h3 class="card-title">Top 30 palavras-chave (título · marca · modelo)</h3></div>
+          <div class="card-body p-2">
+            <span v-for="kw in (searchStudy.top_keywords || [])" :key="kw.word"
+              class="badge badge-light border mr-1 mb-1" style="font-size:12px;font-weight:normal">
+              {{ kw.word }} <span class="badge badge-secondary ml-1">{{ kw.count }}</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- Top 10 concorrentes por vendas (com link p/ o anúncio) -->
+        <div class="card" v-if="topCompetitors.length">
+          <div class="card-header py-2"><h3 class="card-title">Top {{ topCompetitors.length }} concorrentes por vendas</h3></div>
+          <div class="card-body p-0">
+            <table class="table table-sm table-hover mb-0">
+              <thead class="thead-light"><tr>
+                <th style="width:54px">Foto</th><th>Anúncio / Título</th><th class="text-center">Preço</th>
+                <th class="text-center">Vendas</th><th class="text-center">Visitas 30d</th><th>Tipo / Frete</th>
+                <th>Reputação</th><th>Comentário do estudo</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="c in topCompetitors" :key="c.item_id">
+                  <td>
+                    <a v-if="c.permalink" :href="c.permalink" target="_blank" rel="noopener">
+                      <img :src="c.thumbnail || 'https://via.placeholder.com/44?text=%E2%80%94'" style="width:44px;height:44px;object-fit:contain;border-radius:4px" />
+                    </a>
+                    <img v-else :src="c.thumbnail || 'https://via.placeholder.com/44?text=%E2%80%94'" style="width:44px;height:44px;object-fit:contain;border-radius:4px" />
+                  </td>
+                  <td>
+                    <a v-if="c.permalink" :href="c.permalink" target="_blank" rel="noopener" title="Abrir anúncio no ML">
+                      <small>{{ c.item_id }} <i class="fas fa-external-link-alt" style="font-size:9px"></i></small>
+                    </a>
+                    <small v-else>{{ c.item_id }}</small>
+                    <div style="font-size:12px;line-height:1.25">{{ c.title }}</div>
+                  </td>
+                  <td class="text-center">{{ money(c.price) }}</td>
+                  <td class="text-center">{{ c.sold_quantity }}<div v-if="c.sales_per_day" class="text-muted" style="font-size:10px">{{ c.sales_per_day }}/dia</div></td>
+                  <td class="text-center">{{ c.visits_30d ?? '—' }}<div v-if="c.visits_per_day" class="text-muted" style="font-size:10px">{{ c.visits_per_day }}/dia</div></td>
+                  <td><small>{{ c.listing_type_id }}<br>{{ c.free_shipping ? 'Frete grátis' : '' }} {{ c.logistic_type || '' }}</small></td>
+                  <td><small>{{ repLabel(c) }}</small></td>
+                  <td style="font-size:12px">{{ commentMap[String(c.item_id)] || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+
+      <!-- Resultado (síntese da IA) -->
       <template v-if="study">
         <div class="row">
           <div class="col-md-8">
@@ -120,43 +239,6 @@
           <div class="card-footer small text-muted">{{ study.forecast.method_note }} {{ study.disclaimer }}</div>
         </div>
 
-        <!-- Concorrentes (dados reais do ML + comentário da IA por anúncio) -->
-        <div class="card" v-if="topCompetitors.length">
-          <div class="card-header"><h3 class="card-title">Top {{ topCompetitors.length }} concorrentes</h3></div>
-          <div class="card-body p-0">
-            <table class="table table-sm table-hover mb-0">
-              <thead class="thead-light"><tr>
-                <th style="width:54px">Foto</th><th>Anúncio / Título</th><th class="text-center">Preço</th>
-                <th class="text-center">Vendas</th><th class="text-center">Visitas 30d</th><th>Tipo / Frete</th>
-                <th>Reputação</th><th>Comentário do estudo</th>
-              </tr></thead>
-              <tbody>
-                <tr v-for="c in topCompetitors" :key="c.item_id">
-                  <td>
-                    <a v-if="c.permalink" :href="c.permalink" target="_blank" rel="noopener">
-                      <img :src="c.thumbnail || 'https://via.placeholder.com/44?text=%E2%80%94'" style="width:44px;height:44px;object-fit:contain;border-radius:4px" />
-                    </a>
-                    <img v-else :src="c.thumbnail || 'https://via.placeholder.com/44?text=%E2%80%94'" style="width:44px;height:44px;object-fit:contain;border-radius:4px" />
-                  </td>
-                  <td>
-                    <a v-if="c.permalink" :href="c.permalink" target="_blank" rel="noopener" title="Abrir anúncio no ML">
-                      <small>{{ c.item_id }} <i class="fas fa-external-link-alt" style="font-size:9px"></i></small>
-                    </a>
-                    <small v-else>{{ c.item_id }}</small>
-                    <div style="font-size:12px;line-height:1.25">{{ c.title }}</div>
-                  </td>
-                  <td class="text-center">{{ money(c.price) }}</td>
-                  <td class="text-center">{{ c.sold_quantity }}<div v-if="c.sales_per_day" class="text-muted" style="font-size:10px">{{ c.sales_per_day }}/dia</div></td>
-                  <td class="text-center">{{ c.visits_30d ?? '—' }}</td>
-                  <td><small>{{ c.listing_type_id }}<br>{{ c.free_shipping ? 'Frete grátis' : '' }} {{ c.logistic_type || '' }}</small></td>
-                  <td><small>{{ repLabel(c) }}</small></td>
-                  <td style="font-size:12px">{{ commentMap[String(c.item_id)] || '—' }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
         <!-- Anotações -->
         <div class="card card-outline card-secondary" v-if="currentId">
           <div class="card-header"><h3 class="card-title">Minhas anotações (usadas em estudos futuros)</h3></div>
@@ -219,6 +301,7 @@ const study = ref(null)
 const rawResult = ref(null)
 const competitors = ref([])   // top 10 reais (ml_data), com link/foto/métricas
 const commentMap = ref({})    // item_id -> comentário da IA
+const searchStudy = ref(null) // estudo de mercado (categorias, keywords, frete, preço)
 const topCompetitors = computed(() => competitors.value)
 const notes = ref('')
 const history = ref([])
@@ -244,6 +327,7 @@ function buildCompetitors(result) {
     if (c.item_id) cm[String(c.item_id)] = c.comment || c.strengths || c.weaknesses || ''
   }
   commentMap.value = cm
+  searchStudy.value = result?.ml_data?.search_study || null
 }
 function repLabel(c) {
   const lvl = c?.seller_reputation?.level_id
@@ -277,6 +361,7 @@ async function loadHistory() {
 async function startAnalysis() {
   if (!canRun.value) return
   running.value = true; errorMsg.value = ''; study.value = null; rawResult.value = null
+  searchStudy.value = null; competitors.value = []
   progress.value = 'Iniciando…'
   try {
     const { data } = await api.post('/competitor-analysis', {
@@ -353,7 +438,7 @@ async function removeAnalysis(id) {
   } catch { toast.error('Erro ao excluir.') }
 }
 
-watch(product, () => { study.value = null; rawResult.value = null; currentId.value = null; loadHistory() })
+watch(product, () => { study.value = null; rawResult.value = null; currentId.value = null; searchStudy.value = null; competitors.value = []; loadHistory() })
 onMounted(loadAccounts)
 onBeforeUnmount(() => clearInterval(pollTimer))
 </script>
