@@ -304,23 +304,31 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
     catalog_id_set = {str(i) for i in catalog_ids}
 
     if not item_ids:
-        out["errors"].append("nenhum concorrente encontrado (catálogo e highlights vazios)")
+        out["errors"].append(
+            f"nenhum concorrente encontrado (catálogo={len(catalog_ids)}, "
+            f"highlights={len(highlight_ids)}, categoria={cat_id or '—'})"
+        )
         out["search_study"] = {"query": title, "total_found": 0}
         return out
 
-    # 2) Detalhe de todos os itens (vendas, data, frete, atributos) via bulk /items
+    # 2) Detalhe de todos os itens (vendas, data, frete, atributos) com fallback resiliente
     listings: list[dict] = []
     try:
-        details = await ml.get_items_bulk(token, item_ids)
+        details, diag = await ml.fetch_item_details(token, item_ids)
         for d in details:
             it = ml.normalize_item_detail(d)
             it["source"] = "catalog" if str(it["item_id"]) in catalog_id_set else "highlights"
             listings.append(it)
     except Exception as e:  # noqa: BLE001
         out["errors"].append(f"items: {e}")
+        diag = {}
 
     if not listings:
-        out["errors"].append("falha ao carregar detalhes dos concorrentes")
+        out["errors"].append(
+            f"falha ao carregar detalhes: {len(item_ids)} IDs "
+            f"(catálogo={len(catalog_ids)}, highlights={len(highlight_ids)}) — "
+            f"multiget={diag.get('multiget_status')}, individual={diag.get('individual_status')}"
+        )
         out["search_study"] = {"query": title, "total_found": 0}
         return out
 

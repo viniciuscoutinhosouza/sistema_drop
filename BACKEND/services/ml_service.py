@@ -1028,6 +1028,78 @@ async def get_items_bulk(access_token: str, item_ids: list[str]) -> list[dict]:
     return results
 
 
+async def fetch_item_details(access_token: str, item_ids: list[str]) -> tuple[list[dict], dict]:
+    """Busca detalhes de itens com resiliência: multiget /items?ids= e, p/ os que
+    faltarem, fallback individual /items/{id} (endpoint público mais tolerante).
+
+    Retorna (details, diag) onde diag = {multiget_status, multiget_count,
+    individual_count, individual_status}. Útil para diagnosticar restrições do ML.
+    """
+    import asyncio as _asyncio
+
+    if not item_ids:
+        return [], {"multiget_status": None, "multiget_count": 0,
+                    "individual_count": 0, "individual_status": None}
+
+    _attrs = (
+        "id,title,price,available_quantity,sold_quantity,status,listing_type_id,"
+        "category_id,thumbnail,permalink,seller_sku,shipping,attributes,"
+        "catalog_product_id,catalog_listing,item_condition,date_created,start_time,seller_id"
+    )
+    by_id: dict[str, dict] = {}
+    diag = {"multiget_status": None, "multiget_count": 0,
+            "individual_count": 0, "individual_status": None}
+
+    # 1) Multiget em chunks de 20
+    async with httpx.AsyncClient(timeout=30) as client:
+        for i in range(0, len(item_ids), 20):
+            chunk = [str(x) for x in item_ids[i : i + 20]]
+            try:
+                resp = await client.get(
+                    f"{ML_API_BASE}/items",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={"ids": ",".join(chunk), "attributes": _attrs},
+                )
+            except Exception as e:  # noqa: BLE001
+                diag["multiget_status"] = f"erro: {e}"
+                continue
+            diag["multiget_status"] = resp.status_code
+            if resp.status_code != 200:
+                continue
+            for entry in resp.json() or []:
+                if entry.get("code") == 200 and entry.get("body"):
+                    b = entry["body"]
+                    by_id[str(b.get("id"))] = b
+    diag["multiget_count"] = len(by_id)
+
+    # 2) Fallback individual /items/{id} para os que faltaram
+    missing = [str(x) for x in item_ids if str(x) not in by_id]
+    if missing:
+        sem = _asyncio.Semaphore(8)  # limita concorrência p/ evitar rate limit
+
+        async def _one(client: httpx.AsyncClient, iid: str) -> None:
+            async with sem:
+                try:
+                    r = await client.get(
+                        f"{ML_API_BASE}/items/{iid}",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        params={"attributes": _attrs},
+                    )
+                    diag["individual_status"] = r.status_code
+                    if r.status_code == 200:
+                        b = r.json()
+                        if b and b.get("id"):
+                            by_id[str(b["id"])] = b
+                except Exception:  # noqa: BLE001
+                    pass
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            await _asyncio.gather(*[_one(client, iid) for iid in missing[:80]])
+        diag["individual_count"] = len(by_id) - diag["multiget_count"]
+
+    return list(by_id.values()), diag
+
+
 # ── Catálogo / concorrentes (Análise de Concorrência) ─────────────────────────
 
 
