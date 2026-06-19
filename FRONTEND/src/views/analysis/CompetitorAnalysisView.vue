@@ -131,7 +131,12 @@
               </tr></thead>
               <tbody>
                 <tr v-for="c in study.top_competitors" :key="c.item_id">
-                  <td><small>{{ c.item_id }}</small></td>
+                  <td>
+                    <a v-if="compLink(c)" :href="compLink(c)" target="_blank" rel="noopener" title="Abrir anúncio no ML">
+                      <small>{{ c.item_id }} <i class="fas fa-external-link-alt" style="font-size:9px"></i></small>
+                    </a>
+                    <small v-else>{{ c.item_id }}</small>
+                  </td>
                   <td style="font-size:12px">{{ c.title }}</td>
                   <td><small>{{ c.seller }}<br><span class="text-muted">{{ c.reputation }}</span></small></td>
                   <td class="text-center">{{ money(c.price) }}</td>
@@ -205,6 +210,7 @@ const errorMsg = ref('')
 const currentId = ref(null)
 const study = ref(null)
 const rawResult = ref(null)
+const compLinks = ref({})  // item_id -> permalink (fonte: ml_data dos concorrentes)
 const notes = ref('')
 const history = ref([])
 let pollTimer = null
@@ -219,6 +225,14 @@ function rangeMoney(arr) { return Array.isArray(arr) && arr.length === 2 ? `${mo
 function fmtDate(d) { return d ? formatDateTime(d) : '—' }
 function confColor(c) { return c === 'alta' ? 'badge-success' : (c === 'media' ? 'badge-warning' : 'badge-secondary') }
 function copy(t) { navigator.clipboard?.writeText(t || ''); toast.success('Copiado') }
+function buildLinks(result) {
+  const m = {}
+  for (const c of (result?.ml_data?.competitors || [])) {
+    if (c.item_id && c.permalink) m[String(c.item_id)] = c.permalink
+  }
+  compLinks.value = m
+}
+function compLink(c) { return c?.permalink || compLinks.value[String(c?.item_id)] || null }
 
 function setSource(s) {
   if (s === 'cmig' && !cmigId.value) return
@@ -279,6 +293,7 @@ async function fetchStatus() {
       clearInterval(pollTimer); running.value = false
       study.value = data.result?.study || null
       rawResult.value = data.result?.study_raw || null
+      buildLinks(data.result)
       notes.value = data.notes || ''
       loadHistory()
     } else if (data.status === 'error') {
@@ -297,6 +312,7 @@ async function openHistory(id) {
     currentId.value = id
     study.value = data.result?.study || null
     rawResult.value = data.result?.study_raw || null
+    buildLinks(data.result)
     notes.value = data.notes || ''
     errorMsg.value = data.status === 'error' ? (data.error || '') : ''
   } catch { toast.error('Erro ao abrir o estudo.') }
