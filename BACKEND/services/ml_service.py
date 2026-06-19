@@ -1077,6 +1077,61 @@ async def get_catalog_product_items(access_token: str, product_id: str) -> list[
         return []
 
 
+async def get_category_highlights(
+    access_token: str, category_id: str, site_id: str = "MLB", limit: int = 60
+) -> list[str]:
+    """Top mais vendidos de uma categoria (/highlights/{site}/category/{id}).
+
+    Retorna lista de item_ids (apenas entradas type=ITEM), até `limit`.
+    """
+    if not category_id:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/highlights/{site_id}/category/{category_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        if resp.status_code != 200:
+            logger.warning(
+                "[ML] highlights status=%s cat=%s: %s",
+                resp.status_code, category_id, resp.text[:150],
+            )
+            return []
+        content = (resp.json() or {}).get("content", []) or []
+        ids = [c.get("id") for c in content if c.get("type") == "ITEM" and c.get("id")]
+        return ids[:limit]
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[ML] highlights erro cat=%s: %s", category_id, e)
+        return []
+
+
+def normalize_item_detail(d: dict) -> dict:
+    """Normaliza um item vindo do /items (bulk) para o formato do estudo de concorrência."""
+    shipping = d.get("shipping") or {}
+    attrs = d.get("attributes") or []
+    return {
+        "item_id": d.get("id"),
+        "title": d.get("title"),
+        "price": d.get("price"),
+        "sold_quantity": int(d.get("sold_quantity") or 0),
+        "available_quantity": d.get("available_quantity"),
+        "condition": d.get("item_condition") or d.get("condition"),
+        "listing_type_id": d.get("listing_type_id"),
+        "category_id": d.get("category_id"),
+        "catalog_product_id": d.get("catalog_product_id"),
+        "permalink": d.get("permalink"),
+        "thumbnail": d.get("thumbnail"),
+        "date_created": d.get("date_created") or d.get("start_time"),
+        "free_shipping": bool(shipping.get("free_shipping")),
+        "logistic_type": shipping.get("logistic_type"),
+        "shipping_mode": shipping.get("mode"),
+        "seller_id": d.get("seller_id"),
+        "brand": _extract_item_attr(attrs, "BRAND"),
+        "model": _extract_item_attr(attrs, "MODEL"),
+    }
+
+
 async def get_price_to_win(access_token: str, item_id: str, version: str = "v2") -> dict:
     """price_to_win de um item SEU já publicado (preço p/ vencer + boosts). Fase 2."""
     try:

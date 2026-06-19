@@ -74,7 +74,9 @@
           <div class="col-md-4">
             <div class="card card-outline card-primary h-100">
               <div class="card-header py-2">
-                <h3 class="card-title">Top categorias <small class="text-muted">({{ searchStudy.total_found }} anúncios)</small></h3>
+                <h3 class="card-title">Top categorias
+                  <small class="text-muted">({{ searchStudy.total_found }} concorrentes · {{ searchStudy.catalog_count }} catálogo · {{ searchStudy.highlights_count }} categoria)</small>
+                </h3>
               </div>
               <div class="card-body p-2">
                 <table class="table table-sm mb-0">

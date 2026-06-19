@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 _BG_TASKS: set = set()  # mantém referência dos tasks (evita coleta pelo GC)
 
 MAX_COMPETITORS = 15          # top N concorrentes enriquecidos (reputação/visitas)
-SEARCH_TARGET = 180           # total de anúncios a coletar no /search (3 páginas × 60)
 TOP_KEYWORDS = 30             # palavras-chave mais frequentes a retornar
 TOP_CATEGORIES = 3            # categorias mais frequentes a retornar
 
@@ -221,12 +220,13 @@ async def _load_inputs(analysis_id: int) -> dict | None:
 
 
 async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
-    """Estudo de mercado do ML baseado em busca por texto (/sites/MLB/search).
+    """Estudo de mercado do ML — híbrido Catálogo + Highlights.
 
-    Coleta até SEARCH_TARGET (180) anúncios, enriquece com vendas/data/visitas,
-    calcula estatísticas (categorias, keywords, frete, preço) e seleciona o top 10
-    por vendas com reputação. Mantém o contrato anterior (category, attributes,
-    competitors, commission, price_stats, errors) e adiciona `search_study`.
+    A busca livre por texto (/sites/MLB/search) foi descontinuada pelo ML (403).
+    Fontes atuais: (a) itens do CATÁLOGO = concorrentes diretos do produto (buy box);
+    (b) HIGHLIGHTS da categoria = top mais vendidos (tendências/keywords).
+    Enriquece com vendas/data/visitas, calcula estatísticas (categorias, keywords,
+    frete, preço) e seleciona o top 10 por vendas com reputação.
     """
     from services.ml_auth import get_valid_token
 
@@ -265,38 +265,67 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         out["errors"].append(f"categoria: {e}")
 
-    # 1) Busca os 180 anúncios por texto
-    listings: list[dict] = []
+    # 1) Coleta de IDs por duas fontes (busca por texto foi descontinuada pelo ML — 403):
+    #    a) CATÁLOGO: concorrentes diretos do mesmo produto (buy box)
+    #    b) HIGHLIGHTS: top mais vendidos da categoria (tendências/keywords)
+    catalog_ids: list[str] = []
     try:
-        listings = await ml.search_ml_listings(title, token, target_count=SEARCH_TARGET)
+        products = await ml.search_catalog_products(token, title)
+        if products:
+            pid = products[0].get("id")
+            cat_prod = await ml.get_catalog_product(token, pid)
+            out["catalog"] = {
+                "product_id": pid,
+                "name": cat_prod.get("name"),
+                "buy_box_winner": cat_prod.get("buy_box_winner"),
+            }
+            items = await ml.get_catalog_product_items(token, pid)
+            catalog_ids = [it.get("item_id") for it in items if it.get("item_id")]
     except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"search: {e}")
+        out["errors"].append(f"catalogo: {e}")
 
-    if not listings:
-        out["errors"].append("nenhum anúncio retornado na busca")
+    highlight_ids: list[str] = []
+    cat_id = (out.get("category") or {}).get("id")
+    if cat_id:
+        try:
+            highlight_ids = await ml.get_category_highlights(token, cat_id, limit=60)
+        except Exception as e:  # noqa: BLE001
+            out["errors"].append(f"highlights: {e}")
+
+    # Combina e deduplica (catálogo primeiro — são os concorrentes diretos)
+    seen: set[str] = set()
+    item_ids: list[str] = []
+    catalog_id_set = set()
+    for iid in catalog_ids + highlight_ids:
+        s = str(iid)
+        if s and s not in seen:
+            seen.add(s)
+            item_ids.append(iid)
+    catalog_id_set = {str(i) for i in catalog_ids}
+
+    if not item_ids:
+        out["errors"].append("nenhum concorrente encontrado (catálogo e highlights vazios)")
         out["search_study"] = {"query": title, "total_found": 0}
         return out
 
-    item_ids = [it["item_id"] for it in listings if it.get("item_id")]
-
-    # 2) Enriquece com vendas + data de cadastro + atributos (bulk /items)
+    # 2) Detalhe de todos os itens (vendas, data, frete, atributos) via bulk /items
+    listings: list[dict] = []
     try:
         details = await ml.get_items_bulk(token, item_ids)
-        by_id = {str(d.get("id")): d for d in details}
-        for it in listings:
-            d = by_id.get(str(it["item_id"]))
-            if not d:
-                continue
-            it["sold_quantity"] = int(d.get("sold_quantity") or 0)
-            it["date_created"] = d.get("date_created") or d.get("start_time")
-            if not it.get("brand"):
-                it["brand"] = ml._extract_item_attr(d.get("attributes") or [], "BRAND")
-            if not it.get("model"):
-                it["model"] = ml._extract_item_attr(d.get("attributes") or [], "MODEL")
+        for d in details:
+            it = ml.normalize_item_detail(d)
+            it["source"] = "catalog" if str(it["item_id"]) in catalog_id_set else "highlights"
+            listings.append(it)
     except Exception as e:  # noqa: BLE001
         out["errors"].append(f"items: {e}")
 
+    if not listings:
+        out["errors"].append("falha ao carregar detalhes dos concorrentes")
+        out["search_study"] = {"query": title, "total_found": 0}
+        return out
+
     # 3) Enriquece com visitas (30 dias) de todos os itens
+    item_ids = [it["item_id"] for it in listings if it.get("item_id")]
     visits: dict = {}
     try:
         visits = await ml.get_items_visit_stats_range(token, item_ids, days=30)
@@ -332,7 +361,8 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
     search_study = {
         "query": title,
         "total_found": len(listings),
-        "pages_fetched": (len(listings) + 49) // 50,
+        "catalog_count": sum(1 for it in listings if it.get("source") == "catalog"),
+        "highlights_count": sum(1 for it in listings if it.get("source") == "highlights"),
         "top_categories": top_categories,
         "top_keywords": top_keywords,
         "shipping_stats": {
@@ -367,7 +397,7 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
         {k: it.get(k) for k in (
             "item_id", "title", "price", "category_id", "sold_quantity",
             "free_shipping", "logistic_type", "brand", "model",
-            "days_live", "sales_per_day", "visits_30d", "permalink",
+            "days_live", "sales_per_day", "visits_30d", "permalink", "source",
         )}
         for it in listings
     ]
@@ -392,13 +422,15 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
 _SYSTEM_PROMPT = (
     "Você é um especialista sênior em vendas no Mercado Livre (categorias, SEO de título, "
     "precificação, buy box, Mercado Envios/Full e Product Ads). Receberá os dados de um produto "
-    "do vendedor e dados REAIS coletados do ML a partir de uma BUSCA por texto: até 180 anúncios "
-    "(3 páginas), com um estudo de mercado em ml.estudo_mercado contendo as TOP categorias (com "
-    "contagem), as TOP 30 palavras-chave de título/marca/modelo, estatísticas de frete grátis e "
-    "Full, e faixas de preço (mín/máx/médio) separadas por quem oferece frete grátis e quem não "
-    "oferece. Também recebe o top 10 por vendas (com visitas/dia, vendas/dia, data de cadastro e "
-    "reputação) e a comissão. Faça um estudo de concorrência ACIONÁVEL e responda SOMENTE com um "
-    "JSON válido (sem texto fora do JSON, sem markdown), no schema:\n"
+    "do vendedor e dados REAIS coletados do ML por DUAS fontes: concorrentes diretos do CATÁLOGO "
+    "(buy box do mesmo produto) e os mais vendidos da CATEGORIA (highlights). O bloco "
+    "ml.estudo_mercado traz as TOP categorias (com contagem), as TOP 30 palavras-chave de "
+    "título/marca/modelo, estatísticas de frete grátis e Full, e faixas de preço (mín/máx/médio) "
+    "separadas por quem oferece frete grátis e quem não oferece. Também recebe o top 10 por vendas "
+    "(com visitas/dia, vendas/dia, data de cadastro e reputação) e a comissão. Se os dados de "
+    "concorrência forem escassos, seja explícito sobre a baixa confiança. Faça um estudo de "
+    "concorrência ACIONÁVEL e responda SOMENTE com um JSON válido (sem texto fora do JSON, sem "
+    "markdown), no schema:\n"
     "{\n"
     '  "best_title": "título otimizado <=60 chars",\n'
     '  "model_field": "o que preencher no campo Modelo",\n'
