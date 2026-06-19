@@ -1520,12 +1520,21 @@ async def search_ml_listings(
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("[ML] search_ml_listings offset=%s erro: %s", offset, e)
+                if offset == 0:
+                    raise RuntimeError(f"falha de rede no /search: {e}") from e
                 break
             if resp.status_code != 200:
                 logger.warning(
                     "[ML] search_ml_listings status=%s offset=%s: %s",
                     resp.status_code, offset, resp.text[:200],
                 )
+                # Na 1ª página, propaga o status p/ diagnóstico (ex.: 403/410 = endpoint
+                # de busca pública descontinuado pelo ML). Nas demais, só para a paginação.
+                if offset == 0:
+                    raise RuntimeError(
+                        f"HTTP {resp.status_code} em /sites/{site_id}/search — "
+                        f"{resp.text[:150]}"
+                    )
                 break
             data = resp.json()
             results = data.get("results") or []

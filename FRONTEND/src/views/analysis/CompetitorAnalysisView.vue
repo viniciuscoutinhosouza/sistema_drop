@@ -55,8 +55,20 @@
         </div>
       </div>
 
+      <!-- Diagnóstico: erros na coleta do ML -->
+      <div v-if="mlErrors.length" class="alert alert-warning">
+        <h6 class="mb-1"><i class="fas fa-exclamation-triangle mr-1"></i>Diagnóstico da coleta no Mercado Livre</h6>
+        <ul class="mb-1 pl-3 small">
+          <li v-for="(e,i) in mlErrors" :key="i"><code>{{ e }}</code></li>
+        </ul>
+        <small v-if="searchStudy && searchStudy.total_found === 0" class="text-muted">
+          A busca não retornou anúncios — as recomendações da IA abaixo (se houver) não são confiáveis,
+          pois foram geradas sem dados reais de mercado.
+        </small>
+      </div>
+
       <!-- ══ ESTUDO DE MERCADO (dados reais da busca no ML) ══ -->
-      <template v-if="searchStudy">
+      <template v-if="searchStudy && searchStudy.total_found > 0">
         <div class="row">
           <!-- Top categorias -->
           <div class="col-md-4">
@@ -302,6 +314,7 @@ const rawResult = ref(null)
 const competitors = ref([])   // top 10 reais (ml_data), com link/foto/métricas
 const commentMap = ref({})    // item_id -> comentário da IA
 const searchStudy = ref(null) // estudo de mercado (categorias, keywords, frete, preço)
+const mlErrors = ref([])      // erros da coleta no ML (diagnóstico)
 const topCompetitors = computed(() => competitors.value)
 const notes = ref('')
 const history = ref([])
@@ -328,6 +341,7 @@ function buildCompetitors(result) {
   }
   commentMap.value = cm
   searchStudy.value = result?.ml_data?.search_study || null
+  mlErrors.value = result?.ml_data?.errors || []
 }
 function repLabel(c) {
   const lvl = c?.seller_reputation?.level_id
@@ -361,7 +375,7 @@ async function loadHistory() {
 async function startAnalysis() {
   if (!canRun.value) return
   running.value = true; errorMsg.value = ''; study.value = null; rawResult.value = null
-  searchStudy.value = null; competitors.value = []
+  searchStudy.value = null; competitors.value = []; mlErrors.value = []
   progress.value = 'Iniciando…'
   try {
     const { data } = await api.post('/competitor-analysis', {
@@ -438,7 +452,7 @@ async function removeAnalysis(id) {
   } catch { toast.error('Erro ao excluir.') }
 }
 
-watch(product, () => { study.value = null; rawResult.value = null; currentId.value = null; searchStudy.value = null; competitors.value = []; loadHistory() })
+watch(product, () => { study.value = null; rawResult.value = null; currentId.value = null; searchStudy.value = null; competitors.value = []; mlErrors.value = []; loadHistory() })
 onMounted(loadAccounts)
 onBeforeUnmount(() => clearInterval(pollTimer))
 </script>
