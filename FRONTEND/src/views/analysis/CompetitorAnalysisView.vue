@@ -120,30 +120,37 @@
           <div class="card-footer small text-muted">{{ study.forecast.method_note }} {{ study.disclaimer }}</div>
         </div>
 
-        <!-- Concorrentes -->
-        <div class="card" v-if="(study.top_competitors||[]).length">
-          <div class="card-header"><h3 class="card-title">Top concorrentes</h3></div>
+        <!-- Concorrentes (dados reais do ML + comentário da IA por anúncio) -->
+        <div class="card" v-if="topCompetitors.length">
+          <div class="card-header"><h3 class="card-title">Top {{ topCompetitors.length }} concorrentes</h3></div>
           <div class="card-body p-0">
             <table class="table table-sm table-hover mb-0">
               <thead class="thead-light"><tr>
-                <th>Anúncio</th><th>Título</th><th>Vendedor / Reput.</th><th class="text-center">Preço</th>
-                <th class="text-center">Vendas</th><th class="text-center">Visitas</th><th>Tipo / Frete</th><th>Forças / Fraquezas</th>
+                <th style="width:54px">Foto</th><th>Anúncio / Título</th><th class="text-center">Preço</th>
+                <th class="text-center">Vendas</th><th class="text-center">Visitas 30d</th><th>Tipo / Frete</th>
+                <th>Reputação</th><th>Comentário do estudo</th>
               </tr></thead>
               <tbody>
-                <tr v-for="c in study.top_competitors" :key="c.item_id">
+                <tr v-for="c in topCompetitors" :key="c.item_id">
                   <td>
-                    <a v-if="compLink(c)" :href="compLink(c)" target="_blank" rel="noopener" title="Abrir anúncio no ML">
+                    <a v-if="c.permalink" :href="c.permalink" target="_blank" rel="noopener">
+                      <img :src="c.thumbnail || 'https://via.placeholder.com/44?text=%E2%80%94'" style="width:44px;height:44px;object-fit:contain;border-radius:4px" />
+                    </a>
+                    <img v-else :src="c.thumbnail || 'https://via.placeholder.com/44?text=%E2%80%94'" style="width:44px;height:44px;object-fit:contain;border-radius:4px" />
+                  </td>
+                  <td>
+                    <a v-if="c.permalink" :href="c.permalink" target="_blank" rel="noopener" title="Abrir anúncio no ML">
                       <small>{{ c.item_id }} <i class="fas fa-external-link-alt" style="font-size:9px"></i></small>
                     </a>
                     <small v-else>{{ c.item_id }}</small>
+                    <div style="font-size:12px;line-height:1.25">{{ c.title }}</div>
                   </td>
-                  <td style="font-size:12px">{{ c.title }}</td>
-                  <td><small>{{ c.seller }}<br><span class="text-muted">{{ c.reputation }}</span></small></td>
                   <td class="text-center">{{ money(c.price) }}</td>
-                  <td class="text-center">{{ c.sold }}</td>
-                  <td class="text-center">{{ c.visits }}</td>
-                  <td><small>{{ c.listing_type }}<br>{{ c.shipping }}</small></td>
-                  <td><small class="text-success">{{ c.strengths }}</small><br><small class="text-danger">{{ c.weaknesses }}</small></td>
+                  <td class="text-center">{{ c.sold_quantity }}<div v-if="c.sales_per_day" class="text-muted" style="font-size:10px">{{ c.sales_per_day }}/dia</div></td>
+                  <td class="text-center">{{ c.visits_30d ?? '—' }}</td>
+                  <td><small>{{ c.listing_type_id }}<br>{{ c.free_shipping ? 'Frete grátis' : '' }} {{ c.logistic_type || '' }}</small></td>
+                  <td><small>{{ repLabel(c) }}</small></td>
+                  <td style="font-size:12px">{{ commentMap[String(c.item_id)] || '—' }}</td>
                 </tr>
               </tbody>
             </table>
@@ -210,7 +217,9 @@ const errorMsg = ref('')
 const currentId = ref(null)
 const study = ref(null)
 const rawResult = ref(null)
-const compLinks = ref({})  // item_id -> permalink (fonte: ml_data dos concorrentes)
+const competitors = ref([])   // top 10 reais (ml_data), com link/foto/métricas
+const commentMap = ref({})    // item_id -> comentário da IA
+const topCompetitors = computed(() => competitors.value)
 const notes = ref('')
 const history = ref([])
 let pollTimer = null
@@ -225,14 +234,21 @@ function rangeMoney(arr) { return Array.isArray(arr) && arr.length === 2 ? `${mo
 function fmtDate(d) { return d ? formatDateTime(d) : '—' }
 function confColor(c) { return c === 'alta' ? 'badge-success' : (c === 'media' ? 'badge-warning' : 'badge-secondary') }
 function copy(t) { navigator.clipboard?.writeText(t || ''); toast.success('Copiado') }
-function buildLinks(result) {
-  const m = {}
-  for (const c of (result?.ml_data?.competitors || [])) {
-    if (c.item_id && c.permalink) m[String(c.item_id)] = c.permalink
+function buildCompetitors(result) {
+  const list = [...(result?.ml_data?.competitors || [])]
+    .sort((a, b) => (b.sold_quantity || 0) - (a.sold_quantity || 0))
+    .slice(0, 10)
+  competitors.value = list
+  const cm = {}
+  for (const c of (result?.study?.top_competitors || [])) {
+    if (c.item_id) cm[String(c.item_id)] = c.comment || c.strengths || c.weaknesses || ''
   }
-  compLinks.value = m
+  commentMap.value = cm
 }
-function compLink(c) { return c?.permalink || compLinks.value[String(c?.item_id)] || null }
+function repLabel(c) {
+  const lvl = c?.seller_reputation?.level_id
+  return lvl ? `Nível ${lvl}` : (c?.seller_id ? `Vend. ${c.seller_id}` : '—')
+}
 
 function setSource(s) {
   if (s === 'cmig' && !cmigId.value) return
@@ -293,7 +309,7 @@ async function fetchStatus() {
       clearInterval(pollTimer); running.value = false
       study.value = data.result?.study || null
       rawResult.value = data.result?.study_raw || null
-      buildLinks(data.result)
+      buildCompetitors(data.result)
       notes.value = data.notes || ''
       loadHistory()
     } else if (data.status === 'error') {
@@ -312,7 +328,7 @@ async function openHistory(id) {
     currentId.value = id
     study.value = data.result?.study || null
     rawResult.value = data.result?.study_raw || null
-    buildLinks(data.result)
+    buildCompetitors(data.result)
     notes.value = data.notes || ''
     errorMsg.value = data.status === 'error' ? (data.error || '') : ''
   } catch { toast.error('Erro ao abrir o estudo.') }

@@ -283,15 +283,17 @@ _SYSTEM_PROMPT = (
     '  "model_field": "o que preencher no campo Modelo",\n'
     '  "best_category": {"id":"MLBxxxx","name":"","path":"","rationale":""},\n'
     '  "price_range": {"beginner":{"min":0,"max":0},"mature":{"min":0,"max":0},"rationale":"","margin_check":""},\n'
-    '  "top_competitors": [{"item_id":"","title":"","seller":"","reputation":"","price":0,"sold":0,"visits":0,"listing_type":"","shipping":"","strengths":"","weaknesses":""}],\n'
+    '  "top_competitors": [{"item_id":"<item_id EXATO recebido>","comment":"análise/observação deste anúncio no contexto do estudo (forças, fraquezas, o que copiar/evitar, posição de preço)"}],\n'
     '  "forecast": {"7":{"sales":[0,0],"visits":[0,0],"profit":[0,0],"confidence":"baixa|media|alta"},"14":{},"30":{},"60":{},"90":{},"method_note":""},\n'
     '  "recommendations": ["ações p/ ganhar relevância: Full, frete grátis, parcelamento, atributos/ficha, fotos, Ads (ROAS=100/ACOS-teto), etc"],\n'
     '  "disclaimer": "aviso de que a previsão é estimativa"\n'
     "}\n"
     "Regras: a previsão deve usar a VELOCIDADE (sales_per_day) e visitas dos concorrentes + a posição "
     "de preço escolhida; dê FAIXAS (min,max) e confiança. Respeite a margem de contribuição desejada "
-    "sobre o custo ao sugerir preço (desconte comissão e frete). Liste no máximo 10 concorrentes "
-    "(os mais relevantes). Considere o comentário/prompt do usuário e o histórico/anotações."
+    "sobre o custo ao sugerir preço (desconte comissão e frete). Em top_competitors, comente CADA UM "
+    "dos até 10 concorrentes mais relevantes recebidos em ml.concorrentes, usando o item_id EXATO de "
+    "cada um (não invente item_id, não invente links). Considere o comentário/prompt do usuário e o "
+    "histórico/anotações."
 )
 
 
