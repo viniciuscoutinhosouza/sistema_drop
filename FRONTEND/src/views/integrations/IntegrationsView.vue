@@ -370,7 +370,8 @@ const savingBling  = ref(false)
 async function loadAccounts() {
   loading.value = true
   try {
-    const { data } = await api.get('/accounts')
+    // Gestão de contas vê todas, inclusive as de CMIGs inativas.
+    const { data } = await api.get('/accounts', { params: { include_inactive_cmig: true } })
     accounts.value = data
   } catch {
     toast('Erro ao carregar contas', 'danger')

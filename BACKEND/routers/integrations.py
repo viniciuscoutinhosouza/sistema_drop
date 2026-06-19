@@ -21,13 +21,13 @@ def _trunc_bytes(s: str, max_bytes: int) -> str:
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database import get_db
 from dependencies import get_current_user, require_menu_permission
-from models.cmig import CMIGAdministrator
+from models.cmig import CMIG, CMIGAdministrator
 from models.integration import AccountBalance, MarketplaceAccount
 from models.product import DropshipperProduct, ProductListing
 from models.user import AccountAdministrator, User
@@ -133,17 +133,30 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
 
 @router.get("")
 async def list_accounts(
+    include_inactive_cmig: bool = False,
     current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
     """Lista as CONTAs visíveis ao usuário. Admin vê todas; AC vê as que
-    co-administra ou que pertencem às suas CMIGs."""
+    co-administra ou que pertencem às suas CMIGs.
+
+    Por padrão NÃO inclui contas cujas CMIGs estão inativas (some de todos os
+    seletores). A tela de gestão de Integrações passa include_inactive_cmig=true."""
+    # CMIGs inativas → suas contas não aparecem em seletores (regra de negócio).
+    inactive_cmig_ids: set[int] = set()
+    if not include_inactive_cmig:
+        rows = await db.execute(select(CMIG.id).where(CMIG.is_active == False))  # noqa: E712
+        inactive_cmig_ids = {r[0] for r in rows.all()}
+
+    def _visible(acc) -> bool:
+        return acc.cmig_id is None or acc.cmig_id not in inactive_cmig_ids
+
     # Super Admin: vê TODAS as contas (incluindo as vinculadas a qualquer CMIG).
     if current_user.role == "admin":
         result = await db.execute(
             select(MarketplaceAccount).order_by(MarketplaceAccount.created_at)
         )
-        return [_serialize_account(acc, True) for acc in result.scalars().all()]
+        return [_serialize_account(acc, True) for acc in result.scalars().all() if _visible(acc)]
 
     # Contas com vínculo direto via AccountAdministrator
     result = await db.execute(
@@ -170,7 +183,7 @@ async def list_accounts(
         for acc in result2.scalars().all():
             accounts[acc.id] = (acc, False)
 
-    return [_serialize_account(acc, is_owner) for acc, is_owner in accounts.values()]
+    return [_serialize_account(acc, is_owner) for acc, is_owner in accounts.values() if _visible(acc)]
 
 
 # ─── Criar CONTA ──────────────────────────────────────────────────────────────

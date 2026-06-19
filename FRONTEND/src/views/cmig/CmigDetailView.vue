@@ -247,7 +247,7 @@ onMounted(async () => {
   loadNfeConfigs()
   loadAIConfig()
   // Carregar CMs da CMIG
-  const { data: accData } = await api.get('/accounts', { params: { cmig_id: cmigId.value } }).catch(() => ({ data: [] }))
+  const { data: accData } = await api.get('/accounts', { params: { cmig_id: cmigId.value, include_inactive_cmig: true } }).catch(() => ({ data: [] }))
   cms.value = Array.isArray(accData) ? accData : (accData?.items || [])
 })
 
