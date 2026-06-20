@@ -74,3 +74,11 @@ sandbox/
 
 # Dados TEC gerados localmente (arquivo grande, regenerar via sync do Siscomex)
 Scripts SQL/ncm_tec_siscomex.csv
+
+# Camoufox / browser automation local (perfis, traces, screenshots, binário do browser)
+output/
+browser_profile/
+plugins_src/**/__pycache__/
+.venv-camoufox/
+# cloudflared (binário portátil baixado localmente para o túnel do coletor)
+tools/collector/cloudflared.exe

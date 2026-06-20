@@ -1,0 +1,5 @@
+camoufox==0.4.11
+playwright>=1.41
+playwright-stealth>=2.0.0
+requests==2.32.3
+keyring==25.6.0

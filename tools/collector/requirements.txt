@@ -1,0 +1,4 @@
+# Deps da API local do coletor (instalar na .venv-camoufox).
+# O scraping (camoufox/playwright/keyring/requests) vem de ../../requirements-camoufox.txt
+fastapi==0.115.6
+uvicorn==0.34.0

@@ -45,6 +45,20 @@ class Settings(BaseSettings):
     FOCUS_NFE_TIMEOUT: float = 60.0
     FOCUS_NFE_WEBHOOK_SECRET: str = ""
 
+    # Coletor ML local (Camoufox) — busca livre que a API do ML bloqueou (403).
+    # Roda na máquina do operador (IP residencial), exposta por túnel; o backend
+    # chama via HTTP. Vazio/desligado → a Análise de Concorrência degrada para
+    # apenas catálogo + highlights (comportamento atual). Ver tools/collector/.
+    # Múltiplas máquinas (failover): COLLECTOR_API_URL aceita LISTA separada por
+    # vírgula (tenta na ordem; se uma cair/der captcha, tenta a próxima — IPs
+    # residenciais diferentes). COLLECTOR_API_TOKEN pode ser 1 token (compartilhado)
+    # ou lista alinhada às URLs. Ex.: "https://m1.trycloudflare.com,https://m2.trycloudflare.com".
+    COLLECTOR_API_URL: str = ""          # 1+ URLs separadas por vírgula
+    COLLECTOR_API_TOKEN: str = ""        # 1 token (compartilhado) ou lista alinhada às URLs
+    COLLECTOR_ENABLED: bool = False      # liga a 3ª fonte (busca raspada)
+    COLLECTOR_TIMEOUT: float = 330.0     # > SUBPROCESS_TIMEOUT do coletor (300s) p/ 120 itens
+    COLLECTOR_LIMIT: int = 120           # 120 primeiros por relevância (= DEFAULT_LIMIT do coletor)
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

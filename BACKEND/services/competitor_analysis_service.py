@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 import services.ai_service as ai_svc
 import services.ml_service as ml
+from config import get_settings
 from database import task_db
 from models.cmig import CMIGProduct
 from models.competitor_analysis import CompetitorAnalysis
@@ -32,6 +33,8 @@ from models.product import CatalogProduct
 logger = logging.getLogger(__name__)
 
 _BG_TASKS: set = set()  # mantém referência dos tasks (evita coleta pelo GC)
+
+_MLB_ID_RE = re.compile(r"^MLB\d{6,}$")  # valida item_id raspado antes de usar na URL do ML
 
 MAX_COMPETITORS = 15          # top N concorrentes enriquecidos (reputação/visitas)
 TOP_KEYWORDS = 30             # palavras-chave mais frequentes a retornar
@@ -219,6 +222,82 @@ async def _load_inputs(analysis_id: int) -> dict | None:
         }
 
 
+def _collector_endpoints(settings) -> list[tuple[str, str]]:
+    """Monta a lista (url, token) das máquinas coletoras a partir do .env.
+
+    COLLECTOR_API_URL: 1+ URLs separadas por vírgula (ordem = prioridade de failover).
+    COLLECTOR_API_TOKEN: 1 token compartilhado OU lista alinhada às URLs.
+    Entradas vazias são ignoradas (permite deixar a 2ª máquina pré-configurada em branco).
+    """
+    urls = [u.strip() for u in (settings.COLLECTOR_API_URL or "").split(",") if u.strip()]
+    tokens = [t.strip() for t in (settings.COLLECTOR_API_TOKEN or "").split(",") if t.strip()]
+    out: list[tuple[str, str]] = []
+    for i, u in enumerate(urls):
+        tok = tokens[i] if i < len(tokens) else (tokens[0] if tokens else "")
+        out.append((u, tok))
+    return out
+
+
+async def _fetch_scraped_ids(query: str) -> tuple[list[str], dict[str, int], str | None]:
+    """3ª fonte: busca livre raspada via API local do coletor (Camoufox).
+
+    A API roda na máquina do operador (IP residencial), exposta por túnel; o ML
+    bloqueou a busca por texto na API oficial (403). Desligado por padrão
+    (COLLECTOR_ENABLED) → retorna vazio sem erro (degradação graciosa).
+
+    Retorna (item_ids, rank_map, erro), onde rank_map[item_id] = posição por
+    relevância (1..N). Nunca levanta — falha vira aviso e o estudo segue só com
+    catálogo + highlights.
+
+    FAILOVER: COLLECTOR_API_URL pode ter várias URLs (vírgula). Tenta na ordem;
+    se uma cair, der erro, captcha ou 0 itens, passa para a próxima máquina (IP
+    residencial diferente). Só falha de vez se todas falharem.
+    """
+    settings = get_settings()
+    endpoints = _collector_endpoints(settings)
+    if not settings.COLLECTOR_ENABLED or not endpoints or not query.strip():
+        return [], {}, None
+
+    body = {"query": query, "limit": settings.COLLECTOR_LIMIT}
+    errors: list[str] = []
+
+    for base_url, token in endpoints:
+        url = base_url.rstrip("/") + "/collect"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            async with httpx.AsyncClient(timeout=settings.COLLECTOR_TIMEOUT) as client:
+                r = await client.post(url, json=body, headers=headers)
+            if r.status_code != 200:
+                errors.append(f"{base_url}: HTTP {r.status_code}")
+                continue
+            data = r.json()
+            if data.get("captcha_detected"):
+                errors.append(f"{base_url}: captcha")
+                continue  # outra máquina (IP diferente) pode não ter captcha
+            # Revalida o formato no backend (defesa em profundidade — o coletor é um
+            # processo externo não-confiável; o id é interpolado na URL da API do ML).
+            # quality-guardian HIGH-1 / ADR-0012. Propaga o search_rank por MAPA (a ordem
+            # do multiget não é preservada adiante) — consistency-auditor C1/C2.
+            ids: list[str] = []
+            rank_map: dict[str, int] = {}
+            for idx, it in enumerate(data.get("items") or [], start=1):
+                iid = it.get("item_id")
+                if not iid or not _MLB_ID_RE.match(str(iid)):
+                    continue
+                iid = str(iid)
+                ids.append(iid)
+                rank_map[iid] = int(it.get("search_rank") or idx)
+            if ids:
+                # Sucesso (mantém avisos das máquinas que falharam antes, se houver).
+                return ids, rank_map, ("; ".join(errors) or None)
+            errors.append(f"{base_url}: 0 itens")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{base_url}: {e}")
+            continue
+
+    return [], {}, "coletor indisponível — " + "; ".join(errors)
+
+
 async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
     """Estudo de mercado do ML — híbrido Catálogo + Highlights.
 
@@ -292,21 +371,30 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
         except Exception as e:  # noqa: BLE001
             out["errors"].append(f"highlights: {e}")
 
-    # Combina e deduplica (catálogo primeiro — são os concorrentes diretos)
+    # 3ª fonte: busca livre raspada (coletor local Camoufox) — recupera o que a API
+    # do ML bloqueou (403). 120 primeiros por relevância. Opcional/desligável;
+    # falha não derruba o estudo (M3). rank_map preserva a ordem de relevância.
+    scraped_ids, scraped_rank_map, scraped_err = await _fetch_scraped_ids(title)
+    if scraped_err:
+        out["errors"].append(scraped_err)
+
+    # Combina e deduplica. Ordem de prioridade: catálogo (concorrentes diretos do
+    # buy box) → busca raspada (keyword) → highlights (tendências de categoria).
     seen: set[str] = set()
     item_ids: list[str] = []
-    catalog_id_set = set()
-    for iid in catalog_ids + highlight_ids:
+    for iid in catalog_ids + scraped_ids + highlight_ids:
         s = str(iid)
         if s and s not in seen:
             seen.add(s)
             item_ids.append(iid)
     catalog_id_set = {str(i) for i in catalog_ids}
+    scraped_id_set = {str(i) for i in scraped_ids}
 
     if not item_ids:
         out["errors"].append(
             f"nenhum concorrente encontrado (catálogo={len(catalog_ids)}, "
-            f"highlights={len(highlight_ids)}, categoria={cat_id or '—'})"
+            f"raspado={len(scraped_ids)}, highlights={len(highlight_ids)}, "
+            f"categoria={cat_id or '—'})"
         )
         out["search_study"] = {"query": title, "total_found": 0}
         return out
@@ -317,7 +405,15 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
         details, diag = await ml.fetch_item_details(token, item_ids)
         for d in details:
             it = ml.normalize_item_detail(d)
-            it["source"] = "catalog" if str(it["item_id"]) in catalog_id_set else "highlights"
+            iid = str(it["item_id"])
+            if iid in catalog_id_set:
+                it["source"] = "catalog"
+            elif iid in scraped_id_set:
+                it["source"] = "search_scraped"
+            else:
+                it["source"] = "highlights"
+            # search_rank por MAPA (robusto à reordenação do multiget) — auditor C1.
+            it["search_rank"] = scraped_rank_map.get(iid)
             listings.append(it)
     except Exception as e:  # noqa: BLE001
         out["errors"].append(f"items: {e}")
@@ -370,6 +466,7 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
         "query": title,
         "total_found": len(listings),
         "catalog_count": sum(1 for it in listings if it.get("source") == "catalog"),
+        "scraped_count": sum(1 for it in listings if it.get("source") == "search_scraped"),
         "highlights_count": sum(1 for it in listings if it.get("source") == "highlights"),
         "top_categories": top_categories,
         "top_keywords": top_keywords,
@@ -400,12 +497,27 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
         it["seller_reputation"] = rep_cache.get(sid)
 
     search_study["top10_by_sales"] = top10
-    # all_results_raw: versão enxuta dos 180 (sem objetos pesados) para memória/IA
+
+    # Top por relevância: os primeiros da busca raspada (search_rank), amostra de
+    # mercado p/ a IA (keywords/preço/intensidade) — auditor C1/H3.
+    by_rel = sorted(
+        (it for it in listings if it.get("search_rank")),
+        key=lambda c: c["search_rank"],
+    )
+    search_study["top_by_relevance"] = [
+        {k: it.get(k) for k in (
+            "item_id", "search_rank", "title", "price", "sold_quantity",
+            "free_shipping", "logistic_type", "permalink", "source",
+        )}
+        for it in by_rel
+    ]
+
+    # all_results_raw: versão enxuta de TODOS os itens (sem objetos pesados) p/ memória.
     search_study["all_results_raw"] = [
         {k: it.get(k) for k in (
             "item_id", "title", "price", "category_id", "sold_quantity",
             "free_shipping", "logistic_type", "brand", "model",
-            "days_live", "sales_per_day", "visits_30d", "permalink", "source",
+            "days_live", "sales_per_day", "visits_30d", "permalink", "source", "search_rank",
         )}
         for it in listings
     ]
@@ -430,11 +542,15 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
 _SYSTEM_PROMPT = (
     "Você é um especialista sênior em vendas no Mercado Livre (categorias, SEO de título, "
     "precificação, buy box, Mercado Envios/Full e Product Ads). Receberá os dados de um produto "
-    "do vendedor e dados REAIS coletados do ML por DUAS fontes: concorrentes diretos do CATÁLOGO "
-    "(buy box do mesmo produto) e os mais vendidos da CATEGORIA (highlights). O bloco "
+    "do vendedor e dados REAIS coletados do ML por TRÊS fontes: (1) concorrentes diretos do CATÁLOGO "
+    "(buy box do mesmo produto); (2) a BUSCA POR RELEVÂNCIA do termo no ML — os ~120 primeiros "
+    "anúncios ordenados por relevância, em ml.estudo_mercado.top_by_relevance (cada um com search_rank, "
+    "preço, vendas, frete); (3) os mais vendidos da CATEGORIA (highlights). O bloco "
     "ml.estudo_mercado traz as TOP categorias (com contagem), as TOP 30 palavras-chave de "
     "título/marca/modelo, estatísticas de frete grátis e Full, e faixas de preço (mín/máx/médio) "
-    "separadas por quem oferece frete grátis e quem não oferece. Também recebe o top 10 por vendas "
+    "separadas por quem oferece frete grátis e quem não oferece. Use os anúncios por RELEVÂNCIA como "
+    "AMOSTRA DE MERCADO (intensidade de concorrência, palavras-chave que rankeiam, posição de preço); "
+    "NÃO comente cada um deles individualmente. Também recebe o top 10 por vendas "
     "(com visitas/dia, vendas/dia, data de cadastro e reputação) e a comissão. Se os dados de "
     "concorrência forem escassos, seja explícito sobre a baixa confiança. Faça um estudo de "
     "concorrência ACIONÁVEL e responda SOMENTE com um JSON válido (sem texto fora do JSON, sem "
@@ -457,6 +573,25 @@ _SYSTEM_PROMPT = (
     "ml.concorrentes, usando o item_id EXATO de cada um (não invente item_id, não invente links). "
     "Considere o comentário/prompt do usuário e o histórico/anotações."
 )
+
+
+TOP_RELEVANCE_FOR_AI = 25  # itens por relevância enviados à IA (os 120 ficam no result_json)
+
+
+def _study_for_ai(study: dict | None) -> dict:
+    """Enxuga o estudo de mercado p/ o payload da IA (auditor M1).
+
+    Remove o `all_results_raw` (120 itens = muito token) e limita
+    `top_by_relevance` a TOP_RELEVANCE_FOR_AI. Agregados (keywords, faixas de
+    preço, frete) e `top10_by_sales` vão inteiros. O dataset completo fica salvo
+    no result_json como memória/auditoria.
+    """
+    study = study or {}
+    out = {k: v for k, v in study.items() if k != "all_results_raw"}
+    rel = out.get("top_by_relevance")
+    if isinstance(rel, list) and len(rel) > TOP_RELEVANCE_FOR_AI:
+        out["top_by_relevance"] = rel[:TOP_RELEVANCE_FOR_AI]
+    return out
 
 
 async def _run_analysis(analysis_id: int) -> None:
@@ -494,12 +629,7 @@ async def _run_analysis(analysis_id: int) -> None:
                 "estatisticas_preco": ml_data.get("price_stats"),
                 "comissao": ml_data.get("commission"),
                 "concorrentes": ml_data.get("competitors"),
-                "estudo_mercado": {
-                    # remove all_results_raw do payload da IA (180 itens = muito token);
-                    # a IA usa os agregados + top10. O raw fica salvo no result_json.
-                    k: v for k, v in (ml_data.get("search_study") or {}).items()
-                    if k != "all_results_raw"
-                },
+                "estudo_mercado": _study_for_ai(ml_data.get("search_study")),
             },
         }
         user_content = (

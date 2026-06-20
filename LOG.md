@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-20 — feat(full): Análise de Concorrência busca 120 por relevância (coletor pagina) — NÃO commitado
+
+Fatoração da 3ª fonte (coletor Camoufox) p/ trazer os **120 primeiros por relevância** (antes ~50). Auditado por consistency-auditor (incorporados C1/C2, H1, H3, M1, M2, M3, L2).
+
+- **Coletor** ([ml_search.py](tools/collector/ml_search.py)): troquei "scroll 3x de 1 página" por **paginação** (clica "Seguinte" → fallback URL `_Desde_N`), ordem de relevância (default ML, sem `_OrderId_`), `search_rank` (1..N) por item, dedup entre páginas, **captcha checado por página** (para no 1º).
+- **Limites** ([config.py](tools/collector/config.py) + [BACKEND/config.py](BACKEND/config.py)): coletor DEFAULT_LIMIT 50→120, MAX_LIMIT 100→150, SUBPROCESS_TIMEOUT 180→300; backend COLLECTOR_LIMIT 50→120, COLLECTOR_TIMEOUT 120→330 (cadeia 330>300>navegação). Espelhado no `.env.example`.
+- **Backend** ([competitor_analysis_service.py](BACKEND/services/competitor_analysis_service.py)): `_fetch_scraped_ids` retorna `(ids, rank_map, err)` — rank propagado por **mapa item_id→rank** (multiget não preserva ordem); `_gather_ml` aplica `it["search_rank"]` e monta `search_study.top_by_relevance`; novo `_study_for_ai` enxuga o payload da IA (top_by_relevance[:25] + agregados + top10; os 120 crus só no result_json). Corrigido comentário "180".
+- **Memorando** ([_SYSTEM_PROMPT]): descreve **3 fontes** (catálogo / busca relevância 120 / highlights); IA usa os por relevância como amostra de mercado (keywords/preço/intensidade), comenta individualmente só o top10. Adendo na [ADR-0012](DOCs/decisions/ADR-0012-coletor-ml-local-camoufox.md).
+- **Front** ([CompetitorAnalysisView.vue](FRONTEND/src/views/analysis/CompetitorAnalysisView.vue)): header mostra `scraped_count` (relevância) além de catálogo/categoria.
+- Verificação: py_compile coletor ✓, import backend ✓, pytest 25/2 (baseline) ✓, npm build ✓.
+- **Nota (auditor H1)**: `fetch_item_details` (ml_service) mantém fallback individual `Semaphore(8)`/`missing[:80]` — não alterado; monitorar 429 com 120 itens (erro é gracioso). Falta validar a coleta real de 120 no IP do operador.
+
+---
+
+## 2026-06-20 — feat(full): coletor ML local (Camoufox) + 3ª fonte da Análise de Concorrência (ADR-0012) — NÃO commitado
+
+A busca livre por texto do ML virou 403 (descontinuada) → a Análise de Concorrência só via catálogo + highlights. Instalado o kit Camoufox (anti-detect Firefox via Playwright) e criado um coletor que raspa a busca pública do ML **localmente** (máquina do operador, IP residencial) — **nunca no servidor Oracle** (VM Micro 1GB não roda Firefox; IP de datacenter é flagrado pelo Akamai; decisão do dono).
+
+- **Kit Camoufox**: 11 módulos em `plugins_src/_shared/` + `scripts/fingerprint_check.py` + `requirements-camoufox.txt`. venv dedicada `.venv-camoufox` (Python 3.11), camoufox 0.4.11 / browser v135.0.1. 11/11 módulos importam.
+- **Módulo local `tools/collector/`** (roda na venv-camoufox): `collector_api.py` (FastAPI: `POST /collect` auth Bearer via hmac.compare_digest + rate limit + 429 se ocupado; `GET /health`), `ml_search.py` (núcleo de scraping anônimo, sem login), `config.py` (lê `tools/collector/.env`), `.env.example`, README. Smoke test de API: 9/9 OK.
+- **Backend (Oracle) consome via HTTP** como 3ª fonte: `config.py` ganhou COLLECTOR_API_URL/TOKEN/ENABLED(default False)/TIMEOUT/LIMIT. `competitor_analysis_service.py`: `_fetch_scraped_ids` (httpx, revalida item_id `^MLB\d{6,}$`, degradação graciosa), `_gather_ml` funde os ids e marca `source="search_scraped"`.
+- **Reachability**: máquina local atrás de NAT → expor a API por túnel (Cloudflare/ngrok); URL pública vai em COLLECTOR_API_URL do backend. Túnel carrega só controle; Camoufox sai pelo IP residencial.
+- Auditorias: quality-guardian (corrigidos 2 CRITICAL + 2 HIGH: host 127.0.0.1, hmac compare, rate limit, revalidação de id), consistency-auditor (plano), adr-consistency-checker (APROVADO). pytest baseline 25/2 (2 falhas pré-existentes). ADR-0012 criada.
+- **Pendente**: produção 24/7 (provável worker x86 + proxy residencial) — em aberto. Rodar `fingerprint_check.py` headful e testar coleta real no IP do operador.
+
+---
+
 ## 2026-06-18 — feat(full): espelho CMIG protegido + lista mostra zerados e identifica a CMIG (commit 48579c7) — deployado
 
 Os CMIGProdutos espelho (auto-criados só p/ segurar o FULL) podiam ser "excluídos" — na prática `delete_cmig_product` os DESATIVAVA (is_active=False) quando o PG tinha vendas — sumindo das listas e deixando o FULL órfão ("parecem excluídos e não podem ser excluídos"). E produtos zerados sumiam da lista.
