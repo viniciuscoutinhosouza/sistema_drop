@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-06-20 — feat(full): Análise de Concorrência busca 120 por relevância (coletor pagina) — NÃO commitado
+## 2026-06-20 — feat(full): Análise de Concorrência busca 120 por relevância (coletor pagina) — commit c448016, backend deployado no Oracle (2026-06-20)
 
 Fatoração da 3ª fonte (coletor Camoufox) p/ trazer os **120 primeiros por relevância** (antes ~50). Auditado por consistency-auditor (incorporados C1/C2, H1, H3, M1, M2, M3, L2).
 
@@ -18,7 +18,7 @@ Fatoração da 3ª fonte (coletor Camoufox) p/ trazer os **120 primeiros por rel
 
 ---
 
-## 2026-06-20 — feat(full): coletor ML local (Camoufox) + 3ª fonte da Análise de Concorrência (ADR-0012) — NÃO commitado
+## 2026-06-20 — feat(full): coletor ML local (Camoufox) + 3ª fonte da Análise de Concorrência (ADR-0012) — commit c448016, backend deployado no Oracle (2026-06-20)
 
 A busca livre por texto do ML virou 403 (descontinuada) → a Análise de Concorrência só via catálogo + highlights. Instalado o kit Camoufox (anti-detect Firefox via Playwright) e criado um coletor que raspa a busca pública do ML **localmente** (máquina do operador, IP residencial) — **nunca no servidor Oracle** (VM Micro 1GB não roda Firefox; IP de datacenter é flagrado pelo Akamai; decisão do dono).
 
