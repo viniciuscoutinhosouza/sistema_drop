@@ -124,6 +124,26 @@ def _is_kit(it: dict) -> bool:
     return bool(re.search(r"\bkit\b", (it.get("title") or "").lower()))
 
 
+def _clean_seller(s) -> str | None:
+    """Remove o prefixo 'Vendido por' do nome do vendedor (com ou sem espaço)."""
+    if not s:
+        return None
+    s = re.sub(r"^\s*vendido\s*por\s*", "", str(s), flags=re.I).strip()
+    return s or None
+
+
+def _clean_reputation(text) -> str | None:
+    """Extrai SÓ a medalha (MercadoLíder/MercadoLíder Platinum/Gold...) do texto de
+    reputação, que vem como 'MercadoLíder Platinum · Vendido por LOJA'. Sem medalha → None."""
+    if not text:
+        return None
+    for part in str(text).split("·"):
+        p = part.strip()
+        if re.search(r"mercadol[íi]der", p, re.I):
+            return p
+    return None
+
+
 def schedule_analysis(analysis_id: int) -> None:
     """Agenda a execução do estudo em background."""
     t = asyncio.create_task(_run_analysis(analysis_id))
@@ -403,8 +423,9 @@ def _build_listings_from_scraped(items: list[dict]) -> list[dict]:
         # sold pode vir do grid ou da página (deep tem prioridade — texto mais completo)
         sold_text = it.get("sold_text")
         rep = None
-        if it.get("seller_reputation_text") or it.get("seller_sales_text"):
-            rep = {"text": it.get("seller_reputation_text"), "sales": it.get("seller_sales_text")}
+        rep_medal = _clean_reputation(it.get("seller_reputation_text"))
+        if rep_medal:
+            rep = {"text": rep_medal, "sales": it.get("seller_sales_text")}
         listing = {
             "item_id": it.get("item_id"),
             "title": it.get("title"),
@@ -418,7 +439,7 @@ def _build_listings_from_scraped(items: list[dict]) -> list[dict]:
             "listing_type_id": None,
             "rating": it.get("rating"),
             "reviews_text": it.get("reviews_text"),
-            "seller": it.get("seller") or it.get("seller_name"),
+            "seller": _clean_seller(it.get("seller") or it.get("seller_name")),
             "seller_url": it.get("seller_url"),
             "seller_id": it.get("seller_id"),
             "seller_reputation": rep,

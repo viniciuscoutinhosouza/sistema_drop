@@ -420,7 +420,7 @@ const mlErrors = ref([])      // erros da coleta no ML (diagnóstico)
 const enrichmentOff = ref(false) // API do ML de itens bloqueada → dados só da busca raspada
 const ownerListingTypes = ref(null) // simulador Clássico × Premium do produto do dono
 const topCompetitors = computed(() => competitors.value)
-const hasReputation = computed(() => competitors.value.some(c => c.seller_reputation && (c.seller_reputation.text || c.seller_reputation.sales)))
+const hasReputation = computed(() => competitors.value.some(c => c.seller_reputation && c.seller_reputation.text))
 const deepVisitedCount = computed(() => searchStudy.value?.deep_visited_count ?? 0)
 const notes = ref('')
 const history = ref([])
@@ -445,10 +445,11 @@ function buildCompetitors(result) {
   ownerListingTypes.value = result?.ml_data?.owner_listing_types || null
 }
 function repLabel(c) {
+  // Só a medalha (MercadoLíder Platinum/Gold...). O backend já limpou.
   const rep = c?.seller_reputation
-  if (rep && (rep.text || rep.sales)) return [rep.text, rep.sales].filter(Boolean).join(' · ')
+  if (rep?.text) return rep.text
   const lvl = rep?.level_id
-  return lvl ? `Nível ${lvl}` : (c?.seller_id ? `Vend. ${c.seller_id}` : '—')
+  return lvl ? `Nível ${lvl}` : '—'
 }
 
 function setSource(s) {
