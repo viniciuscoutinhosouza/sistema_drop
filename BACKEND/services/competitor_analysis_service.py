@@ -542,21 +542,43 @@ def _build_search_study(title: str, listings: list[dict], category: dict | None,
     study["rating_avg"] = round(sum(ratings) / len(ratings), 2) if ratings else None
     study["rating_count"] = len(ratings)
 
-    # Concentração de vendedores (intensidade de competição).
+    # Concentração de vendedores (intensidade de competição) + link da loja/perfil.
     seller_counter: Counter[str] = Counter(
         (it.get("seller") or it.get("seller_url")) for it in listings
         if (it.get("seller") or it.get("seller_url"))
     )
+    seller_url_map: dict[str, str] = {}
+    for it in listings:
+        sname = it.get("seller") or it.get("seller_url")
+        if sname and sname not in seller_url_map and it.get("seller_url"):
+            seller_url_map[sname] = it["seller_url"]
     if seller_counter:
         top_seller, top_seller_n = seller_counter.most_common(1)[0]
         study["seller_concentration"] = {
             "distinct_sellers": len(seller_counter),
             "top_seller": top_seller,
             "share_top_seller_pct": round(top_seller_n * 100 / n, 1),
-            "top_sellers": [{"seller": s, "count": c} for s, c in seller_counter.most_common(10)],
+            "top_sellers": [{"seller": s, "count": c, "url": seller_url_map.get(s)}
+                            for s, c in seller_counter.most_common(10)],
         }
     else:
         study["seller_concentration"] = None
+
+    # Cruzamento Unidade × FULL × Frete → faixa de preço por combinação (sem closures).
+    price_combinations = []
+    for is_kit_v, kit_label in ((False, "Unitário"), (True, "KIT")):
+        for is_full_v, full_label in ((True, "FULL"), (False, "Outros")):
+            for is_free_v, fr_label in ((True, "Grátis"), (False, "Comprador")):
+                subset = [it for it in listings
+                          if bool(it.get("is_kit")) == is_kit_v
+                          and (it.get("logistic_type") == "fulfillment") == is_full_v
+                          and bool(it.get("free_shipping")) == is_free_v]
+                if subset:
+                    price_combinations.append({
+                        "unidade": kit_label, "full": full_label, "frete": fr_label,
+                        **_price_block([it.get("price") for it in subset]),
+                    })
+    study["price_combinations"] = price_combinations
 
     # Sweet spot: faixa de preço dos MAIS VENDIDOS (sold ≥ mediana de quem tem sold).
     with_sold = sorted(it for it in (i.get("sold_quantity") for i in listings) if it)
@@ -576,10 +598,10 @@ def _build_search_study(title: str, listings: list[dict], category: dict | None,
         for it in listings if it.get("price") and it.get("sold_quantity")
     ][:25]
 
-    # Top 20 por vendas: deep-visited primeiro (deep_rank_by_sales), resto por sold desc.
+    # Top 20 por vendas: itens com página visitada (vendas REAIS da PDP) primeiro,
+    # ordenados por vendas desc; depois os do grid (vendas aprox/esparsas).
     def _sales_key(c: dict):
-        deep_rank = c.get("deep_rank_by_sales")
-        return (0, deep_rank) if deep_rank else (1, -(c.get("sold_quantity") or 0))
+        return (0 if c.get("deep_scraped") else 1, -(c.get("sold_quantity") or 0))
     study["top20_by_sales"] = sorted(listings, key=_sales_key)[:TOP_COMPETITORS]
     by_rel = sorted((it for it in listings if it.get("search_rank")), key=lambda c: c["search_rank"])
     _REL_KEYS = (

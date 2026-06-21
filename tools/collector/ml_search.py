@@ -148,17 +148,21 @@ def _parse_results(page, limit: int) -> list[dict]:
           '.poly-component__title, h2.ui-search-item__title, .ui-search-item__title, a.poly-component__title'
         ) || a;
 
-        // Preço atual e original (riscado).
-        const curBlock = card.querySelector('.poly-price__current, .andes-money-amount-combo__main-container, .ui-search-price__second-line') || card;
-        const price = money(
-          curBlock.querySelector('.andes-money-amount__fraction'),
-          curBlock.querySelector('.andes-money-amount__cents')
-        );
-        const prevEl = card.querySelector('.andes-money-amount--previous');
-        const originalPrice = prevEl ? money(
-          prevEl.querySelector('.andes-money-amount__fraction'),
-          prevEl.querySelector('.andes-money-amount__cents')
-        ) : null;
+        // Preço: o PRINCIPAL é o PROMOCIONAL/atual, NÃO o riscado (--previous).
+        // Escopo na área de preço p/ não pegar parcelas; pega o 1º money-amount
+        // que NÃO seja o riscado.
+        const moneyOf = (amtEl) => {
+          if (!amtEl) return null;
+          const fr = amtEl.querySelector('.andes-money-amount__fraction');
+          if (!fr) return null;
+          let p = (fr.textContent || '').replace(/[^\d]/g, '');
+          const ce = amtEl.querySelector('.andes-money-amount__cents');
+          if (ce) { const c = (ce.textContent || '').replace(/[^\d]/g, ''); if (c) p = p + '.' + c; }
+          return p ? parseFloat(p) : null;
+        };
+        const priceScope = card.querySelector('.poly-component__price, .poly-price, .ui-search-price__second-line, .ui-search-price') || card;
+        const price = moneyOf(priceScope.querySelector('.andes-money-amount:not(.andes-money-amount--previous)'));
+        const originalPrice = moneyOf(card.querySelector('.andes-money-amount--previous'));
         const discEl = card.querySelector('.andes-money-amount__discount, .ui-search-price__discount');
 
         const sellerEl = card.querySelector(
@@ -248,6 +252,13 @@ def _parse_results(page, limit: int) -> list[dict]:
         seen.add(iid)
         r["item_id"] = iid
         r["source"] = "search_scraped"
+        # Sanitiza o permalink: anúncios patrocinados (Ads) vêm com tracker
+        # (click1.mercadolivre.com.br/mclics/...) em vez da URL do anúncio. Isso
+        # quebra a visita da página (não carrega o PDP) e o link exibido. Troca
+        # pela URL canônica do item (id já validado MLB\d+).
+        pl = r.get("permalink") or r.get("href") or ""
+        if (not pl) or ("mclics" in pl) or ("click1." in pl) or ("/clicks/" in pl) or not _RE_ITEM_ID.search(pl):
+            r["permalink"] = _item_url(iid)
         clean.append(r)
     return clean[:limit]
 
@@ -385,7 +396,8 @@ def _parse_item_page(page) -> dict:
         brand: findAttr(/marca/i),
         model: findAttr(/modelo/i),
         sold_text: norm((q('.ui-pdp-subtitle') || {}).textContent) || null,
-        price: money(q('.ui-pdp-price__main-container') || q('.ui-pdp-price') || document),
+        // Preço PRINCIPAL = promocional/atual (não o riscado --previous).
+        price: money(q('.ui-pdp-price__main-container .andes-money-amount:not(.andes-money-amount--previous)') || q('.ui-pdp-price .andes-money-amount:not(.andes-money-amount--previous)') || q('.ui-pdp-price__main-container') || document),
         original_price: origEl ? money(origEl.closest('.ui-pdp-price__original-value') || origEl.parentElement || origEl) : null,
         installments_text: norm((q('.ui-pdp-payment, .ui-pdp-price__subtitles') || {}).textContent) || null,
         seller_name: norm((q('.ui-pdp-seller__header__title, .ui-pdp-seller__link-trigger') || {}).textContent) || null,
@@ -450,7 +462,8 @@ def _visit_item_pages(page, human, tracer, items, deep_count, wait_ms, progress_
         # Só navega p/ URL https do mercadolivre; senão usa a URL canônica do ID
         # (validado MLB\d+). Evita navegar p/ tracker/Ads/terceiro — quality-guardian HIGH.
         url = it.get("permalink") or it.get("href") or ""
-        if not (url.startswith("https://") and "mercadolivre.com" in url):
+        is_tracker = ("mclics" in url) or ("click1." in url) or ("/clicks/" in url)
+        if is_tracker or not (url.startswith("https://") and "mercadolivre.com" in url):
             url = _item_url(it["item_id"])
         _write_progress(progress_path, phase="deep_visit", current=i, total=total,
                         message=f"Abrindo anúncio {i}/{total}…")

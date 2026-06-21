@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-06-21 — fix(análise): preço promocional + permalink de Ads + card preço cruzado + link vendedor
+
+Ajustes pedidos pelo dono após teste:
+- **Preço (#4)**: o coletor pegava o preço RISCADO; agora pega o PRINCIPAL/promocional (`.andes-money-amount:not(--previous)`), no grid e na PDP.
+- **Permalink/Ads (#3)**: anúncios patrocinados vinham com tracker `click1.mercadolivre.com.br/mclics/...` → quebrava a visita da página (sem categoria/vendas/reputação/avaliação) e o link. Agora sanitiza p/ a URL canônica do item (`_item_url`) no coletor e na visita; top20 reordenado por vendas REAIS da PDP (deep primeiro).
+- **Card preço (#1)**: virou cruzamento **Unidade(KIT/Unitário) × FULL/Outros × Frete(Grátis/Comprador)** com Mín/Médio/Máx/Qtd por combinação (`price_combinations`).
+- **Concentração (#2)**: link "ir para a página/loja do vendedor" por vendedor (`top_sellers[].url`).
+- Verificado: compile/import, price_combinations/seller/top20 OK, pytest 25/2, build ✓.
+
+---
+
 ## 2026-06-21 — feat(análise): deep por VENDAS + KIT/FULL + simulador Clássico×Premium + análise geral
 
 Refatoração do estudo (planejada em plan mode, auditada quality/consistency/adr):

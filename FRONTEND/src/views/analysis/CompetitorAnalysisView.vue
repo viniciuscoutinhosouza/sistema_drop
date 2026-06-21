@@ -123,15 +123,17 @@
                 </div>
                 <table class="table table-sm mb-0">
                   <thead class="thead-light"><tr>
-                    <th>Grupo</th><th class="text-center">Mín</th><th class="text-center">Médio</th><th class="text-center">Máx</th><th class="text-center">Qtd</th>
+                    <th>Unidade</th><th>Full</th><th>Frete</th><th class="text-center">Mín</th><th class="text-center">Médio</th><th class="text-center">Máx</th><th class="text-center">Qtd</th>
                   </tr></thead>
                   <tbody>
-                    <tr v-for="row in priceRows" :key="row.label">
-                      <td><span class="badge" :class="row.badge">{{ row.label }}</span></td>
-                      <td class="text-center">{{ money(row.block?.min) }}</td>
-                      <td class="text-center"><strong>{{ money(row.block?.avg) }}</strong></td>
-                      <td class="text-center">{{ money(row.block?.max) }}</td>
-                      <td class="text-center">{{ row.block?.count }}</td>
+                    <tr v-for="(row,i) in (searchStudy.price_combinations || [])" :key="i">
+                      <td><span class="badge" :class="row.unidade === 'KIT' ? 'badge-warning' : 'badge-light border'">{{ row.unidade }}</span></td>
+                      <td><span class="badge" :class="row.full === 'FULL' ? 'badge-primary' : 'badge-secondary'">{{ row.full }}</span></td>
+                      <td><span class="badge" :class="row.frete === 'Grátis' ? 'badge-success' : 'badge-light border'">{{ row.frete }}</span></td>
+                      <td class="text-center">{{ money(row.min) }}</td>
+                      <td class="text-center"><strong>{{ money(row.avg) }}</strong></td>
+                      <td class="text-center">{{ money(row.max) }}</td>
+                      <td class="text-center">{{ row.count }}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -172,7 +174,12 @@
                 <table class="table table-sm mb-0">
                   <tbody>
                     <tr v-for="sc in (searchStudy.seller_concentration?.top_sellers || [])" :key="sc.seller">
-                      <td>{{ sc.seller }}</td>
+                      <td>
+                        <a v-if="sc.url" :href="sc.url" target="_blank" rel="noopener" title="Ir para a página/loja do vendedor">
+                          {{ sc.seller }} <i class="fas fa-external-link-alt" style="font-size:9px"></i>
+                        </a>
+                        <span v-else>{{ sc.seller }}</span>
+                      </td>
                       <td class="text-right"><span class="badge badge-primary">{{ sc.count }}×</span></td>
                     </tr>
                   </tbody>
@@ -415,16 +422,6 @@ const ownerListingTypes = ref(null) // simulador Clássico × Premium do produto
 const topCompetitors = computed(() => competitors.value)
 const hasReputation = computed(() => competitors.value.some(c => c.seller_reputation && (c.seller_reputation.text || c.seller_reputation.sales)))
 const deepVisitedCount = computed(() => searchStudy.value?.deep_visited_count ?? 0)
-const priceRows = computed(() => {
-  const ps = searchStudy.value?.price_stats || {}
-  return [
-    { label: 'Com frete grátis', badge: 'badge-success', block: ps.with_free_shipping },
-    { label: 'Sem frete grátis', badge: 'badge-secondary', block: ps.without_free_shipping },
-    { label: 'FULL', badge: 'badge-primary', block: ps.full },
-    { label: 'KIT', badge: 'badge-warning', block: ps.kit },
-    { label: 'Sem KIT', badge: 'badge-light border', block: ps.non_kit },
-  ].filter(r => r.block && r.block.count)
-})
 const notes = ref('')
 const history = ref([])
 let pollTimer = null
