@@ -56,23 +56,38 @@ Coloque essa URL pública em `COLLECTOR_API_URL` no `.env` do **backend** (servi
 Oracle), e o mesmo `COLLECTOR_API_TOKEN` em `COLLECTOR_API_TOKEN`. O túnel carrega só
 o tráfego de controle; o Camoufox continua saindo pelo **seu IP residencial**.
 
-### Duas máquinas (failover)
+### Túnel fixo (named tunnel Cloudflare) — em produção
 
-Para alta disponibilidade, rode o coletor + túnel em **duas máquinas** e liste as duas
-URLs separadas por vírgula no `.env` do backend. O backend tenta a 1ª; se cair, der erro
-ou captcha, usa a 2ª (IP residencial diferente):
+A Máquina 1 usa um **named tunnel** com URL fixa: **`https://coletor1.madeingroup.api.br`**
+(domínio `madeingroup.api.br` gerenciado pela Cloudflare). Não muda mais a cada reinício.
+
+Subir tudo de uma vez (API + túnel) e deixar resiliente a reboot:
+- Launcher: `tools/collector/iniciar_coletor_completo.bat` (sobe a API 8777 + `cloudflared tunnel run coletor-ml-1`).
+- Já há um atalho no **Inicializar do Windows** (`shell:startup`) que roda esse .bat no logon.
+
+Setup do túnel (feito uma vez, por máquina):
+```powershell
+cloudflared.exe tunnel login                                   # autoriza o domínio (1x)
+cloudflared.exe tunnel create coletor-ml-1                      # cria o túnel
+cloudflared.exe tunnel route dns coletor-ml-1 coletor1.madeingroup.api.br
+# config em %USERPROFILE%\.cloudflared\config.yml apontando p/ http://localhost:8777
+cloudflared.exe tunnel run coletor-ml-1
+```
+
+### Segunda máquina (failover)
+
+Repita o setup acima na 2ª máquina, trocando o nome para `coletor-ml-2` e o hostname
+para `coletor2.madeingroup.api.br` (mesmo domínio, subdomínio diferente). Garanta o
+**mesmo `COLLECTOR_API_TOKEN`** no `.env` dela. Depois, no `.env` do backend, liste as duas:
 
 ```env
 COLLECTOR_ENABLED=true
-COLLECTOR_API_URL=https://maquina1.trycloudflare.com,https://maquina2.trycloudflare.com
-# 1 token compartilhado (mesmo COLLECTOR_API_TOKEN nas duas máquinas):
+COLLECTOR_API_URL=https://coletor1.madeingroup.api.br,https://coletor2.madeingroup.api.br
 COLLECTOR_API_TOKEN=SEU_TOKEN
-# ...ou um token por máquina, alinhado à ordem das URLs:
-# COLLECTOR_API_TOKEN=tokenMaquina1,tokenMaquina2
 ```
 
-Pode deixar a 2ª já pré-configurada e ligá-la depois — entradas vazias são ignoradas
-(`COLLECTOR_API_URL=https://maquina1...,` funciona com só a 1ª no ar).
+O backend tenta a 1ª; se cair, der erro ou captcha, usa a 2ª (IP residencial diferente).
+Entradas vazias são ignoradas, então dá pra deixar a 2ª pré-configurada e ligá-la depois.
 
 ## Endpoints
 
