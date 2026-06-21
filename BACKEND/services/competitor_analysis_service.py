@@ -263,6 +263,44 @@ def _parse_sold(sold_text: str | None) -> int | None:
         return None
 
 
+async def _collect_via_job(base: str, headers: dict, body: dict,
+                           budget_s: float) -> tuple[dict, str | None]:
+    """Dispara o job no coletor e faz polling até concluir. Retorna (data, erro).
+
+    Cada requisição (POST de disparo e GETs de status) é curta → não estoura o
+    timeout ~100s do túnel Cloudflare (HTTP 524). O polling dura até budget_s.
+    Compatível com coletor antigo (síncrono): se o POST já vier com `items`/sem
+    `job_id`, usa direto.
+    """
+    poll_interval = 5
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(f"{base}/collect", json=body, headers=headers)
+        if r.status_code != 200:
+            return {}, f"HTTP {r.status_code}: {r.text[:160]}"
+        start = r.json()
+        if "job_id" not in start:
+            return start, None  # coletor síncrono (retrocompat)
+        job_id = start["job_id"]
+
+        elapsed = 0.0
+        while elapsed < budget_s:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+            try:
+                s = await client.get(f"{base}/collect/{job_id}", headers=headers)
+            except Exception:  # noqa: BLE001
+                continue  # falha transitória de poll → tenta de novo
+            if s.status_code != 200:
+                return {}, f"poll HTTP {s.status_code}"
+            j = s.json()
+            st = j.get("status")
+            if st == "done":
+                return j.get("result") or {}, None
+            if st == "error":
+                return {}, f"job erro: {str(j.get('error'))[:160]}"
+        return {}, f"job não concluiu em {int(budget_s)}s"
+
+
 async def _fetch_scraped_items(query: str) -> tuple[list[dict], str | None]:
     """Fonte primária: itens COMPLETOS raspados da busca do ML (coletor Camoufox).
 
@@ -286,15 +324,16 @@ async def _fetch_scraped_items(query: str) -> tuple[list[dict], str | None]:
     errors: list[str] = []
 
     for base_url, token in endpoints:
-        url = base_url.rstrip("/") + "/collect"
+        base = base_url.rstrip("/")
         headers = {"Authorization": f"Bearer {token}"}
         try:
-            async with httpx.AsyncClient(timeout=settings.COLLECTOR_TIMEOUT) as client:
-                r = await client.post(url, json=body, headers=headers)
-            if r.status_code != 200:
-                errors.append(f"{base_url}: HTTP {r.status_code}")
+            # Modelo ASSÍNCRONO: dispara o job (resposta rápida) e faz polling. Evita
+            # o HTTP 524 do túnel Cloudflare (corta requisições >~100s) — a coleta de
+            # 120 itens leva minutos. ADR-0012.
+            data, err = await _collect_via_job(base, headers, body, settings.COLLECTOR_TIMEOUT)
+            if err:
+                errors.append(f"{base_url}: {err}")
                 continue
-            data = r.json()
             if data.get("captcha_detected"):
                 errors.append(f"{base_url}: captcha")
                 continue
