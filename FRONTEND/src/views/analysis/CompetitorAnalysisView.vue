@@ -331,29 +331,6 @@
           </div>
         </div>
 
-        <!-- Previsão -->
-        <div class="card" v-if="study.forecast">
-          <div class="card-header"><h3 class="card-title">Previsão (estimativa)</h3></div>
-          <div class="card-body p-0">
-            <table class="table table-sm mb-0">
-              <thead class="thead-light"><tr>
-                <th>Janela</th><th class="text-center">Vendas (faixa)</th><th class="text-center">Visitas (faixa)</th>
-                <th class="text-center">Lucro (faixa)</th><th class="text-center">Confiança</th>
-              </tr></thead>
-              <tbody>
-                <tr v-for="w in ['7','14','30','60','90']" :key="w">
-                  <td><strong>{{ w }} dias</strong></td>
-                  <td class="text-center">{{ range(study.forecast[w]?.sales) }}</td>
-                  <td class="text-center">{{ range(study.forecast[w]?.visits) }}</td>
-                  <td class="text-center">{{ rangeMoney(study.forecast[w]?.profit) }}</td>
-                  <td class="text-center"><span class="badge" :class="confColor(study.forecast[w]?.confidence)">{{ study.forecast[w]?.confidence || '—' }}</span></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="card-footer small text-muted">{{ study.forecast.method_note }} {{ study.disclaimer }}</div>
-        </div>
-
         <!-- Anotações -->
         <div class="card card-outline card-secondary" v-if="currentId">
           <div class="card-header"><h3 class="card-title">Minhas anotações (usadas em estudos futuros)</h3></div>

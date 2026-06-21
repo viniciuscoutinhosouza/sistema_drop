@@ -900,17 +900,15 @@ _SYSTEM_PROMPT = (
     '  "price_range": {"beginner":{"min":0,"max":0},"mature":{"min":0,"max":0},"rationale":"","margin_check":""},\n'
     '  "expert_analysis": "ANÁLISE GERAL de especialista de marketplace (5-10 frases): como montar ESTE anúncio para alcançar a MAIOR RELEVÂNCIA no menor tempo e MAIOR LUCRATIVIDADE — título/keywords, categoria certa, frete grátis/Full, ficha técnica/atributos, fotos, faixa de preço (sweet spot dos mais vendidos), parcelamento, Ads, e como se posicionar frente à concorrência/concentração de vendedores observada. NÃO comente anúncio por anúncio — visão consolidada.",\n'
     '  "listing_type_recommendation": {"recommended":"gold_special|gold_pro","rationale":"por que Clássico ou Premium, dado custo/comissão/frete/margem e visibilidade/parcelamento","table":[{"tipo":"Clássico","preco":0,"comissao_pct":0,"frete":0,"receita_liquida":0,"lucro":0,"margem_sobre_custo_pct":0},{"tipo":"Premium","preco":0,"comissao_pct":0,"frete":0,"receita_liquida":0,"lucro":0,"margem_sobre_custo_pct":0}]},\n'
-    '  "forecast": {"7":{"sales":[0,0],"visits":[0,0],"profit":[0,0],"confidence":"baixa|media|alta"},"14":{},"30":{},"60":{},"90":{},"method_note":""},\n'
     '  "recommendations": ["ações p/ ganhar relevância: Full, frete grátis, parcelamento, atributos/ficha, fotos, Ads (ROAS/ACOS), etc"],\n'
-    '  "disclaimer": "aviso de que a previsão é estimativa"\n'
+    '  "disclaimer": "ressalvas do estudo (dados aproximados, sem visitas etc.)"\n'
     "}\n"
     "Regras: a tabela de listing_type_recommendation deve usar EXATAMENTE os números de ml.simulador_dono.options "
     "(Clássico=gold_special, Premium=gold_pro); recommended pode seguir ml.simulador_dono.recommended ou divergir "
-    "com justificativa. VISITAS sempre indisponíveis → forecast visits=[0,0]. Para vendas/lucro use velocidade real "
-    "quando houver (velocity_stats); senão confidence='baixa'. Dê FAIXAS (min,max). Respeite a margem desejada sobre "
-    "o custo ao sugerir preço (desconte comissão e frete via simulador_dono). Use ml.estudo_mercado.top_keywords no "
-    "best_title e o sweet_spot/quartis no price_range. NÃO comente anúncio por anúncio. Considere o comentário/prompt "
-    "do usuário e o histórico/anotações."
+    "com justificativa. VISITAS são indisponíveis — não as cite. Dê FAIXAS (min,max) quando estimar. Respeite a margem "
+    "desejada sobre o custo ao sugerir preço (desconte comissão e frete via simulador_dono). Use ml.estudo_mercado.top_keywords "
+    "no best_title e o sweet_spot/quartis no price_range. NÃO comente anúncio por anúncio nem faça previsão de vendas/visitas. "
+    "Considere o comentário/prompt do usuário e o histórico/anotações."
 )
 
 

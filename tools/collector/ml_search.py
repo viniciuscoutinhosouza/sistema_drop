@@ -389,7 +389,18 @@ def _parse_item_page(page) -> dict:
       const origEl = q('.ui-pdp-price__original-value, s.andes-money-amount--previous');
       const ptext = document.body ? (document.body.innerText || '') : '';
 
+      // Link da página/loja do vendedor (na seção do vendedor da PDP).
+      const sellerBox = q('.ui-pdp-seller, .ui-seller-data, .ui-vip-seller, .ui-box-component-pdp__visible--desktop');
+      let sellerUrl = null;
+      if (sellerBox) {
+        let sa = sellerBox.querySelector("a[href*='/loja/'], a[href*='_CustId_'], a[href*='/perfil/'], a[href*='/tienda/'], a[href*='/pagina/']")
+              || sellerBox.querySelector('a.ui-pdp-seller__link-trigger, a.ui-pdp-action--secondary')
+              || sellerBox.querySelector('a[href]');
+        if (sa) sellerUrl = ((sa.href || sa.getAttribute('href') || '').split('#')[0].split('?')[0]) || null;
+      }
+
       return {
+        seller_url: sellerUrl,
         title: norm((q('.ui-pdp-title') || {}).textContent) || null,
         category_path, category_leaf,
         attributes: attrs,
