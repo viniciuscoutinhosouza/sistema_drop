@@ -141,6 +141,9 @@ def _parse_results(page, limit: int) -> list[dict]:
         const sellerEl = card.querySelector(
           '.poly-component__seller, .ui-search-official-store-label, .ui-search-item__group__element--seller'
         );
+        // Link da página do vendedor (loja oficial / filtro _CustId_) quando exposto.
+        const sellerA = (sellerEl && sellerEl.tagName === 'A') ? sellerEl :
+          (card.querySelector('a.poly-component__seller, .poly-component__seller a, a.ui-search-official-store-label, a[href*="_CustId_"], a[href*="/loja/"], a[href*="tienda"]'));
         const soldEl = card.querySelector('.poly-component__sold, .ui-search-item__group__element--sold');
 
         // Avaliações
@@ -168,6 +171,7 @@ def _parse_results(page, limit: int) -> list[dict]:
           original_price: originalPrice,
           discount_text: discEl ? (discEl.textContent || '').trim() : null,
           seller: sellerEl ? (sellerEl.textContent || '').trim() : null,
+          seller_url: sellerA ? ((sellerA.getAttribute('href') || sellerA.href || '').split('#')[0].split('?')[0] || null) : null,
           sold_text: soldEl ? (soldEl.textContent || '').trim() : null,
           rating: ratingEl ? parseFloat((ratingEl.textContent || '').replace(',', '.')) || null : null,
           reviews_text: reviewsEl ? (reviewsEl.textContent || '').replace(/[()]/g, '').trim() : null,
@@ -225,6 +229,57 @@ def _parse_results(page, limit: int) -> list[dict]:
     return clean[:limit]
 
 
+def _parse_categories(page) -> list[dict]:
+    """Raspa o filtro 'Categorias' da barra lateral da busca → [{name, count, url}].
+
+    É a forma de obter a distribuição REAL de categorias/subcategorias dos anúncios
+    com quantidade (o card de resultado não expõe a categoria por item). Best-effort:
+    se o ML mudar o layout e não casar, retorna [] e o backend cai na categoria sugerida.
+    """
+    js = r"""
+    () => {
+      const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+      // Localiza o grupo de filtro cujo título menciona "categoria".
+      const groups = Array.from(document.querySelectorAll(
+        '.ui-search-filter-dl, .ui-search-filter-groups section, .ui-search-filter-group, [class*="filter-dl"]'
+      ));
+      let group = null;
+      for (const g of groups) {
+        const tEl = g.querySelector('.ui-search-filter-dt-title, [class*="filter-dt"], h3, .ui-search-filter-name');
+        if (tEl && /categor/i.test(norm(tEl.textContent))) { group = g; break; }
+      }
+      const scope = group || document;
+      const out = [];
+      const seen = new Set();
+      const links = Array.from(scope.querySelectorAll('a.ui-search-link, .ui-search-filter-container a, li a'));
+      for (const a of links) {
+        const nameEl = a.querySelector('.ui-search-filter-name') || a;
+        let name = norm(nameEl.textContent || '');
+        if (!name || /ver mais|mostrar mais|menos/i.test(name)) continue;
+        let count = null;
+        const qtyEl = a.querySelector('.ui-search-filter-results-qty, [class*="results-qty"]');
+        if (qtyEl) count = parseInt((qtyEl.textContent || '').replace(/\D/g, '')) || null;
+        const m = name.match(/\((\d[\d.]*)\)\s*$/);  // "Anéis (94)"
+        if (count === null && m) count = parseInt(m[1].replace(/\D/g, '')) || null;
+        name = name.replace(/\s*\(\d[\d.]*\)\s*$/, '').trim();
+        const key = name.toLowerCase();
+        if (name.length < 2 || seen.has(key)) continue;
+        seen.add(key);
+        out.push({ name: name, count: count, url: (a.getAttribute('href') || '').split('#')[0] });
+        if (out.length >= 15) break;
+      }
+      return out;
+    }
+    """
+    try:
+        cats = page.evaluate(js) or []
+    except Exception:  # noqa: BLE001
+        cats = []
+    # Mantém só entradas com contagem (as reais do filtro) quando houver alguma com count.
+    with_count = [c for c in cats if c.get("count")]
+    return with_count or cats
+
+
 def collect(query: str, *, headless: bool = False, limit: int = 50,
             wait_ms: int = 900, save: bool = True) -> dict:
     """Executa a busca e retorna {query, url, total, items[], captcha_detected, error}.
@@ -250,6 +305,7 @@ def collect(query: str, *, headless: bool = False, limit: int = 50,
         "captcha_detected": False,
         "total": 0,
         "items": [],
+        "categories": [],
         "error": None,
     }
 
@@ -290,6 +346,13 @@ def collect(query: str, *, headless: bool = False, limit: int = 50,
                     for _ in range(3):
                         page.mouse.wheel(0, 1800)
                         page.wait_for_timeout(wait_ms)
+
+                # Categorias reais (barra lateral) — raspa na 1ª página, com a página no topo.
+                if page_idx == 0:
+                    page.mouse.wheel(0, -4000)
+                    page.wait_for_timeout(400)
+                    with tracer.step("parse_categories"):
+                        result["categories"] = _parse_categories(page)
 
                 with tracer.step("parse_results", f"page={page_idx + 1}"):
                     new_count = 0

@@ -81,11 +81,15 @@
               <div class="card-body p-2">
                 <table class="table table-sm mb-0">
                   <tbody>
-                    <tr v-for="cat in (searchStudy.top_categories || [])" :key="cat.id">
-                      <td>{{ cat.name }} <small class="text-muted">({{ cat.id }})</small></td>
+                    <tr v-for="(cat, i) in (searchStudy.top_categories || [])" :key="cat.name || i">
+                      <td>
+                        <a v-if="cat.url" :href="cat.url" target="_blank" rel="noopener">{{ cat.name }}</a>
+                        <span v-else>{{ cat.name }}</span>
+                        <small v-if="cat.id" class="text-muted">({{ cat.id }})</small>
+                      </td>
                       <td class="text-right" style="white-space:nowrap">
-                        <span class="badge badge-primary">{{ cat.count }}×</span>
-                        <small class="text-muted ml-1">{{ cat.pct }}%</small>
+                        <span v-if="cat.count" class="badge badge-primary">{{ cat.count }}×</span>
+                        <small v-if="cat.pct != null" class="text-muted ml-1">{{ cat.pct }}%</small>
                       </td>
                     </tr>
                   </tbody>
@@ -159,7 +163,7 @@
           <div class="card-body p-0">
             <table class="table table-sm table-hover mb-0">
               <thead class="thead-light"><tr>
-                <th style="width:54px">Foto</th><th>Anúncio / Título</th><th class="text-center">Preço</th>
+                <th style="width:54px">Foto</th><th>Anúncio / Título</th><th>Vendedor</th><th class="text-center">Preço</th>
                 <th class="text-center">Vendas</th><th class="text-center" v-if="!enrichmentOff">Visitas 30d</th><th>Frete</th>
                 <th v-if="!enrichmentOff">Reputação</th><th class="text-center">Avaliação</th><th>Comentário do estudo</th>
               </tr></thead>
@@ -177,7 +181,12 @@
                     </a>
                     <small v-else>{{ c.item_id }}</small>
                     <div style="font-size:12px;line-height:1.25">{{ c.title }}</div>
-                    <small v-if="c.seller" class="text-muted">{{ c.seller }}</small>
+                  </td>
+                  <td style="font-size:12px">
+                    <a v-if="c.seller_url" :href="c.seller_url" target="_blank" rel="noopener" title="Abrir página do vendedor">
+                      {{ c.seller || 'vendedor' }} <i class="fas fa-external-link-alt" style="font-size:9px"></i>
+                    </a>
+                    <span v-else>{{ c.seller || '—' }}</span>
                   </td>
                   <td class="text-center">
                     {{ money(c.price) }}

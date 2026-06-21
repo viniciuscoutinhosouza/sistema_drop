@@ -301,16 +301,17 @@ async def _collect_via_job(base: str, headers: dict, body: dict,
         return {}, f"job não concluiu em {int(budget_s)}s"
 
 
-async def _fetch_scraped_items(query: str) -> tuple[list[dict], str | None]:
+async def _fetch_scraped_items(query: str) -> tuple[list[dict], list[dict], str | None]:
     """Fonte primária: itens COMPLETOS raspados da busca do ML (coletor Camoufox).
 
     O ML bloqueou a busca (/search) e os detalhes (/items) na API oficial (403) →
     o coletor raspa a página pública e devolve por item: title, price, original_price,
-    seller, sold_text, rating, reviews, free_shipping, full, thumbnail, permalink,
-    search_rank. Cada item já vem com `search_rank` (ordem de relevância 1..N).
+    seller, seller_url, sold_text, rating, reviews, free_shipping, full, thumbnail,
+    permalink, search_rank. Também devolve `categories` (filtro da barra lateral:
+    categoria real + qtd). Cada item já vem com `search_rank` (ordem 1..N).
 
-    Desligado por padrão (COLLECTOR_ENABLED) → retorna vazio sem erro. Revalida o
-    item_id (^MLB\\d{6,}$) por defesa em profundidade. Nunca levanta.
+    Retorna (items, categories, erro). Desligado por padrão (COLLECTOR_ENABLED) →
+    vazio sem erro. Revalida o item_id (^MLB\\d{6,}$). Nunca levanta.
 
     FAILOVER: COLLECTOR_API_URL pode ter várias URLs (vírgula). Tenta na ordem; se
     uma cair/der captcha/0 itens, passa pra próxima máquina (IP residencial diferente).
@@ -318,7 +319,7 @@ async def _fetch_scraped_items(query: str) -> tuple[list[dict], str | None]:
     settings = get_settings()
     endpoints = _collector_endpoints(settings)
     if not settings.COLLECTOR_ENABLED or not endpoints or not query.strip():
-        return [], None
+        return [], [], None
 
     body = {"query": query, "limit": settings.COLLECTOR_LIMIT}
     errors: list[str] = []
@@ -346,13 +347,14 @@ async def _fetch_scraped_items(query: str) -> tuple[list[dict], str | None]:
                 it["search_rank"] = int(it.get("search_rank") or idx)
                 items.append(it)
             if items:
-                return items, ("; ".join(errors) or None)
+                categories = [c for c in (data.get("categories") or []) if isinstance(c, dict) and c.get("name")]
+                return items, categories, ("; ".join(errors) or None)
             errors.append(f"{base_url}: 0 itens")
         except Exception as e:  # noqa: BLE001
             errors.append(f"{base_url}: {e}")
             continue
 
-    return [], "coletor indisponível — " + "; ".join(errors)
+    return [], [], "coletor indisponível — " + "; ".join(errors)
 
 
 def _build_listings_from_scraped(items: list[dict]) -> list[dict]:
@@ -375,6 +377,7 @@ def _build_listings_from_scraped(items: list[dict]) -> list[dict]:
             "rating": it.get("rating"),
             "reviews_text": it.get("reviews_text"),
             "seller": it.get("seller"),
+            "seller_url": it.get("seller_url"),
             "seller_id": None,
             "seller_reputation": None,
             "thumbnail": it.get("thumbnail"),
@@ -393,7 +396,8 @@ def _build_listings_from_scraped(items: list[dict]) -> list[dict]:
     return out
 
 
-def _build_search_study(title: str, listings: list[dict], category: dict | None) -> dict:
+def _build_search_study(title: str, listings: list[dict], category: dict | None,
+                        scraped_categories: list[dict] | None = None) -> dict:
     """Agregados do estudo (keywords, frete, preço) + top10 + top_by_relevance + raw.
     Funciona tanto no modo raspado quanto enriquecido (campos ausentes = None)."""
     n = len(listings) or 1
@@ -401,10 +405,19 @@ def _build_search_study(title: str, listings: list[dict], category: dict | None)
     no_free = [it for it in listings if not it.get("free_shipping")]
     full = [it for it in listings if it.get("logistic_type") == "fulfillment"]
 
-    # Top categorias: o raspado não traz category_id → usa a categoria sugerida
-    # (domain_discovery) como única entrada, para o card não ficar vazio (auditor C2).
+    # Top categorias REAIS: o filtro da barra lateral da busca (raspado) traz
+    # categoria/subcategoria + qtd. Fallbacks: category_id dos itens (modo API) →
+    # categoria sugerida (domain_discovery) → vazio.
     cat = category or {}
-    if any(it.get("category_id") for it in listings):
+    if scraped_categories:
+        total_cat = sum(c.get("count") or 0 for c in scraped_categories) or n
+        top_categories = [
+            {"id": None, "name": c.get("name"), "url": c.get("url"),
+             "count": c.get("count"),
+             "pct": round((c.get("count") or 0) * 100 / total_cat, 1) if c.get("count") else None}
+            for c in scraped_categories[:TOP_CATEGORIES * 4]
+        ]
+    elif any(it.get("category_id") for it in listings):
         counter: Counter[str] = Counter(it["category_id"] for it in listings if it.get("category_id"))
         top_categories = [{"id": cid, "name": cid, "count": c, "pct": round(c * 100 / n, 1)}
                           for cid, c in counter.most_common(TOP_CATEGORIES)]
@@ -442,7 +455,7 @@ def _build_search_study(title: str, listings: list[dict], category: dict | None)
     study["top_by_relevance"] = [
         {k: it.get(k) for k in (
             "item_id", "search_rank", "title", "price", "sold_quantity",
-            "free_shipping", "logistic_type", "permalink", "seller", "source",
+            "free_shipping", "logistic_type", "permalink", "seller", "seller_url", "source",
         )}
         for it in by_rel
     ]
@@ -450,7 +463,7 @@ def _build_search_study(title: str, listings: list[dict], category: dict | None)
         {k: it.get(k) for k in (
             "item_id", "title", "price", "original_price", "category_id", "sold_quantity",
             "sold_text", "free_shipping", "logistic_type", "rating", "reviews_text",
-            "seller", "thumbnail", "permalink", "source", "search_rank",
+            "seller", "seller_url", "thumbnail", "permalink", "source", "search_rank",
         )}
         for it in listings
     ]
@@ -561,7 +574,7 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
             out["errors"].append(f"categoria: {e}")
 
     # Fonte primária: busca raspada (coletor local Camoufox), 120 por relevância.
-    scraped_items, scraped_err = await _fetch_scraped_items(title)
+    scraped_items, scraped_categories, scraped_err = await _fetch_scraped_items(title)
     if scraped_err:
         out["errors"].append(scraped_err)
     if not scraped_items:
@@ -577,7 +590,7 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
     if enrich and token:
         await _enrich_via_api(token, listings, out)
 
-    search_study = _build_search_study(title, listings, out.get("category"))
+    search_study = _build_search_study(title, listings, out.get("category"), scraped_categories)
     out["search_study"] = search_study
     out["competitors"] = search_study["top10_by_sales"]
 
