@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-06-21 — chore: túnel fixo do coletor + frontend (scraped_count) deployado + runbook 2ª máquina
+
+- **Túnel fixo Cloudflare**: domínio `madeingroup.api.br` (Registro.br → NS Cloudflare). Named tunnel `coletor-ml-1` → `https://coletor1.madeingroup.api.br` → localhost:8777. `.env` do servidor Oracle atualizado para a URL fixa; backend reiniciado (PM2). Launcher `iniciar_coletor_completo.bat` + atalho no Inicializar do Windows. cloudflared.exe gitignored.
+- **Frontend deployado**: build local com a mudança cosmética (`scraped_count` no header da Análise de Concorrência) → `dist` enviado por scp para `/home/ubuntu/app/FRONTEND/dist` (backup do antigo no servidor). Confirmado: texto "relevância" no bundle, site 200. Resolve a pendência cosmética.
+- **Runbook 2ª máquina (failover)**: `tools/collector/SETUP_MAQUINA2.md` — passo a passo para configurar `coletor-ml-2`/`coletor2.madeingroup.api.br` e ligar `COLLECTOR_API_URL=https://coletor1...,https://coletor2...` no servidor.
+- Pendente: dono configurar a 2ª máquina; reiniciar o PC 1 p/ validar auto-start.
+
+---
+
 ## 2026-06-20 — feat(full): Análise de Concorrência busca 120 por relevância (coletor pagina) — commit c448016, backend deployado no Oracle (2026-06-20)
 
 Fatoração da 3ª fonte (coletor Camoufox) p/ trazer os **120 primeiros por relevância** (antes ~50). Auditado por consistency-auditor (incorporados C1/C2, H1, H3, M1, M2, M3, L2).
