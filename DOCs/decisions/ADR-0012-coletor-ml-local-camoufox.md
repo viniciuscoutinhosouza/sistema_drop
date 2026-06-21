@@ -95,6 +95,31 @@ Evolução do contrato da 3ª fonte (não muda a arquitetura):
   busca por relevância 120 / highlights) e instrui a IA a usar os itens por relevância como
   **amostra de mercado** (keywords, preço, intensidade), comentando individualmente só o top10.
 
+## Adendo (2026-06-21) — ML bloqueou /items; coletor vira fonte PRIMÁRIA
+
+O ML estendeu o bloqueio: além da busca (`/search`), agora `GET /items/{id}` e
+`/items?ids=` retornam **403 `PolicyAgent / PA_UNAUTHORIZED_RESULT_FROM_POLICIES`**
+para anúncios de **terceiros** (concorrentes), mesmo autenticado. Isso matou o passo
+de enriquecimento (`fetch_item_details`/visitas/reputação) — `listings` ficava vazio
+e a tela mostrava "falha ao carregar detalhes".
+
+Decisão: **o coletor (busca raspada) passa a ser a FONTE PRIMÁRIA** dos concorrentes.
+- O coletor raspa o **máximo** da página de busca por item: título, preço, preço
+  original, vendedor, "X vendidos", avaliação/reviews, frete grátis, FULL, thumbnail,
+  permalink, search_rank, sponsored.
+- `_gather_ml` monta `listings` direto desses dados (`_build_listings_from_scraped`),
+  com TODAS as chaves que o front lê (campos da API ausentes = `None`).
+- **Enriquecimento via API desligado por flag** `ML_COMPETITOR_ENRICHMENT=False`
+  (config). Quando ligado, `_enrich_via_api` é só um overlay best-effort (dormente
+  enquanto o ML bloquear). Catálogo/highlights (que só davam IDs p/ a API morta)
+  foram removidos do fluxo.
+- `enrichment_off=true` viaja no `ml_data` → a IA não cita visitas/data/reputação e
+  marca previsão como **baixa confiança**; o front troca o rótulo "por vendas"→"por
+  relevância" e oculta colunas de Visitas/Reputação.
+- `sold_quantity` vira **aproximado** (parse de "X vendidos"); `top_categories` usa a
+  categoria sugerida (domain_discovery, ainda público) já que o raspado não traz
+  category_id. Comissão na mediana segue best-effort (endpoint público).
+
 ## Adendo (2026-06-20) — Failover de múltiplas máquinas coletoras
 
 `COLLECTOR_API_URL` aceita **lista separada por vírgula** de URLs (máquinas). O backend

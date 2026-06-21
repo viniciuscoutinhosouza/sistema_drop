@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-21 — fix(análise): ML bloqueou /items (403 PolicyAgent) → coletor vira fonte primária
+
+O ML estendeu o bloqueio para `GET /items/{id}` e `/items?ids=` (403 PolicyAgent) em anúncios de terceiros → `fetch_item_details` morria e o estudo dava "falha ao carregar detalhes". Pivot: a busca raspada vira a FONTE PRIMÁRIA; enriquecimento via API desligado por flag. Auditado (consistency-auditor: C1 permalink, C2 top_categories, H1 relabel front, H2 dict padronizado, L2 prompt).
+
+- **config.py**: `ML_COMPETITOR_ENRICHMENT=False` (flag; religar se o ML reabrir).
+- **Coletor** ([ml_search.py](tools/collector/ml_search.py)): raspa o MÁXIMO por item — título, preço, preço original, desconto, vendedor, "X vendidos", avaliação/reviews, frete grátis, FULL, thumbnail, permalink real, sponsored.
+- **Backend** ([competitor_analysis_service.py](BACKEND/services/competitor_analysis_service.py)): `_fetch_scraped_items` (itens completos), `_build_listings_from_scraped` (dict padronizado, nulls explícitos), `_build_search_study` (agregados compartilhados), `_parse_sold` ("X vendidos"/"mil"→int), `_enrich_via_api` (overlay dormente atrás do flag). `_gather_ml` reescrito: raspado→listings→(enrich opcional)→estudo. Catálogo/highlights removidos (só davam IDs p/ a API morta). `enrichment_off` no `ml_data`.
+- **_SYSTEM_PROMPT**: dados da página de busca; sem visitas/data/reputação; previsão baixa confiança; não inventar métricas.
+- **Frontend** ([CompetitorAnalysisView.vue](FRONTEND/src/views/analysis/CompetitorAnalysisView.vue)): rótulo "por vendas"→"por relevância" quando `enrichment_off`; oculta colunas Visitas/Reputação; mostra vendedor, preço original, avaliação; aviso explicativo.
+- Verificação: import backend ✓ (_parse_sold 50/2500/1000; build helpers OK), py_compile coletor ✓, npm build ✓. ADR-0012 com adendo.
+
+---
+
 ## 2026-06-21 — chore: túnel fixo do coletor + frontend (scraped_count) deployado + runbook 2ª máquina
 
 - **Túnel fixo Cloudflare**: domínio `madeingroup.api.br` (Registro.br → NS Cloudflare). Named tunnel `coletor-ml-1` → `https://coletor1.madeingroup.api.br` → localhost:8777. `.env` do servidor Oracle atualizado para a URL fixa; backend reiniciado (PM2). Launcher `iniciar_coletor_completo.bat` + atalho no Inicializar do Windows. cloudflared.exe gitignored.

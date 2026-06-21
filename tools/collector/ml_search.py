@@ -96,38 +96,86 @@ def _parse_results(page, limit: int) -> list[dict]:
     (limit) => {
       const RE = /MLB-?(\d{6,})/i;
       const norm = (s) => { const m = (s||'').match(RE); return m ? ('MLB'+m[1]) : null; };
+      const txt = (el) => el ? (el.getAttribute('title') || el.textContent || '').trim() : null;
+      const money = (frEl, ceEl) => {
+        if (!frEl) return null;
+        let p = (frEl.textContent || '').replace(/[^\d]/g, '');
+        if (ceEl) { const c = (ceEl.textContent || '').replace(/[^\d]/g, ''); if (c) p = p + '.' + c; }
+        return p ? parseFloat(p) : null;
+      };
       const seen = new Set();
       const out = [];
 
       let cards = Array.from(document.querySelectorAll(
         'li.ui-search-layout__item, div.ui-search-result__wrapper, .poly-card, .andes-card'
       ));
+
       const pickFromCard = (card) => {
-        const a = card.querySelector("a[href*='MLB']");
+        // Link real do anúncio = âncora do título (não o tracker de Ads).
+        const titleA = card.querySelector('a.poly-component__title, a.ui-search-item__group__element, h2 a, h3 a');
+        const anyA = card.querySelector("a[href*='MLB']");
+        const a = titleA || anyA;
         if (!a) return null;
-        const id = norm(a.getAttribute('href') || a.href || '');
+        const id = norm((titleA && (titleA.getAttribute('href') || titleA.href)) || '') ||
+                   norm((anyA && (anyA.getAttribute('href') || anyA.href)) || '') ||
+                   norm(card.innerHTML);
         if (!id) return null;
+
         const titleEl = card.querySelector(
-          '.poly-component__title, h2.ui-search-item__title, .ui-search-item__title, a[href*="MLB"]'
+          '.poly-component__title, h2.ui-search-item__title, .ui-search-item__title, a.poly-component__title'
+        ) || a;
+
+        // Preço atual e original (riscado).
+        const curBlock = card.querySelector('.poly-price__current, .andes-money-amount-combo__main-container, .ui-search-price__second-line') || card;
+        const price = money(
+          curBlock.querySelector('.andes-money-amount__fraction'),
+          curBlock.querySelector('.andes-money-amount__cents')
         );
-        const priceEl = card.querySelector('.andes-money-amount__fraction');
-        const centsEl = card.querySelector('.andes-money-amount__cents');
+        const prevEl = card.querySelector('.andes-money-amount--previous');
+        const originalPrice = prevEl ? money(
+          prevEl.querySelector('.andes-money-amount__fraction'),
+          prevEl.querySelector('.andes-money-amount__cents')
+        ) : null;
+        const discEl = card.querySelector('.andes-money-amount__discount, .ui-search-price__discount');
+
         const sellerEl = card.querySelector(
           '.poly-component__seller, .ui-search-official-store-label, .ui-search-item__group__element--seller'
         );
         const soldEl = card.querySelector('.poly-component__sold, .ui-search-item__group__element--sold');
-        let price = null;
-        if (priceEl) {
-          let p = (priceEl.textContent || '').replace(/[^\d]/g, '');
-          if (centsEl) { const c = (centsEl.textContent || '').replace(/[^\d]/g, ''); if (c) p = p + '.' + c; }
-          price = p ? parseFloat(p) : null;
-        }
+
+        // Avaliações
+        const ratingEl = card.querySelector('.poly-reviews__rating, .ui-search-reviews__rating-number');
+        const reviewsEl = card.querySelector('.poly-reviews__total, .ui-search-reviews__amount');
+
+        // Frete grátis / FULL (busca textual robusta).
+        const cardText = (card.textContent || '');
+        const shipEl = card.querySelector('.poly-component__shipping, .ui-search-item__shipping');
+        const shipText = (shipEl ? shipEl.textContent : cardText) || '';
+        const freeShipping = /gr[áa]tis/i.test(shipText);
+        const isFull = !!card.querySelector("svg[aria-label='Full' i], .poly-component__shipped-from") ||
+                       /\bfull\b/i.test(shipText);
+
+        // Imagem (thumbnail) — lida com lazy-load (data-src).
+        const img = card.querySelector('img.poly-component__picture, img.ui-search-result-image__element, img');
+        const thumb = img ? (img.getAttribute('data-src') || img.getAttribute('src') || null) : null;
+
+        const isSponsored = !!card.querySelector(".poly-component__ads-promotions, [class*='advertising'], a[href*='mclics']");
+
         return {
           item_id: id,
-          title: titleEl ? (titleEl.getAttribute('title') || titleEl.textContent || '').trim() : null,
+          title: txt(titleEl),
           price: price,
+          original_price: originalPrice,
+          discount_text: discEl ? (discEl.textContent || '').trim() : null,
           seller: sellerEl ? (sellerEl.textContent || '').trim() : null,
           sold_text: soldEl ? (soldEl.textContent || '').trim() : null,
+          rating: ratingEl ? parseFloat((ratingEl.textContent || '').replace(',', '.')) || null : null,
+          reviews_text: reviewsEl ? (reviewsEl.textContent || '').replace(/[()]/g, '').trim() : null,
+          free_shipping: freeShipping,
+          full: isFull,
+          thumbnail: thumb,
+          sponsored: isSponsored,
+          permalink: (titleA && (titleA.getAttribute('href') || titleA.href) || '').split('#')[0].split('?')[0] || null,
           href: (a.getAttribute('href') || a.href || '').split('#')[0].split('?')[0],
         };
       };
@@ -138,6 +186,7 @@ def _parse_results(page, limit: int) -> list[dict]:
         if (r && !seen.has(r.item_id)) { seen.add(r.item_id); out.push(r); }
       }
 
+      // Fallback: se nenhum card casou, varre âncoras de produto.
       if (out.length === 0) {
         const anchors = Array.from(document.querySelectorAll("a[href*='MLB']"));
         for (const a of anchors) {
@@ -146,9 +195,10 @@ def _parse_results(page, limit: int) -> list[dict]:
           if (!id || seen.has(id)) continue;
           seen.add(id);
           out.push({
-            item_id: id,
-            title: (a.getAttribute('title') || a.textContent || '').trim() || null,
-            price: null, seller: null, sold_text: null,
+            item_id: id, title: txt(a), price: null, original_price: null,
+            discount_text: null, seller: null, sold_text: null, rating: null,
+            reviews_text: null, free_shipping: false, full: false, thumbnail: null,
+            sponsored: false, permalink: null,
             href: (a.getAttribute('href') || a.href || '').split('#')[0].split('?')[0],
           });
         }

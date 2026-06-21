@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     COLLECTOR_ENABLED: bool = False      # liga a 3ª fonte (busca raspada)
     COLLECTOR_TIMEOUT: float = 330.0     # > SUBPROCESS_TIMEOUT do coletor (300s) p/ 120 itens
     COLLECTOR_LIMIT: int = 120           # 120 primeiros por relevância (= DEFAULT_LIMIT do coletor)
+    # Enriquecimento via API do ML (/items, visitas, reputação) p/ concorrentes.
+    # O ML passou a bloquear /items de terceiros (403 PolicyAgent) → DESLIGADO; o
+    # estudo opera só com os dados raspados da página de busca. Religar quando/se o
+    # ML reabrir a API de itens de concorrentes.
+    ML_COMPETITOR_ENRICHMENT: bool = False
 
     class Config:
         env_file = ".env"

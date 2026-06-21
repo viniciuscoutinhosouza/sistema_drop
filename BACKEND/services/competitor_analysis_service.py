@@ -238,25 +238,49 @@ def _collector_endpoints(settings) -> list[tuple[str, str]]:
     return out
 
 
-async def _fetch_scraped_ids(query: str) -> tuple[list[str], dict[str, int], str | None]:
-    """3ª fonte: busca livre raspada via API local do coletor (Camoufox).
+def _parse_sold(sold_text: str | None) -> int | None:
+    """Converte o texto de vendas raspado em inteiro aproximado.
 
-    A API roda na máquina do operador (IP residencial), exposta por túnel; o ML
-    bloqueou a busca por texto na API oficial (403). Desligado por padrão
-    (COLLECTOR_ENABLED) → retorna vazio sem erro (degradação graciosa).
+    Ex.: '+50 vendidos' → 50; '1.000 vendidos' → 1000; '2,5mil vendidos' → 2500.
+    É estimativa (alimenta a baixa confiança do estudo). pt-BR: '.' é milhar, ',' decimal.
+    """
+    if not sold_text:
+        return None
+    s = str(sold_text).lower()
+    m = re.search(r"([\d.,]+)\s*mil", s)
+    if m:
+        num = m.group(1).replace(".", "").replace(",", ".")
+        try:
+            return int(float(num) * 1000)
+        except ValueError:
+            return None
+    m = re.search(r"(\d[\d.]*)", s)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(".", ""))
+    except ValueError:
+        return None
 
-    Retorna (item_ids, rank_map, erro), onde rank_map[item_id] = posição por
-    relevância (1..N). Nunca levanta — falha vira aviso e o estudo segue só com
-    catálogo + highlights.
 
-    FAILOVER: COLLECTOR_API_URL pode ter várias URLs (vírgula). Tenta na ordem;
-    se uma cair, der erro, captcha ou 0 itens, passa para a próxima máquina (IP
-    residencial diferente). Só falha de vez se todas falharem.
+async def _fetch_scraped_items(query: str) -> tuple[list[dict], str | None]:
+    """Fonte primária: itens COMPLETOS raspados da busca do ML (coletor Camoufox).
+
+    O ML bloqueou a busca (/search) e os detalhes (/items) na API oficial (403) →
+    o coletor raspa a página pública e devolve por item: title, price, original_price,
+    seller, sold_text, rating, reviews, free_shipping, full, thumbnail, permalink,
+    search_rank. Cada item já vem com `search_rank` (ordem de relevância 1..N).
+
+    Desligado por padrão (COLLECTOR_ENABLED) → retorna vazio sem erro. Revalida o
+    item_id (^MLB\\d{6,}$) por defesa em profundidade. Nunca levanta.
+
+    FAILOVER: COLLECTOR_API_URL pode ter várias URLs (vírgula). Tenta na ordem; se
+    uma cair/der captcha/0 itens, passa pra próxima máquina (IP residencial diferente).
     """
     settings = get_settings()
     endpoints = _collector_endpoints(settings)
     if not settings.COLLECTOR_ENABLED or not endpoints or not query.strip():
-        return [], {}, None
+        return [], None
 
     body = {"query": query, "limit": settings.COLLECTOR_LIMIT}
     errors: list[str] = []
@@ -273,46 +297,201 @@ async def _fetch_scraped_ids(query: str) -> tuple[list[str], dict[str, int], str
             data = r.json()
             if data.get("captcha_detected"):
                 errors.append(f"{base_url}: captcha")
-                continue  # outra máquina (IP diferente) pode não ter captcha
-            # Revalida o formato no backend (defesa em profundidade — o coletor é um
-            # processo externo não-confiável; o id é interpolado na URL da API do ML).
-            # quality-guardian HIGH-1 / ADR-0012. Propaga o search_rank por MAPA (a ordem
-            # do multiget não é preservada adiante) — consistency-auditor C1/C2.
-            ids: list[str] = []
-            rank_map: dict[str, int] = {}
+                continue
+            items: list[dict] = []
             for idx, it in enumerate(data.get("items") or [], start=1):
                 iid = it.get("item_id")
                 if not iid or not _MLB_ID_RE.match(str(iid)):
                     continue
-                iid = str(iid)
-                ids.append(iid)
-                rank_map[iid] = int(it.get("search_rank") or idx)
-            if ids:
-                # Sucesso (mantém avisos das máquinas que falharam antes, se houver).
-                return ids, rank_map, ("; ".join(errors) or None)
+                it["item_id"] = str(iid)
+                it["search_rank"] = int(it.get("search_rank") or idx)
+                items.append(it)
+            if items:
+                return items, ("; ".join(errors) or None)
             errors.append(f"{base_url}: 0 itens")
         except Exception as e:  # noqa: BLE001
             errors.append(f"{base_url}: {e}")
             continue
 
-    return [], {}, "coletor indisponível — " + "; ".join(errors)
+    return [], "coletor indisponível — " + "; ".join(errors)
+
+
+def _build_listings_from_scraped(items: list[dict]) -> list[dict]:
+    """Monta listings padronizados (TODAS as chaves que front/estudo leem) a partir
+    dos itens raspados. Campos que dependiam da API do ML (/items) ficam None —
+    consistency-auditor H2 (sem `undefined` no template)."""
+    out: list[dict] = []
+    for it in items:
+        out.append({
+            "item_id": it.get("item_id"),
+            "title": it.get("title"),
+            "price": it.get("price"),
+            "original_price": it.get("original_price"),
+            "discount_text": it.get("discount_text"),
+            "sold_quantity": _parse_sold(it.get("sold_text")),
+            "sold_text": it.get("sold_text"),
+            "free_shipping": bool(it.get("free_shipping")),
+            "logistic_type": "fulfillment" if it.get("full") else None,
+            "listing_type_id": None,
+            "rating": it.get("rating"),
+            "reviews_text": it.get("reviews_text"),
+            "seller": it.get("seller"),
+            "seller_id": None,
+            "seller_reputation": None,
+            "thumbnail": it.get("thumbnail"),
+            "permalink": it.get("permalink") or it.get("href"),  # auditor C1
+            "category_id": None,
+            "brand": None,
+            "model": None,
+            "days_live": None,
+            "sales_per_day": None,
+            "visits_30d": None,
+            "visits_per_day": None,
+            "sponsored": bool(it.get("sponsored")),
+            "source": "search_scraped",
+            "search_rank": it.get("search_rank"),
+        })
+    return out
+
+
+def _build_search_study(title: str, listings: list[dict], category: dict | None) -> dict:
+    """Agregados do estudo (keywords, frete, preço) + top10 + top_by_relevance + raw.
+    Funciona tanto no modo raspado quanto enriquecido (campos ausentes = None)."""
+    n = len(listings) or 1
+    free = [it for it in listings if it.get("free_shipping")]
+    no_free = [it for it in listings if not it.get("free_shipping")]
+    full = [it for it in listings if it.get("logistic_type") == "fulfillment"]
+
+    # Top categorias: o raspado não traz category_id → usa a categoria sugerida
+    # (domain_discovery) como única entrada, para o card não ficar vazio (auditor C2).
+    cat = category or {}
+    if any(it.get("category_id") for it in listings):
+        counter: Counter[str] = Counter(it["category_id"] for it in listings if it.get("category_id"))
+        top_categories = [{"id": cid, "name": cid, "count": c, "pct": round(c * 100 / n, 1)}
+                          for cid, c in counter.most_common(TOP_CATEGORIES)]
+    elif cat.get("id"):
+        top_categories = [{"id": cat.get("id"), "name": cat.get("name"), "count": len(listings), "pct": 100.0}]
+    else:
+        top_categories = []
+
+    study = {
+        "query": title,
+        "total_found": len(listings),
+        "catalog_count": sum(1 for it in listings if it.get("source") == "catalog"),
+        "scraped_count": sum(1 for it in listings if it.get("source") == "search_scraped"),
+        "highlights_count": sum(1 for it in listings if it.get("source") == "highlights"),
+        "top_categories": top_categories,
+        "top_keywords": _tokenize_keywords(listings),
+        "shipping_stats": {
+            "free_shipping_count": len(free),
+            "no_free_shipping_count": len(no_free),
+            "full_count": len(full),
+            "free_shipping_pct": round(len(free) * 100 / n, 1),
+            "full_pct": round(len(full) * 100 / n, 1),
+        },
+        "price_stats": {
+            "with_free_shipping": _price_block([it.get("price") for it in free]),
+            "without_free_shipping": _price_block([it.get("price") for it in no_free]),
+            "overall": _price_block([it.get("price") for it in listings]),
+        },
+    }
+
+    study["top10_by_sales"] = sorted(
+        listings, key=lambda c: (c.get("sold_quantity") or 0), reverse=True
+    )[:10]
+    by_rel = sorted((it for it in listings if it.get("search_rank")), key=lambda c: c["search_rank"])
+    study["top_by_relevance"] = [
+        {k: it.get(k) for k in (
+            "item_id", "search_rank", "title", "price", "sold_quantity",
+            "free_shipping", "logistic_type", "permalink", "seller", "source",
+        )}
+        for it in by_rel
+    ]
+    study["all_results_raw"] = [
+        {k: it.get(k) for k in (
+            "item_id", "title", "price", "original_price", "category_id", "sold_quantity",
+            "sold_text", "free_shipping", "logistic_type", "rating", "reviews_text",
+            "seller", "thumbnail", "permalink", "source", "search_rank",
+        )}
+        for it in listings
+    ]
+    return study
+
+
+async def _enrich_via_api(token: str, listings: list[dict], out: dict) -> None:
+    """Overlay best-effort com dados da API do ML (vendas exatas, date_created,
+    visitas, reputação). DORMENTE: o ML bloqueia /items de terceiros (403). Só roda
+    quando ML_COMPETITOR_ENRICHMENT=True. Falhas viram avisos; nunca derruba o estudo."""
+    ids = [it["item_id"] for it in listings if it.get("item_id")]
+    try:
+        details, diag = await ml.fetch_item_details(token, ids)
+    except Exception as e:  # noqa: BLE001
+        out["errors"].append(f"enriquecimento itens: {e}")
+        return
+    by_id = {str(nd.get("item_id")): nd for nd in (ml.normalize_item_detail(d) for d in details)}
+    if not by_id:
+        out["errors"].append(
+            f"enriquecimento indisponível (multiget={diag.get('multiget_status')}, "
+            f"individual={diag.get('individual_status')})"
+        )
+        return
+    visits: dict = {}
+    try:
+        visits = await ml.get_items_visit_stats_range(token, list(by_id.keys()), days=30)
+    except Exception as e:  # noqa: BLE001
+        out["errors"].append(f"visitas: {e}")
+    now = datetime.now(UTC)
+    for it in listings:
+        nd = by_id.get(str(it.get("item_id")))
+        if not nd:
+            continue
+        for k in ("sold_quantity", "date_created", "seller_id", "category_id",
+                  "brand", "model", "listing_type_id", "logistic_type"):
+            if nd.get(k) is not None:
+                it[k] = nd[k]
+        created = it.get("date_created")
+        if created:
+            try:
+                dt = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                it["days_live"] = max(1, (now - dt).days)
+                it["sales_per_day"] = round((it.get("sold_quantity") or 0) / it["days_live"], 3)
+            except Exception:  # noqa: BLE001
+                pass
+        v30 = visits.get(str(it["item_id"]))
+        if v30:
+            it["visits_30d"] = v30
+            it["visits_per_day"] = round(v30 / 30, 1)
+    rep_cache: dict[str, dict] = {}
+    for it in sorted(listings, key=lambda c: (c.get("sold_quantity") or 0), reverse=True)[:10]:
+        sid = str(it.get("seller_id") or "")
+        if sid and sid not in rep_cache:
+            try:
+                rep_cache[sid] = await ml.get_seller_reputation(token, sid)
+            except Exception:  # noqa: BLE001
+                rep_cache[sid] = {}
+        it["seller_reputation"] = rep_cache.get(sid)
 
 
 async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
-    """Estudo de mercado do ML — híbrido Catálogo + Highlights.
+    """Estudo de mercado do ML a partir da BUSCA RASPADA (coletor Camoufox).
 
-    A busca livre por texto (/sites/MLB/search) foi descontinuada pelo ML (403).
-    Fontes atuais: (a) itens do CATÁLOGO = concorrentes diretos do produto (buy box);
-    (b) HIGHLIGHTS da categoria = top mais vendidos (tendências/keywords).
-    Enriquece com vendas/data/visitas, calcula estatísticas (categorias, keywords,
-    frete, preço) e seleciona o top 10 por vendas com reputação.
+    O ML bloqueou a busca (/search) e os detalhes (/items) de terceiros na API
+    (403 PolicyAgent) → a fonte primária é o coletor, que raspa a página pública.
+    O enriquecimento via API (vendas exatas, date_created, visitas, reputação) fica
+    DESLIGADO por padrão (`ML_COMPETITOR_ENRICHMENT`); quando ligado, é só um overlay
+    best-effort. Ver ADR-0012. Sempre degrada graciosamente (nunca derruba o estudo).
     """
     from services.ml_auth import get_valid_token
 
+    settings = get_settings()
+    enrich = bool(settings.ML_COMPETITOR_ENRICHMENT)
     out: dict = {"category": None, "attributes": [], "catalog": None, "competitors": [],
-                 "commission": None, "errors": [], "search_study": None}
+                 "commission": None, "errors": [], "search_study": None,
+                 "enrichment_off": not enrich}
     title = product.get("title") or ""
 
+    # Token (categoria/comissão públicas + enriquecimento opcional). Falha não derruba.
+    token: str | None = None
     try:
         async with task_db() as db:
             # Recarrega a conta ATTACHED nesta sessão (o objeto de _load_inputs está
@@ -322,212 +501,50 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
                     select(MarketplaceAccount).where(MarketplaceAccount.id == account.id)
                 )
             ).scalar_one_or_none()
-            if not acc:
-                out["errors"].append("conta não encontrada")
-                return out
-            token = await get_valid_token(acc, db, margin_seconds=3600)
+            if acc:
+                token = await get_valid_token(acc, db, margin_seconds=3600)
     except Exception as e:  # noqa: BLE001
         out["errors"].append(f"token: {e}")
-        return out
 
     # Categoria + atributos sugeridos (domain_discovery público) — contexto p/ a IA.
-    try:
-        cats = await ml.search_categories(title)
-        if cats:
-            out["category"] = cats[0]
-            attrs = await ml.get_category_attributes(cats[0]["id"])
-            out["attributes"] = [
-                {"id": at.get("id"), "name": at.get("name"),
-                 "tags": at.get("tags") or {}, "required": bool((at.get("tags") or {}).get("required"))}
-                for at in (attrs or [])
-            ][:40]
-    except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"categoria: {e}")
-
-    # 1) Coleta de IDs por duas fontes (busca por texto foi descontinuada pelo ML — 403):
-    #    a) CATÁLOGO: concorrentes diretos do mesmo produto (buy box)
-    #    b) HIGHLIGHTS: top mais vendidos da categoria (tendências/keywords)
-    catalog_ids: list[str] = []
-    try:
-        products = await ml.search_catalog_products(token, title)
-        if products:
-            pid = products[0].get("id")
-            cat_prod = await ml.get_catalog_product(token, pid)
-            out["catalog"] = {
-                "product_id": pid,
-                "name": cat_prod.get("name"),
-                "buy_box_winner": cat_prod.get("buy_box_winner"),
-            }
-            items = await ml.get_catalog_product_items(token, pid)
-            catalog_ids = [it.get("item_id") for it in items if it.get("item_id")]
-    except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"catalogo: {e}")
-
-    highlight_ids: list[str] = []
-    cat_id = (out.get("category") or {}).get("id")
-    if cat_id:
+    if token:
         try:
-            highlight_ids = await ml.get_category_highlights(token, cat_id, limit=60)
+            cats = await ml.search_categories(title)
+            if cats:
+                out["category"] = cats[0]
+                attrs = await ml.get_category_attributes(cats[0]["id"])
+                out["attributes"] = [
+                    {"id": at.get("id"), "name": at.get("name"),
+                     "tags": at.get("tags") or {}, "required": bool((at.get("tags") or {}).get("required"))}
+                    for at in (attrs or [])
+                ][:40]
         except Exception as e:  # noqa: BLE001
-            out["errors"].append(f"highlights: {e}")
+            out["errors"].append(f"categoria: {e}")
 
-    # 3ª fonte: busca livre raspada (coletor local Camoufox) — recupera o que a API
-    # do ML bloqueou (403). 120 primeiros por relevância. Opcional/desligável;
-    # falha não derruba o estudo (M3). rank_map preserva a ordem de relevância.
-    scraped_ids, scraped_rank_map, scraped_err = await _fetch_scraped_ids(title)
+    # Fonte primária: busca raspada (coletor local Camoufox), 120 por relevância.
+    scraped_items, scraped_err = await _fetch_scraped_items(title)
     if scraped_err:
         out["errors"].append(scraped_err)
-
-    # Combina e deduplica. Ordem de prioridade: catálogo (concorrentes diretos do
-    # buy box) → busca raspada (keyword) → highlights (tendências de categoria).
-    seen: set[str] = set()
-    item_ids: list[str] = []
-    for iid in catalog_ids + scraped_ids + highlight_ids:
-        s = str(iid)
-        if s and s not in seen:
-            seen.add(s)
-            item_ids.append(iid)
-    catalog_id_set = {str(i) for i in catalog_ids}
-    scraped_id_set = {str(i) for i in scraped_ids}
-
-    if not item_ids:
+    if not scraped_items:
         out["errors"].append(
-            f"nenhum concorrente encontrado (catálogo={len(catalog_ids)}, "
-            f"raspado={len(scraped_ids)}, highlights={len(highlight_ids)}, "
-            f"categoria={cat_id or '—'})"
+            "a busca não retornou anúncios (coletor desligado/indisponível ou sem resultados)"
         )
         out["search_study"] = {"query": title, "total_found": 0}
         return out
 
-    # 2) Detalhe de todos os itens (vendas, data, frete, atributos) com fallback resiliente
-    listings: list[dict] = []
-    try:
-        details, diag = await ml.fetch_item_details(token, item_ids)
-        for d in details:
-            it = ml.normalize_item_detail(d)
-            iid = str(it["item_id"])
-            if iid in catalog_id_set:
-                it["source"] = "catalog"
-            elif iid in scraped_id_set:
-                it["source"] = "search_scraped"
-            else:
-                it["source"] = "highlights"
-            # search_rank por MAPA (robusto à reordenação do multiget) — auditor C1.
-            it["search_rank"] = scraped_rank_map.get(iid)
-            listings.append(it)
-    except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"items: {e}")
-        diag = {}
+    listings = _build_listings_from_scraped(scraped_items)
 
-    if not listings:
-        out["errors"].append(
-            f"falha ao carregar detalhes: {len(item_ids)} IDs "
-            f"(catálogo={len(catalog_ids)}, highlights={len(highlight_ids)}) — "
-            f"multiget={diag.get('multiget_status')}, individual={diag.get('individual_status')}"
-        )
-        out["search_study"] = {"query": title, "total_found": 0}
-        return out
+    # Enriquecimento via API do ML (DORMENTE — /items bloqueado; atrás do flag).
+    if enrich and token:
+        await _enrich_via_api(token, listings, out)
 
-    # 3) Enriquece com visitas (30 dias) de todos os itens
-    item_ids = [it["item_id"] for it in listings if it.get("item_id")]
-    visits: dict = {}
-    try:
-        visits = await ml.get_items_visit_stats_range(token, item_ids, days=30)
-    except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"visitas: {e}")
-
-    # 4) Calcula velocidade por anúncio (days_live, sales_per_day, visits_per_day)
-    now = datetime.now(UTC)
-    for it in listings:
-        sold = int(it.get("sold_quantity") or 0)
-        created = it.get("date_created")
-        days_live = None
-        if created:
-            try:
-                dt = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
-                days_live = max(1, (now - dt).days)
-            except Exception:  # noqa: BLE001
-                pass
-        it["days_live"] = days_live
-        it["sales_per_day"] = round(sold / days_live, 3) if days_live else None
-        v30 = visits.get(str(it["item_id"]))
-        it["visits_30d"] = v30
-        it["visits_per_day"] = round(v30 / 30, 1) if v30 else None
-
-    # 5) Estatísticas agregadas
-    free = [it for it in listings if it.get("free_shipping")]
-    no_free = [it for it in listings if not it.get("free_shipping")]
-    full = [it for it in listings if it.get("logistic_type") == "fulfillment"]
-
-    top_categories = await _top_categories_with_names(listings)
-    top_keywords = _tokenize_keywords(listings)
-
-    search_study = {
-        "query": title,
-        "total_found": len(listings),
-        "catalog_count": sum(1 for it in listings if it.get("source") == "catalog"),
-        "scraped_count": sum(1 for it in listings if it.get("source") == "search_scraped"),
-        "highlights_count": sum(1 for it in listings if it.get("source") == "highlights"),
-        "top_categories": top_categories,
-        "top_keywords": top_keywords,
-        "shipping_stats": {
-            "free_shipping_count": len(free),
-            "no_free_shipping_count": len(no_free),
-            "full_count": len(full),
-            "free_shipping_pct": round(len(free) * 100 / len(listings), 1),
-            "full_pct": round(len(full) * 100 / len(listings), 1),
-        },
-        "price_stats": {
-            "with_free_shipping": _price_block([it.get("price") for it in free]),
-            "without_free_shipping": _price_block([it.get("price") for it in no_free]),
-            "overall": _price_block([it.get("price") for it in listings]),
-        },
-    }
-
-    # 6) Top 10 por vendas → enriquece com reputação do vendedor
-    top10 = sorted(listings, key=lambda c: (c.get("sold_quantity") or 0), reverse=True)[:10]
-    rep_cache: dict[str, dict] = {}
-    for it in top10:
-        sid = str(it.get("seller_id") or "")
-        if sid and sid not in rep_cache:
-            try:
-                rep_cache[sid] = await ml.get_seller_reputation(token, sid)
-            except Exception:  # noqa: BLE001
-                rep_cache[sid] = {}
-        it["seller_reputation"] = rep_cache.get(sid)
-
-    search_study["top10_by_sales"] = top10
-
-    # Top por relevância: os primeiros da busca raspada (search_rank), amostra de
-    # mercado p/ a IA (keywords/preço/intensidade) — auditor C1/H3.
-    by_rel = sorted(
-        (it for it in listings if it.get("search_rank")),
-        key=lambda c: c["search_rank"],
-    )
-    search_study["top_by_relevance"] = [
-        {k: it.get(k) for k in (
-            "item_id", "search_rank", "title", "price", "sold_quantity",
-            "free_shipping", "logistic_type", "permalink", "source",
-        )}
-        for it in by_rel
-    ]
-
-    # all_results_raw: versão enxuta de TODOS os itens (sem objetos pesados) p/ memória.
-    search_study["all_results_raw"] = [
-        {k: it.get(k) for k in (
-            "item_id", "title", "price", "category_id", "sold_quantity",
-            "free_shipping", "logistic_type", "brand", "model",
-            "days_live", "sales_per_day", "visits_30d", "permalink", "source", "search_rank",
-        )}
-        for it in listings
-    ]
-
+    search_study = _build_search_study(title, listings, out.get("category"))
     out["search_study"] = search_study
-    out["competitors"] = top10  # contrato anterior: top 10 enriquecido
+    out["competitors"] = search_study["top10_by_sales"]
 
-    # 7) Comissão na mediana de preço (âncora de custo p/ a IA)
+    # Comissão na mediana de preço (âncora de custo p/ a IA) — público, best-effort.
     prices = sorted([it["price"] for it in listings if it.get("price")])
-    if prices and out.get("category"):
+    if prices and out.get("category") and token:
         median = prices[len(prices) // 2]
         try:
             out["commission"] = await ml.get_commission_details(
@@ -542,19 +559,17 @@ async def _gather_ml(account: MarketplaceAccount, product: dict) -> dict:
 _SYSTEM_PROMPT = (
     "Você é um especialista sênior em vendas no Mercado Livre (categorias, SEO de título, "
     "precificação, buy box, Mercado Envios/Full e Product Ads). Receberá os dados de um produto "
-    "do vendedor e dados REAIS coletados do ML por TRÊS fontes: (1) concorrentes diretos do CATÁLOGO "
-    "(buy box do mesmo produto); (2) a BUSCA POR RELEVÂNCIA do termo no ML — os ~120 primeiros "
-    "anúncios ordenados por relevância, em ml.estudo_mercado.top_by_relevance (cada um com search_rank, "
-    "preço, vendas, frete); (3) os mais vendidos da CATEGORIA (highlights). O bloco "
-    "ml.estudo_mercado traz as TOP categorias (com contagem), as TOP 30 palavras-chave de "
-    "título/marca/modelo, estatísticas de frete grátis e Full, e faixas de preço (mín/máx/médio) "
-    "separadas por quem oferece frete grátis e quem não oferece. Use os anúncios por RELEVÂNCIA como "
-    "AMOSTRA DE MERCADO (intensidade de concorrência, palavras-chave que rankeiam, posição de preço); "
-    "NÃO comente cada um deles individualmente. Também recebe o top 10 por vendas "
-    "(com visitas/dia, vendas/dia, data de cadastro e reputação) e a comissão. Se os dados de "
-    "concorrência forem escassos, seja explícito sobre a baixa confiança. Faça um estudo de "
-    "concorrência ACIONÁVEL e responda SOMENTE com um JSON válido (sem texto fora do JSON, sem "
-    "markdown), no schema:\n"
+    "do vendedor e dados REAIS coletados da PÁGINA DE BUSCA do ML (~120 anúncios ordenados por "
+    "RELEVÂNCIA, em ml.estudo_mercado.top_by_relevance), cada um com: título, preço, preço original, "
+    "vendedor, frete grátis, FULL, avaliação/reviews e search_rank. O bloco ml.estudo_mercado traz as "
+    "TOP palavras-chave dos títulos, estatísticas de frete grátis e Full, e faixas de preço (mín/máx/médio) "
+    "separadas por quem oferece frete grátis e quem não. IMPORTANTE: quando ml.enriquecimento_api_off=true "
+    "(padrão atual), os dados vêm SÓ da vitrine de busca — NÃO há visitas, data de cadastro nem reputação "
+    "do vendedor (o ML bloqueou a API de itens de terceiros). NÃO invente nem cite esses números; "
+    "a quantidade de vendas (sold_quantity) é APROXIMADA (do selo 'X vendidos', pode estar ausente). "
+    "Use os anúncios como AMOSTRA DE MERCADO (intensidade de concorrência, palavras-chave que rankeiam, "
+    "posição de preço, % com frete grátis/Full). Faça um estudo ACIONÁVEL e responda SOMENTE com um JSON "
+    "válido (sem texto fora do JSON, sem markdown), no schema:\n"
     "{\n"
     '  "best_title": "título otimizado <=60 chars",\n'
     '  "model_field": "o que preencher no campo Modelo",\n'
@@ -565,9 +580,11 @@ _SYSTEM_PROMPT = (
     '  "recommendations": ["ações p/ ganhar relevância: Full, frete grátis, parcelamento, atributos/ficha, fotos, Ads (ROAS=100/ACOS-teto), etc"],\n'
     '  "disclaimer": "aviso de que a previsão é estimativa"\n'
     "}\n"
-    "Regras: a previsão deve usar a VELOCIDADE (sales_per_day) e visitas dos concorrentes + a posição "
-    "de preço escolhida; dê FAIXAS (min,max) e confiança. Respeite a margem de contribuição desejada "
-    "sobre o custo ao sugerir preço (desconte comissão e frete). Use as TOP palavras-chave do mercado "
+    "Regras: quando enriquecimento_api_off=true, a previsão NÃO tem velocidade real (sem visitas nem "
+    "data de cadastro) → baseie-a só em preço/posição de relevância/vendas aproximadas e marque "
+    "confidence='baixa' em todos os horizontes, deixando claro no method_note e no disclaimer que é "
+    "estimativa grosseira. Dê FAIXAS (min,max). Respeite a margem de contribuição desejada sobre o custo "
+    "ao sugerir preço (desconte comissão e frete). Use as TOP palavras-chave do mercado "
     "(ml.estudo_mercado.top_keywords) para compor o best_title; use as faixas de preço por frete para "
     "calibrar o price_range. Em top_competitors, comente CADA UM dos até 10 concorrentes recebidos em "
     "ml.concorrentes, usando o item_id EXATO de cada um (não invente item_id, não invente links). "
@@ -624,6 +641,7 @@ async def _run_analysis(analysis_id: int) -> None:
             "comentario_usuario": inp["analysis"]["user_prompt"],
             "memoria_estudos_anteriores": inp["memory"],
             "ml": {
+                "enriquecimento_api_off": ml_data.get("enrichment_off"),
                 "categoria_sugerida": ml_data.get("category"),
                 "atributos": ml_data.get("attributes"),
                 "estatisticas_preco": ml_data.get("price_stats"),
