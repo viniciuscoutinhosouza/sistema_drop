@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-06-21 — feat(análise): categorias reais (barra lateral) + vendedor com link
+
+- **Coletor** ([ml_search.py](tools/collector/ml_search.py)): `_parse_categories` raspa o filtro "Categorias" da barra lateral da busca (categoria/subcategoria + qtd reais — o card de resultado não expõe categoria por item); `seller_url` por anúncio (loja oficial / `_CustId_`). Best-effort: se o ML mudar o layout, cai na categoria sugerida.
+- **Backend** ([competitor_analysis_service.py](BACKEND/services/competitor_analysis_service.py)): `_fetch_scraped_items` retorna `(items, categories, err)`; `_build_search_study` usa as categorias raspadas no `top_categories`; `seller_url` no listing/top_by_relevance/all_results_raw.
+- **Frontend**: card Top Categorias mostra categorias reais com link + qtd; coluna **Vendedor** (com link) no Top 10.
+- Limitações honestas: Visitas/Reputação seguem impossíveis (API /items bloqueada); Vendas só quando o ML mostra "X vendidos" no card; categoria por-anúncio não vem da busca (só o agregado da barra lateral).
+- Deploy: backend pull+restart, frontend dist (coluna Vendedor confirmada), coletor via subprocesso. Verificado: import/compile + caminho de categorias.
+
+---
+
 ## 2026-06-21 — fix(coletor): coleta assíncrona (job + polling) p/ evitar HTTP 524 do túnel
 
 O túnel Cloudflare (grátis) corta requisições HTTP que passam de ~100s → a coleta de 120 itens (minutos) dava **524** e o estudo falhava. Tornei a coleta **assíncrona**:
