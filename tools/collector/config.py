@@ -67,7 +67,7 @@ class CollectorConfig:
     MAX_LIMIT: int = _get_int("COLLECTOR_MAX_LIMIT", 150)
     # Deep visit: nº de anúncios cuja PÁGINA é aberta p/ dados ricos (categoria real,
     # ficha técnica, reputação, data). Mais = mais lento + maior risco de bloqueio.
-    DEFAULT_DEEP_COUNT: int = _get_int("COLLECTOR_DEFAULT_DEEP_COUNT", 30)
+    DEFAULT_DEEP_COUNT: int = _get_int("COLLECTOR_DEFAULT_DEEP_COUNT", 20)
     MAX_DEEP_COUNT: int = _get_int("COLLECTOR_MAX_DEEP_COUNT", 100)
     # Rate limit: máx. de coletas por janela (anti-DoS / proteção do IP residencial).
     RATE_MAX: int = _get_int("COLLECTOR_RATE_MAX", 20)

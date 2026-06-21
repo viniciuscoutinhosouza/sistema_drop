@@ -59,8 +59,8 @@ class Settings(BaseSettings):
     COLLECTOR_TIMEOUT: float = 960.0     # > SUBPROCESS_TIMEOUT do coletor (900s); cobre deep visit
     COLLECTOR_LIMIT: int = 120           # 120 primeiros por relevância (= DEFAULT_LIMIT do coletor)
     # Nº de anúncios cuja PÁGINA é aberta p/ dados ricos (categoria/ficha/reputação/data).
-    # Mais = mais lento + maior risco de bloqueio. 30 ≈ 5 min. (= DEFAULT_DEEP_COUNT do coletor)
-    COLLECTOR_DEEP_COUNT: int = 30
+    # Visita os N MAIS VENDIDOS. Mais = mais lento + maior risco. 20 ≈ 4 min. (= DEFAULT_DEEP_COUNT do coletor)
+    COLLECTOR_DEEP_COUNT: int = 20
     # Enriquecimento via API do ML (/items, visitas, reputação) p/ concorrentes.
     # O ML passou a bloquear /items de terceiros (403 PolicyAgent) → DESLIGADO; o
     # estudo opera só com os dados raspados da página de busca. Religar quando/se o

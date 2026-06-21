@@ -36,9 +36,17 @@ _BG_TASKS: set = set()  # mantém referência dos tasks (evita coleta pelo GC)
 
 _MLB_ID_RE = re.compile(r"^MLB\d{6,}$")  # valida item_id raspado antes de usar na URL do ML
 
-MAX_COMPETITORS = 15          # top N concorrentes enriquecidos (reputação/visitas)
+MAX_COMPETITORS = 15          # (legado) top N concorrentes enriquecidos
+TOP_COMPETITORS = 20          # top N concorrentes por vendas exibidos
 TOP_KEYWORDS = 30             # palavras-chave mais frequentes a retornar
 TOP_CATEGORIES = 3            # categorias mais frequentes a retornar
+
+# Rótulos dos tipos de anúncio (espelha routers.simulator._LISTING_TYPE_INFO; duplicado
+# aqui p/ evitar import router→service).
+_LISTING_TYPE_LABELS = {
+    "gold_special": {"label": "Clássico", "fee_range": "10%–14%"},
+    "gold_pro": {"label": "Premium", "fee_range": "15%–19%"},
+}
 
 # Stop-words PT-BR + ruído de marketplace (filtradas das keywords).
 _STOPWORDS_PT: set[str] = {
@@ -83,6 +91,37 @@ def _price_block(prices: list[float]) -> dict:
         "avg": round(sum(vals) / len(vals), 2),
         "count": len(vals),
     }
+
+
+def _price_quartiles(prices: list[float]) -> dict:
+    """p25/mediana/p75/iqr de uma lista de preços (ignora None)."""
+    vals = sorted(float(p) for p in prices if p is not None)
+    if not vals:
+        return {"p25": None, "median": None, "p75": None, "iqr": None, "count": 0}
+
+    def _pct(q: float) -> float:
+        i = q * (len(vals) - 1)
+        lo = int(i)
+        frac = i - lo
+        hi = min(lo + 1, len(vals) - 1)
+        return round(vals[lo] + (vals[hi] - vals[lo]) * frac, 2)
+
+    p25, p75 = _pct(0.25), _pct(0.75)
+    return {"p25": p25, "median": _pct(0.5), "p75": p75, "iqr": round(p75 - p25, 2), "count": len(vals)}
+
+
+def _clean_category_path(path: str | None) -> str | None:
+    """Remove crumbs iniciais 'Voltar/Volver/Back' do breadcrumb (artefato da PDP)."""
+    if not path:
+        return path
+    parts = [p.strip() for p in str(path).split(">")]
+    parts = [p for p in parts if p and not re.match(r"^(voltar|volver|back)$", p, re.I)]
+    return " > ".join(parts) if parts else None
+
+
+def _is_kit(it: dict) -> bool:
+    """Heurística: o título contém 'kit' (combo/conjunto de itens)."""
+    return bool(re.search(r"\bkit\b", (it.get("title") or "").lower()))
 
 
 def schedule_analysis(analysis_id: int) -> None:
@@ -386,8 +425,11 @@ def _build_listings_from_scraped(items: list[dict]) -> list[dict]:
             "thumbnail": it.get("thumbnail"),
             "permalink": it.get("permalink") or it.get("href"),  # auditor C1
             "category_id": it.get("category_id"),
-            "category_path": it.get("category_path"),
+            "category_path": _clean_category_path(it.get("category_path")),
             "category_leaf": it.get("category_leaf"),
+            "is_kit": _is_kit(it),
+            "page_sold": it.get("page_sold"),
+            "deep_rank_by_sales": it.get("deep_rank_by_sales"),
             "attributes": it.get("attributes") or [],
             "brand": it.get("brand"),
             "model": it.get("model"),
@@ -415,13 +457,15 @@ def _build_search_study(title: str, listings: list[dict], category: dict | None,
     free = [it for it in listings if it.get("free_shipping")]
     no_free = [it for it in listings if not it.get("free_shipping")]
     full = [it for it in listings if it.get("logistic_type") == "fulfillment"]
+    kit = [it for it in listings if it.get("is_kit")]
+    non_kit = [it for it in listings if not it.get("is_kit")]
 
     # Top categorias por prioridade: (1) caminho REAL por item (breadcrumb das páginas
     # visitadas); (2) filtro lateral raspado; (3) category_id por item (modo API);
     # (4) categoria sugerida (domain_discovery); (5) vazio.
     cat = category or {}
     path_counter: Counter[str] = Counter(
-        (it.get("category_path") or it.get("category_leaf"))
+        (_clean_category_path(it.get("category_path")) or it.get("category_leaf"))
         for it in listings if (it.get("category_path") or it.get("category_leaf"))
     )
     if path_counter:
@@ -457,13 +501,20 @@ def _build_search_study(title: str, listings: list[dict], category: dict | None,
             "free_shipping_count": len(free),
             "no_free_shipping_count": len(no_free),
             "full_count": len(full),
+            "kit_count": len(kit),
+            "non_kit_count": len(non_kit),
             "free_shipping_pct": round(len(free) * 100 / n, 1),
             "full_pct": round(len(full) * 100 / n, 1),
+            "kit_pct": round(len(kit) * 100 / n, 1),
         },
         "price_stats": {
             "with_free_shipping": _price_block([it.get("price") for it in free]),
             "without_free_shipping": _price_block([it.get("price") for it in no_free]),
+            "full": _price_block([it.get("price") for it in full]),
+            "kit": _price_block([it.get("price") for it in kit]),
+            "non_kit": _price_block([it.get("price") for it in non_kit]),
             "overall": _price_block([it.get("price") for it in listings]),
+            "distribution": _price_quartiles([it.get("price") for it in listings]),
         },
     }
 
@@ -486,9 +537,50 @@ def _build_search_study(title: str, listings: list[dict], category: dict | None,
         "with_date_count": len(spd),
     } if spd else None)
 
-    study["top10_by_sales"] = sorted(
-        listings, key=lambda c: (c.get("sold_quantity") or 0), reverse=True
-    )[:10]
+    # Rating médio (dos que têm avaliação).
+    ratings = [it["rating"] for it in listings if it.get("rating")]
+    study["rating_avg"] = round(sum(ratings) / len(ratings), 2) if ratings else None
+    study["rating_count"] = len(ratings)
+
+    # Concentração de vendedores (intensidade de competição).
+    seller_counter: Counter[str] = Counter(
+        (it.get("seller") or it.get("seller_url")) for it in listings
+        if (it.get("seller") or it.get("seller_url"))
+    )
+    if seller_counter:
+        top_seller, top_seller_n = seller_counter.most_common(1)[0]
+        study["seller_concentration"] = {
+            "distinct_sellers": len(seller_counter),
+            "top_seller": top_seller,
+            "share_top_seller_pct": round(top_seller_n * 100 / n, 1),
+            "top_sellers": [{"seller": s, "count": c} for s, c in seller_counter.most_common(10)],
+        }
+    else:
+        study["seller_concentration"] = None
+
+    # Sweet spot: faixa de preço dos MAIS VENDIDOS (sold ≥ mediana de quem tem sold).
+    with_sold = sorted(it for it in (i.get("sold_quantity") for i in listings) if it)
+    if with_sold:
+        sold_median = with_sold[len(with_sold) // 2]
+        top_sellers_items = [it for it in listings
+                             if (it.get("sold_quantity") or 0) >= sold_median and it.get("price")]
+        sweet = _price_block([it.get("price") for it in top_sellers_items])
+        sweet["basis"] = "anúncios com vendas >= mediana"
+        study["sweet_spot"] = sweet
+    else:
+        study["sweet_spot"] = None
+
+    # Preço × vendas (p/ a IA inferir elasticidade) — só itens com ambos, enxuto.
+    study["price_vs_sales"] = [
+        {"price": it.get("price"), "sold_quantity": it.get("sold_quantity")}
+        for it in listings if it.get("price") and it.get("sold_quantity")
+    ][:25]
+
+    # Top 20 por vendas: deep-visited primeiro (deep_rank_by_sales), resto por sold desc.
+    def _sales_key(c: dict):
+        deep_rank = c.get("deep_rank_by_sales")
+        return (0, deep_rank) if deep_rank else (1, -(c.get("sold_quantity") or 0))
+    study["top20_by_sales"] = sorted(listings, key=_sales_key)[:TOP_COMPETITORS]
     by_rel = sorted((it for it in listings if it.get("search_rank")), key=lambda c: c["search_rank"])
     _REL_KEYS = (
         "item_id", "search_rank", "title", "price", "original_price", "sold_quantity",
@@ -555,7 +647,76 @@ async def _enrich_via_api(token: str, listings: list[dict], out: dict) -> None:
         it["seller_reputation"] = rep_cache.get(sid)
 
 
-async def _gather_ml(account: MarketplaceAccount, product: dict, analysis_id: int | None = None) -> dict:
+async def _simulate_owner_listing_types(token: str, seller_id: str, product: dict,
+                                        category_id: str | None, desired_margin_pct) -> dict | None:
+    """Calcula Clássico vs Premium PARA O PRODUTO DO DONO, no preço que atinge a
+    margem desejada sobre o custo. Reusa ml.get_listing_costs (comissão+frete reais).
+    Nunca levanta; retorna None se faltar custo/categoria/token/seller."""
+    cost = product.get("cost_price")
+    if not (token and seller_id and category_id) or not cost or cost <= 0:
+        return None
+    m = float(desired_margin_pct or 0) / 100.0
+    dims = (product.get("weight_kg"), product.get("height_cm"),
+            product.get("width_cm"), product.get("length_cm"))
+    options: list[dict] = []
+    for lt in ("gold_special", "gold_pro"):
+        try:
+            price = max(float(cost) * (1 + m) * 1.4, 1.0)  # chute inicial
+            costs = None
+            for _ in range(5):  # converge no preço que dá a margem (comissão depende do preço)
+                costs = await ml.get_listing_costs(
+                    token, seller_id, round(price, 2), category_id, lt, "me2", "cross_docking",
+                    dims[0], dims[1], dims[2], dims[3], True,
+                )
+                # Auto-consistente com get_listing_costs: parte proporcional = comissão %
+                # (comission_pct); o restante de total_cost (fixo + frete) vira termo fixo —
+                # evita dupla contagem de fixed/financing (quality-guardian HIGH).
+                total = costs.get("total_cost") or 0
+                pct = min(max((costs.get("commission_pct") or 0) / 100.0, 0), 0.95)
+                fixed_total = max(total - pct * price, 0)
+                new_price = (float(cost) * (1 + m) + fixed_total) / (1 - pct)
+                if abs(new_price - price) < 0.01:
+                    price = new_price
+                    break
+                price = new_price
+            costs = await ml.get_listing_costs(
+                token, seller_id, round(price, 2), category_id, lt, "me2", "cross_docking",
+                dims[0], dims[1], dims[2], dims[3], True,
+            )
+            net = costs.get("net_revenue") or 0
+            gross_profit = round(net - float(cost), 2)
+            meta = _LISTING_TYPE_LABELS.get(lt, {})
+            options.append({
+                "listing_type_id": lt, "label": meta.get("label", lt), "fee_range": meta.get("fee_range"),
+                "price": round(price, 2),
+                "commission_amount": costs.get("commission_amount"),
+                "commission_pct": costs.get("commission_pct"),
+                "shipping_cost": costs.get("shipping_cost"),
+                "fixed_fee": costs.get("fixed_fee"),
+                "financing_fee": costs.get("financing_fee"),
+                "net_revenue": net,
+                "gross_profit": gross_profit,
+                "margin_on_cost_pct": round((gross_profit / float(cost)) * 100, 1) if cost else None,
+            })
+        except Exception:  # noqa: BLE001
+            continue
+    if not options:
+        return None
+    # Recomendado: menor preço p/ atingir a margem (mais competitivo); IA discute Full/visibilidade.
+    recommended = min(options, key=lambda o: o["price"])["listing_type_id"]
+    return {
+        "reference": "preço que atinge a margem de contribuição desejada",
+        "desired_margin_pct": desired_margin_pct,
+        "category_id": category_id,
+        "cost_price": float(cost),
+        "has_dimensions": all(dims),
+        "options": options,
+        "recommended": recommended,
+    }
+
+
+async def _gather_ml(account: MarketplaceAccount, product: dict, analysis_id: int | None = None,
+                     desired_margin_pct=None) -> dict:
     """Estudo de mercado do ML a partir da BUSCA RASPADA (coletor Camoufox).
 
     O ML bloqueou a busca (/search) e os detalhes (/items) de terceiros na API
@@ -641,19 +802,33 @@ async def _gather_ml(account: MarketplaceAccount, product: dict, analysis_id: in
 
     search_study = _build_search_study(title, listings, out.get("category"), scraped_categories)
     out["search_study"] = search_study
-    out["competitors"] = search_study["top10_by_sales"]
+    out["competitors"] = search_study["top20_by_sales"]
 
     # Comissão na mediana de preço (âncora de custo p/ a IA) — público, best-effort.
     prices = sorted([it["price"] for it in listings if it.get("price")])
-    if prices and out.get("category") and token:
+    # Categoria p/ o simulador: a sugerida (domain_discovery) ou a mais frequente dos deep-visited.
+    cat_id = (out.get("category") or {}).get("id")
+    if not cat_id:
+        cc = Counter(it["category_id"] for it in listings if it.get("category_id"))
+        cat_id = cc.most_common(1)[0][0] if cc else None
+    if prices and cat_id and token:
         median = prices[len(prices) // 2]
         try:
             out["commission"] = await ml.get_commission_details(
-                token, median, out["category"]["id"], "gold_special", "me2", "cross_docking"
+                token, median, cat_id, "gold_special", "me2", "cross_docking"
             )
             out["price_stats"] = {"min": prices[0], "median": median, "max": prices[-1]}
         except Exception as e:  # noqa: BLE001
             out["errors"].append(f"comissao: {e}")
+
+    # Simulador Clássico × Premium do PRODUTO DO DONO (no preço da margem desejada).
+    seller_id = getattr(account, "platform_user_id", None)
+    try:
+        out["owner_listing_types"] = await _simulate_owner_listing_types(
+            token, seller_id, product, cat_id, desired_margin_pct,
+        )
+    except Exception as e:  # noqa: BLE001
+        out["errors"].append(f"simulador clássico/premium: {e}")
     return out
 
 
@@ -667,32 +842,32 @@ _SYSTEM_PROMPT = (
     "(category_leaf), marca (brand), modelo (model), reputação textual do vendedor (seller_reputation) e, "
     "quando disponível, data de criação (date_created) → velocidade (sales_per_day). O bloco ml.estudo_mercado "
     "traz: top_categories (categorias REAIS dos anúncios + qtd), top_keywords, brand_coverage, model_coverage, "
-    "reputation_mix, velocity_stats (vendas/dia dos que têm data), estatísticas de frete/Full e faixas de preço. "
-    "IMPORTANTE: VISITAS são INDISPONÍVEIS (o ML não expõe visitas na página pública) — NÃO invente nem cite "
-    "visitas. sold_quantity é APROXIMADO (selo 'X vendidos', pode faltar). date_created só existe em parte dos "
-    "anúncios — só calcule velocidade com ele. Use os anúncios como AMOSTRA DE MERCADO (concorrência, "
-    "keywords que rankeiam, posição de preço, % frete grátis/Full, marcas/modelos dominantes, reputação). "
-    "Faça um estudo ACIONÁVEL e responda SOMENTE com um JSON válido (sem texto fora do JSON, sem markdown), no schema:\n"
+    "reputation_mix, velocity_stats, distribution (quartis p25/median/p75), sweet_spot (faixa de preço dos MAIS "
+    "VENDIDOS), seller_concentration (nº de vendedores e share do maior), rating_avg, price_vs_sales, e "
+    "estatísticas de frete/Full/KIT e faixas de preço (inclui linhas full/kit/non_kit). Também recebe "
+    "ml.simulador_dono: custo de anúncio CLÁSSICO vs PREMIUM do SEU produto, calculado no preço que atinge a "
+    "margem desejada (comissão, frete, receita líquida, lucro, margem sobre custo) — use ESSES números, não invente. "
+    "IMPORTANTE: VISITAS são INDISPONÍVEIS — não invente nem cite. sold_quantity é APROXIMADO (pode faltar). "
+    "date_created só em parte dos anúncios. Use tudo como AMOSTRA DE MERCADO. "
+    "Faça UM estudo ACIONÁVEL e responda SOMENTE com um JSON válido (sem texto fora do JSON, sem markdown), no schema:\n"
     "{\n"
     '  "best_title": "título otimizado <=60 chars",\n'
     '  "model_field": "o que preencher no campo Modelo",\n'
     '  "best_category": {"id":"MLBxxxx","name":"","path":"","rationale":""},\n'
     '  "price_range": {"beginner":{"min":0,"max":0},"mature":{"min":0,"max":0},"rationale":"","margin_check":""},\n'
-    '  "top_competitors": [{"item_id":"<item_id EXATO recebido>","comment":"análise/observação deste anúncio no contexto do estudo (forças, fraquezas, o que copiar/evitar, posição de preço)"}],\n'
+    '  "expert_analysis": "ANÁLISE GERAL de especialista de marketplace (5-10 frases): como montar ESTE anúncio para alcançar a MAIOR RELEVÂNCIA no menor tempo e MAIOR LUCRATIVIDADE — título/keywords, categoria certa, frete grátis/Full, ficha técnica/atributos, fotos, faixa de preço (sweet spot dos mais vendidos), parcelamento, Ads, e como se posicionar frente à concorrência/concentração de vendedores observada. NÃO comente anúncio por anúncio — visão consolidada.",\n'
+    '  "listing_type_recommendation": {"recommended":"gold_special|gold_pro","rationale":"por que Clássico ou Premium, dado custo/comissão/frete/margem e visibilidade/parcelamento","table":[{"tipo":"Clássico","preco":0,"comissao_pct":0,"frete":0,"receita_liquida":0,"lucro":0,"margem_sobre_custo_pct":0},{"tipo":"Premium","preco":0,"comissao_pct":0,"frete":0,"receita_liquida":0,"lucro":0,"margem_sobre_custo_pct":0}]},\n'
     '  "forecast": {"7":{"sales":[0,0],"visits":[0,0],"profit":[0,0],"confidence":"baixa|media|alta"},"14":{},"30":{},"60":{},"90":{},"method_note":""},\n'
-    '  "recommendations": ["ações p/ ganhar relevância: Full, frete grátis, parcelamento, atributos/ficha, fotos, Ads (ROAS=100/ACOS-teto), etc"],\n'
+    '  "recommendations": ["ações p/ ganhar relevância: Full, frete grátis, parcelamento, atributos/ficha, fotos, Ads (ROAS/ACOS), etc"],\n'
     '  "disclaimer": "aviso de que a previsão é estimativa"\n'
     "}\n"
-    "Regras de previsão: VISITAS são sempre indisponíveis → no forecast deixe visits=[0,0] e não as cite. "
-    "Para vendas/lucro use a VELOCIDADE real quando houver (velocity_stats / sales_per_day dos anúncios com "
-    "date_created) + posição de preço + nº de concorrentes; quando NÃO houver dados de velocidade, baseie só "
-    "em preço/relevância/vendas aproximadas e marque confidence='baixa'. Sempre deixe claro no method_note e no "
-    "disclaimer o grau de estimativa. Dê FAIXAS (min,max). Respeite a margem de contribuição desejada sobre o custo "
-    "ao sugerir preço (desconte comissão e frete). Use as TOP palavras-chave do mercado "
-    "(ml.estudo_mercado.top_keywords) para compor o best_title; use as faixas de preço por frete para "
-    "calibrar o price_range. Em top_competitors, comente CADA UM dos até 10 concorrentes recebidos em "
-    "ml.concorrentes, usando o item_id EXATO de cada um (não invente item_id, não invente links). "
-    "Considere o comentário/prompt do usuário e o histórico/anotações."
+    "Regras: a tabela de listing_type_recommendation deve usar EXATAMENTE os números de ml.simulador_dono.options "
+    "(Clássico=gold_special, Premium=gold_pro); recommended pode seguir ml.simulador_dono.recommended ou divergir "
+    "com justificativa. VISITAS sempre indisponíveis → forecast visits=[0,0]. Para vendas/lucro use velocidade real "
+    "quando houver (velocity_stats); senão confidence='baixa'. Dê FAIXAS (min,max). Respeite a margem desejada sobre "
+    "o custo ao sugerir preço (desconte comissão e frete via simulador_dono). Use ml.estudo_mercado.top_keywords no "
+    "best_title e o sweet_spot/quartis no price_range. NÃO comente anúncio por anúncio. Considere o comentário/prompt "
+    "do usuário e o histórico/anotações."
 )
 
 
@@ -704,11 +879,14 @@ def _study_for_ai(study: dict | None) -> dict:
 
     Remove o `all_results_raw` (120 itens = muito token) e limita
     `top_by_relevance` a TOP_RELEVANCE_FOR_AI. Agregados (keywords, faixas de
-    preço, frete) e `top10_by_sales` vão inteiros. O dataset completo fica salvo
+    preço, frete) ficam. O dataset completo fica salvo
     no result_json como memória/auditoria.
     """
     study = study or {}
-    out = {k: v for k, v in study.items() if k != "all_results_raw"}
+    # all_results_raw (120) e top20_by_sales (= ml.concorrentes, mandado à parte) saem
+    # do payload p/ economizar token; agregados + top_by_relevance enxuto ficam.
+    drop = {"all_results_raw", "top20_by_sales"}
+    out = {k: v for k, v in study.items() if k not in drop}
     rel = out.get("top_by_relevance")
     if isinstance(rel, list) and len(rel) > TOP_RELEVANCE_FOR_AI:
         out["top_by_relevance"] = rel[:TOP_RELEVANCE_FOR_AI]
@@ -727,7 +905,8 @@ async def _run_analysis(analysis_id: int) -> None:
             return
 
         await _set_progress(analysis_id, "Consultando Mercado Livre (categoria, concorrentes, preços)")
-        ml_data = await _gather_ml(inp["account"]["obj"], inp["product"], analysis_id)
+        ml_data = await _gather_ml(inp["account"]["obj"], inp["product"], analysis_id,
+                                   inp["analysis"]["desired_margin_pct"])
 
         await _set_progress(analysis_id, "Carregando configuração de IA")
         async with task_db() as db:
@@ -750,6 +929,7 @@ async def _run_analysis(analysis_id: int) -> None:
                 "atributos": ml_data.get("attributes"),
                 "estatisticas_preco": ml_data.get("price_stats"),
                 "comissao": ml_data.get("commission"),
+                "simulador_dono": ml_data.get("owner_listing_types"),
                 "concorrentes": ml_data.get("competitors"),
                 "estudo_mercado": _study_for_ai(ml_data.get("search_study")),
             },

@@ -109,12 +109,16 @@
                     <small class="text-muted">c/ frete grátis ({{ searchStudy.shipping_stats?.free_shipping_pct }}%)</small>
                   </div>
                   <div class="col">
-                    <div class="h5 mb-0 text-secondary">{{ searchStudy.shipping_stats?.no_free_shipping_count }}</div>
-                    <small class="text-muted">sem frete grátis</small>
-                  </div>
-                  <div class="col">
                     <div class="h5 mb-0 text-primary">{{ searchStudy.shipping_stats?.full_count }}</div>
                     <small class="text-muted">no Full ({{ searchStudy.shipping_stats?.full_pct }}%)</small>
+                  </div>
+                  <div class="col">
+                    <div class="h5 mb-0 text-warning">{{ searchStudy.shipping_stats?.kit_count }}</div>
+                    <small class="text-muted">são KIT ({{ searchStudy.shipping_stats?.kit_pct }}%)</small>
+                  </div>
+                  <div class="col" v-if="searchStudy.rating_avg">
+                    <div class="h5 mb-0 text-info">★ {{ searchStudy.rating_avg }}</div>
+                    <small class="text-muted">avaliação média</small>
                   </div>
                 </div>
                 <table class="table table-sm mb-0">
@@ -122,19 +126,54 @@
                     <th>Grupo</th><th class="text-center">Mín</th><th class="text-center">Médio</th><th class="text-center">Máx</th><th class="text-center">Qtd</th>
                   </tr></thead>
                   <tbody>
-                    <tr>
-                      <td><span class="badge badge-success">Com frete grátis</span></td>
-                      <td class="text-center">{{ money(searchStudy.price_stats?.with_free_shipping?.min) }}</td>
-                      <td class="text-center"><strong>{{ money(searchStudy.price_stats?.with_free_shipping?.avg) }}</strong></td>
-                      <td class="text-center">{{ money(searchStudy.price_stats?.with_free_shipping?.max) }}</td>
-                      <td class="text-center">{{ searchStudy.price_stats?.with_free_shipping?.count }}</td>
+                    <tr v-for="row in priceRows" :key="row.label">
+                      <td><span class="badge" :class="row.badge">{{ row.label }}</span></td>
+                      <td class="text-center">{{ money(row.block?.min) }}</td>
+                      <td class="text-center"><strong>{{ money(row.block?.avg) }}</strong></td>
+                      <td class="text-center">{{ money(row.block?.max) }}</td>
+                      <td class="text-center">{{ row.block?.count }}</td>
                     </tr>
-                    <tr>
-                      <td><span class="badge badge-secondary">Sem frete grátis</span></td>
-                      <td class="text-center">{{ money(searchStudy.price_stats?.without_free_shipping?.min) }}</td>
-                      <td class="text-center"><strong>{{ money(searchStudy.price_stats?.without_free_shipping?.avg) }}</strong></td>
-                      <td class="text-center">{{ money(searchStudy.price_stats?.without_free_shipping?.max) }}</td>
-                      <td class="text-center">{{ searchStudy.price_stats?.without_free_shipping?.count }}</td>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Distribuição de preço + Concentração de vendedores -->
+        <div class="row">
+          <div class="col-md-6" v-if="searchStudy.price_stats?.distribution?.median">
+            <div class="card card-outline card-info h-100">
+              <div class="card-header py-2"><h3 class="card-title">Distribuição de preço</h3></div>
+              <div class="card-body p-2">
+                <table class="table table-sm mb-2">
+                  <tbody>
+                    <tr><td>25% mais baratos até</td><td class="text-right"><strong>{{ money(searchStudy.price_stats?.distribution?.p25) }}</strong></td></tr>
+                    <tr><td>Mediana</td><td class="text-right"><strong>{{ money(searchStudy.price_stats?.distribution?.median) }}</strong></td></tr>
+                    <tr><td>25% mais caros a partir de</td><td class="text-right"><strong>{{ money(searchStudy.price_stats?.distribution?.p75) }}</strong></td></tr>
+                  </tbody>
+                </table>
+                <div v-if="searchStudy.sweet_spot?.count" class="alert alert-success py-2 mb-0" style="font-size:13px">
+                  <strong>Sweet spot</strong> (faixa dos mais vendidos):
+                  {{ money(searchStudy.sweet_spot.min) }} – {{ money(searchStudy.sweet_spot.max) }}
+                  <span class="text-muted">(médio {{ money(searchStudy.sweet_spot.avg) }})</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-6" v-if="searchStudy.seller_concentration">
+            <div class="card card-outline card-warning h-100">
+              <div class="card-header py-2"><h3 class="card-title">Concentração de vendedores</h3>
+                <small v-if="searchStudy.seller_concentration" class="text-muted d-block">
+                  {{ searchStudy.seller_concentration.distinct_sellers }} vendedores distintos · maior tem {{ searchStudy.seller_concentration.share_top_seller_pct }}%
+                </small>
+              </div>
+              <div class="card-body p-2">
+                <table class="table table-sm mb-0">
+                  <tbody>
+                    <tr v-for="sc in (searchStudy.seller_concentration?.top_sellers || [])" :key="sc.seller">
+                      <td>{{ sc.seller }}</td>
+                      <td class="text-right"><span class="badge badge-primary">{{ sc.count }}×</span></td>
                     </tr>
                   </tbody>
                 </table>
@@ -157,7 +196,7 @@
         <!-- Top concorrentes (com link p/ o anúncio) -->
         <div class="card" v-if="topCompetitors.length">
           <div class="card-header py-2">
-            <h3 class="card-title">Top {{ topCompetitors.length }} concorrentes {{ enrichmentOff ? 'por relevância' : 'por vendas' }}</h3>
+            <h3 class="card-title">Top {{ topCompetitors.length }} concorrentes por vendas (aprox.)</h3>
             <small class="text-muted d-block">Os {{ deepVisitedCount }} mais relevantes tiveram a página visitada (categoria, ficha técnica, reputação, data). Visitas são indisponíveis na página pública do ML.</small>
           </div>
           <div class="card-body p-0">
@@ -165,7 +204,7 @@
               <thead class="thead-light"><tr>
                 <th style="width:54px">Foto</th><th>Anúncio / Título</th><th>Vendedor</th><th>Categoria</th><th class="text-center">Preço</th>
                 <th class="text-center">Vendas</th><th class="text-center" v-if="!enrichmentOff">Visitas 30d</th><th>Frete</th>
-                <th v-if="hasReputation">Reputação</th><th class="text-center">Avaliação</th><th>Comentário do estudo</th>
+                <th v-if="hasReputation">Reputação</th><th class="text-center">Avaliação</th>
               </tr></thead>
               <tbody>
                 <tr v-for="c in topCompetitors" :key="c.item_id">
@@ -199,7 +238,6 @@
                   <td><small>{{ c.free_shipping ? 'Frete grátis' : '—' }}<br>{{ c.logistic_type === 'fulfillment' ? 'FULL' : '' }}</small></td>
                   <td v-if="hasReputation"><small>{{ repLabel(c) }}</small></td>
                   <td class="text-center"><small>{{ c.rating ? `★ ${c.rating}` : '—' }}<div v-if="c.reviews_text" class="text-muted" style="font-size:10px">{{ c.reviews_text }}</div></small></td>
-                  <td style="font-size:12px">{{ commentMap[String(c.item_id)] || '—' }}</td>
                 </tr>
               </tbody>
             </table>
@@ -209,6 +247,43 @@
 
       <!-- Resultado (síntese da IA) -->
       <template v-if="study">
+        <!-- Análise do especialista (comentário geral) -->
+        <div class="card card-outline card-primary" v-if="study.expert_analysis">
+          <div class="card-header py-2"><h3 class="card-title"><i class="fas fa-user-tie mr-1"></i> Análise do especialista</h3></div>
+          <div class="card-body" style="white-space:pre-line;font-size:14px;line-height:1.5">{{ study.expert_analysis }}</div>
+        </div>
+
+        <!-- Clássico × Premium (seu produto) -->
+        <div class="card card-outline card-success" v-if="ownerListingTypes?.options?.length">
+          <div class="card-header py-2">
+            <h3 class="card-title">Clássico × Premium (seu produto)</h3>
+            <small class="text-muted d-block">No preço que atinge sua margem desejada ({{ ownerListingTypes.desired_margin_pct }}%) · custo {{ money(ownerListingTypes.cost_price) }}
+              <span v-if="!ownerListingTypes.has_dimensions" class="text-danger">· ⚠ sem dimensões → frete não calculado (cadastre peso/medidas)</span>
+            </small>
+          </div>
+          <div class="card-body p-0">
+            <table class="table table-sm mb-0">
+              <thead class="thead-light"><tr>
+                <th>Tipo</th><th class="text-center">Preço</th><th class="text-center">Comissão</th><th class="text-center">Frete</th>
+                <th class="text-center">Receita líq.</th><th class="text-center">Lucro</th><th class="text-center">Margem s/ custo</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="o in ownerListingTypes.options" :key="o.listing_type_id"
+                    :class="{ 'table-success': o.listing_type_id === ownerListingTypes.recommended }">
+                  <td><strong>{{ o.label }}</strong> <i v-if="o.listing_type_id === ownerListingTypes.recommended" class="fas fa-star text-warning" title="Recomendado"></i><br><small class="text-muted">{{ o.fee_range }}</small></td>
+                  <td class="text-center">{{ money(o.price) }}</td>
+                  <td class="text-center">{{ money(o.commission_amount) }}<div class="text-muted" style="font-size:10px">{{ o.commission_pct }}%</div></td>
+                  <td class="text-center">{{ money(o.shipping_cost) }}</td>
+                  <td class="text-center">{{ money(o.net_revenue) }}</td>
+                  <td class="text-center"><strong>{{ money(o.gross_profit) }}</strong></td>
+                  <td class="text-center">{{ o.margin_on_cost_pct }}%</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-if="study.listing_type_recommendation?.rationale" class="p-2 small text-muted">{{ study.listing_type_recommendation.rationale }}</div>
+          </div>
+        </div>
+
         <div class="row">
           <div class="col-md-8">
             <div class="card card-outline card-success">
@@ -332,14 +407,24 @@ const errorMsg = ref('')
 const currentId = ref(null)
 const study = ref(null)
 const rawResult = ref(null)
-const competitors = ref([])   // top 10 reais (ml_data), com link/foto/métricas
-const commentMap = ref({})    // item_id -> comentário da IA
+const competitors = ref([])   // top 20 por vendas (ml_data), com link/foto/métricas
 const searchStudy = ref(null) // estudo de mercado (categorias, keywords, frete, preço)
 const mlErrors = ref([])      // erros da coleta no ML (diagnóstico)
 const enrichmentOff = ref(false) // API do ML de itens bloqueada → dados só da busca raspada
+const ownerListingTypes = ref(null) // simulador Clássico × Premium do produto do dono
 const topCompetitors = computed(() => competitors.value)
 const hasReputation = computed(() => competitors.value.some(c => c.seller_reputation && (c.seller_reputation.text || c.seller_reputation.sales)))
 const deepVisitedCount = computed(() => searchStudy.value?.deep_visited_count ?? 0)
+const priceRows = computed(() => {
+  const ps = searchStudy.value?.price_stats || {}
+  return [
+    { label: 'Com frete grátis', badge: 'badge-success', block: ps.with_free_shipping },
+    { label: 'Sem frete grátis', badge: 'badge-secondary', block: ps.without_free_shipping },
+    { label: 'FULL', badge: 'badge-primary', block: ps.full },
+    { label: 'KIT', badge: 'badge-warning', block: ps.kit },
+    { label: 'Sem KIT', badge: 'badge-light border', block: ps.non_kit },
+  ].filter(r => r.block && r.block.count)
+})
 const notes = ref('')
 const history = ref([])
 let pollTimer = null
@@ -355,18 +440,12 @@ function fmtDate(d) { return d ? formatDateTime(d) : '—' }
 function confColor(c) { return c === 'alta' ? 'badge-success' : (c === 'media' ? 'badge-warning' : 'badge-secondary') }
 function copy(t) { navigator.clipboard?.writeText(t || ''); toast.success('Copiado') }
 function buildCompetitors(result) {
-  const list = [...(result?.ml_data?.competitors || [])]
-    .sort((a, b) => (b.sold_quantity || 0) - (a.sold_quantity || 0))
-    .slice(0, 10)
-  competitors.value = list
-  const cm = {}
-  for (const c of (result?.study?.top_competitors || [])) {
-    if (c.item_id) cm[String(c.item_id)] = c.comment || c.strengths || c.weaknesses || ''
-  }
-  commentMap.value = cm
+  // O backend já entrega competitors = top20_by_sales ordenado; mantém a ordem.
+  competitors.value = [...(result?.ml_data?.competitors || [])].slice(0, 20)
   searchStudy.value = result?.ml_data?.search_study || null
   mlErrors.value = result?.ml_data?.errors || []
   enrichmentOff.value = !!result?.ml_data?.enrichment_off
+  ownerListingTypes.value = result?.ml_data?.owner_listing_types || null
 }
 function repLabel(c) {
   const rep = c?.seller_reputation

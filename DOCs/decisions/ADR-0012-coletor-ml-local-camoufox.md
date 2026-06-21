@@ -95,6 +95,26 @@ Evolução do contrato da 3ª fonte (não muda a arquitetura):
   busca por relevância 120 / highlights) e instrui a IA a usar os itens por relevância como
   **amostra de mercado** (keywords, preço, intensidade), comentando individualmente só o top10.
 
+## Adendo (2026-06-21) — Deep por VENDAS + estatísticas + simulador Clássico×Premium
+
+Evolução do estudo (busca/paginação seguem por **relevância** — sem `_OrderId_`):
+- **Deep-visit passou a selecionar os N MAIS VENDIDOS** (não mais "mais relevantes"):
+  `_visit_item_pages` ordena por vendas aprox. (`_approx_sold` do selo) desc, fallback
+  `search_rank`. Default **`COLLECTOR_DEEP_COUNT` 30→20**. Visitas seguem indisponíveis;
+  jitter/anônimo/para-no-captcha/failover mantidos.
+- **Categorias**: remove crumb "Voltar/Volver/Back" do breadcrumb (`_clean_category_path`,
+  defesa dupla coletor+backend) e funde paths idênticos.
+- **Estatísticas novas** (congeladas no `result_json`, ADR-0006): KIT/FULL (contagem +
+  faixa de preço `price_stats.full/kit/non_kit`), quartis (`distribution`), `sweet_spot`
+  (faixa dos mais vendidos), `seller_concentration`, `rating_avg`, `price_vs_sales`. Top
+  passou de 10→**20 por vendas** (`top20_by_sales`).
+- **Simulador Clássico × Premium DO PRODUTO DO DONO**: `_simulate_owner_listing_types`
+  reusa `ml.get_listing_costs` (mesma função do Simulador) p/ `gold_special`/`gold_pro`,
+  resolvendo iterativamente o preço que atinge a margem desejada (auto-consistente com
+  o `total_cost` da função — sem dupla contagem). HTTP fora de sessão BD (ADR-0001).
+- **IA**: comentário deixou de ser por anúncio → **um `expert_analysis` GERAL** +
+  `listing_type_recommendation` (tabela Clássico×Premium dos números do backend).
+
 ## Adendo (2026-06-21) — Visita à página de cada anúncio (deep scrape) + progresso ao vivo
 
 Como o ML bloqueou `/items`, os dados ricos (categoria real, ficha técnica, reputação,

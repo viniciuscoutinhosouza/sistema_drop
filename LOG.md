@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-06-21 — feat(análise): deep por VENDAS + KIT/FULL + simulador Clássico×Premium + análise geral
+
+Refatoração do estudo (planejada em plan mode, auditada quality/consistency/adr):
+- **Coletor** ([ml_search.py](tools/collector/ml_search.py)): remove "Voltar" do breadcrumb; deep-visit dos **20 MAIS VENDIDOS** (`_approx_sold`, fallback relevância) em vez dos mais relevantes; `page_sold`/`deep_rank_by_sales`. deep_count 30→20.
+- **Backend** ([competitor_analysis_service.py](BACKEND/services/competitor_analysis_service.py)): `_clean_category_path` (funde categorias), `_is_kit`, `_price_quartiles`; `_build_search_study` ganha KIT/FULL (contagem + `price_stats.full/kit/non_kit`), `distribution` (quartis), `sweet_spot`, `seller_concentration`, `rating_avg`, `price_vs_sales`, `top20_by_sales`; `_simulate_owner_listing_types` (Clássico×Premium do produto do dono via `ml.get_listing_costs`, no preço que atinge a margem desejada — solver auto-consistente, sem dupla contagem); prompt novo (1 `expert_analysis` GERAL + `listing_type_recommendation`, sem comentário por anúncio); payload com `simulador_dono`.
+- **Front** ([CompetitorAnalysisView.vue](FRONTEND/src/views/analysis/CompetitorAnalysisView.vue)): card frete com KIT/rating + linhas FULL/KIT/Sem-KIT; cards Distribuição de preço (quartis+sweet_spot) e Concentração de vendedores; Top 20 c/ link do vendedor; removida coluna comentário; card "Análise do especialista"; tabela Clássico×Premium destacando o recomendado.
+- Auditorias: quality-guardian (HIGH dupla-contagem do solver → corrigido), consistency (M1 cards vazios em estudo legado + M2 rótulo "por vendas" → corrigidos), adr (APROVADO + adendo). pytest 25/2, builds ✓. ADR-0012 com adendo.
+
+---
+
 ## 2026-06-21 — feat(análise): visita a página de cada anúncio (top 30) + progresso ao vivo
 
 Upgrade do estudo: além do grid, o coletor abre a PÁGINA dos 30 mais relevantes (configurável) p/ dados ricos que a API bloqueada dava. Planejado (plan mode) + auditado (consistency-auditor); decisões do dono: deep=30, seguir sem visitas (impossíveis na página pública).

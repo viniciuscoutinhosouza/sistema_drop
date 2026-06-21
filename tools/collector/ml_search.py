@@ -44,6 +44,26 @@ def _slug(text: str) -> str:
     return s[:60] or "busca"
 
 
+def _approx_sold(sold_text) -> int | None:
+    """'+50 vendidos' → 50; '1.000 vendidos' → 1000; '2,5mil' → 2500. Aproximado."""
+    if not sold_text:
+        return None
+    s = str(sold_text).lower()
+    m = re.search(r"([\d.,]+)\s*mil", s)
+    if m:
+        try:
+            return int(float(m.group(1).replace(".", "").replace(",", ".")) * 1000)
+        except ValueError:
+            return None
+    m = re.search(r"(\d[\d.]*)", s)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(".", ""))
+    except ValueError:
+        return None
+
+
 def _norm_item_id(raw: str) -> str | None:
     """Normaliza p/ o formato canônico da API (MLB1234567890, sem hífen)."""
     m = _RE_ITEM_ID.search(raw or "")
@@ -339,7 +359,9 @@ def _parse_item_page(page) -> dict:
       };
 
       const crumbs = qa('.andes-breadcrumb__item a, nav.andes-breadcrumb a, .ui-pdp-breadcrumb a, .andes-breadcrumb a')
-        .map(a => norm(a.textContent)).filter(Boolean);
+        .map(a => norm(a.textContent))
+        .filter(Boolean)
+        .filter(c => !/^(voltar|volver|back)$/i.test(c));  // remove o crumb "Voltar"
       const category_path = crumbs.length ? crumbs.join(' > ') : null;
       const category_leaf = crumbs.length ? crumbs[crumbs.length - 1] : null;
 
@@ -413,13 +435,18 @@ def _read_embedded_state(page) -> dict:
 
 
 def _visit_item_pages(page, human, tracer, items, deep_count, wait_ms, progress_path) -> dict:
-    """Abre a página dos `deep_count` primeiros anúncios e enriquece cada item in-place.
-    Resiliente: 1 falha não derruba o lote; para no 1º captcha (mantém o grid)."""
-    deep = items[:deep_count]
+    """Abre a página dos `deep_count` anúncios MAIS VENDIDOS e enriquece cada item
+    in-place. Resiliente: 1 falha não derruba o lote; para no 1º captcha (mantém o grid)."""
+    # Ordena por vendas aprox (do grid) desc; fallback estável p/ relevância quando
+    # o selo "X vendidos" não aparece. Visita do mais vendido p/ o menos.
+    ranked = sorted(items, key=lambda it: (-(_approx_sold(it.get("sold_text")) or -1),
+                                           it.get("search_rank") or 1_000_000))
+    deep = ranked[:deep_count]
     total = len(deep)
     errors: list[str] = []
     stopped = None
     for i, it in enumerate(deep, start=1):
+        it["deep_rank_by_sales"] = i
         # Só navega p/ URL https do mercadolivre; senão usa a URL canônica do ID
         # (validado MLB\d+). Evita navegar p/ tracker/Ads/terceiro — quality-guardian HIGH.
         url = it.get("permalink") or it.get("href") or ""
@@ -453,6 +480,7 @@ def _visit_item_pages(page, human, tracer, items, deep_count, wait_ms, progress_
                 if sid:
                     it["seller_id"] = sid
                 it["deep_scraped"] = True
+                it["page_sold"] = _approx_sold(it.get("sold_text"))  # sold da página (melhor)
         except Exception as e:  # noqa: BLE001
             errors.append(f"{it.get('item_id')}: {type(e).__name__}: {e}")
         # Jitter humano entre anúncios (reduz padrão de bot / risco de bloqueio).
