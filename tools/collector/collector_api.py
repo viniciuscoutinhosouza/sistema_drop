@@ -84,16 +84,19 @@ def _check_rate_limit() -> None:
     _RATE_HITS.append(now)
 
 
-async def _run_collect_subprocess(query: str, limit: int, headless: bool) -> dict:
+async def _run_collect_subprocess(query: str, limit: int, headless: bool,
+                                  deep_count: int, progress_path: str) -> dict:
     """Roda ml_search.py como subprocesso e lê o JSON do resultado.
 
     Necessário porque o Playwright sync do Camoufox não roda dentro do event loop
     do uvicorn. O subprocesso tem interpretador próprio (sem loop) e isola o browser.
+    Escreve progresso em `progress_path` (lido pelo GET /collect/{job_id}).
     """
     fd, tmp = tempfile.mkstemp(suffix=".json", prefix="ml_collect_")
     os.close(fd)
     args = [sys.executable, str(_ML_SEARCH), query,
-            "--limit", str(limit), "--result-file", tmp]
+            "--limit", str(limit), "--deep-count", str(deep_count),
+            "--result-file", tmp, "--progress-file", progress_path]
     if headless:
         args.append("--headless")
     try:
@@ -125,11 +128,15 @@ async def health() -> dict:
     return {"status": "ok", "service": "ml-collector", "headless_default": config.DEFAULT_HEADLESS}
 
 
-async def _run_job(job_id: str, query: str, limit: int, headless: bool) -> None:
-    """Executa a coleta em background e guarda o resultado em _JOBS[job_id]."""
+async def _run_job(job_id: str, query: str, limit: int, headless: bool, deep_count: int) -> None:
+    """Executa a coleta em background e guarda o resultado em _JOBS[job_id].
+    Mantém `progress_path` no job p/ o GET expor o progresso ao vivo."""
+    fd, progress_path = tempfile.mkstemp(suffix=".json", prefix="ml_progress_")
+    os.close(fd)
+    _JOBS[job_id] = {"status": "running", "ts": time.time(), "progress_path": progress_path}
     async with _BROWSER_LOCK:  # um navegador por vez
         try:
-            result = await _run_collect_subprocess(query, limit, headless)
+            result = await _run_collect_subprocess(query, limit, headless, deep_count, progress_path)
             result.pop("_saved_to", None)   # não vaza caminho local
             result.pop("screenshot", None)
             _JOBS[job_id] = {"status": "done", "result": result, "ts": time.time()}
@@ -138,6 +145,11 @@ async def _run_job(job_id: str, query: str, limit: int, headless: bool) -> None:
         except Exception as e:  # noqa: BLE001
             logger.exception("job %s falhou", job_id)
             _JOBS[job_id] = {"status": "error", "error": str(e), "ts": time.time()}
+        finally:
+            try:
+                os.remove(progress_path)
+            except OSError:
+                pass
 
 
 @app.post("/collect", dependencies=[Depends(require_token)])
@@ -160,6 +172,13 @@ async def collect_endpoint(body: dict) -> dict:
     limit = max(1, min(limit, config.MAX_LIMIT))
     headless = bool((body or {}).get("headless", config.DEFAULT_HEADLESS))
 
+    raw_deep = (body or {}).get("deep_count")
+    try:
+        deep_count = config.DEFAULT_DEEP_COUNT if raw_deep is None else int(raw_deep)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="'deep_count' deve ser inteiro") from None
+    deep_count = max(0, min(deep_count, config.MAX_DEEP_COUNT))
+
     _check_rate_limit()
     if _BROWSER_LOCK.locked():
         raise HTTPException(status_code=429, detail="coleta em andamento, tente novamente em instantes")
@@ -167,18 +186,25 @@ async def collect_endpoint(body: dict) -> dict:
     _prune_jobs()
     job_id = uuid.uuid4().hex
     _JOBS[job_id] = {"status": "running", "ts": time.time()}
-    logger.info("collect job=%s query=%r limit=%s headless=%s", job_id, query, limit, headless)
-    asyncio.create_task(_run_job(job_id, query, limit, headless))
+    logger.info("collect job=%s query=%r limit=%s deep=%s headless=%s", job_id, query, limit, deep_count, headless)
+    asyncio.create_task(_run_job(job_id, query, limit, headless, deep_count))
     return {"job_id": job_id, "status": "running"}
 
 
 @app.get("/collect/{job_id}", dependencies=[Depends(require_token)])
 async def collect_status(job_id: str) -> dict:
-    """Status/resultado de um job. O cliente faz polling até status done|error."""
+    """Status/resultado de um job. O cliente faz polling até status done|error.
+    Enquanto roda, inclui `progress` (fase/atual/total/mensagem) lido do arquivo."""
     job = _JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job não encontrado (expirado?)")
-    return {"job_id": job_id, **job}
+    out = {k: v for k, v in job.items() if k != "progress_path"}
+    if job.get("status") == "running" and job.get("progress_path"):
+        try:
+            out["progress"] = json.loads(Path(job["progress_path"]).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            pass
+    return {"job_id": job_id, **out}
 
 
 if __name__ == "__main__":

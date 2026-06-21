@@ -56,8 +56,11 @@ class Settings(BaseSettings):
     COLLECTOR_API_URL: str = ""          # 1+ URLs separadas por vírgula
     COLLECTOR_API_TOKEN: str = ""        # 1 token (compartilhado) ou lista alinhada às URLs
     COLLECTOR_ENABLED: bool = False      # liga a 3ª fonte (busca raspada)
-    COLLECTOR_TIMEOUT: float = 330.0     # > SUBPROCESS_TIMEOUT do coletor (300s) p/ 120 itens
+    COLLECTOR_TIMEOUT: float = 960.0     # > SUBPROCESS_TIMEOUT do coletor (900s); cobre deep visit
     COLLECTOR_LIMIT: int = 120           # 120 primeiros por relevância (= DEFAULT_LIMIT do coletor)
+    # Nº de anúncios cuja PÁGINA é aberta p/ dados ricos (categoria/ficha/reputação/data).
+    # Mais = mais lento + maior risco de bloqueio. 30 ≈ 5 min. (= DEFAULT_DEEP_COUNT do coletor)
+    COLLECTOR_DEEP_COUNT: int = 30
     # Enriquecimento via API do ML (/items, visitas, reputação) p/ concorrentes.
     # O ML passou a bloquear /items de terceiros (403 PolicyAgent) → DESLIGADO; o
     # estudo opera só com os dados raspados da página de busca. Religar quando/se o

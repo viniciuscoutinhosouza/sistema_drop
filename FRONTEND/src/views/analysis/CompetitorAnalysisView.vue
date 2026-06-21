@@ -158,14 +158,14 @@
         <div class="card" v-if="topCompetitors.length">
           <div class="card-header py-2">
             <h3 class="card-title">Top {{ topCompetitors.length }} concorrentes {{ enrichmentOff ? 'por relevância' : 'por vendas' }}</h3>
-            <small v-if="enrichmentOff" class="text-muted d-block">Dados da página de busca do ML (visitas e reputação indisponíveis — API de itens de terceiros bloqueada pelo ML)</small>
+            <small class="text-muted d-block">Os {{ deepVisitedCount }} mais relevantes tiveram a página visitada (categoria, ficha técnica, reputação, data). Visitas são indisponíveis na página pública do ML.</small>
           </div>
           <div class="card-body p-0">
             <table class="table table-sm table-hover mb-0">
               <thead class="thead-light"><tr>
-                <th style="width:54px">Foto</th><th>Anúncio / Título</th><th>Vendedor</th><th class="text-center">Preço</th>
+                <th style="width:54px">Foto</th><th>Anúncio / Título</th><th>Vendedor</th><th>Categoria</th><th class="text-center">Preço</th>
                 <th class="text-center">Vendas</th><th class="text-center" v-if="!enrichmentOff">Visitas 30d</th><th>Frete</th>
-                <th v-if="!enrichmentOff">Reputação</th><th class="text-center">Avaliação</th><th>Comentário do estudo</th>
+                <th v-if="hasReputation">Reputação</th><th class="text-center">Avaliação</th><th>Comentário do estudo</th>
               </tr></thead>
               <tbody>
                 <tr v-for="c in topCompetitors" :key="c.item_id">
@@ -181,6 +181,7 @@
                     </a>
                     <small v-else>{{ c.item_id }}</small>
                     <div style="font-size:12px;line-height:1.25">{{ c.title }}</div>
+                    <small v-if="c.brand || c.model" class="text-muted">{{ [c.brand, c.model].filter(Boolean).join(' · ') }}</small>
                   </td>
                   <td style="font-size:12px">
                     <a v-if="c.seller_url" :href="c.seller_url" target="_blank" rel="noopener" title="Abrir página do vendedor">
@@ -188,6 +189,7 @@
                     </a>
                     <span v-else>{{ c.seller || '—' }}</span>
                   </td>
+                  <td style="font-size:11px">{{ c.category_leaf || '—' }}</td>
                   <td class="text-center">
                     {{ money(c.price) }}
                     <div v-if="c.original_price" class="text-muted" style="font-size:10px;text-decoration:line-through">{{ money(c.original_price) }}</div>
@@ -195,7 +197,7 @@
                   <td class="text-center">{{ c.sold_quantity ?? '—' }}<div v-if="c.sales_per_day" class="text-muted" style="font-size:10px">{{ c.sales_per_day }}/dia</div></td>
                   <td class="text-center" v-if="!enrichmentOff">{{ c.visits_30d ?? '—' }}<div v-if="c.visits_per_day" class="text-muted" style="font-size:10px">{{ c.visits_per_day }}/dia</div></td>
                   <td><small>{{ c.free_shipping ? 'Frete grátis' : '—' }}<br>{{ c.logistic_type === 'fulfillment' ? 'FULL' : '' }}</small></td>
-                  <td v-if="!enrichmentOff"><small>{{ repLabel(c) }}</small></td>
+                  <td v-if="hasReputation"><small>{{ repLabel(c) }}</small></td>
                   <td class="text-center"><small>{{ c.rating ? `★ ${c.rating}` : '—' }}<div v-if="c.reviews_text" class="text-muted" style="font-size:10px">{{ c.reviews_text }}</div></small></td>
                   <td style="font-size:12px">{{ commentMap[String(c.item_id)] || '—' }}</td>
                 </tr>
@@ -336,6 +338,8 @@ const searchStudy = ref(null) // estudo de mercado (categorias, keywords, frete,
 const mlErrors = ref([])      // erros da coleta no ML (diagnóstico)
 const enrichmentOff = ref(false) // API do ML de itens bloqueada → dados só da busca raspada
 const topCompetitors = computed(() => competitors.value)
+const hasReputation = computed(() => competitors.value.some(c => c.seller_reputation && (c.seller_reputation.text || c.seller_reputation.sales)))
+const deepVisitedCount = computed(() => searchStudy.value?.deep_visited_count ?? 0)
 const notes = ref('')
 const history = ref([])
 let pollTimer = null
@@ -365,7 +369,9 @@ function buildCompetitors(result) {
   enrichmentOff.value = !!result?.ml_data?.enrichment_off
 }
 function repLabel(c) {
-  const lvl = c?.seller_reputation?.level_id
+  const rep = c?.seller_reputation
+  if (rep && (rep.text || rep.sales)) return [rep.text, rep.sales].filter(Boolean).join(' · ')
+  const lvl = rep?.level_id
   return lvl ? `Nível ${lvl}` : (c?.seller_id ? `Vend. ${c.seller_id}` : '—')
 }
 

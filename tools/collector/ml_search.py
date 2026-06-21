@@ -17,8 +17,11 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import os
+import random
 import re
 import sys
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -280,9 +283,172 @@ def _parse_categories(page) -> list[dict]:
     return with_count or cats
 
 
-def collect(query: str, *, headless: bool = False, limit: int = 50,
-            wait_ms: int = 900, save: bool = True) -> dict:
-    """Executa a busca e retorna {query, url, total, items[], captcha_detected, error}.
+def _write_progress(progress_path, *, phase: str, current: int = 0,
+                    total: int = 0, message: str = "") -> None:
+    """Escreve o progresso (atômico) p/ a API ler durante o job. Nunca levanta."""
+    if not progress_path:
+        return
+    try:
+        data = {"phase": phase, "current": current, "total": total,
+                "message": message, "updated_at": _dt.datetime.now(_dt.UTC).isoformat()}
+        tmp = str(progress_path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, progress_path)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _item_url(item_id: str) -> str:
+    """URL pública do anúncio a partir do ID (o ML resolve p/ a página completa)."""
+    num = item_id[3:] if item_id.upper().startswith("MLB") else item_id
+    return f"https://produto.mercadolivre.com.br/MLB-{num}"
+
+
+def _parse_item_page(page) -> dict:
+    """Raspa a PÁGINA do anúncio (PDP): categoria (breadcrumb), ficha técnica,
+    vendas, preço, vendedor+reputação, reviews, frete/FULL. Todo campo pode ser None.
+    """
+    js = r"""
+    () => {
+      const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+      const q = (sel) => document.querySelector(sel);
+      const qa = (sel) => Array.from(document.querySelectorAll(sel));
+      const money = (root) => {
+        if (!root) return null;
+        const fr = root.querySelector('.andes-money-amount__fraction');
+        if (!fr) return null;
+        let p = (fr.textContent || '').replace(/[^\d]/g, '');
+        const ce = root.querySelector('.andes-money-amount__cents');
+        if (ce) { const c = (ce.textContent || '').replace(/[^\d]/g, ''); if (c) p = p + '.' + c; }
+        return p ? parseFloat(p) : null;
+      };
+
+      const crumbs = qa('.andes-breadcrumb__item a, nav.andes-breadcrumb a, .ui-pdp-breadcrumb a, .andes-breadcrumb a')
+        .map(a => norm(a.textContent)).filter(Boolean);
+      const category_path = crumbs.length ? crumbs.join(' > ') : null;
+      const category_leaf = crumbs.length ? crumbs[crumbs.length - 1] : null;
+
+      const attrs = [];
+      const seenAttr = new Set();
+      qa('.ui-pdp-specs__table tr, .ui-vpp-striped-specs__row, .andes-table__row, .ui-pdp-specifications__table tr').forEach(tr => {
+        const k = tr.querySelector('th, .andes-table__header, .ui-pdp-specs__table__column-title, .ui-vpp-striped-specs__label');
+        const v = tr.querySelector('td, .andes-table__column, .ui-pdp-specs__table__column, .ui-vpp-striped-specs__value');
+        const name = norm(k && k.textContent), val = norm(v && v.textContent);
+        if (name && val && !seenAttr.has(name.toLowerCase())) { seenAttr.add(name.toLowerCase()); attrs.push({ name, value: val }); }
+      });
+      const findAttr = (re) => { const a = attrs.find(x => re.test(x.name)); return a ? a.value : null; };
+
+      const origEl = q('.ui-pdp-price__original-value, s.andes-money-amount--previous');
+      const ptext = document.body ? (document.body.innerText || '') : '';
+
+      return {
+        title: norm((q('.ui-pdp-title') || {}).textContent) || null,
+        category_path, category_leaf,
+        attributes: attrs,
+        brand: findAttr(/marca/i),
+        model: findAttr(/modelo/i),
+        sold_text: norm((q('.ui-pdp-subtitle') || {}).textContent) || null,
+        price: money(q('.ui-pdp-price__main-container') || q('.ui-pdp-price') || document),
+        original_price: origEl ? money(origEl.closest('.ui-pdp-price__original-value') || origEl.parentElement || origEl) : null,
+        installments_text: norm((q('.ui-pdp-payment, .ui-pdp-price__subtitles') || {}).textContent) || null,
+        seller_name: norm((q('.ui-pdp-seller__header__title, .ui-pdp-seller__link-trigger') || {}).textContent) || null,
+        seller_reputation_text: norm((q('.ui-pdp-seller__status-title, .ui-seller-data-status__title, .ui-pdp-seller__reputation') || {}).textContent) || null,
+        seller_sales_text: norm((q('.ui-pdp-seller__sales-description, .ui-seller-data-header__title') || {}).textContent) || null,
+        rating: (() => { const r = q('.ui-pdp-review__rating, .ui-review-capability__rating__average'); return r ? (parseFloat((r.textContent || '').replace(',', '.')) || null) : null; })(),
+        reviews_text: norm((q('.ui-pdp-review__amount, .ui-review-capability__rating__label') || {}).textContent) || null,
+        free_shipping: /frete gr[áa]tis/i.test(ptext),
+        full: !!q("svg[aria-label*='Full' i], .ui-pdp-icon--full") || /\bfull\b/i.test(norm((q('.ui-pdp-shipping') || {}).textContent)),
+      };
+    }
+    """
+    try:
+        return page.evaluate(js) or {}
+    except Exception as e:  # noqa: BLE001
+        print(f"  [item_page] evaluate falhou: {e}")
+        return {}
+
+
+def _read_embedded_state(page) -> dict:
+    """Lê o JSON embutido da página (window.__PRELOADED_STATE__ / __NEXT_DATA__ /
+    ld+json) e busca recursivamente date_created/category_id/seller_id etc.
+    Única via p/ a data de criação. Best-effort; {} se nada."""
+    js = r"""
+    () => {
+      const wanted = ['date_created','dateCreated','start_time','category_id','categoryId','seller_id','sellerId','sold_quantity','available_quantity'];
+      const out = {};
+      const visit = (obj, depth) => {
+        if (!obj || depth > 6 || typeof obj !== 'object') return;
+        for (const k in obj) {
+          let v;
+          try { v = obj[k]; } catch (e) { continue; }
+          if (wanted.indexOf(k) !== -1 && (typeof v === 'string' || typeof v === 'number') && out[k] === undefined) out[k] = v;
+          if (v && typeof v === 'object') visit(v, depth + 1);
+        }
+      };
+      try { if (window.__PRELOADED_STATE__) visit(window.__PRELOADED_STATE__, 0); } catch (e) {}
+      try { if (window.__NEXT_DATA__) visit(window.__NEXT_DATA__, 0); } catch (e) {}
+      try { document.querySelectorAll('script[type="application/ld+json"]').forEach(s => { try { visit(JSON.parse(s.textContent), 0); } catch (e) {} }); } catch (e) {}
+      return out;
+    }
+    """
+    try:
+        return page.evaluate(js) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _visit_item_pages(page, human, tracer, items, deep_count, wait_ms, progress_path) -> dict:
+    """Abre a página dos `deep_count` primeiros anúncios e enriquece cada item in-place.
+    Resiliente: 1 falha não derruba o lote; para no 1º captcha (mantém o grid)."""
+    deep = items[:deep_count]
+    total = len(deep)
+    errors: list[str] = []
+    stopped = None
+    for i, it in enumerate(deep, start=1):
+        url = it.get("permalink") or it.get("href") or _item_url(it["item_id"])
+        _write_progress(progress_path, phase="deep_visit", current=i, total=total,
+                        message=f"Abrindo anúncio {i}/{total}…")
+        try:
+            with tracer.step("item_page", f"{i}/{total} {it.get('item_id')}"):
+                page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+                human_delay("after_goto")
+                for _ in range(3):  # scroll p/ carregar ficha técnica lazy
+                    page.mouse.wheel(0, 1600)
+                    page.wait_for_timeout(wait_ms)
+                if detect_captcha(page):
+                    stopped = "captcha"
+                    errors.append(f"{it.get('item_id')}: captcha")
+                    break
+                detail = _parse_item_page(page)
+                for k, v in detail.items():
+                    if v not in (None, "", [], {}):
+                        it[k] = v
+                state = _read_embedded_state(page)
+                dc = state.get("date_created") or state.get("dateCreated") or state.get("start_time")
+                if dc:
+                    it["date_created"] = dc
+                cid = state.get("category_id") or state.get("categoryId")
+                if cid:
+                    it["category_id"] = cid
+                sid = state.get("seller_id") or state.get("sellerId")
+                if sid:
+                    it["seller_id"] = sid
+                it["deep_scraped"] = True
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{it.get('item_id')}: {type(e).__name__}: {e}")
+        # Jitter humano entre anúncios (reduz padrão de bot / risco de bloqueio).
+        page.wait_for_timeout(int(random.uniform(2.5, 6.0) * 1000))
+    return {
+        "deep_visited": sum(1 for it in deep if it.get("deep_scraped")),
+        "deep_errors": errors,
+        "deep_stopped_reason": stopped,
+    }
+
+
+def collect(query: str, *, headless: bool = False, limit: int = 50, deep_count: int = 0,
+            wait_ms: int = 900, save: bool = True, progress_path=None) -> dict:
+    """Executa a busca (grid) + visita das páginas dos `deep_count` mais relevantes.
 
     SÍNCRONO/BLOQUEANTE (Camoufox usa Playwright sync API). A API local roda isto
     num threadpool + lock (um navegador por vez).
@@ -306,8 +472,13 @@ def collect(query: str, *, headless: bool = False, limit: int = 50,
         "total": 0,
         "items": [],
         "categories": [],
+        "deep_count": deep_count,
+        "deep_visited": 0,
+        "deep_errors": [],
+        "deep_stopped_reason": None,
         "error": None,
     }
+    _write_progress(progress_path, phase="search", message="Pesquisando no Mercado Livre…")
 
     try:
         with open_camoufox_context(bank="mercadolivre", opts=opts) as (context, _meta):
@@ -372,6 +543,8 @@ def collect(query: str, *, headless: bool = False, limit: int = 50,
             result["items"] = all_items[:limit]
             result["total"] = len(result["items"])
             result["pages_visited"] = min(page_idx + 1, max_pages)
+            _write_progress(progress_path, phase="search", current=result["total"],
+                            total=result["total"], message=f"Coletados {result['total']} anúncios")
 
             try:
                 shot = out_dir / f"{_slug(query)}_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
@@ -380,9 +553,20 @@ def collect(query: str, *, headless: bool = False, limit: int = 50,
             except Exception:  # noqa: BLE001
                 pass
 
+            # Visita as páginas individuais dos mais relevantes p/ dados ricos
+            # (categoria real, ficha técnica, reputação, data). Só se não houve captcha.
+            if deep_count > 0 and result["items"] and not result["captcha_detected"]:
+                deep = _visit_item_pages(page, human, tracer, result["items"],
+                                         deep_count, wait_ms, progress_path)
+                result.update(deep)
+                if deep.get("deep_stopped_reason") == "captcha":
+                    result["captcha_detected"] = True
+
     except Exception as e:  # noqa: BLE001
         result["error"] = f"{type(e).__name__}: {e}"
         print(f"  [erro] {result['error']}")
+
+    _write_progress(progress_path, phase="study", message="Gerando estudo com IA…")
 
     if save:
         out_path = out_dir / f"{_slug(query)}_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -397,11 +581,17 @@ def main() -> int:
     ap.add_argument("query", help="termo de busca")
     ap.add_argument("--headless", action="store_true", help="sem janela (só após validar headful)")
     ap.add_argument("--limit", type=int, default=50)
+    ap.add_argument("--deep-count", type=int, default=0,
+                    help="nº de anúncios cuja PÁGINA é aberta p/ dados ricos")
     ap.add_argument("--wait", type=int, default=900, help="pausa (ms) entre scrolls")
     ap.add_argument("--result-file", default=None,
                     help="grava o JSON do resultado neste caminho exato (usado pela API)")
+    ap.add_argument("--progress-file", default=None,
+                    help="grava o progresso (JSON) neste caminho p/ a API ler durante o job")
     args = ap.parse_args()
-    result = collect(args.query, headless=args.headless, limit=args.limit, wait_ms=args.wait)
+    result = collect(args.query, headless=args.headless, limit=args.limit,
+                     deep_count=args.deep_count, wait_ms=args.wait,
+                     progress_path=args.progress_file)
     # A API chama este script como subprocesso (Playwright sync NÃO roda no event loop
     # do uvicorn) e lê o resultado deste arquivo.
     if args.result_file:

@@ -65,12 +65,16 @@ class CollectorConfig:
     # 120 por relevância (acoplado ao COLLECTOR_LIMIT do backend — manter iguais).
     DEFAULT_LIMIT: int = _get_int("COLLECTOR_DEFAULT_LIMIT", 120)
     MAX_LIMIT: int = _get_int("COLLECTOR_MAX_LIMIT", 150)
+    # Deep visit: nº de anúncios cuja PÁGINA é aberta p/ dados ricos (categoria real,
+    # ficha técnica, reputação, data). Mais = mais lento + maior risco de bloqueio.
+    DEFAULT_DEEP_COUNT: int = _get_int("COLLECTOR_DEFAULT_DEEP_COUNT", 30)
+    MAX_DEEP_COUNT: int = _get_int("COLLECTOR_MAX_DEEP_COUNT", 100)
     # Rate limit: máx. de coletas por janela (anti-DoS / proteção do IP residencial).
     RATE_MAX: int = _get_int("COLLECTOR_RATE_MAX", 20)
     RATE_WINDOW_S: int = _get_int("COLLECTOR_RATE_WINDOW_S", 60)
-    # Tempo máx. (s) do subprocesso de coleta. 120 itens = ~3 páginas humanizadas
-    # (navega + scroll + parse por página) → orçamento maior.
-    SUBPROCESS_TIMEOUT: int = _get_int("COLLECTOR_SUBPROCESS_TIMEOUT", 300)
+    # Tempo máx. (s) do subprocesso. Grid (~3 páginas) + visita das páginas individuais
+    # (≈30 × 6-12s humanizado) → orçamento generoso.
+    SUBPROCESS_TIMEOUT: int = _get_int("COLLECTOR_SUBPROCESS_TIMEOUT", 900)
 
 
 config = CollectorConfig()
