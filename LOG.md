@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-06-21 — fix(coletor): coleta assíncrona (job + polling) p/ evitar HTTP 524 do túnel
+
+O túnel Cloudflare (grátis) corta requisições HTTP que passam de ~100s → a coleta de 120 itens (minutos) dava **524** e o estudo falhava. Tornei a coleta **assíncrona**:
+- `POST /collect` agora DISPARA o job e responde na hora `{job_id, status:"running"}` (testado: 551ms via túnel). `GET /collect/{job_id}` devolve o status/resultado. TTL de jobs 1h, mantém lock/rate-limit.
+- Backend `_collect_via_job`: dispara e faz **polling** (5s) até `COLLECTOR_TIMEOUT` (330s). Retrocompatível com coletor síncrono. Failover multi-máquina preservado.
+- Verificação: fluxo async testado 7/7 (POST→job_id→poll→done, auth, 404); deploy backend + restart do coletor local; POST via túnel coletor1.madeingroup.api.br retornou job_id em 551ms (sem 524).
+- **Operacional:** atualizar o coletor exige reiniciar a janela "Coletor ML API" (fechar + rodar `iniciar_coletor_completo.bat`); o `ml_search.py` (subprocesso) atualiza sozinho, mas o `collector_api.py` é processo de longa duração.
+
+---
+
 ## 2026-06-21 — fix(análise): ML bloqueou /items (403 PolicyAgent) → coletor vira fonte primária
 
 O ML estendeu o bloqueio para `GET /items/{id}` e `/items?ids=` (403 PolicyAgent) em anúncios de terceiros → `fetch_item_details` morria e o estudo dava "falha ao carregar detalhes". Pivot: a busca raspada vira a FONTE PRIMÁRIA; enriquecimento via API desligado por flag. Auditado (consistency-auditor: C1 permalink, C2 top_categories, H1 relabel front, H2 dict padronizado, L2 prompt).
