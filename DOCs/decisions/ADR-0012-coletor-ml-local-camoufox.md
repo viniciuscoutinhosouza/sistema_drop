@@ -95,6 +95,27 @@ Evolução do contrato da 3ª fonte (não muda a arquitetura):
   busca por relevância 120 / highlights) e instrui a IA a usar os itens por relevância como
   **amostra de mercado** (keywords, preço, intensidade), comentando individualmente só o top10.
 
+## Adendo (2026-06-21) — Visita à página de cada anúncio (deep scrape) + progresso ao vivo
+
+Como o ML bloqueou `/items`, os dados ricos (categoria real, ficha técnica, reputação,
+data de criação) passam a vir da **página individual** do anúncio, raspada pelo coletor:
+- O coletor pesquisa **Título + Modelo**, guarda 100 por relevância e **visita a página**
+  dos `COLLECTOR_DEEP_COUNT` (default **30**, configurável até 100) mais relevantes:
+  `_parse_item_page` (breadcrumb→categoria, ficha técnica→marca/modelo/specs, vendas,
+  reputação textual, reviews) + `_read_embedded_state` (date_created/category_id/seller_id
+  do JSON embutido). Resto fica com os dados do grid. Humanizado (jitter 2.5-6s), para no
+  1º captcha, resiliente por item.
+- **Visitas continuam indisponíveis** (não existem na página pública) — fora do estudo.
+  date_created é best-effort (do JSON embutido); velocidade só quando presente.
+- **Progresso ao vivo**: o coletor escreve um arquivo de progresso; `GET /collect/{job_id}`
+  expõe `progress`; o backend (`_collect_via_job`→`on_progress`) repassa a `_set_progress`,
+  e o usuário acompana "Abrindo anúncio i/30…" na tela.
+- **Risco/tempo**: 30 páginas ≈ 5 min e maior exposição do IP → default conservador, jitter,
+  anônimo, para no captcha. Timeouts subiram (subprocess 900s / backend 960s); o modelo
+  async (job+polling) evita o 524 do túnel mesmo com minutos de coleta.
+- O estudo da IA ganhou categorias REAIS por item + cobertura de marca/modelo + mix de
+  reputação + velocity_stats.
+
 ## Adendo (2026-06-21) — ML bloqueou /items; coletor vira fonte PRIMÁRIA
 
 O ML estendeu o bloqueio: além da busca (`/search`), agora `GET /items/{id}` e

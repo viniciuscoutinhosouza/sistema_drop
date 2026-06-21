@@ -109,6 +109,15 @@ async def _run_collect_subprocess(query: str, limit: int, headless: bool,
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+            # Resiliência: se o grid já foi persistido antes do deep, devolve o parcial
+            # em vez de perder tudo no timeout do deep visit.
+            try:
+                if Path(tmp).exists() and Path(tmp).stat().st_size > 0:
+                    partial = json.loads(Path(tmp).read_text(encoding="utf-8"))
+                    partial.setdefault("deep_errors", []).append("timeout no deep visit — resultado parcial (grid)")
+                    return partial
+            except Exception:  # noqa: BLE001
+                pass
             raise HTTPException(status_code=504, detail="coleta excedeu o tempo limite") from None
 
         if not Path(tmp).exists() or Path(tmp).stat().st_size == 0:

@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-21 — feat(análise): visita a página de cada anúncio (top 30) + progresso ao vivo
+
+Upgrade do estudo: além do grid, o coletor abre a PÁGINA dos 30 mais relevantes (configurável) p/ dados ricos que a API bloqueada dava. Planejado (plan mode) + auditado (consistency-auditor); decisões do dono: deep=30, seguir sem visitas (impossíveis na página pública).
+
+- **Coletor** ([ml_search.py](tools/collector/ml_search.py)): `_parse_item_page` (breadcrumb→categoria, ficha técnica→marca/modelo/specs, vendas, preço, reputação textual, reviews, frete/FULL), `_read_embedded_state` (date_created/category_id/seller_id do `__PRELOADED_STATE__`/`__NEXT_DATA__`/ld+json), `_visit_item_pages` (loop humanizado, jitter 2.5-6s, para no 1º captcha, resiliente por item), `_write_progress` (atômico). Query Título+Modelo. CLI `--deep-count`/`--progress-file`.
+- **API** ([collector_api.py](tools/collector/collector_api.py)): `POST /collect` aceita `deep_count`; job grava `progress_path`; `GET /collect/{job_id}` expõe `progress` ao vivo.
+- **Backend** ([competitor_analysis_service.py](BACKEND/services/competitor_analysis_service.py)): `_fetch_scraped_items(deep_count,on_progress)` + `_collect_via_job` repassa progresso a `_set_progress` (status granular); `_build_listings_from_scraped` mapeia categoria/ficha/reputação/`date_created`→velocidade (`_apply_velocity` extraído); `_build_search_study` com categorias REAIS por item + `brand_coverage`/`model_coverage`/`reputation_mix`/`velocity_stats`/`deep_visited_count`. Prompt atualizado (visitas indisponíveis; velocidade quando há data).
+- **Front** ([CompetitorAnalysisView.vue](FRONTEND/src/views/analysis/CompetitorAnalysisView.vue)): coluna Categoria + marca/modelo + reputação (quando raspada); progresso granular.
+- **Config**: `COLLECTOR_DEEP_COUNT=30`; timeouts 900/960s (cobre ~30 páginas; túnel async evita 524). ADR-0012 adendo.
+- Verificação: compile/import ✓, deep mapping testado ✓, pytest 25/2, build ✓. Deploy: backend + coletor local (reiniciado) + dist. **Validação E2E da página real fica pro teste do dono pelo frontend** (seletores PDP podem variar por categoria → degrada p/ None).
+
+---
+
 ## 2026-06-21 — feat(análise): categorias reais (barra lateral) + vendedor com link
 
 - **Coletor** ([ml_search.py](tools/collector/ml_search.py)): `_parse_categories` raspa o filtro "Categorias" da barra lateral da busca (categoria/subcategoria + qtd reais — o card de resultado não expõe categoria por item); `seller_url` por anúncio (loja oficial / `_CustId_`). Best-effort: se o ML mudar o layout, cai na categoria sugerida.

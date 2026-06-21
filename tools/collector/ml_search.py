@@ -299,6 +299,20 @@ def _write_progress(progress_path, *, phase: str, current: int = 0,
         pass
 
 
+def _write_result(path, result: dict) -> None:
+    """Grava o resultado (atômico) no caminho do --result-file. Usado p/ persistir o
+    grid ANTES da visita das páginas, evitando perder tudo se o deep estourar o tempo."""
+    if not path:
+        return
+    try:
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _item_url(item_id: str) -> str:
     """URL pública do anúncio a partir do ID (o ML resolve p/ a página completa)."""
     num = item_id[3:] if item_id.upper().startswith("MLB") else item_id
@@ -406,7 +420,11 @@ def _visit_item_pages(page, human, tracer, items, deep_count, wait_ms, progress_
     errors: list[str] = []
     stopped = None
     for i, it in enumerate(deep, start=1):
-        url = it.get("permalink") or it.get("href") or _item_url(it["item_id"])
+        # Só navega p/ URL https do mercadolivre; senão usa a URL canônica do ID
+        # (validado MLB\d+). Evita navegar p/ tracker/Ads/terceiro — quality-guardian HIGH.
+        url = it.get("permalink") or it.get("href") or ""
+        if not (url.startswith("https://") and "mercadolivre.com" in url):
+            url = _item_url(it["item_id"])
         _write_progress(progress_path, phase="deep_visit", current=i, total=total,
                         message=f"Abrindo anúncio {i}/{total}…")
         try:
@@ -447,7 +465,7 @@ def _visit_item_pages(page, human, tracer, items, deep_count, wait_ms, progress_
 
 
 def collect(query: str, *, headless: bool = False, limit: int = 50, deep_count: int = 0,
-            wait_ms: int = 900, save: bool = True, progress_path=None) -> dict:
+            wait_ms: int = 900, save: bool = True, progress_path=None, result_path=None) -> dict:
     """Executa a busca (grid) + visita das páginas dos `deep_count` mais relevantes.
 
     SÍNCRONO/BLOQUEANTE (Camoufox usa Playwright sync API). A API local roda isto
@@ -553,6 +571,10 @@ def collect(query: str, *, headless: bool = False, limit: int = 50, deep_count: 
             except Exception:  # noqa: BLE001
                 pass
 
+            # Persiste o grid ANTES do deep — se a visita das páginas estourar o tempo
+            # e o subprocesso for morto, o backend ainda recupera o grid (resiliência).
+            _write_result(result_path, result)
+
             # Visita as páginas individuais dos mais relevantes p/ dados ricos
             # (categoria real, ficha técnica, reputação, data). Só se não houve captcha.
             if deep_count > 0 and result["items"] and not result["captcha_detected"]:
@@ -591,13 +613,12 @@ def main() -> int:
     args = ap.parse_args()
     result = collect(args.query, headless=args.headless, limit=args.limit,
                      deep_count=args.deep_count, wait_ms=args.wait,
-                     progress_path=args.progress_file)
+                     progress_path=args.progress_file, result_path=args.result_file)
     # A API chama este script como subprocesso (Playwright sync NÃO roda no event loop
-    # do uvicorn) e lê o resultado deste arquivo.
+    # do uvicorn) e lê o resultado deste arquivo (collect já gravou o final via result_path,
+    # mas reescrevemos por garantia).
     if args.result_file:
-        Path(args.result_file).write_text(
-            json.dumps(result, ensure_ascii=False), encoding="utf-8"
-        )
+        _write_result(args.result_file, result)
     return 0
 
 

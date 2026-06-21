@@ -72,32 +72,6 @@ def _tokenize_keywords(items: list[dict]) -> list[dict]:
     return [{"word": w, "count": c} for w, c in counter.most_common(TOP_KEYWORDS)]
 
 
-async def _top_categories_with_names(items: list[dict]) -> list[dict]:
-    """Top categorias por frequência, enriquecidas com o nome (via /categories/{id})."""
-    counter: Counter[str] = Counter(
-        it["category_id"] for it in items if it.get("category_id")
-    )
-    top = counter.most_common(TOP_CATEGORIES)
-    total = len(items) or 1
-    out: list[dict] = []
-    async with httpx.AsyncClient(timeout=10) as client:
-        for cat_id, count in top:
-            name = cat_id
-            try:
-                r = await client.get(f"{ml.ML_API_BASE}/categories/{cat_id}")
-                if r.status_code == 200:
-                    name = r.json().get("name") or cat_id
-            except Exception:  # noqa: BLE001
-                pass
-            out.append({
-                "id": cat_id,
-                "name": name,
-                "count": count,
-                "pct": round(count * 100 / total, 1),
-            })
-    return out
-
-
 def _price_block(prices: list[float]) -> dict:
     """min/max/avg de uma lista de preços (ignora None)."""
     vals = [float(p) for p in prices if p is not None]
@@ -364,14 +338,17 @@ async def _fetch_scraped_items(query: str, deep_count: int = 0,
 
 
 def _apply_velocity(it: dict, now: datetime) -> None:
-    """Calcula days_live e sales_per_day a partir de date_created (se houver)."""
+    """days_live a partir de date_created; sales_per_day SÓ quando sold é conhecido
+    (evita 0.0 falso quando o selo de vendas não foi exposto) — quality-guardian HIGH."""
     created = it.get("date_created")
     if not created:
         return
     try:
         dt = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
         it["days_live"] = max(1, (now - dt).days)
-        it["sales_per_day"] = round((it.get("sold_quantity") or 0) / it["days_live"], 3)
+        sold = it.get("sold_quantity")
+        if sold is not None:
+            it["sales_per_day"] = round(sold / it["days_live"], 3)
     except Exception:  # noqa: BLE001
         pass
 
