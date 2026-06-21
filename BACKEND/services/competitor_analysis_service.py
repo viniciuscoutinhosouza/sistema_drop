@@ -577,11 +577,14 @@ async def _gather_ml(account: MarketplaceAccount, product: dict, analysis_id: in
     query = title if (not model or model.lower() in title.lower()) else f"{title} {model}".strip()
 
     # Relay do progresso do coletor → progress_step (o usuário acompanha na tela).
+    _last_progress = {"msg": None}
+
     async def _on_progress(p: dict) -> None:
         if analysis_id is None:
             return
         msg = (p or {}).get("message") or ""
-        if msg:
+        if msg and msg != _last_progress["msg"]:  # evita writes redundantes (poll repetido)
+            _last_progress["msg"] = msg
             await _set_progress(analysis_id, f"Coletando: {msg}")
 
     # Token (categoria/comissão públicas + enriquecimento opcional). Falha não derruba.
