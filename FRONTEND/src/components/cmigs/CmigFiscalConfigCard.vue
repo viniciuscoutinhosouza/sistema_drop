@@ -200,6 +200,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { formatDate as fmtBrDate } from '@/utils/formatters'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
@@ -274,11 +275,7 @@ const certificateIcon = computed(() => {
   return 'fa-check-circle'
 })
 
-function formatDate(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return d.toLocaleDateString('pt-BR')
-}
+function formatDate(iso) { return fmtBrDate(iso) }   // fonte única (horário do Brasil)
 
 async function load() {
   loading.value = true

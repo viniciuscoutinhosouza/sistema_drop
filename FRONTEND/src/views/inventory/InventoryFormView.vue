@@ -154,6 +154,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime as fmtBrDateTime } from '@/utils/formatters'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
@@ -318,8 +319,5 @@ function statusLabel(s) {
 function statusBadge(s) {
   return { draft: 'badge badge-secondary', finalized: 'badge badge-success', cancelled: 'badge badge-danger' }[s] || 'badge badge-light'
 }
-function fmt(dt) {
-  if (!dt) return '—'
-  return new Date(dt).toLocaleString('pt-BR')
-}
+function fmt(dt) { return fmtBrDateTime(dt) }   // fonte única (horário do Brasil)
 </script>

@@ -241,6 +241,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { formatDate as fmtBrDate } from '@/utils/formatters'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
@@ -462,10 +463,7 @@ function profileBadge(u) {
   return roleBadge(p ? p.base_role : u.role)
 }
 
-function formatDate(dt) {
-  if (!dt) return '—'
-  return new Date(dt).toLocaleDateString('pt-BR')
-}
+function formatDate(dt) { return fmtBrDate(dt) }   // fonte única (horário do Brasil)
 
 function formatCurrency(v) {
   return Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })

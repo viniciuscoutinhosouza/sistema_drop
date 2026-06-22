@@ -1,6 +1,5 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, text
@@ -10,10 +9,9 @@ from database import get_db
 from dependencies import get_current_user
 from models.user import User
 from schemas.dashboard import KPIResponse, TopProductSchema
+from services.datetime_br import BR_TZ as BRT  # fonte única do fuso do Brasil
 
 router = APIRouter()
-
-BRT = ZoneInfo("America/Sao_Paulo")
 
 
 @router.get("/kpis", response_model=KPIResponse)
@@ -378,6 +376,6 @@ async def get_marketplace_dashboard(
             "is_global": is_global,
             "account_id": account_id,
             "platform": platform,
-            "generated_at": now_brt.isoformat(),
+            "generated_at": now_brt.astimezone(UTC).isoformat(),  # contrato único: UTC
         },
     }

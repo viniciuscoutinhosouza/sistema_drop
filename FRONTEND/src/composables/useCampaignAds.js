@@ -57,9 +57,11 @@ export function derive(m, targets = {}) {
   }
 }
 
-/** Data YYYY-MM-DD a partir de um Date. */
+/** Data YYYY-MM-DD a partir de um Date, no fuso do Brasil (não usa toISOString=UTC). */
 export function isoDate(d) {
-  return d.toISOString().slice(0, 10)
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d)
 }
 
 export function useCampaignAds() {

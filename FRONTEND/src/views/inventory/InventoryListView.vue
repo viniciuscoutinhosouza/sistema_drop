@@ -64,6 +64,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import api from '@/composables/useApi'
+import { formatDateTime } from '@/utils/formatters'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -99,8 +100,5 @@ function statusLabel(s) {
 function statusBadge(s) {
   return { draft: 'badge badge-secondary', finalized: 'badge badge-success', cancelled: 'badge badge-danger' }[s] || 'badge badge-light'
 }
-function fmt(dt) {
-  if (!dt) return '—'
-  return new Date(dt).toLocaleString('pt-BR')
-}
+function fmt(dt) { return formatDateTime(dt) }   // fonte única (horário do Brasil)
 </script>

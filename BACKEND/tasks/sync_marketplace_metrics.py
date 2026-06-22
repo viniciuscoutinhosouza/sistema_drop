@@ -12,18 +12,16 @@ endpoint /dashboard/marketplace. Este job cuida só do que vem da API externa.
 
 import logging
 from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
 from database import task_db
 from models.integration import MarketplaceAccount, MarketplaceMetricDaily
 from services import ml_auth, ml_service, messages_service
+from services.datetime_br import BR_TZ as BRT  # fonte única do fuso do Brasil
 from tasks._job_wrapper import tracked_job
 
 logger = logging.getLogger(__name__)
-
-BRT = ZoneInfo("America/Sao_Paulo")
 
 
 async def sync_marketplace_metrics():

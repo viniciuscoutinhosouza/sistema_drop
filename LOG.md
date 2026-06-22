@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-06-21 — feat(datetime): fonte única de data/hora p/ horário do Brasil (front + back)
+
+Padronização transversal de data/hora (ADR-0013). Problema: telas (Dashboard Marketplace,
+Análise de Concorrência) exibiam horário errado — cada componente formatava com
+`toLocaleString('pt-BR')` **sem `timeZone`** (renderizava no fuso do navegador) e strings
+*naive* eram mal interpretadas; "hoje"/intervalos via `toISOString()` davam off-by-one.
+
+- **Frontend — fonte única** `utils/formatters.js`: reescrita a seção de data/hora com
+  `Intl.DateTimeFormat` em `timeZone: 'America/Sao_Paulo'` fixo — `parseDate`, `formatDate`,
+  `formatDateTime`, `formatTime`, `brToday`, `brDaysAgo`, `brInputToUtcIso`. Só-data
+  (`YYYY-MM-DD`) = dia literal (sem off-by-one); naive = UTC.
+- **Backend — fonte única** `services/datetime_br.py` (novo): `now_utc/now_br/ensure_aware/
+  to_br/to_utc/iso_utc/parse_marketplace_dt`, `BR_TZ`. `dashboard.py` `generated_at` → UTC.
+- **Consolidação** (delegam ao util, removidas duplicatas): `_helpers.js`, InventoryList/Form,
+  StockMovementsModal, CmigFiscalConfigCard, ShipmentModal, OrderStatusStepper, UsersView,
+  Separation (View/InfoModal/CartsList), Integrations, InvoicesModal, EmailConfig, SaidasView.
+- **Bugs de fuso corrigidos** (achados na auditoria): `orders.py` `date_from/date_to` agora
+  = dia local BRASIL→UTC (não corta as últimas 3h); `useCampaignAds.isoDate` e `SaidasView`
+  mês corrente via fuso do Brasil (não `toISOString`). Dedup de `ZoneInfo` em dashboard/
+  sync_marketplace_metrics/ml_fiscal_sync/stock → importam `BR_TZ`.
+- **Dívida registrada** (ADR-0013): `datetime.utcnow()` naive em módulos fiscais e reuso de
+  `parse_marketplace_dt` — follow-up sem bloqueio (o front já exibe naive como UTC).
+- Verificado: `npm run build` ✓, py_compile dos arquivos backend ✓, smoke do `datetime_br` ✓,
+  `pytest -m "not integration"` 25/2 (baseline — as 2 falhas são limitação do MockResult em
+  orders.py:480, sem relação com a mudança). Auditorias quality/consistency/adr sem CRITICAL/HIGH.
+
+---
+
 ## 2026-06-21 — fix(análise): preço promocional + permalink de Ads + card preço cruzado + link vendedor
 
 Ajustes pedidos pelo dono após teste:

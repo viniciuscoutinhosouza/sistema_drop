@@ -116,6 +116,7 @@
 
 <script setup>
 import { ref, watch } from 'vue'
+import { formatDateTime as fmtBrDateTime } from '@/utils/formatters'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 
@@ -205,10 +206,7 @@ async function copy(text) {
   catch { toast.error('Não foi possível copiar') }
 }
 
-function formatDate(iso) {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
-}
+function formatDate(iso) { return fmtBrDateTime(iso) }   // fonte única (horário do Brasil)
 
 function fmtCurrency(v) {
   return Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })

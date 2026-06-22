@@ -100,6 +100,7 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { formatDateTime as fmtBrDateTime } from '@/utils/formatters'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 
@@ -140,7 +141,7 @@ async function load() {
       from_email: data.from_email || '', from_name: data.from_name || '',
       is_active: !!data.is_active,
     })
-    if (data.updated_at) updatedAt.value = new Date(data.updated_at).toLocaleString('pt-BR')
+    if (data.updated_at) updatedAt.value = fmtBrDateTime(data.updated_at)
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao carregar configuração')
   } finally {
@@ -160,7 +161,7 @@ async function save() {
     const { data } = await api.put('/settings/email', payload)
     form.password = ''
     form.password_set = !!data.password_set
-    if (data.updated_at) updatedAt.value = new Date(data.updated_at).toLocaleString('pt-BR')
+    if (data.updated_at) updatedAt.value = fmtBrDateTime(data.updated_at)
     toast.success('Configuração salva')
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao salvar')

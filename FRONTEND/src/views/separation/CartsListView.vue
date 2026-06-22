@@ -68,6 +68,7 @@
 
 <script setup>
 import { ref, onMounted, reactive } from 'vue'
+import { formatDateTime as fmtBrDateTime } from '@/utils/formatters'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 
@@ -100,7 +101,7 @@ async function confirmDeliver() {
 
 function statusLabel(s) { return { open: 'Em separação', separated: 'Aguardando coleta', delivered: 'Entregue', cancelled: 'Cancelada' }[s] || s }
 function badge(s) { return { open: 'badge badge-secondary', separated: 'badge badge-warning', delivered: 'badge badge-success', cancelled: 'badge badge-danger' }[s] || 'badge badge-light' }
-function fmt(dt) { return dt ? new Date(dt).toLocaleString('pt-BR') : '—' }
+function fmt(dt) { return fmtBrDateTime(dt) }   // fonte única (horário do Brasil)
 </script>
 
 <style scoped>

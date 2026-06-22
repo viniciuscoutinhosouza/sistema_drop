@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
+from services.datetime_br import BR_TZ
 from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIGProduct
 from models.integration import MarketplaceAccount
@@ -2323,7 +2324,8 @@ async def sync_range(
     try:
         dt_from = datetime.fromisoformat(date_from_str)
         if dt_from.tzinfo is None:
-            dt_from = dt_from.replace(tzinfo=UTC)
+            # data só-data do filtro = início do dia no horário do BRASIL → UTC
+            dt_from = dt_from.replace(tzinfo=BR_TZ).astimezone(UTC)
         date_from_iso = dt_from.isoformat()
     except ValueError:
         raise HTTPException(status_code=400, detail="date_from inválido — use formato YYYY-MM-DD")
@@ -2334,8 +2336,8 @@ async def sync_range(
         try:
             dt_to = datetime.fromisoformat(date_to_str)
             if dt_to.tzinfo is None:
-                # date_to is end-of-day
-                dt_to = dt_to.replace(hour=23, minute=59, second=59, tzinfo=UTC)
+                # date_to = fim do dia no horário do BRASIL → UTC (não cortar as últimas 3h locais)
+                dt_to = dt_to.replace(hour=23, minute=59, second=59, tzinfo=BR_TZ).astimezone(UTC)
             date_to_iso = dt_to.isoformat()
             ts_to = int(dt_to.timestamp())
         except ValueError:

@@ -329,6 +329,7 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0010](DOCs/decisions/ADR-0010-full-sempre-cmig.md) — Estoque FULL é sempre do produto CMIG (auto-criação de espelho do PG); sync ML vira conferência
 - [ADR-0011](DOCs/decisions/ADR-0011-estudos-assincronos-ia-ml.md) — Estudos assíncronos IA+ML (job in-process por request + estudo persistido como memória)
 - [ADR-0012](DOCs/decisions/ADR-0012-coletor-ml-local-camoufox.md) — Coletor de busca ML local (Camoufox) via HTTP, fora do servidor Oracle (3ª fonte opt-in da Análise de Concorrência)
+- [ADR-0013](DOCs/decisions/ADR-0013-datahora-utc-armazenamento-conversao-borda.md) — Data/hora: UTC aware no armazenamento/transporte, conversão para America/Sao_Paulo na borda (fonte única: `utils/formatters.js` + `services/datetime_br.py`)
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 

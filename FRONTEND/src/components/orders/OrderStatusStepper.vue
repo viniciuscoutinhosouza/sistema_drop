@@ -31,6 +31,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { formatDate as fmtBrDate } from '@/utils/formatters'
 
 const props = defineProps({
   status:        { type: String, required: true },
@@ -154,10 +155,7 @@ function onStepClick(key) {
 }
 
 // ─── Ícone de entrega ─────────────────────────────────────────────────────────
-function fmt(d) {
-  if (!d) return null
-  return new Date(d + 'T12:00:00').toLocaleDateString('pt-BR')
-}
+function fmt(d) { return d ? fmtBrDate(d) : null }   // fonte única (horário do Brasil)
 
 const shipStatus = computed(() => props.order?.shipment_status || '')
 

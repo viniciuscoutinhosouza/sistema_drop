@@ -270,8 +270,8 @@ async def sync_full_stock_for_cmig(
     só-PG resolvem o CMIGProduct espelho (auto-criado se necessário).
     """
     from datetime import datetime
-    from zoneinfo import ZoneInfo
 
+    from services.datetime_br import BR_TZ
     from services import ml_service
     from models.integration import MarketplaceAccount
     from models.product import ProductListing
@@ -412,7 +412,7 @@ async def sync_full_stock_for_cmig(
 
     # Divergência → re-sincroniza as NF-e do mês corrente em background (ajusta o qty).
     if resync_on_drift and drift_accounts:
-        now_brt = datetime.now(ZoneInfo("America/Sao_Paulo"))
+        now_brt = datetime.now(BR_TZ)
         for acc_id in drift_accounts:
             background_tasks.add_task(
                 _resync_account_month, acc_id, cmig_id, now_brt.year, now_brt.month, current_user.id

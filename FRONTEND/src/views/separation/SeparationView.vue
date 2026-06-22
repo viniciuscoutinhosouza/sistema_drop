@@ -259,6 +259,7 @@
 
 <script setup>
 import { ref, computed, onMounted, nextTick, reactive } from 'vue'
+import { formatDate as fmtBrDate, formatDateTime as fmtBrDateTime } from '@/utils/formatters'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { platformLogo, shippingModeStyle, PLATFORMS } from '@/utils/constants'
@@ -542,12 +543,8 @@ function focusFirstBip() {
 }
 
 function pct(scan) { return scan.expected ? Math.round((scan.scanned / scan.expected) * 100) : 0 }
-function fmt(dt) { return dt ? new Date(dt).toLocaleString('pt-BR') : '—' }
-function fmtDate(d) {
-  if (!d) return '—'
-  const s = String(d).length === 10 ? d + 'T12:00:00' : d  // evita shift de fuso em datas só-data
-  return new Date(s).toLocaleDateString('pt-BR')
-}
+function fmt(dt) { return fmtBrDateTime(dt) }   // fonte única (horário do Brasil)
+function fmtDate(d) { return fmtBrDate(d) }
 </script>
 
 <style scoped>

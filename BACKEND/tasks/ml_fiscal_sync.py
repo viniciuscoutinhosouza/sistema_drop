@@ -8,16 +8,15 @@ sequência são detectados e logados por `_sync_ml_fiscal_account`.
 
 import logging
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
 from database import task_db
 from models.integration import MarketplaceAccount
+from services.datetime_br import BR_TZ as _BRT  # fonte única do fuso do Brasil
 from tasks._job_wrapper import tracked_job
 
 logger = logging.getLogger(__name__)
-_BRT = ZoneInfo("America/Sao_Paulo")
 
 
 async def sync_ml_fiscal_current_month():

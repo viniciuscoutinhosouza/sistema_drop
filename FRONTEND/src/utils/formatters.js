@@ -9,25 +9,84 @@ export function formatCurrency(value) {
   }).format(Number(value))
 }
 
-/**
- * Format an ISO date string to dd/MM/yyyy HH:mm
- */
-export function formatDateTime(isoString) {
-  if (!isoString) return ''
-  const s = String(isoString)
-  const d = s.includes('T') ? new Date(s) : new Date(s + 'T12:00:00')
-  return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-}
+// ── Data/hora — FONTE ÚNICA (horário local do Brasil) ───────────────────────
+// Política: o backend guarda/transporta em UTC (ISO com offset). A conversão para
+// o horário local do Brasil acontece SEMPRE aqui, com timeZone fixo, independente
+// do fuso do navegador. Use estas funções em TODA exibição/cálculo/filtro de data.
+export const BR_TZ = 'America/Sao_Paulo'
+const _RE_DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+const _RE_HAS_TZ = /(Z|[+-]\d{2}:?\d{2})$/
 
 /**
- * Format an ISO date string to dd/MM/yyyy
- * Plain dates (YYYY-MM-DD) are treated as local noon to avoid UTC-boundary off-by-one.
+ * Converte qualquer entrada (Date | epoch | string ISO) em um Date (ou null).
+ * - "YYYY-MM-DD" (só-data): dia-calendário literal (não converte fuso → sem off-by-one).
+ * - datetime COM offset/Z: instante absoluto.
+ * - datetime SEM offset (naive): tratado como UTC (o backend guarda UTC).
  */
-export function formatDate(isoString) {
-  if (!isoString) return ''
-  const s = String(isoString)
-  const d = s.includes('T') ? new Date(s) : new Date(s + 'T12:00:00')
-  return d.toLocaleDateString('pt-BR')
+export function parseDate(input) {
+  if (input === null || input === undefined || input === '') return null
+  if (input instanceof Date) return isNaN(input.getTime()) ? null : input
+  if (typeof input === 'number') { const d = new Date(input); return isNaN(d.getTime()) ? null : d }
+  let s = String(input).trim()
+  if (!s) return null
+  if (_RE_DATE_ONLY.test(s)) {
+    const d = new Date(s + 'T12:00:00')        // dia literal (meio-dia local)
+    return isNaN(d.getTime()) ? null : d
+  }
+  s = s.replace(' ', 'T')
+  if (s.includes('T') && !_RE_HAS_TZ.test(s)) s += 'Z'  // naive → UTC
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
+
+/** Formata para dd/MM/aaaa (horário do Brasil). Só-data é exibida literal. */
+export function formatDate(input) {
+  const s = input == null ? '' : String(input).trim()
+  if (_RE_DATE_ONLY.test(s)) { const [y, m, d] = s.split('-'); return `${d}/${m}/${y}` }
+  const d = parseDate(input)
+  return d ? new Intl.DateTimeFormat('pt-BR', {
+    timeZone: BR_TZ, day: '2-digit', month: '2-digit', year: 'numeric',
+  }).format(d) : '—'
+}
+
+/** Formata para dd/MM/aaaa HH:mm (horário do Brasil). */
+export function formatDateTime(input) {
+  const s = input == null ? '' : String(input).trim()
+  if (_RE_DATE_ONLY.test(s)) return formatDate(s)   // sem hora
+  const d = parseDate(input)
+  return d ? new Intl.DateTimeFormat('pt-BR', {
+    timeZone: BR_TZ, day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  }).format(d) : '—'
+}
+
+/** Formata só a hora HH:mm (horário do Brasil). */
+export function formatTime(input) {
+  const d = parseDate(input)
+  return d ? new Intl.DateTimeFormat('pt-BR', {
+    timeZone: BR_TZ, hour: '2-digit', minute: '2-digit',
+  }).format(d) : '—'
+}
+
+/** "Hoje" no fuso do Brasil como "YYYY-MM-DD" (não usa toISOString=UTC). */
+export function brToday() { return brDateISO(new Date()) }
+/** "YYYY-MM-DD" de N dias atrás no fuso do Brasil. */
+export function brDaysAgo(days) {
+  const d = new Date(); d.setDate(d.getDate() - Number(days || 0))
+  return brDateISO(d)
+}
+function brDateISO(date) {
+  // en-CA formata como YYYY-MM-DD; timeZone garante o dia-calendário do Brasil.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: BR_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(date)
+}
+
+/** Converte "YYYY-MM-DDTHH:mm" (entendido como horário do BRASIL) → ISO UTC p/ enviar ao backend. */
+export function brInputToUtcIso(localStr) {
+  if (!localStr) return null
+  const d = new Date(String(localStr).length === 16 ? localStr + ':00-03:00' : localStr + '-03:00')
+  return isNaN(d.getTime()) ? null : d.toISOString()
 }
 
 /**

@@ -238,6 +238,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { formatDate as fmtBrDate, formatDateTime as fmtBrDateTime } from '@/utils/formatters'
 import api from '@/composables/useApi'
 import { shippingModeStyle } from '@/utils/constants'
 
@@ -416,22 +417,9 @@ const addressZip = computed(() => {
   return z.length === 8 ? `${z.slice(0, 5)}-${z.slice(5)}` : z
 })
 
-// ─── Date format ─────────────────────────────────────────────────────────────
-function formatDate(d) {
-  if (!d) return '—'
-  const s = String(d)
-  const dt = s.includes('T') ? new Date(s) : new Date(s + 'T12:00:00')
-  return dt.toLocaleDateString('pt-BR')
-}
-function formatDateTime(d) {
-  if (!d) return '—'
-  const s = String(d)
-  const dt = s.includes('T') ? new Date(s) : new Date(s + 'T12:00:00')
-  return dt.toLocaleString('pt-BR', {
-    day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  })
-}
+// ─── Date format ──────────────────────────── fonte única (horário do Brasil) ──
+function formatDate(d) { return fmtBrDate(d) }
+function formatDateTime(d) { return fmtBrDateTime(d) }
 </script>
 
 <style scoped>

@@ -319,6 +319,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime as fmtBrDateTime } from '@/utils/formatters'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
@@ -601,10 +602,7 @@ const LEVEL_STYLE = {
 function levelLabel(l) { return LEVEL_LABEL[l] || l }
 function levelStyle(l) { return LEVEL_STYLE[l] || '' }
 
-function formatDateTime(dt) {
-  if (!dt) return '—'
-  return new Date(dt).toLocaleString('pt-BR')
-}
+function formatDateTime(dt) { return fmtBrDateTime(dt) }   // fonte única (horário do Brasil)
 
 onMounted(() => { loadAccounts(); loadCmigs() })
 </script>

@@ -227,6 +227,7 @@ import { useFiscalStore } from '@/stores/fiscal'
 import { useCmigStore } from '@/stores/cmig'
 import { useToast } from '@/composables/useToast'
 import { fmt } from '@/views/fiscal/_helpers'
+import { brToday } from '@/utils/formatters'
 import api from '@/composables/useApi'
 import XmlImportModal from '@/components/fiscal/XmlImportModal.vue'
 
@@ -310,7 +311,7 @@ async function reload() {
 }
 
 // Sincroniza TODAS as NF-e do mês (batch do Faturador ML — inclui remessa/FULL)
-const syncMonth = ref(new Date().toISOString().slice(0, 7)) // 'YYYY-MM'
+const syncMonth = ref(brToday().slice(0, 7)) // 'YYYY-MM' (mês corrente no fuso do Brasil)
 const syncingAll = ref(false)
 async function syncAllNfe() {
   syncingAll.value = true

@@ -1,15 +1,8 @@
-export const fmt = {
-  date(iso) {
-    if (!iso) return '—'
-    const d = new Date(iso)
-    return d.toLocaleDateString('pt-BR')
-  },
+import { formatDate, formatDateTime } from '@/utils/formatters'
 
-  datetime(iso) {
-    if (!iso) return '—'
-    const d = new Date(iso)
-    return d.toLocaleString('pt-BR')
-  },
+export const fmt = {
+  date(iso) { return formatDate(iso) },        // fonte única (horário do Brasil)
+  datetime(iso) { return formatDateTime(iso) },
 
   currency(v) {
     if (v === null || v === undefined) return '—'

@@ -388,6 +388,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
+import { formatDateTime, brToday, brDaysAgo } from '@/utils/formatters'
 
 const props = defineProps({
   show: { type: Boolean, required: true },
@@ -514,12 +515,9 @@ function fullBadgeClass(type) {
   return map[type] || 'badge-light'
 }
 
-function todayIso() { return new Date().toISOString().slice(0, 10) }
-function isoDaysAgo(days) {
-  const d = new Date()
-  d.setDate(d.getDate() - days)
-  return d.toISOString().slice(0, 10)
-}
+// "Hoje"/N dias atrás no fuso do Brasil (não usa toISOString=UTC, que desloca perto da meia-noite).
+function todayIso() { return brToday() }
+function isoDaysAgo(days) { return brDaysAgo(days) }
 
 function setPeriodPreset(days) {
   if (days === null) {
@@ -592,14 +590,7 @@ function adjustmentTooltip(m) {
   return parts.join(' | ')
 }
 
-function formatDateTimeOneLine(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
-  const dt = d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' })
-  const tm = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-  return `${dt} ${tm}`
-}
+function formatDateTimeOneLine(iso) { return formatDateTime(iso) }  // fonte única (horário do Brasil)
 
 function formatBR(iso) {
   if (!iso) return '—'

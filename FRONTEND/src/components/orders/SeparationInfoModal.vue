@@ -54,13 +54,15 @@
 </template>
 
 <script setup>
+import { formatDateTime as fmtBrDateTime } from '@/utils/formatters'
+
 defineProps({
   show: { type: Boolean, default: false },
   info: { type: Object, default: null },
 })
 defineEmits(['close'])
 
-function fmt(dt) { return dt ? new Date(dt).toLocaleString('pt-BR') : '—' }
+function fmt(dt) { return fmtBrDateTime(dt) }   // fonte única (horário do Brasil)
 function modeLabel(m) { return { manual: 'Manual', scan: 'Bipagem' }[m] || (m || '—') }
 function cartStatusLabel(s) {
   return { open: 'Em separação', separated: 'Concluída (pronta p/ transportadora)', delivered: 'Entregue', cancelled: 'Cancelada' }[s] || (s || '—')
