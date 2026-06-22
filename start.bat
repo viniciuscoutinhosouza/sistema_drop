@@ -6,12 +6,21 @@ echo   MIG ECOMMERCE - Iniciando Sistema
 echo ============================================
 
 echo Iniciando Backend...
-start "MIG BACKEND" cmd /k c:\Sistema_Drop\start_backend.bat
+start "MIG BACKEND" cmd /k "c:\Sistema_Drop\start_backend.bat"
 
 timeout /t 2 /nobreak >nul
 
 echo Iniciando Frontend...
-start "MIG FRONTEND" cmd /k c:\Sistema_Drop\start_frontend.bat
+start "MIG FRONTEND" cmd /k "c:\Sistema_Drop\start_frontend.bat"
+
+
+
+timeout /t 2 /nobreak >nul
+
+echo Iniciando Ngrok...
+start "MIG NGROK" cmd /k "c:\Sistema_Drop\start_ngrok.bat"
+
+
 
 echo.
 echo ============================================
