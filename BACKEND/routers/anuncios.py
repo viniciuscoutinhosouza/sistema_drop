@@ -526,6 +526,63 @@ def _build_ml_payload(
     return payload
 
 
+def _listing_is_full(listing) -> bool:
+    """True se o anúncio está no Fulfillment (FULL).
+
+    Forma OR (conservadora) alinhada ao ramo FULL de /sync-stock (anuncios.py:5717)
+    e do switch-to-cross-docking: trata como FULL se qualquer sinal indicar FULL.
+    """
+    return (listing.logistic_type or "").strip().lower() == "fulfillment" or bool(listing.is_full)
+
+
+def _strip_unwritable_stock(ml_payload: dict, listing) -> str | None:
+    """Remove `available_quantity` do payload de UPDATE quando o estoque NÃO é
+    editável via API do ML — os demais campos do anúncio seguem normalmente.
+
+    Dois casos:
+      - **Anúncio FULL**: estoque é gerido pelo galpão do ML; enviar
+        `available_quantity` faz o ML rejeitar com `item.available_quantity.not_modifiable`
+        (esse erro NÃO é auto-removido pelo retry de `update_item`, então o PUT inteiro
+        falhava — título/preço/atributos não eram salvos). Só o estoque LOCAL muda.
+      - **Item de catálogo ML**: estoque gerenciado pelo catálogo.
+
+    Cobre variações: os forms de update (sync_listing_to_ml / update_anuncio) não
+    emitem `variations` com estoque, então o estoque fica só no root `available_quantity`
+    — remover o root é suficiente.
+
+    Retorna o motivo do skip (para feedback ao usuário) ou None se nada foi removido.
+    """
+    if "available_quantity" not in ml_payload:
+        return None
+    if _listing_is_full(listing):
+        ml_payload.pop("available_quantity", None)
+        return "available_quantity (FULL — estoque gerido pelo ML)"
+    if listing.ml_catalog_id:
+        ml_payload.pop("available_quantity", None)
+        return "available_quantity (catálogo ML)"
+    return None
+
+
+def _clear_stale_variation_picture_ids(ml_payload: dict, listing) -> None:
+    """Ao enviar `pictures` para um anúncio COM variações, zera
+    `variations[].picture_ids` — senão o ML rejeita os picture_ids antigos
+    (`item.picture.invalid` em `item.variations.picture_ids`), que podem
+    referenciar URLs locais inválidas (ex.: /static/uploads/...). Após o update,
+    as variações herdam as fotos do top-level.
+    """
+    if "pictures" not in ml_payload or not listing.variations_json:
+        return
+    try:
+        _vars = _json.loads(listing.variations_json)
+        _vids = [v.get("id") for v in _vars if v.get("id")]
+        if _vids:
+            ml_payload["variations"] = [
+                {"id": vid, "picture_ids": []} for vid in _vids
+            ]
+    except Exception:
+        logger.debug("variations_json inválido ao limpar picture_ids", exc_info=True)
+
+
 def _ml_requires_family_name(error_body: dict) -> bool:
     """Retorna True se o erro do ML indica que family_name é obrigatório.
 
@@ -4057,29 +4114,20 @@ async def update_anuncio(
             # Campos imutáveis após criação — ML rejeita com field_not_updatable
             for _f in ("buying_mode", "listing_type_id", "condition"):
                 ml_payload.pop(_f, None)
-            # Itens de catálogo ML têm estoque gerenciado pelo ML — quantidade não editável
-            if listing.ml_catalog_id:
-                ml_payload.pop("available_quantity", None)
+            # Estoque não editável via update (FULL = galpão ML; catálogo ML) — não enviar.
+            stock_skip = _strip_unwritable_stock(ml_payload, listing)
 
             # Se atualizamos pictures e o item tem variations registradas no ML, limpa
-            # variations[].picture_ids — caso contrário ML reclama dos picture_ids
-            # antigos (que podem referenciar URLs relativas inválidas). Após o update
-            # as variations herdam as fotos do top-level.
-            if "pictures" in ml_payload and listing.variations_json:
-                try:
-                    _vars = _json.loads(listing.variations_json)
-                    _vids = [v.get("id") for v in _vars if v.get("id")]
-                    if _vids:
-                        ml_payload["variations"] = [
-                            {"id": vid, "picture_ids": []} for vid in _vids
-                        ]
-                except Exception:
-                    pass
+            # variations[].picture_ids (herdam as fotos do topo) — evita o ML reclamar
+            # dos picture_ids antigos/inválidos.
+            _clear_stale_variation_picture_ids(ml_payload, listing)
 
             ml_resp = await ml_service.update_item(
                 _access_token, listing.platform_item_id, ml_payload
             )
             ml_skipped = ml_resp.get("_skipped_fields") or []
+            if stock_skip and stock_skip not in ml_skipped:
+                ml_skipped.append(stock_skip)
 
             description = listing.description_override
             if description:
@@ -4856,8 +4904,11 @@ async def sync_listing_to_ml(
         ml_payload.pop("title", None)
     for _f in ("buying_mode", "listing_type_id", "condition"):
         ml_payload.pop(_f, None)
-    if listing.ml_catalog_id:
-        ml_payload.pop("available_quantity", None)
+    # Estoque não editável via update (FULL = galpão ML; catálogo ML) — não enviar.
+    stock_skip = _strip_unwritable_stock(ml_payload, listing)
+    # Variações: zera picture_ids antigas (herdam as fotos do topo) — evita
+    # item.picture.invalid em item.variations.picture_ids.
+    _clear_stale_variation_picture_ids(ml_payload, listing)
 
     skipped: list[str] = []
     try:
@@ -4865,6 +4916,8 @@ async def sync_listing_to_ml(
             access_token, listing.platform_item_id, ml_payload
         )
         skipped = ml_resp.get("_skipped_fields") or []
+        if stock_skip and stock_skip not in skipped:
+            skipped.append(stock_skip)
     except ml_service.UserProductRepeatedError as exc:
         conflict = await _build_user_product_conflict_payload(
             access_token=access_token,
@@ -5832,12 +5885,17 @@ async def sync_to_ml_batch(
             "detail": "Anúncio não pertence à conta informada.",
         })
 
+    full_stock_skipped: list[int] = []
     for lid in listing_ids:
         if lid not in valid_ids:
             continue
         try:
-            await sync_listing_to_ml(listing_id=lid, db=db, current_user=current_user)
+            res = await sync_listing_to_ml(listing_id=lid, db=db, current_user=current_user)
             processed += 1
+            # Estoque não enviado (FULL/catálogo, gerido pelo ML) — sinaliza p/ a UI avisar.
+            # Cobre tanto o strip proativo quanto a auto-cura do update_item.
+            if any("available_quantity" in s for s in (res.get("ml_skipped_fields") or [])):
+                full_stock_skipped.append(lid)
         except HTTPException as exc:
             # 409 user_product_repeated_conflict: detalha pra UI decidir
             errors.append({
@@ -5853,7 +5911,7 @@ async def sync_to_ml_batch(
                 "detail": f"Erro interno ({exc.__class__.__name__})",
             })
 
-    return {"processed": processed, "errors": errors}
+    return {"processed": processed, "errors": errors, "full_stock_skipped": full_stock_skipped}
 
 
 @router.post("/reimport-batch")

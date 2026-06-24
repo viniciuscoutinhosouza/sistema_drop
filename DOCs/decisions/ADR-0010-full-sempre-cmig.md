@@ -60,6 +60,11 @@ de FULL grava `'pg'`.
   não atualize estoque manualmente; o estoque vem das notas". `available_for_product`/
   `available_to_push` resolvem o CMIG espelho para anúncios só-PG (sem criar) — preserva a regra
   do ADR-0008 (não pausar quando LOCAL=0 mas FULL>0).
+- O caminho de **escrita do anúncio** (`sync_listing_to_ml` / `update_anuncio`) também deixou de
+  empurrar `available_quantity` para anúncios FULL: o helper `_strip_unwritable_stock` remove o
+  estoque do payload de update do item quando `_listing_is_full(listing)` (envia título/preço/
+  atributos/fotos/descrição, mas não o estoque, que o ML rejeitava com
+  `item.available_quantity.not_modifiable`). Fecha a fronteira de escrita que esta ADR desenhou.
 - ADR-0004 (event-sourcing LOCAL) e ADR-0009 (simbólicas) preservados.
 - **Leitura legada de chave `'pg'`**: até a migração `/migrate-full-pg-to-cmig` rodar com
   `dry_run=false`, `available_for_product` e os leitores ainda contemplam linhas

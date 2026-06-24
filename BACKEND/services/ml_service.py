@@ -1887,12 +1887,20 @@ async def update_item(access_token: str, item_id: str, data: dict) -> dict:
             cause_list = causes if isinstance(causes, list) else []
             to_drop: list[str] = []
             for cause in cause_list:
-                if (cause or {}).get("code") == "field_not_updatable":
+                code = (cause or {}).get("code") or ""
+                if code == "field_not_updatable":
                     for ref in cause.get("references") or []:
                         # references vêm como "pictures" ou "item.catalog_listing" — usamos a 1ª chave
                         key = ref.split(".", 1)[0] if isinstance(ref, str) else None
                         if key and key in payload:
                             to_drop.append(key)
+                elif "available_quantity.not_modifiable" in code:
+                    # Estoque não editável pelo PUT (anúncio FULL, catálogo ML ou com
+                    # variações): remove available_quantity e retenta — os demais campos
+                    # (título, preço, atributos, fotos) são salvos. Auto-cura mesmo quando
+                    # o flag is_full/logistic_type local está desatualizado.
+                    if "available_quantity" in payload:
+                        to_drop.append("available_quantity")
 
             to_drop = list(dict.fromkeys(to_drop))  # dedup preservando ordem
             if not to_drop:

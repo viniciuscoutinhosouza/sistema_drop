@@ -2741,6 +2741,7 @@ async function runBatchAction() {
         : b.action === 'reactivate'
         ? '/anuncios/reactivate-batch'
         : '/anuncios/switch-to-cross-docking-batch'
+      let fullStockSkipped = 0
       for (let i = 0; i < b.ids.length; i += BATCH_CHUNK_SIZE) {
         if (b.cancelled) break
         const chunk = b.ids.slice(i, i + BATCH_CHUNK_SIZE)
@@ -2750,6 +2751,7 @@ async function runBatchAction() {
             listing_ids: chunk,
           })
           b.success += data.processed || 0
+          fullStockSkipped += (data.full_stock_skipped || []).length
           for (const err of data.errors || []) {
             b.errors.push({ listing_id: err.listing_id, code: err.code, detail: err.detail })
           }
@@ -2759,6 +2761,10 @@ async function runBatchAction() {
           }
         }
         b.done = Math.min(i + chunk.length, b.ids.length)
+      }
+      // FULL/catálogo: o estoque é gerido pelo ML — não é enviado (só o LOCAL muda).
+      if (b.action === 'sync_to_ml' && fullStockSkipped > 0) {
+        toast.info(`${fullStockSkipped} anúncio(s) com estoque gerido pelo ML (FULL/catálogo): estoque não enviado, demais dados sincronizados.`)
       }
     }
 

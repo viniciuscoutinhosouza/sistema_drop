@@ -4,6 +4,80 @@
 
 ---
 
+## 2026-06-24 — fix(anuncios): zera picture_ids de variação ao enviar fotos (paridade sync ↔ wizard)
+
+Bug: "Enviar Anúncio ao Marketplace" (`sync_listing_to_ml`) dava
+`item.picture.invalid` em `item.variations.picture_ids` para anúncios COM
+variações — o ML rejeitava picture_ids antigas com caminhos locais
+(`/static/uploads/media/...`). O caminho gêmeo `update_anuncio` (wizard
+"Salvar e Enviar") já tratava isso; o sync não — disparidade entre os dois.
+
+- `_clear_stale_variation_picture_ids(ml_payload, listing)` (novo helper): quando
+  envia `pictures` e o listing tem `variations_json`, seta
+  `variations=[{id, picture_ids: []}]` (variações herdam as fotos do topo).
+  Decisão do dono: herdar do topo (mesmo comportamento do wizard).
+- `sync_listing_to_ml`: passa a chamar o helper (o fix). `update_anuncio`: bloco
+  inline substituído pela chamada ao helper (DRY, sem mudança de comportamento).
+- Top-level `pictures` continua absolutizado por `_absolutize_image_url`
+  (PUBLIC_BASE_URL) — o erro só citava variations, não pictures.
+- Teste novo `tests/test_anuncios_helpers.py` (9 casos) cobrindo
+  `_clear_stale_variation_picture_ids` e `_strip_unwritable_stock` (blinda os dois
+  fixes recentes). Suite: 34 passed / 2 (baseline MockResult).
+- Verificado: py_compile, 9 testes novos verdes, npm run build, pytest 34/2.
+  Auditorias quality/consistency sem CRITICAL/HIGH (paridade confirmada;
+  nenhum outro PUT /items com fotos+variações ficou sem o guard).
+
+---
+
+## 2026-06-24 — fix(ml): auto-cura de `available_quantity.not_modifiable` no update_item
+
+Follow-up do fix anterior: o erro continuou no anúncio #2923
+(`item.available_quantity.not_modifiable`) porque o flag `is_full`/`logistic_type`
+local estava desatualizado — o guard proativo não identificou como FULL.
+
+- `ml_service.update_item`: a auto-recuperação (que já tratava `field_not_updatable`)
+  passou a tratar também o código `item.available_quantity.not_modifiable` — remove
+  `available_quantity` do payload e retenta. Os demais campos (título, preço, atributos,
+  fotos) são salvos. **Robusto independente do flag local** (cobre FULL, catálogo e
+  variações). Testado com a resposta exata do #2923: 1º PUT 400 → remove estoque →
+  2º PUT 200, `_skipped_fields=['available_quantity']`.
+- `sync_to_ml_batch`: detecção de skip passou de `"FULL" in s` para
+  `"available_quantity" in s` — cobre tanto o strip proativo quanto a auto-cura.
+- Frontend: toast ajustado para "estoque gerido pelo ML (FULL/catálogo)".
+- Obs.: o `#2927 ConnectTimeout` é erro de rede transitório ao conectar no ML — o
+  batch isola o item e segue; basta reexecutar a ação para esse anúncio.
+- Verificado: py_compile, mock-test do update_item, npm run build, pytest 25/2.
+
+---
+
+## 2026-06-24 — fix(anuncios): não enviar estoque ao ML em anúncios FULL
+
+Bug: a ação "Enviar Anúncio ao Marketplace" (Gestão de Anúncios) enviava
+`available_quantity` para anúncios FULL; o ML rejeita com
+`item.available_quantity.not_modifiable` e o PUT inteiro falhava (título/preço/
+atributos não eram salvos). Anúncios FULL têm estoque gerido pelo galpão ML —
+só o estoque LOCAL muda (coerente com ADR-0010).
+
+- `_listing_is_full(listing)` (novo): FULL = `logistic_type=='fulfillment'` OU
+  `is_full` (forma OR, alinhada ao ramo FULL de /sync-stock).
+- `_strip_unwritable_stock(ml_payload, listing)` (novo): remove `available_quantity`
+  do payload de update p/ FULL e p/ catálogo ML; retorna o motivo do skip. Cobre
+  variações (os forms de update não emitem `variations` com estoque).
+- `sync_listing_to_ml` e `update_anuncio`: passaram a usar o helper (antes só
+  removiam estoque p/ catálogo). Demais campos seguem normalmente.
+- `sync-to-ml-batch`: retorna `full_stock_skipped`; o frontend
+  (AnunciosView.runBatchAction) mostra `toast.info` avisando que o estoque do FULL
+  não foi enviado.
+- NÃO tocados (intencional): publish/create (item novo nasce não-FULL e o ML exige
+  estoque no POST), reactivate (tratado no ml_service), switch-to-cross-docking
+  (envio de estoque intencional após sair do FULL), /sync-stock (já lê do ML p/ FULL).
+- Verificado: py_compile ok, unit do helper (FULL via logistic/is_full e catálogo
+  removem estoque; cross_docking/vazio mantêm), npm run build ok, pytest
+  -m "not integration" 25/2 (baseline). Auditorias quality/consistency/adr sem
+  CRITICAL/HIGH; adendo no ADR-0010 (fronteira de escrita do anúncio).
+
+---
+
 ## 2026-06-21 — feat(datetime): fonte única de data/hora p/ horário do Brasil (front + back)
 
 Padronização transversal de data/hora (ADR-0013). Problema: telas (Dashboard Marketplace,
