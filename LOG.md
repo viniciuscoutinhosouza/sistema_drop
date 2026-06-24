@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-06-24 — feat(anuncios): preserva foto específica por variação no envio ao ML (opção 2)
+
+O dono testou no servidor: o anúncio com variações foi atualizado, mas as variações
+perderam a foto específica (passaram a herdar as do topo). Trocado para PRESERVAR a
+foto de cada variação, replicando o fluxo de 2 etapas da publicação com variações.
+
+- ETAPA 1 (já existia): `_clear_stale_variation_picture_ids` zera picture_ids no 1º
+  PUT (senão o ML rejeita as antigas inválidas).
+- ETAPA 2 (nova): `_resync_variation_pictures` — do `pictures` que o ML devolve monta
+  url→picture_id, resolve a foto de cada variação (via `_pictures_urls`) e faz 2º PUT
+  (`update_item_variations`) com a lista COMPLETA de variações (regra de ouro do ML).
+  Persiste os picture_ids no `variations_json`. Best-effort: nunca derruba o sync
+  (captura inclusive timeout/connect do httpx) — degrada com aviso `ml_pictures_warning`.
+- `_consolidate_with_variation_pics`: inclui as fotos de cada variação no array do topo
+  (cap 12) p/ o ML lhes atribuir picture_id. Avisa se alguma variação ficou sem foto
+  (estouro do limite de 12).
+- Aplicado nos DOIS caminhos (sync_listing_to_ml e update_anuncio) — paridade. Reusa
+  os helpers da publicação (`_consolidate_unique_pictures`, `_build_url_to_pic_id_map`,
+  `_resolve_picture_ids_for_variation`, `ml_service.update_item_variations`).
+  `publish_anuncio_with_variations` não foi tocado (já fazia as 2 etapas).
+- Testes: +6 casos em tests/test_anuncios_helpers.py (consolidação, urls_by_id, persist,
+  resync resolve por variação com lista completa, no-op). Suite 40 passed / 2 baseline.
+- Auditorias: consistency (plano) + quality (impl). 1 HIGH corrigido (etapa 2 captura
+  erros de transporte, não só HTTPException — evita 500 após o 1º PUT já aplicado).
+- Verificado: py_compile, 15 testes do módulo verdes, npm run build, pytest 40/2.
+
+---
+
 ## 2026-06-24 — fix(anuncios): zera picture_ids de variação ao enviar fotos (paridade sync ↔ wizard)
 
 Bug: "Enviar Anúncio ao Marketplace" (`sync_listing_to_ml`) dava

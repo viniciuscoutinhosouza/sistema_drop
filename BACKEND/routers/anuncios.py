@@ -564,11 +564,11 @@ def _strip_unwritable_stock(ml_payload: dict, listing) -> str | None:
 
 
 def _clear_stale_variation_picture_ids(ml_payload: dict, listing) -> None:
-    """Ao enviar `pictures` para um anúncio COM variações, zera
-    `variations[].picture_ids` — senão o ML rejeita os picture_ids antigos
-    (`item.picture.invalid` em `item.variations.picture_ids`), que podem
-    referenciar URLs locais inválidas (ex.: /static/uploads/...). Após o update,
-    as variações herdam as fotos do top-level.
+    """ETAPA 1: ao enviar `pictures` para um anúncio COM variações, zera
+    `variations[].picture_ids` no 1º PUT — senão o ML rejeita os picture_ids
+    antigos (`item.picture.invalid` em `item.variations.picture_ids`), que podem
+    referenciar URLs locais ainda desconhecidas pelo ML. A foto específica de cada
+    variação é restabelecida na ETAPA 2 por `_resync_variation_pictures`.
     """
     if "pictures" not in ml_payload or not listing.variations_json:
         return
@@ -581,6 +581,111 @@ def _clear_stale_variation_picture_ids(ml_payload: dict, listing) -> None:
             ]
     except Exception:
         logger.debug("variations_json inválido ao limpar picture_ids", exc_info=True)
+
+
+def _variation_urls_by_id(listing) -> dict:
+    """Mapa {str(id_variação_ML): [URLs das fotos daquela variação]} a partir do
+    `variations_json` (campo `_pictures_urls`). Usado para re-resolver picture_ids."""
+    out: dict = {}
+    if not listing.variations_json:
+        return out
+    try:
+        for v in _json.loads(listing.variations_json):
+            vid = v.get("id")
+            if vid:
+                out[str(vid)] = v.get("_pictures_urls") or []
+    except Exception:
+        logger.debug("variations_json inválido ao mapear URLs por variação", exc_info=True)
+    return out
+
+
+def _consolidate_with_variation_pics(parent_urls: list[str], listing) -> list[str]:
+    """Top-level pictures = fotos do topo (`parent_urls`, já resolvidas pelo caller)
+    + fotos de cada variação (`_pictures_urls`), unidas/dedup/cap 12. Garante que
+    TODA foto de variação esteja no array do item para o ML lhe atribuir um
+    picture_id (sem isso a ETAPA 2 não consegue resolver a foto da variação).
+    """
+    per_var: list[list[str]] = []
+    if listing.variations_json:
+        try:
+            per_var = [v.get("_pictures_urls") or [] for v in _json.loads(listing.variations_json)]
+        except Exception:
+            per_var = []
+    if per_var:
+        return _consolidate_unique_pictures(parent_urls or [], per_var)
+    return parent_urls or []
+
+
+def _persist_variation_picture_ids(listing, pics_payload: list[dict]) -> None:
+    """Grava os picture_ids resolvidos por variação de volta no `variations_json`
+    (in-memory; o commit é do caller) — mantém o estado salvo coerente para o
+    próximo sync."""
+    if not listing.variations_json:
+        return
+    try:
+        vars_local = _json.loads(listing.variations_json)
+    except Exception:
+        return
+    ids_map = {str(p["id"]): p.get("picture_ids", []) for p in pics_payload if p.get("id")}
+    changed = False
+    for v in vars_local:
+        vid = str(v.get("id"))
+        if vid in ids_map:
+            v["picture_ids"] = ids_map[vid]
+            changed = True
+    if changed:
+        listing.variations_json = _json.dumps(vars_local, ensure_ascii=False)
+
+
+async def _resync_variation_pictures(access_token: str, listing, ml_resp: dict, urls_by_vid: dict) -> str | None:
+    """ETAPA 2: restabelece a foto específica de cada variação após o 1º PUT.
+
+    Do `pictures` que o ML devolveu monta url→picture_id, resolve as fotos de cada
+    variação (via `_pictures_urls`) e faz um 2º PUT (`update_item_variations`) com a
+    lista COMPLETA de variações (regra de ouro do ML — a fonte de QUEM enviar é
+    sempre `ml_resp['variations']`). Persiste os picture_ids no `variations_json`.
+    Degrada gracioso (nunca levanta). Retorna um aviso se alguma variação ficou sem
+    foto resolvida (ex.: estouro do limite de 12 fotos), senão None.
+    """
+    ml_vars = ml_resp.get("variations") or []
+    if not ml_vars:
+        return None
+    url_to_id = _build_url_to_pic_id_map(ml_resp.get("pictures") or [])
+    if not url_to_id:
+        return None
+
+    pics_payload: list[dict] = []
+    need = False
+    unresolved = 0
+    for var_ret in ml_vars:
+        vid = var_ret.get("id")
+        want = [u for u in (urls_by_vid.get(str(vid)) or []) if u]
+        pic_ids = _resolve_picture_ids_for_variation(want, url_to_id)
+        if want and len(pic_ids) < len(want):
+            unresolved += 1
+        if pic_ids and pic_ids != (var_ret.get("picture_ids") or []):
+            need = True
+        pics_payload.append({"id": vid, "picture_ids": pic_ids})
+
+    if need:
+        try:
+            await ml_service.update_item_variations(
+                access_token, listing.platform_item_id, pics_payload
+            )
+            _persist_variation_picture_ids(listing, pics_payload)
+        except Exception as exc:  # noqa: BLE001 — etapa best-effort: nunca derruba o sync
+            # Inclui erros de transporte (timeout/connect do httpx), que NÃO são
+            # HTTPException. O 1º PUT já foi aplicado; degradamos com aviso e seguimos.
+            detail = getattr(exc, "detail", None) or str(exc)
+            logger.warning(
+                "Falha ao aplicar fotos por variação no item %s: %s",
+                listing.platform_item_id, detail,
+            )
+            return "Falha ao aplicar as fotos das variações no ML"
+
+    if unresolved:
+        return f"{unresolved} variação(ões) ficaram sem foto específica (verifique o limite de 12 fotos do anúncio)"
+    return None
 
 
 def _ml_requires_family_name(error_body: dict) -> bool:
@@ -4059,6 +4164,7 @@ async def update_anuncio(
     ml_error: str | None = None
     ml_skipped: list[str] = []
     fiscal_sync_warning: str | None = None
+    pictures_warning: str | None = None
 
     # Variáveis compartilhadas entre o bloco ML e o bloco fiscal (declaradas fora
     # para que o fiscal execute mesmo quando o update ML falhar).
@@ -4104,6 +4210,8 @@ async def update_anuncio(
                     form["pictures"] = [p.get("url") or p for p in pics if p]
                 except Exception:
                     pass
+            # Inclui as fotos de cada variação no array do topo (p/ o ML lhes dar picture_id).
+            form["pictures"] = _consolidate_with_variation_pics(form["pictures"], listing)
 
             ml_payload = _build_ml_payload(_product, form, for_update=True)
             # ML rejeita mudança de categoria após criação
@@ -4117,10 +4225,10 @@ async def update_anuncio(
             # Estoque não editável via update (FULL = galpão ML; catálogo ML) — não enviar.
             stock_skip = _strip_unwritable_stock(ml_payload, listing)
 
-            # Se atualizamos pictures e o item tem variations registradas no ML, limpa
-            # variations[].picture_ids (herdam as fotos do topo) — evita o ML reclamar
-            # dos picture_ids antigos/inválidos.
+            # ETAPA 1: zera picture_ids antigas das variações p/ o 1º PUT não falhar;
+            # a foto de cada variação é restabelecida na ETAPA 2.
             _clear_stale_variation_picture_ids(ml_payload, listing)
+            _urls_by_vid = _variation_urls_by_id(listing)
 
             ml_resp = await ml_service.update_item(
                 _access_token, listing.platform_item_id, ml_payload
@@ -4128,6 +4236,13 @@ async def update_anuncio(
             ml_skipped = ml_resp.get("_skipped_fields") or []
             if stock_skip and stock_skip not in ml_skipped:
                 ml_skipped.append(stock_skip)
+            # ETAPA 2: restabelece a foto específica de cada variação (2º PUT).
+            if _urls_by_vid:
+                _pic_warn = await _resync_variation_pictures(
+                    _access_token, listing, ml_resp, _urls_by_vid
+                )
+                if _pic_warn:
+                    pictures_warning = _pic_warn
 
             description = listing.description_override
             if description:
@@ -4185,6 +4300,8 @@ async def update_anuncio(
         result["ml_skipped_fields"] = ml_skipped
     if fiscal_sync_warning:
         result["fiscal_sync_warning"] = fiscal_sync_warning
+    if pictures_warning:
+        result["ml_pictures_warning"] = pictures_warning
     if cascade_summary["cmig_updated"] or cascade_summary["pg_updated"]:
         result["_cascade"] = cascade_summary
     return result
@@ -4868,6 +4985,8 @@ async def sync_listing_to_ml(
             pictures = [p.get("url") or p for p in pics if p]
         except Exception:
             pass
+    # Inclui as fotos de cada variação no array do topo (p/ o ML lhes dar picture_id).
+    pictures = _consolidate_with_variation_pics(pictures, listing)
 
     attributes: list = []
     if listing.attributes_json:
@@ -4906,11 +5025,13 @@ async def sync_listing_to_ml(
         ml_payload.pop(_f, None)
     # Estoque não editável via update (FULL = galpão ML; catálogo ML) — não enviar.
     stock_skip = _strip_unwritable_stock(ml_payload, listing)
-    # Variações: zera picture_ids antigas (herdam as fotos do topo) — evita
-    # item.picture.invalid em item.variations.picture_ids.
+    # ETAPA 1: zera picture_ids antigas das variações p/ o 1º PUT não falhar com
+    # item.picture.invalid; a foto de cada variação é restabelecida na ETAPA 2.
     _clear_stale_variation_picture_ids(ml_payload, listing)
+    urls_by_vid = _variation_urls_by_id(listing)
 
     skipped: list[str] = []
+    pic_warn: str | None = None
     try:
         ml_resp = await ml_service.update_item(
             access_token, listing.platform_item_id, ml_payload
@@ -4918,6 +5039,11 @@ async def sync_listing_to_ml(
         skipped = ml_resp.get("_skipped_fields") or []
         if stock_skip and stock_skip not in skipped:
             skipped.append(stock_skip)
+        # ETAPA 2: restabelece a foto específica de cada variação (2º PUT).
+        if urls_by_vid:
+            pic_warn = await _resync_variation_pictures(
+                access_token, listing, ml_resp, urls_by_vid
+            )
     except ml_service.UserProductRepeatedError as exc:
         conflict = await _build_user_product_conflict_payload(
             access_token=access_token,
@@ -4962,6 +5088,8 @@ async def sync_listing_to_ml(
         result["ml_skipped_fields"] = skipped
     if fiscal_sync_warning:
         result["fiscal_sync_warning"] = fiscal_sync_warning
+    if pic_warn:
+        result["ml_pictures_warning"] = pic_warn
     return result
 
 
