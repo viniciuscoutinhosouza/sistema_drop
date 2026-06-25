@@ -264,7 +264,7 @@
         <div class="card card-outline card-success" v-if="ownerListingTypes?.options?.length">
           <div class="card-header py-2">
             <h3 class="card-title">Clássico × Premium (seu produto)</h3>
-            <small class="text-muted d-block">No preço que atinge sua margem desejada ({{ ownerListingTypes.desired_margin_pct }}%) · custo {{ money(ownerListingTypes.cost_price) }}
+            <small class="text-muted d-block">No preço que atinge sua margem desejada ({{ ownerListingTypes.desired_margin_pct }}% sobre a venda) · custo {{ money(ownerListingTypes.cost_price) }}
               <span v-if="!ownerListingTypes.has_dimensions" class="text-danger">· ⚠ sem dimensões → frete não calculado (cadastre peso/medidas)</span>
             </small>
           </div>
@@ -272,7 +272,7 @@
             <table class="table table-sm mb-0">
               <thead class="thead-light"><tr>
                 <th>Tipo</th><th class="text-center">Preço</th><th class="text-center">Comissão</th><th class="text-center">Frete</th>
-                <th class="text-center">Receita líq.</th><th class="text-center">Lucro</th><th class="text-center">Margem s/ custo</th>
+                <th class="text-center">Receita líq.</th><th class="text-center">Lucro</th><th class="text-center">Margem s/ venda</th>
               </tr></thead>
               <tbody>
                 <tr v-for="o in ownerListingTypes.options" :key="o.listing_type_id"
@@ -283,7 +283,7 @@
                   <td class="text-center">{{ money(o.shipping_cost) }}</td>
                   <td class="text-center">{{ money(o.net_revenue) }}</td>
                   <td class="text-center"><strong>{{ money(o.gross_profit) }}</strong></td>
-                  <td class="text-center">{{ o.margin_on_cost_pct }}%</td>
+                  <td class="text-center"><strong>{{ o.margin_on_sale_pct }}%</strong><div class="text-muted" style="font-size:10px">s/ custo {{ o.margin_on_cost_pct }}%</div></td>
                 </tr>
               </tbody>
             </table>

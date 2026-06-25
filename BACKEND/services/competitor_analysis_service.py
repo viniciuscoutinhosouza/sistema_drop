@@ -693,8 +693,8 @@ async def _enrich_via_api(token: str, listings: list[dict], out: dict) -> None:
 async def _simulate_owner_listing_types(token: str, seller_id: str, product: dict,
                                         category_id: str | None, desired_margin_pct) -> dict | None:
     """Calcula Clássico vs Premium PARA O PRODUTO DO DONO, no preço que atinge a
-    margem desejada sobre o custo. Reusa ml.get_listing_costs (comissão+frete reais).
-    Nunca levanta; retorna None se faltar custo/categoria/token/seller."""
+    margem desejada SOBRE A VENDA (lucro = margem × preço). Reusa ml.get_listing_costs
+    (comissão+frete reais). Nunca levanta; retorna None se faltar custo/categoria/token/seller."""
     cost = product.get("cost_price")
     if not (token and seller_id and category_id) or not cost or cost <= 0:
         return None
@@ -704,8 +704,10 @@ async def _simulate_owner_listing_types(token: str, seller_id: str, product: dic
     options: list[dict] = []
     for lt in ("gold_special", "gold_pro"):
         try:
-            price = max(float(cost) * (1 + m) * 1.4, 1.0)  # chute inicial
+            # Chute inicial: preço que dá margem-sobre-venda m assumindo ~15% de comissão.
+            price = max(float(cost) / max(1 - m - 0.15, 0.05) * 1.1, 1.0)
             costs = None
+            ok = True
             for _ in range(5):  # converge no preço que dá a margem (comissão depende do preço)
                 costs = await ml.get_listing_costs(
                     token, seller_id, round(price, 2), category_id, lt, "me2", "cross_docking",
@@ -717,11 +719,21 @@ async def _simulate_owner_listing_types(token: str, seller_id: str, product: dic
                 total = costs.get("total_cost") or 0
                 pct = min(max((costs.get("commission_pct") or 0) / 100.0, 0), 0.95)
                 fixed_total = max(total - pct * price, 0)
-                new_price = (float(cost) * (1 + m) + fixed_total) / (1 - pct)
+                # Margem SOBRE A VENDA: lucro = m × preço, onde
+                # lucro = preço·(1-pct) - fixed_total - custo. Isolando o preço:
+                #   preço·(1 - pct - m) = custo + fixed_total
+                denom = 1 - pct - m
+                if denom <= 0:
+                    # Comissão + margem desejada ≥ 100% → inatingível neste tipo de anúncio.
+                    ok = False
+                    break
+                new_price = (float(cost) + fixed_total) / denom
                 if abs(new_price - price) < 0.01:
                     price = new_price
                     break
                 price = new_price
+            if not ok:
+                continue
             costs = await ml.get_listing_costs(
                 token, seller_id, round(price, 2), category_id, lt, "me2", "cross_docking",
                 dims[0], dims[1], dims[2], dims[3], True,
@@ -739,6 +751,7 @@ async def _simulate_owner_listing_types(token: str, seller_id: str, product: dic
                 "financing_fee": costs.get("financing_fee"),
                 "net_revenue": net,
                 "gross_profit": gross_profit,
+                "margin_on_sale_pct": round((gross_profit / price) * 100, 1) if price else None,
                 "margin_on_cost_pct": round((gross_profit / float(cost)) * 100, 1) if cost else None,
             })
         except Exception:  # noqa: BLE001
@@ -748,7 +761,7 @@ async def _simulate_owner_listing_types(token: str, seller_id: str, product: dic
     # Recomendado: menor preço p/ atingir a margem (mais competitivo); IA discute Full/visibilidade.
     recommended = min(options, key=lambda o: o["price"])["listing_type_id"]
     return {
-        "reference": "preço que atinge a margem de contribuição desejada",
+        "reference": "preço que atinge a margem de contribuição desejada sobre a venda",
         "desired_margin_pct": desired_margin_pct,
         "category_id": category_id,
         "cost_price": float(cost),
