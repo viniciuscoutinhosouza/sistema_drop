@@ -5776,8 +5776,14 @@ async def get_anuncio_costs(
     listing.costs_cached_at = datetime.now(UTC)
     await db.commit()
 
-    # Devolve custos + dados de promoção + flag de ajuste automático
-    return {**costs, **promo_info, "has_auto_price_adj": auto_price_adj}
+    # Devolve custos + dados de promoção + flag de ajuste automático.
+    # `costs_cached_at` vai junto p/ o front atualizar o "reloginho" sem recarregar a lista.
+    return {
+        **costs,
+        **promo_info,
+        "has_auto_price_adj": auto_price_adj,
+        "costs_cached_at": listing.costs_cached_at.isoformat(),
+    }
 
 
 @router.post("/sync-stock")

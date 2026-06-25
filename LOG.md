@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-24 — fix(anuncios): reloginho de custos reflete o recálculo + consulta silenciosa
+
+Dois ajustes na Gestão de Anúncios:
+- **Reloginho (costs_cached_at)** não virava "agora" após o recálculo em segundo plano.
+  Causa: `GET /anuncios/{id}/costs` regravava `costs_cached_at` no banco mas NÃO devolvia
+  o campo, e o `fetchCost` não atualizava `listing.costs_cached_at` (o reloginho lê esse
+  campo). Correção: endpoint passa a devolver `costs_cached_at` (ISO) e o `fetchCost`
+  grava em `listing.costs_cached_at` após sucesso → o card vira "agora" assim que o lote
+  termina, sem recarregar a lista.
+- **"Consultando..."** removido: o spinner durante o recálculo dos custos saiu; a tela
+  mantém os valores cacheados enquanto consulta em segundo plano (silencioso). O ref
+  `loadingCosts` segue como guarda de concorrência (sem indicador visual).
+- Verificado: py_compile, npm run build.
+
+---
+
 ## 2026-06-24 — feat(anuncios): preserva foto específica por variação no envio ao ML (opção 2)
 
 O dono testou no servidor: o anúncio com variações foi atualizado, mas as variações

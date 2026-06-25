@@ -348,11 +348,9 @@
 
                   <!-- Grid financeiro -->
                   <div style="flex:0 0 220px;font-size:11px;border-left:1px solid #e2e8f0;padding-left:10px;align-self:stretch;display:flex;flex-direction:column;justify-content:center">
-                    <div v-if="loadingCosts[a.id]" class="text-muted">
-                      <i class="fas fa-spinner fa-spin mr-1"></i>Consultando...
-                    </div>
-                    <template v-else>
-                      <!-- Preço: normal + promocional (quando há promoção) -->
+                    <!-- Consulta silenciosa: mantém os valores cacheados na tela enquanto
+                         o recálculo roda em segundo plano (sem indicador "Consultando"). -->
+                    <!-- Preço: normal + promocional (quando há promoção) -->
                       <div class="mb-1">
                         <div class="d-flex align-items-center flex-wrap" style="gap:5px">
                           <span v-if="pricingCalc(a).isReal && !pricingCalc(a).isStale"
@@ -446,7 +444,6 @@
                       <div v-if="a.costs_cached_at" class="text-right mt-1" style="font-size:10px;color:#94a3b8">
                         <i class="fas fa-clock mr-1"></i>{{ timeSince(a.costs_cached_at) }}
                       </div>
-                    </template>
                   </div>
 
                   <!-- Ações -->
@@ -3536,6 +3533,8 @@ async function fetchCost(listing) {
     if (data.price && data.price > 0) listing.sale_price = data.price
     if (data.regular_price)  listing.regular_price = data.regular_price
     if (data.promo_type !== undefined) listing.promo_type = data.promo_type ?? null
+    // Atualiza o "reloginho": o recálculo regravou o cache no banco (agora).
+    if (data.costs_cached_at) listing.costs_cached_at = data.costs_cached_at
   } catch { /* silencia — mantém estimativa */ }
   finally { loadingCosts.value = { ...loadingCosts.value, [id]: false } }
 }
