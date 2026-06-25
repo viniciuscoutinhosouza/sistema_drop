@@ -14,7 +14,6 @@ from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
-from services.datetime_br import BR_TZ
 from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIGProduct
 from models.integration import MarketplaceAccount
@@ -29,6 +28,7 @@ from models.product import (
 from models.user import User
 from models.webhook import WebhookEvent
 from services import ml_service as _ml
+from services.datetime_br import BR_TZ
 from services.financial_service import debit_balance
 from services.shipping_mode import classify_logistic_type, label_for_mode
 
@@ -136,6 +136,51 @@ def _resolve_item_cost_runtime(
             return float(c)
     c = catalog_cost_map.get(catalog_id)
     return float(c) if c is not None else None
+
+
+def _issuer_type_from_cmig(cmig_info: dict | None) -> str:
+    """'cnpj' (emite NF-e), 'cpf' (precisa de DC-e) ou 'unknown'.
+
+    CNPJ tem precedência: se a CMIG tem ambos, opera como PJ (emite NF-e).
+    """
+    if not cmig_info:
+        return "unknown"
+    if (cmig_info.get("cnpj") or "").strip():
+        return "cnpj"
+    if (cmig_info.get("cpf") or "").strip():
+        return "cpf"
+    return "unknown"
+
+
+async def _order_issuer_type(db: AsyncSession, order: Order) -> str:
+    """Carrega a CMIG do pedido e retorna o tipo fiscal do emissor (cnpj/cpf/unknown)."""
+    from models.cmig import CMIG
+
+    if not order.cmig_id:
+        return "unknown"
+    cmig = (
+        await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))
+    ).scalar_one_or_none()
+    if not cmig:
+        return "unknown"
+    if (cmig.cnpj or "").strip():
+        return "cnpj"
+    if (cmig.cpf or "").strip():
+        return "cpf"
+    return "unknown"
+
+
+# Mensagem padrão quando o ML aguarda a Declaração de Conteúdo (conta CPF, sem NF-e).
+_DCE_PENDING_MSG = (
+    "Conta pessoa física (CPF) — o Mercado Livre aguarda a Declaração de Conteúdo "
+    "Eletrônica (DC-e), não NF-e. Emita a DC-e no painel do Mercado Livre (ou pelo app "
+    "DC-e do gov.br) para liberar a etiqueta. Assim que a DC-e for emitida, clique "
+    "novamente para imprimir a etiqueta."
+)
+_UNKNOWN_ISSUER_MSG = (
+    "Documento fiscal pendente, mas a CMIG não tem CNPJ nem CPF cadastrado — o sistema "
+    "não sabe se deve emitir NF-e (PJ) ou DC-e (PF). Cadastre o CNPJ ou CPF na CMIG."
+)
 
 
 def _serialize_order_list(
@@ -307,11 +352,15 @@ def _serialize_order_list(
         net_pct = round(net / sale * 100, 2) if sale > 0 else None
 
     cmig_info = (cmig_map or {}).get(o.cmig_id) if o.cmig_id else None
+    fiscal_issuer_type = _issuer_type_from_cmig(cmig_info)
 
     return {
         "id": o.id,
         "cmig_id": o.cmig_id,
         "cmig": cmig_info,
+        # Tipo fiscal do emissor: 'cnpj' emite NF-e; 'cpf' precisa de DC-e (Declaração
+        # de Conteúdo Eletrônica); 'unknown' quando a CMIG não tem CNPJ nem CPF.
+        "fiscal_issuer_type": fiscal_issuer_type,
         "platform": o.platform,
         "platform_order_id": o.platform_order_id,
         "platform_order_ref": o.platform_order_ref,
@@ -604,6 +653,7 @@ async def list_orders(
                 "trade_name": c.trade_name,
                 "company_name": c.company_name,
                 "cnpj": c.cnpj,
+                "cpf": c.cpf,
             }
 
     # Batch: cost maps para fallback de product_cost em pedidos antigos sem unit_cost.
@@ -1246,6 +1296,11 @@ async def emit_order_nfe(
     account = acc_result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta de marketplace não encontrada")
+
+    # Conta pessoa física (CPF) não emite NF-e — o ML aguarda a DC-e. Não tentar
+    # Faturador (evita o erro enganoso "erro na emissão da NFe").
+    if await _order_issuer_type(db, order) == "cpf":
+        raise HTTPException(status_code=400, detail=_DCE_PENDING_MSG)
 
     # Se o status local já indica nota autorizada/em processo, sincroniza o estado
     # real do ML antes de bloquear — o banco pode estar desatualizado.
@@ -2842,13 +2897,19 @@ async def get_order_shipping_label(
                 detail="Pedido Full — a logística é gerenciada pelo Mercado Livre, não há etiqueta para o vendedor imprimir",
             )
 
-        # NF-e pendente — emitir automaticamente (pedido aqui já não é Full)
+        # Documento fiscal pendente — o que o ML aguarda depende do emissor:
+        # CNPJ → NF-e (emite via Faturador); CPF → DC-e (Declaração de Conteúdo).
         if shipment.get("substatus") == "invoice_pending":
-            await _emit_nfe_for_label(order, account, db)
-            raise HTTPException(
-                status_code=400,
-                detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
-            )
+            issuer = await _order_issuer_type(db, order)
+            if issuer == "cnpj":
+                await _emit_nfe_for_label(order, account, db)
+                raise HTTPException(
+                    status_code=400,
+                    detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
+                )
+            if issuer == "cpf":
+                raise HTTPException(status_code=400, detail=_DCE_PENDING_MSG)
+            raise HTTPException(status_code=400, detail=_UNKNOWN_ISSUER_MSG)
 
     # Rede de segurança: se o pré-fetch falhou, o erro bruto do ML ainda revela
     # pedidos Full / NF-e pendente.
@@ -2869,11 +2930,16 @@ async def get_order_shipping_label(
                 detail="Pedido Full — a logística é gerenciada pelo Mercado Livre, não há etiqueta para o vendedor imprimir",
             )
         if "invoice_pending" in msg:
-            await _emit_nfe_for_label(order, account, db)
-            raise HTTPException(
-                status_code=400,
-                detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
-            )
+            issuer = await _order_issuer_type(db, order)
+            if issuer == "cnpj":
+                await _emit_nfe_for_label(order, account, db)
+                raise HTTPException(
+                    status_code=400,
+                    detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
+                )
+            if issuer == "cpf":
+                raise HTTPException(status_code=400, detail=_DCE_PENDING_MSG)
+            raise HTTPException(status_code=400, detail=_UNKNOWN_ISSUER_MSG)
         raise
 
     # Persist to disk + mark cached_at

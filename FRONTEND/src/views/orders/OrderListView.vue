@@ -423,7 +423,17 @@
                 >
                   <i class="fas fa-spinner fa-spin mr-1"></i>Processando NF-e…
                 </button>
-                <!-- ML sem NF-e: emitir -->
+                <!-- Conta CPF (pessoa física): não emite NF-e — o ML aguarda a DC-e -->
+                <button
+                  v-else-if="order.platform === 'mercadolivre' && order.fiscal_issuer_type === 'cpf'"
+                  class="btn btn-sm btn-outline-secondary flex-grow-1"
+                  style="font-size:.78rem"
+                  @click="emitDce(order)"
+                  title="Conta pessoa física (CPF) — emita a Declaração de Conteúdo (DC-e) no painel do Mercado Livre"
+                >
+                  <i class="fas fa-file-signature mr-1"></i>DC-e (Declaração)
+                </button>
+                <!-- ML sem NF-e (CNPJ ou indefinido): emitir -->
                 <button
                   v-else-if="order.platform === 'mercadolivre'"
                   class="btn btn-sm btn-outline-warning flex-grow-1"
@@ -1186,6 +1196,19 @@ async function emitNfe(order) {
     toast.error(err.response?.data?.detail || 'Erro ao emitir NF-e')
   } finally {
     nfeEmitting.value[order.id] = false
+  }
+}
+
+// Conta pessoa física (CPF): o ML aguarda a Declaração de Conteúdo (DC-e), não NF-e.
+// A emissão da DC-e é feita no painel do ML / app DC-e (gov.br) — orienta o usuário.
+function emitDce(order) {
+  toast.info(
+    'Conta pessoa física (CPF): o Mercado Livre aguarda a Declaração de Conteúdo (DC-e), ' +
+    'não NF-e. Emita a DC-e no painel do Mercado Livre (ou pelo app DC-e do gov.br). ' +
+    'Depois clique em Imprimir Etiqueta.',
+  )
+  if (order.platform_order_id) {
+    window.open(`https://www.mercadolivre.com.br/vendas/${order.platform_order_id}/detalhe`, '_blank')
   }
 }
 
