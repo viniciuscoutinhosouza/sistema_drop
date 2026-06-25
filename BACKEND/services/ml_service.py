@@ -261,6 +261,31 @@ async def emit_nfe(access_token: str, seller_id: str, order_ids: list) -> dict:
     return resp.json()
 
 
+async def emit_dce(access_token: str, seller_id: str, shipment_id: str, order_ids: list) -> dict:
+    """Emite a DC-e (Declaração de Conteúdo) de um envio sem NF-e (conta pessoa física).
+
+    ⚠️ TODO — chamada ML ainda NÃO confirmada. O Mercado Livre não documenta
+    publicamente (403 no devsite) e não há endpoint conhecido de DC-e como há para
+    NF-e (Faturador). A DC-e é gerada pelo ML e já vem embutida na etiqueta ME2,
+    mas exige uma ação de "emitir" que tira o shipment de `invoice_pending`.
+
+    Quando confirmarmos a requisição exata (capturando do painel do ML ou sondando
+    uma venda CPF em invoice_pending), plugar aqui o POST correto. Candidatos a
+    investigar: /shipments/{id}/invoice_data (POST), faturador "sem nota", ou um
+    endpoint de declaração de conteúdo por pack/shipment.
+
+    Por enquanto sinaliza que a emissão automática ainda não está conectada.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Emissão automática de DC-e ainda não conectada à API do Mercado Livre. "
+            "Emita a Declaração de Conteúdo no painel do ML por enquanto; a etiqueta "
+            "já inclui a DC-e. (Integração em configuração.)"
+        ),
+    )
+
+
 async def get_shipment_invoice_data(access_token: str, shipment_id: str) -> dict:
     """Return invoice data from GET /shipments/{id}/invoice_data?siteId=MLB (or {} on error)."""
     try:

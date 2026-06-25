@@ -424,14 +424,37 @@
                   <i class="fas fa-spinner fa-spin mr-1"></i>Processando NF-e…
                 </button>
                 <!-- Conta CPF (pessoa física): não emite NF-e — o ML aguarda a DC-e -->
+                <!-- DC-e já emitida -->
+                <button
+                  v-else-if="order.platform === 'mercadolivre' && order.fiscal_issuer_type === 'cpf' && order.dce_status === 'emitted'"
+                  class="btn btn-sm btn-success flex-grow-1"
+                  style="font-size:.78rem"
+                  disabled
+                  title="Declaração de Conteúdo já emitida — imprima a etiqueta (a DC-e vem inclusa)"
+                >
+                  <i class="fas fa-file-signature mr-1"></i>DC-e emitida
+                </button>
+                <!-- DC-e em processamento -->
+                <button
+                  v-else-if="order.platform === 'mercadolivre' && order.fiscal_issuer_type === 'cpf' && order.dce_status === 'pending'"
+                  class="btn btn-sm btn-outline-info flex-grow-1"
+                  style="font-size:.78rem"
+                  disabled
+                  title="DC-e em processamento"
+                >
+                  <i class="fas fa-spinner fa-spin mr-1"></i>Processando DC-e…
+                </button>
+                <!-- Emitir DC-e -->
                 <button
                   v-else-if="order.platform === 'mercadolivre' && order.fiscal_issuer_type === 'cpf'"
-                  class="btn btn-sm btn-outline-secondary flex-grow-1"
+                  class="btn btn-sm btn-outline-warning flex-grow-1"
                   style="font-size:.78rem"
+                  :disabled="dceEmitting[order.id]"
                   @click="emitDce(order)"
-                  title="Conta pessoa física (CPF) — emita a Declaração de Conteúdo (DC-e) no painel do Mercado Livre"
+                  title="Emitir a Declaração de Conteúdo (DC-e) — conta pessoa física não emite NF-e"
                 >
-                  <i class="fas fa-file-signature mr-1"></i>DC-e (Declaração)
+                  <i class="fas fa-file-signature mr-1"></i>
+                  {{ dceEmitting[order.id] ? 'Emitindo…' : 'Emitir DC-e' }}
                 </button>
                 <!-- ML sem NF-e (CNPJ ou indefinido): emitir -->
                 <button
@@ -655,6 +678,7 @@ const syncingRange = ref(false)
 const syncRangeResult = ref(null)
 const syncRange = ref({ date_from: '', date_to: '', platform: 'all' })
 const nfeEmitting = ref({})
+const dceEmitting = ref({})
 const showInvoicesModal = ref(false)
 const invoicesOrder = ref(null)
 const showShipmentModal = ref(false)
@@ -1199,16 +1223,27 @@ async function emitNfe(order) {
   }
 }
 
-// Conta pessoa física (CPF): o ML aguarda a Declaração de Conteúdo (DC-e), não NF-e.
-// A emissão da DC-e é feita no painel do ML / app DC-e (gov.br) — orienta o usuário.
-function emitDce(order) {
-  toast.info(
-    'Conta pessoa física (CPF): o Mercado Livre aguarda a Declaração de Conteúdo (DC-e), ' +
-    'não NF-e. Emita a DC-e no painel do Mercado Livre (ou pelo app DC-e do gov.br). ' +
-    'Depois clique em Imprimir Etiqueta.',
-  )
-  if (order.platform_order_id) {
-    window.open(`https://www.mercadolivre.com.br/vendas/${order.platform_order_id}/detalhe`, '_blank')
+// Conta pessoa física (CPF): emite a Declaração de Conteúdo (DC-e), não NF-e.
+// A DC-e já vem inclusa na etiqueta do ML — emitir tira o envio de invoice_pending.
+async function emitDce(order) {
+  dceEmitting.value[order.id] = true
+  try {
+    const { data } = await api.post(`/orders/${order.id}/emit-dce`)
+    order.dce_status = data.dce_status
+    if (data.already_existed) {
+      toast.info('DC-e já estava emitida.')
+    } else {
+      toast.success('DC-e emitida — imprima a etiqueta (a declaração vem inclusa).')
+    }
+  } catch (err) {
+    const detail = err.response?.data?.detail || 'Erro ao emitir DC-e'
+    toast.error(detail)
+    // Fallback enquanto a emissão automática não está conectada (501): abre o painel do ML.
+    if (err.response?.status === 501 && order.platform_order_id) {
+      window.open(`https://www.mercadolivre.com.br/vendas/${order.platform_order_id}/detalhe`, '_blank')
+    }
+  } finally {
+    dceEmitting.value[order.id] = false
   }
 }
 

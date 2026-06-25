@@ -384,6 +384,7 @@ def _serialize_order_list(
         "nfe_url": _ml_nfe_url(o),
         "nfe_key": o.nfe_key,
         "nfe_status": o.nfe_status,
+        "dce_status": o.dce_status,
         "shipment_id": o.shipment_id,
         "estimated_delivery_date": o.estimated_delivery_date.isoformat()
         if o.estimated_delivery_date
@@ -1354,6 +1355,68 @@ async def emit_order_nfe(
         "nfe_key": order.nfe_key,
         "nfe_url": _ml_nfe_url(order),
     }
+
+
+@router.post("/{order_id}/emit-dce")
+async def emit_order_dce(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Emite a DC-e (Declaração de Conteúdo) de um pedido de conta pessoa física.
+
+    Estrutura completa; a chamada de emissão ao ML ainda é um stub (501) até
+    confirmarmos o endpoint exato. Dedup por envio: pedidos de carrinho dividem
+    o mesmo shipment/pack, então a DC-e é uma só — marcamos todos os pedidos do
+    mesmo shipment.
+    """
+    order = await _get_order_checked(db, order_id, current_user)
+    if order.platform != "mercadolivre":
+        raise HTTPException(
+            status_code=400, detail="DC-e disponível apenas para pedidos do Mercado Livre"
+        )
+
+    issuer = await _order_issuer_type(db, order)
+    if issuer == "cnpj":
+        raise HTTPException(
+            status_code=400,
+            detail="Esta conta tem CNPJ — emita NF-e, não DC-e.",
+        )
+    if issuer != "cpf":
+        raise HTTPException(status_code=400, detail=_UNKNOWN_ISSUER_MSG)
+
+    # Idempotência: se a DC-e já foi emitida, não reemitir.
+    if order.dce_status in ("emitted", "pending"):
+        return {"ok": True, "already_existed": True, "dce_status": order.dce_status}
+
+    acc_result = await db.execute(
+        select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
+    )
+    account = acc_result.scalar_one_or_none()
+    if not account or not account.access_token:
+        raise HTTPException(status_code=400, detail="Conta sem token válido")
+
+    try:
+        ml_order_id = int(order.platform_order_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ID do pedido inválido para emissão de DC-e")
+
+    # Chamada de emissão ao ML — stub por enquanto (levanta 501 com mensagem clara).
+    # Quando o endpoint real for confirmado, isto passa a emitir de fato.
+    await _ml.emit_dce(
+        account.access_token, account.platform_user_id, order.shipment_id, [ml_order_id]
+    )
+
+    # (Após emissão real) Dedup por envio: marca todos os pedidos do mesmo shipment.
+    order.dce_status = "emitted"
+    if order.shipment_id:
+        await db.execute(
+            sa_update(Order)
+            .where(Order.shipment_id == order.shipment_id)
+            .values(dce_status="emitted")
+        )
+    await db.commit()
+    return {"ok": True, "dce_status": order.dce_status}
 
 
 @router.post("/{order_id}/sync-nfe")

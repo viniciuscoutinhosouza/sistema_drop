@@ -36,6 +36,10 @@ class Order(Base):
     nfe_invoices_json = Column(
         String
     )  # CLOB — cache da lista de NF-e do Faturador ML (venda + referências)
+    # DC-e (Declaração de Conteúdo Eletrônica) — contas pessoa física (CPF) que não
+    # emitem NF-e. dce_status: None | 'pending' | 'emitted'. pack_id: dedup por envio.
+    dce_status = Column(String(30))
+    pack_id = Column(String(50))
     invoice_id = Column(Integer, ForeignKey("invoices.id"))
     estimated_delivery_date = Column(Date)
     estimated_handling_limit = Column(Date)
