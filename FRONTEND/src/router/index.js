@@ -113,6 +113,7 @@ const AIConfigView = () => import('@/views/settings/AIConfigView.vue')
 const EmailConfigView = () => import('@/views/settings/EmailConfigView.vue')
 const MarketplaceSettingsView = () => import('@/views/settings/MarketplaceSettingsView.vue')
 const EShipConfigView = () => import('@/views/integrations/eship/EShipConfigView.vue')
+const EnvioProdutosView = () => import('@/views/integrations/eship/EnvioProdutosView.vue')
 
 // Console de API do Marketplace — Admin only
 const ApiConsoleView = () => import('@/views/admin/ApiConsoleView.vue')
@@ -259,6 +260,9 @@ const routes = [
 
       // Integração eShip (WMS) — Admin
       { path: 'settings/eship', component: EShipConfigView, meta: { title: 'Integração eShip', role: 'admin' } },
+
+      // Integração > Envio de Produtos (eShip por empresa)
+      { path: 'integracao/envio-produtos', component: EnvioProdutosView, meta: { title: 'Envio de Produtos (eShip)' } },
 
       // Tabela NCM — Admin
       { path: 'settings/ncm', component: NcmView, meta: { title: 'Tabela NCM', role: 'admin' } },

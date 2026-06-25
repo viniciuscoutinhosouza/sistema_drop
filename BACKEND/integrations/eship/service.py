@@ -1,15 +1,16 @@
-"""Regras de negócio da integração eShip.
+"""Regras de negócio da integração eShip (WMS).
 
-Os DOIS pontos que dependem do mapeamento fino da Fase 0 (specs Ordem.json /
-Transporte.json, ainda não lidos) estão isolados e marcados com `# TODO Fase 0`:
-  - build_ordem_payload()  — corpo do criar_ordem
-  - extract_status() / extract_order_id() — parsing das respostas do eShip
-Toda a orquestração (idempotência, resolução de galpão, atualização do Order)
-já está pronta e coberta por testes; quando o contrato real chegar, ajusta-se
-apenas essas funções.
+Payloads e funções alinhados à spec BACKEND/integrations/eship-integracao-api.md.
+Credenciais resolvidas por EMPRESA (CMIG): base_url + api_key + warehouse_code.
+
+Fluxo (spec §9): cadastrar produto → criar ordem → anexar NF-e (XML) → anexar
+etiqueta → monitorar status (GetOrdem/GetFalhasOrdem). Estoque via GetSaldoEstoque.
 """
 
+import base64
+import json
 import logging
+import re
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -20,95 +21,176 @@ from models.order import Order, OrderItem
 
 from . import client
 from .client import EShipError
-from .config import get_active_config
+from .config import EShipCreds, creds_from_cmig
 from .status_map import map_status
 
 logger = logging.getLogger(__name__)
 
-# Nomes das funções RPC. Produto/Status confirmados no swagger; Ordem a confirmar.
+# Funções RPC (spec §3-§8)
 FUNC_POST_PRODUTO = "webServicePostProduto"
-FUNC_GET_STATUS = "webServiceGetStatusObjeto"
-FUNC_CRIAR_ORDEM = "webServicePostOrdem"  # TODO Fase 0: confirmar nome real (Ordem.json)
+FUNC_GET_PRODUTO = "webServiceGetProduto"
+FUNC_POST_ORDEM = "webServicePostOrdem"
+FUNC_POST_ORDEM_XML = "webServicePostOrdemPorXml"
+FUNC_POST_ARQUIVO = "webServicePostArquivoOrdem"
+FUNC_GET_ORDEM = "webServiceGetOrdem"
+FUNC_GET_FALHAS = "webServiceGetFalhasOrdem"
+FUNC_CANCELAR_ORDEM = "webServiceCancelarOrdem"
+FUNC_GET_SALDO = "webServiceGetSaldoEstoque"
+
+# idTipoAnexo (spec §6.3)
+ANEXO_XML_NFE = 4   # XMLDANFE
+ANEXO_ETIQUETA = 7  # ETIQUETA
 
 
-async def _warehouse_id_for_order(db: AsyncSession, order: Order) -> int | None:
-    """Resolve o galpão do pedido via CMIG (orders.cmig_id -> cmigs.warehouse_id)."""
+def _digits(s: str | None) -> str:
+    return re.sub(r"\D", "", s or "")
+
+
+async def _creds_for_order(db: AsyncSession, order: Order) -> tuple[EShipCreds | None, CMIG | None]:
+    """Resolve credenciais eShip pela CMIG do pedido."""
     if not order.cmig_id:
-        return None
-    cmig = (
-        await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))
-    ).scalar_one_or_none()
-    return cmig.warehouse_id if cmig else None
+        return None, None
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))).scalar_one_or_none()
+    if not cmig:
+        return None, None
+    return creds_from_cmig(cmig), cmig
 
 
-# ─── Produto (campos confirmados no swagger Produto.json) ────────────────────
+# ─── Produto (spec §3) ───────────────────────────────────────────────────────
 
 
-def build_produto_payload(item: OrderItem) -> dict:
-    """Monta o payload de produto a partir do item do pedido.
+def build_produto_payload(item: OrderItem, creds: EShipCreds) -> dict:
+    """Monta o payload de Cadastrar Produto conforme a spec.
 
-    Campos eShip: codigo, codigoBarras, descricao, largura/comprimento/altura,
-    pesoLiquido/pesoBruto. getattr tolerante porque o produto vinculado pode não
-    ter todas as medidas; o mapeamento fino é finalizado na Fase 0.
+    Obrigatórios: codigoSKU, descricao, cnpjCadastro, embalado. gtin opcional.
     """
     return {
-        "codigo": item.sku or "",
-        "descricao": (item.title or item.sku or "")[:255],
-        "codigoBarras": getattr(item, "ean", None) or "",
+        "codigoSKU": (item.sku or "")[:15],
+        "descricao": (item.title or item.sku or "")[:200],
+        "gtin": (getattr(item, "ean", None) or "")[:15],
+        "cnpjCadastro": _digits(creds.cnpj),
+        "tipo": 1,        # 1 = Simples
+        "status": 1,      # 1 = Normal
+        "embalado": 1,    # 1 = Embalado (default operacional)
     }
 
 
-async def upsert_produto(cfg, item: OrderItem) -> None:
-    """Garante o produto no eShip antes do pedido (best-effort; não bloqueia)."""
+async def upsert_produto(creds: EShipCreds, item: OrderItem) -> None:
+    """Garante o produto no eShip antes da ordem (best-effort; não bloqueia)."""
     if not item.sku:
         return
     try:
-        await client.call(cfg, FUNC_POST_PRODUTO, build_produto_payload(item))
+        await client.call(creds, FUNC_POST_PRODUTO, build_produto_payload(item, creds))
     except EShipError as e:
         logger.warning("[eShip] upsert produto sku=%s falhou: %s", item.sku, e)
 
 
-# ─── Ordem (PLACEHOLDER — ajustar na Fase 0) ─────────────────────────────────
+# ─── Ordem (spec §4) ─────────────────────────────────────────────────────────
 
 
-def build_ordem_payload(order: Order) -> dict:
-    """Corpo do criar_ordem. TODO Fase 0: ajustar ao contrato real do Ordem.json.
+def _parse_address(order: Order) -> dict:
+    """Lê o endereço (CLOB JSON) do pedido com aliases tolerantes (ML/normalizado)."""
+    raw = {}
+    if order.shipping_address:
+        try:
+            raw = json.loads(order.shipping_address)
+        except (ValueError, TypeError):
+            raw = {}
 
-    Estrutura provisória só com os dados que já temos no pedido."""
+    def g(*keys: str) -> str:
+        for k in keys:
+            v = raw.get(k)
+            if v:
+                return str(v)
+        return ""
+
     return {
-        "pedido": order.platform_order_id or str(order.id),
-        "canal": order.platform,
-        "destinatario": {
-            "nome": order.buyer_name,
-            "documento": order.buyer_document,
-            "endereco": order.shipping_address,  # CLOB JSON do endereço
-        },
-        "itens": [
-            {"codigo": it.sku, "quantidade": it.quantity} for it in (order.items or [])
+        "logradouro": g("street", "logradouro", "address_line"),
+        "numero": g("number", "numero", "street_number"),
+        "complemento": g("complement", "complemento", "comment"),
+        "bairro": g("neighborhood", "bairro"),
+        "municipio": g("city", "municipio", "cidade"),
+        "estado": g("state", "estado", "uf", "state_id"),
+        "cep": g("zip_code", "cep", "zip", "zip_code_str"),
+        "telefone": g("phone", "telefone", "receiver_phone"),
+    }
+
+
+def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
+    """Monta o payload de Inserir Ordem conforme a spec §4.
+
+    Obrigatórios: numeroOrigem, codigoArmazemOrigem, cadastroDestinatario.
+    """
+    endereco = _parse_address(order)
+    doc = _digits(order.buyer_document)
+    dest: dict = {
+        "nomeDestinatario": order.buyer_name or "",
+        "contato": [
+            {
+                "nome": order.buyer_name or "",
+                "email": order.buyer_email or "",
+                "telefone": endereco["telefone"],
+            }
         ],
+        "endereco": endereco,
+    }
+    if len(doc) == 14:
+        dest["cnpjDestinatario"] = doc
+    elif len(doc) == 11:
+        dest["cpfDestinatario"] = doc
+
+    produtos = []
+    for idx, it in enumerate(order.items or [], start=1):
+        unit = float(it.unit_price) if it.unit_price is not None else 0.0
+        produtos.append(
+            {
+                "codigoProduto": it.sku or "",
+                "quantidadeProduto": it.quantity or 1,
+                "infos": {
+                    "valorunitrioproduto": f"{unit:.2f}",
+                    "valortotalproduto": f"{unit * (it.quantity or 0):.2f}",
+                    "nmerolinha": str(idx),
+                    "identificadorexterno": str(it.id),
+                },
+            }
+        )
+
+    numero_origem = order.platform_order_id or str(order.id)
+    infos_ordem = [
+        {
+            "ORDCanal de Venda": order.platform or "",
+            "ORDValor da ordem": f"{float(order.sale_amount):.2f}" if order.sale_amount else "",
+            "ORDNº da Compra Canal de Venda": order.platform_order_id or "",
+            "ORDChave": order.nfe_key or "",
+        }
+    ]
+
+    return {
+        "numeroOrigem": numero_origem,
+        "codigoArmazemOrigem": creds.warehouse_code or "",
+        "cadastroDestinatario": dest,
+        "infosOrdem": infos_ordem,
+        "produtos": produtos,
     }
 
 
 def extract_order_id(resp: dict) -> str | None:
-    """Extrai o id da ordem da resposta do eShip. TODO Fase 0: ajustar às chaves reais."""
+    """Extrai o id da ordem da resposta do eShip (chaves tolerantes)."""
     if not isinstance(resp, dict):
         return None
-    for key in ("idOrdem", "ordem", "id", "orderId", "codigo"):
-        v = resp.get(key)
-        if v:
-            return str(v)
-    # respostas aninhadas comuns
+    for key in ("idOrdem", "ordem", "id", "orderId", "codigo", "codigoOrdem"):
+        if resp.get(key):
+            return str(resp[key])
     data = resp.get("data") or resp.get("retorno") or {}
     if isinstance(data, dict):
-        for key in ("idOrdem", "ordem", "id"):
+        for key in ("idOrdem", "ordem", "id", "codigoOrdem"):
             if data.get(key):
                 return str(data[key])
     return None
 
 
 def extract_status(resp: dict) -> tuple[str | None, str | None, str | None]:
-    """Extrai (status_eship, tracking_code, tracking_url) da resposta de status.
-    TODO Fase 0: ajustar às chaves reais do GetStatusObjeto/Transporte."""
+    """(status_eship, tracking_code, tracking_url) da resposta de GetOrdem."""
     if not isinstance(resp, dict):
         return None, None, None
     node = resp.get("data") or resp.get("retorno") or resp
@@ -118,49 +200,143 @@ def extract_status(resp: dict) -> tuple[str | None, str | None, str | None]:
         return None, None, None
     status = node.get("status") or node.get("statusObjeto") or node.get("situacao")
     rastreio = node.get("rastreio") or node.get("codigoRastreio") or node.get("tracking")
-    url = node.get("urlRastreio") or node.get("trackingUrl")
+    url = node.get("urlRastreio") or node.get("trackingUrl") or node.get("ORDUrl externa")
     return status, rastreio, url
 
 
-# ─── Orquestração (pronta, testável) ─────────────────────────────────────────
+# ─── Orquestração ────────────────────────────────────────────────────────────
 
 
 async def push_order(db: AsyncSession, order: Order) -> dict:
-    """Envia o pedido ao eShip do galpão. Idempotente: não reenvia se já há
-    eship_order_id. Levanta EShipError se o galpão não tiver eShip ativo."""
+    """Envia o pedido ao eShip da empresa (CMIG). Idempotente por eship_order_id."""
     if order.eship_order_id:
         return {"already_sent": True, "eship_order_id": order.eship_order_id}
 
-    warehouse_id = await _warehouse_id_for_order(db, order)
-    cfg = await get_active_config(db, warehouse_id) if warehouse_id else None
-    if not cfg:
-        raise EShipError("Galpão do pedido não tem integração eShip ativa.")
+    creds, _cmig = await _creds_for_order(db, order)
+    if not creds:
+        raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
+    if not creds.warehouse_code:
+        raise EShipError("Configure o código do armazém (codigoArmazemOrigem) na CMIG antes de enviar.")
 
-    # Garante produtos (best-effort)
     for item in order.items or []:
-        await upsert_produto(cfg, item)
+        await upsert_produto(creds, item)
 
-    resp = await client.call(cfg, FUNC_CRIAR_ORDEM, build_ordem_payload(order))
-    eship_id = extract_order_id(resp)
-    if not eship_id:
-        raise EShipError(f"eShip não retornou id da ordem. Resposta: {str(resp)[:200]}")
-
+    resp = await client.call(creds, FUNC_POST_ORDEM, build_ordem_payload(order, creds))
+    eship_id = extract_order_id(resp) or (order.platform_order_id or str(order.id))
     order.eship_order_id = eship_id
     await db.commit()
-    return {"already_sent": False, "eship_order_id": eship_id}
+    return {"already_sent": False, "eship_order_id": eship_id, "response": resp}
+
+
+async def push_order_by_xml(db: AsyncSession, order: Order, xml_content: str,
+                            id_fila: int | None = None, tipo_ordem: int | None = None) -> dict:
+    """Cria a ordem já processando o XML da NF-e (spec §5)."""
+    if order.eship_order_id:
+        return {"already_sent": True, "eship_order_id": order.eship_order_id}
+    creds, cmig = await _creds_for_order(db, order)
+    if not creds:
+        raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
+
+    payload: dict = {
+        "cnpjRemetente": _digits(creds.cnpj),
+        "codigoArmazem": creds.warehouse_code or "",
+        "conteudo": xml_content,
+    }
+    if tipo_ordem is not None:
+        payload["tipoOrdem"] = tipo_ordem
+    if id_fila is not None:
+        payload["idFila"] = id_fila
+
+    resp = await client.call(creds, FUNC_POST_ORDEM_XML, payload)
+    eship_id = extract_order_id(resp) or (order.platform_order_id or str(order.id))
+    order.eship_order_id = eship_id
+    await db.commit()
+    return {"already_sent": False, "eship_order_id": eship_id, "response": resp}
+
+
+async def attach_file(db: AsyncSession, order: Order, *, content: bytes, extensao: str,
+                      mime_type: str, id_tipo_anexo: int, inserir_fiscal: bool = False,
+                      atualizar_transporte: bool = False) -> dict:
+    """Anexa um arquivo (NF-e XML, DANFE PDF, etiqueta) a uma ordem existente (spec §6)."""
+    creds, _cmig = await _creds_for_order(db, order)
+    if not creds:
+        raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
+    payload = {
+        "numeroOrigem": order.platform_order_id or str(order.id),
+        "arquivoBase": base64.b64encode(content).decode(),
+        "extensao": extensao,
+        "mimeType": mime_type,
+        "idTipoAnexo": id_tipo_anexo,
+    }
+    if inserir_fiscal:
+        payload["inserirFiscal"] = "1"
+    if atualizar_transporte:
+        payload["atualizarTransporte"] = "1"
+        payload["cadastrarTransporte"] = "1"
+    return await client.call(creds, FUNC_POST_ARQUIVO, payload)
+
+
+async def attach_nfe_xml(db: AsyncSession, order: Order, xml_content: bytes) -> dict:
+    """Anexa o XML da NF-e (idTipoAnexo=4) atualizando dados fiscais e transporte."""
+    return await attach_file(
+        db, order, content=xml_content, extensao="xml", mime_type="application/xml",
+        id_tipo_anexo=ANEXO_XML_NFE, inserir_fiscal=True, atualizar_transporte=True,
+    )
+
+
+async def attach_label(db: AsyncSession, order: Order, content: bytes,
+                       extensao: str = "pdf", mime_type: str = "application/pdf") -> dict:
+    """Anexa a etiqueta de entrega (idTipoAnexo=7)."""
+    return await attach_file(
+        db, order, content=content, extensao=extensao, mime_type=mime_type,
+        id_tipo_anexo=ANEXO_ETIQUETA,
+    )
+
+
+async def cancel_order(db: AsyncSession, order: Order) -> dict:
+    """Cancela a ordem no eShip (spec §7)."""
+    creds, _cmig = await _creds_for_order(db, order)
+    if not creds:
+        raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
+    resp = await client.call(
+        creds, FUNC_CANCELAR_ORDEM,
+        {"numeroOrigem": order.platform_order_id or str(order.id)},
+    )
+    return resp
+
+
+async def get_falhas(db: AsyncSession, order: Order) -> dict:
+    """Consulta falhas de processamento da ordem (spec §7)."""
+    creds, _cmig = await _creds_for_order(db, order)
+    if not creds:
+        raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
+    return await client.call(
+        creds, FUNC_GET_FALHAS,
+        {"numeroOrigem": order.platform_order_id or str(order.id)},
+    )
+
+
+async def get_saldo_estoque(db: AsyncSession, cmig_id: int, sku: str | None = None) -> dict:
+    """Consulta saldo de estoque no eShip (WMS = fonte de verdade do físico). spec §8."""
+    creds = creds_from_cmig(
+        (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    )
+    if not creds:
+        raise EShipError("CMIG sem integração eShip ativa/configurada.")
+    payload = {"codigoSKU": sku} if sku else {}
+    return await client.call(creds, FUNC_GET_SALDO, payload)
 
 
 async def sync_order_status(db: AsyncSession, order: Order) -> bool:
-    """Consulta o status do pedido no eShip e atualiza o Order. Retorna True se mudou."""
+    """Consulta o status da ordem no eShip (GetOrdem) e atualiza o Order."""
     if not order.eship_order_id:
         return False
-    warehouse_id = await _warehouse_id_for_order(db, order)
-    cfg = await get_active_config(db, warehouse_id) if warehouse_id else None
-    if not cfg:
+    creds, _cmig = await _creds_for_order(db, order)
+    if not creds:
         return False
 
     resp = await client.call(
-        cfg, FUNC_GET_STATUS, {"ordem": order.eship_order_id}
+        creds, FUNC_GET_ORDEM, {"numeroOrigem": order.platform_order_id or str(order.id)}
     )
     raw_status, tracking, url = extract_status(resp)
     ship_status, order_status = map_status(raw_status)

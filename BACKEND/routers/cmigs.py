@@ -221,6 +221,9 @@ async def list_cmigs(
             "state": c.state,
             "is_active": c.is_active,
             "created_at": c.created_at.isoformat() if c.created_at else None,
+            # eShip (WMS) — não expõe a apikey, só se está configurada
+            "eship_active": bool(getattr(c, "eship_active", 0)),
+            "eship_configured": bool(c.eship_base_url and c.eship_api_key),
             # is_owner: AC dono → flag em CMIGAdministrator; admin → sempre True (bypass total)
             "is_owner": current_user.role == "admin" or c.id in owned_ids,
         }
@@ -304,6 +307,62 @@ async def update_cmig(
     await db.commit()
     await db.refresh(cmig)
     return cmig
+
+
+# ── Configuração eShip (WMS) por empresa ─────────────────────────────────────────
+
+
+def _serialize_eship(cmig: CMIG) -> dict:
+    """Config eShip da CMIG — nunca devolve a apikey, só se está setada."""
+    return {
+        "cmig_id": cmig.id,
+        "eship_active": bool(getattr(cmig, "eship_active", 0)),
+        "eship_base_url": cmig.eship_base_url or "",
+        "eship_warehouse_code": cmig.eship_warehouse_code or "",
+        "eship_api_key_set": bool(cmig.eship_api_key),
+        "cnpj": cmig.cnpj,
+    }
+
+
+@router.get("/{cmig_id}/eship-config")
+async def get_eship_config(
+    cmig_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retorna a config eShip da CMIG (apikey mascarada)."""
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+    return _serialize_eship(cmig)
+
+
+@router.patch("/{cmig_id}/eship-config")
+async def update_eship_config(
+    cmig_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Atualiza a config eShip da CMIG. A apikey só é alterada se vier preenchida."""
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+    if current_user.role not in ("ac", "admin"):
+        raise HTTPException(status_code=403, detail="Apenas AC ou admin podem editar a integração eShip")
+
+    if "eship_base_url" in body:
+        cmig.eship_base_url = (body.get("eship_base_url") or "").strip() or None
+    if "eship_warehouse_code" in body:
+        cmig.eship_warehouse_code = (body.get("eship_warehouse_code") or "").strip() or None
+    # apikey: só atualiza se vier preenchida (campo password não reenvia o valor existente)
+    api_key = body.get("eship_api_key")
+    if api_key:
+        cmig.eship_api_key = api_key.strip()
+    if "eship_active" in body:
+        cmig.eship_active = 1 if body.get("eship_active") else 0
+
+    await db.commit()
+    await db.refresh(cmig)
+    return _serialize_eship(cmig)
 
 
 # ── Co-administração ───────────────────────────────────────────────────────────

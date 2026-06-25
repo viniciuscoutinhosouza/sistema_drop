@@ -1,9 +1,53 @@
-"""Model e helpers de configuração do eShip por galpão (warehouse)."""
+"""Config do eShip.
+
+A partir da spec (apikey única por empresa), a fonte de verdade das credenciais é a
+CMIG (empresa): `eship_base_url`, `eship_api_key`, `eship_warehouse_code`, `eship_active`.
+A tabela `eship_config` por galpão é legada (mantida por compatibilidade).
+"""
+
+from dataclasses import dataclass
 
 from sqlalchemy import TIMESTAMP, Boolean, Column, ForeignKey, Integer, String, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import Base
+from models.cmig import CMIG
+
+
+@dataclass
+class EShipCreds:
+    """Credenciais resolvidas para chamar o eShip (duck-types com EShipConfig:
+    o client usa apenas .base_url e .api_key)."""
+
+    base_url: str | None
+    api_key: str | None
+    warehouse_code: str | None = None
+    cnpj: str | None = None
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.base_url and self.api_key)
+
+
+def creds_from_cmig(cmig: CMIG) -> EShipCreds | None:
+    """Credenciais eShip a partir da CMIG (ativa e com base_url+api_key) ou None."""
+    if not cmig or not getattr(cmig, "eship_active", 0):
+        return None
+    creds = EShipCreds(
+        base_url=cmig.eship_base_url,
+        api_key=cmig.eship_api_key,
+        warehouse_code=cmig.eship_warehouse_code,
+        cnpj=cmig.cnpj,
+    )
+    return creds if creds.usable else None
+
+
+async def get_cmig_creds(db: AsyncSession, cmig_id: int) -> EShipCreds | None:
+    """Carrega a CMIG e devolve as credenciais eShip utilizáveis (ou None)."""
+    if not cmig_id:
+        return None
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    return creds_from_cmig(cmig) if cmig else None
 
 
 class EShipConfig(Base):

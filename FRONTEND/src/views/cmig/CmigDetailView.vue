@@ -107,6 +107,9 @@
             <!-- Configuração Fiscal (NF-e via Focus NFe) -->
             <CmigFiscalConfigCard v-if="cmig" :cmig-id="Number(cmig.id)" />
 
+            <!-- Integração eShip (WMS) -->
+            <CmigEShipConfigCard v-if="cmig" :cmig-id="Number(cmig.id)" />
+
             <!-- Co-administradores -->
             <div class="card" v-if="isAC">
               <div class="card-header">
@@ -219,6 +222,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import CmigFiscalConfigCard from '@/components/cmigs/CmigFiscalConfigCard.vue'
+import CmigEShipConfigCard from '@/components/cmigs/CmigEShipConfigCard.vue'
 
 const route = useRoute()
 const authStore = useAuthStore()

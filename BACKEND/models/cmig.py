@@ -26,6 +26,11 @@ class CMIG(Base):
     city = Column(String(100))
     state = Column(String(2))
     is_active = Column(Boolean, nullable=False, default=True)
+    # Integração eShip (WMS) — credenciais por empresa (a apikey é única por empresa).
+    eship_base_url = Column(String(500))        # ex: https://armazenaki.eship.com.br/v3
+    eship_api_key = Column(String(500))         # header api: <apikey>
+    eship_warehouse_code = Column(String(50))   # codigoArmazemOrigem (obrigatório na ordem)
+    eship_active = Column(Integer, default=0)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")

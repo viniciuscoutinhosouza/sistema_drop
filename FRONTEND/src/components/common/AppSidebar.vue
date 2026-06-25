@@ -204,6 +204,16 @@
             </li>
           </template>
 
+          <!-- INTEGRAÇÃO -->
+          <template v-if="canSee('integracao_envio')">
+            <li class="nav-header">INTEGRAÇÃO</li>
+            <li class="nav-item">
+              <RouterLink to="/integracao/envio-produtos" class="nav-link" :class="{ active: route.path.startsWith('/integracao/envio-produtos') }">
+                <i class="nav-icon fas fa-truck-loading"></i><p>Envio de Produtos</p>
+              </RouterLink>
+            </li>
+          </template>
+
           <!-- MONITORAMENTO -->
           <template v-if="canSee('rotinas')">
             <li class="nav-header">MONITORAMENTO</li>
@@ -345,6 +355,7 @@ const _legacyMenus = {
     'pedidos','catalog','pedido_manual','devolucoes','estoque',
     'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
     'pg','separacao','ag_retorno','inventario','inventario_criar','rotinas',
+    'integracao_envio',
     'go_empresa','go_usuarios',
     'config_usuarios','config_email','config_eship','config_ncm','config_ai','config_api_console','config_perfis',
   ]),
@@ -352,11 +363,11 @@ const _legacyMenus = {
     'cmig','integrations','cmig_reports','full_cnpjs','anuncios','campanha_ads','atendimento','financeiro',
     'pedidos','catalog','pedido_manual','devolucoes','estoque',
     'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
-    'inventario',
+    'inventario','integracao_envio',
   ]),
   ugo: new Set([
     'pg','cmig','pedidos','estoque','separacao','ag_retorno','inventario','inventario_criar','devolucoes',
-    'pessoas','fiscal_entradas','fiscal_saidas','rotinas','config_usuarios',
+    'pessoas','fiscal_entradas','fiscal_saidas','rotinas','config_usuarios','integracao_envio',
   ]),
   go: new Set(['rotinas','go_empresa','go_usuarios','inventario']),
 }

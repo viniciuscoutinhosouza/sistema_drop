@@ -5,12 +5,13 @@
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import require_role
+from models.cmig import CMIG, CMIGAdministrator
 from models.order import Order
 from models.user import User
 from models.warehouse import Warehouse
@@ -21,6 +22,48 @@ from .config import EShipConfig, get_config
 from .schemas import EShipConfigIn
 
 router = APIRouter()
+
+
+async def _assert_cmig_access(db: AsyncSession, cmig: CMIG, user: User) -> None:
+    """Garante que o usuário pode acessar a CMIG (mesmo critério de routers.cmigs).
+
+    admin → tudo; ugo → CMIG do seu galpão; ac → CMIG que administra.
+    """
+    if user.role == "admin":
+        return
+    if user.role == "ugo":
+        if cmig.warehouse_id != user.warehouse_id:
+            raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
+        return
+    if user.role == "ac":
+        adm = (
+            await db.execute(
+                select(CMIGAdministrator).where(
+                    and_(CMIGAdministrator.user_id == user.id, CMIGAdministrator.cmig_id == cmig.id)
+                )
+            )
+        ).scalar_one_or_none()
+        if not adm:
+            raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+        return
+    raise HTTPException(status_code=403, detail="Permissão insuficiente")
+
+
+async def _accessible_cmig_ids(db: AsyncSession, user: User) -> set[int] | None:
+    """IDs de CMIG que o usuário pode ver. None = todas (admin)."""
+    if user.role == "admin":
+        return None
+    if user.role == "ugo":
+        rows = (
+            await db.execute(select(CMIG.id).where(CMIG.warehouse_id == user.warehouse_id))
+        ).all()
+        return {r[0] for r in rows}
+    rows = (
+        await db.execute(
+            select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == user.id)
+        )
+    ).all()
+    return {r[0] for r in rows}
 
 
 def _serialize(wh: Warehouse, cfg: EShipConfig | None) -> dict:
@@ -36,17 +79,66 @@ def _serialize(wh: Warehouse, cfg: EShipConfig | None) -> dict:
 
 @router.get("/enabled")
 async def eship_enabled(
-    current_user: User = Depends(require_role("admin", "ugo", "go")),
+    current_user: User = Depends(require_role("admin", "ugo", "go", "ac")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Indica se há algum galpão com eShip ativo (para a UI decidir mostrar ações).
-    Leve e acessível aos papéis operacionais (o /configs é admin-only)."""
-    row = (
+    """Indica se há eShip ativo (alguma CMIG ou galpão), para a UI decidir mostrar ações."""
+    cmig_row = (
+        await db.execute(
+            select(CMIG.id).where(CMIG.eship_active == 1).limit(1)
+        )
+    ).first()
+    if cmig_row is not None:
+        return {"enabled": True}
+    wh_row = (
         await db.execute(
             select(EShipConfig.id).where(EShipConfig.is_active == True).limit(1)  # noqa: E712
         )
     ).first()
-    return {"enabled": row is not None}
+    return {"enabled": wh_row is not None}
+
+
+@router.get("/cmigs")
+async def list_cmig_integrations(
+    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lista CMIGs ACESSÍVEIS ao usuário com o status da integração eShip (apikey nunca exposta)."""
+    allowed = await _accessible_cmig_ids(db, current_user)
+    cmigs = (await db.execute(select(CMIG).order_by(CMIG.company_name))).scalars().all()
+    if allowed is not None:
+        cmigs = [c for c in cmigs if c.id in allowed]
+    return [
+        {
+            "cmig_id": c.id,
+            "company_name": c.company_name,
+            "cnpj": c.cnpj,
+            "cpf": c.cpf,
+            "eship_active": bool(getattr(c, "eship_active", 0)),
+            "eship_configured": bool(c.eship_base_url and c.eship_api_key),
+            "eship_base_url": c.eship_base_url or "",
+            "eship_warehouse_code": c.eship_warehouse_code or "",
+        }
+        for c in cmigs
+    ]
+
+
+@router.get("/cmigs/{cmig_id}/saldo")
+async def get_saldo(
+    cmig_id: int,
+    sku: str | None = None,
+    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Consulta o saldo de estoque no eShip (WMS = fonte de verdade do físico)."""
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    if not cmig:
+        raise HTTPException(status_code=404, detail="CMIG não encontrada")
+    await _assert_cmig_access(db, cmig, current_user)
+    try:
+        return await service.get_saldo_estoque(db, cmig_id, sku)
+    except EShipError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @router.get("/configs")
@@ -90,7 +182,8 @@ async def upsert_config(
     return _serialize(wh, cfg)
 
 
-async def _load_order(db: AsyncSession, order_id: int) -> Order:
+async def _load_order(db: AsyncSession, order_id: int, user: User) -> Order:
+    """Carrega o pedido e valida que o usuário tem acesso à CMIG dona dele."""
     order = (
         await db.execute(
             select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
@@ -98,6 +191,15 @@ async def _load_order(db: AsyncSession, order_id: int) -> Order:
     ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if user.role != "admin":
+        cmig = None
+        if order.cmig_id:
+            cmig = (
+                await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))
+            ).scalar_one_or_none()
+        if not cmig:
+            raise HTTPException(status_code=403, detail="Pedido sem CMIG acessível")
+        await _assert_cmig_access(db, cmig, user)
     return order
 
 
@@ -108,7 +210,7 @@ async def push_order_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Envia (ou reenvia) o pedido ao eShip do galpão."""
-    order = await _load_order(db, order_id)
+    order = await _load_order(db, order_id, current_user)
     try:
         result = await service.push_order(db, order)
     except EShipError as e:
@@ -123,9 +225,39 @@ async def sync_order_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Sincroniza o status de um pedido específico com o eShip."""
-    order = await _load_order(db, order_id)
+    order = await _load_order(db, order_id, current_user)
     try:
         changed = await service.sync_order_status(db, order)
     except EShipError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"message": "Status sincronizado", "changed": changed, "status": order.shipment_status}
+
+
+@router.post("/orders/{order_id}/cancel")
+async def cancel_order_endpoint(
+    order_id: int,
+    current_user: User = Depends(require_role("admin", "ugo")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancela a ordem no eShip."""
+    order = await _load_order(db, order_id, current_user)
+    try:
+        resp = await service.cancel_order(db, order)
+    except EShipError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"message": "Cancelamento enviado ao eShip", "response": resp}
+
+
+@router.get("/orders/{order_id}/falhas")
+async def order_falhas_endpoint(
+    order_id: int,
+    current_user: User = Depends(require_role("admin", "ugo")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Consulta falhas de processamento da ordem no eShip."""
+    order = await _load_order(db, order_id, current_user)
+    try:
+        resp = await service.get_falhas(db, order)
+    except EShipError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"falhas": resp}

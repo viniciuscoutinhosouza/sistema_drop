@@ -41,6 +41,8 @@ MENU_CATALOG: list[dict] = [
     {"key": "ag_retorno",       "label": "Ag. Retorno Físico",       "section": "ESTOQUE (GL)"},
     {"key": "inventario",       "label": "Inventário (ver)",         "section": "ESTOQUE (GL)"},
     {"key": "inventario_criar", "label": "Inventário (criar)",       "section": "ESTOQUE (GL)"},
+    # Integração
+    {"key": "integracao_envio", "label": "Envio de Produtos (eShip)", "section": "INTEGRAÇÃO"},
     # Monitoramento
     {"key": "rotinas",          "label": "Rotinas Automatizadas",    "section": "MONITORAMENTO"},
     # GO
