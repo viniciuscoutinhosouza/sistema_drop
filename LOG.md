@@ -4,6 +4,37 @@
 
 ---
 
+## 2026-06-25 — feat(eship): cadastro em lote do catálogo da CMIG no WMS
+
+Nova ação "Enviar produtos ao WMS" na tela Integração → Envio de Produtos: pré-cadastra
+todo o catálogo de uma CMIG no eShip (independente de pedido). Antes, produtos só iam ao
+WMS como efeito colateral do envio de um pedido.
+
+- `service.push_cmig_products(db, cmig_id)`: resolve creds por CMIG (`creds_from_cmig`),
+  lê CMIGProduct + `selectinload(variants)`, monta SKUs (produto c/ variações = 1 por
+  variante usando `CMIGProductVariant.sku` + EAN do pai; sem variações = `sku_cmig`/title/
+  ean; ignora sem SKU; dedup por SKU truncado em 15) e faz upsert (`webServicePostProduto`,
+  idempotente). Best-effort: retorna `{total, sent, failed, errors}`.
+- Concorrência limitada (Semaphore=5) — corta o tempo total p/ não estourar o timeout do
+  proxy num catálogo grande, sem inundar o WMS (correção do HIGH da auditoria).
+- `_produto_payload(sku, descricao, gtin, creds)`: builder genérico reusado pelo caminho de
+  pedido (`build_produto_payload`) e pelo lote.
+- Router: `POST /integrations/eship/cmigs/{cmig_id}/push-products` (admin/ugo/ac +
+  `_assert_cmig_access`, EShipError→502) — mesmo padrão de `get_saldo`.
+- Frontend (EnvioProdutosView.vue): botão por CMIG (só se ativo+configurado), confirm,
+  spinner, resumo enviados/falhas + SKUs com erro. Texto "Como funciona" atualizado.
+- GTIN/EAN: o caminho de **pedido** (`upsert_produto`) também passou a enviar o EAN — antes
+  ia vazio porque o `OrderItem` não tem coluna `ean`. Novo `_resolve_item_ean(db, item)`
+  busca o EAN do produto vinculado (`CMIGProduct.ean` ou `CatalogProduct.ean`). O caminho de
+  lote já enviava o EAN do produto.
+- Testes: tests/test_eship_products.py (12 casos). Também consertado teste stale
+  test_eship.py::test_build_ordem_payload (assinatura/payload desatualizados, veio nos
+  commits puxados). Suite 49/2 (baseline MockResult).
+- Auditorias quality/consistency/adr sem CRITICAL; HIGH (request bloqueante) corrigido.
+- Obs.: garantir `proxy_read_timeout` adequado no nginx p/ catálogos grandes (deploy).
+
+---
+
 ## 2026-06-24 — fix(anuncios): reloginho de custos reflete o recálculo + consulta silenciosa
 
 Dois ajustes na Gestão de Anúncios:

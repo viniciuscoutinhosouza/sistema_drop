@@ -7,6 +7,7 @@ Fluxo (spec §9): cadastrar produto → criar ordem → anexar NF-e (XML) → an
 etiqueta → monitorar status (GetOrdem/GetFalhasOrdem). Estoque via GetSaldoEstoque.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -15,6 +16,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from models.cmig import CMIG
 from models.order import Order, OrderItem
@@ -41,6 +43,9 @@ FUNC_GET_SALDO = "webServiceGetSaldoEstoque"
 ANEXO_XML_NFE = 4   # XMLDANFE
 ANEXO_ETIQUETA = 7  # ETIQUETA
 
+# Cadastro em lote: nº máx. de chamadas simultâneas ao WMS (equilíbrio tempo × rajada)
+_PUSH_CONCURRENCY = 5
+
 
 def _digits(s: str | None) -> str:
     return re.sub(r"\D", "", s or "")
@@ -59,15 +64,15 @@ async def _creds_for_order(db: AsyncSession, order: Order) -> tuple[EShipCreds |
 # ─── Produto (spec §3) ───────────────────────────────────────────────────────
 
 
-def build_produto_payload(item: OrderItem, creds: EShipCreds) -> dict:
-    """Monta o payload de Cadastrar Produto conforme a spec.
+def _produto_payload(sku: str, descricao: str, gtin: str | None, creds: EShipCreds) -> dict:
+    """Builder genérico do payload de Cadastrar Produto (spec §3).
 
     Obrigatórios: codigoSKU, descricao, cnpjCadastro, embalado. gtin opcional.
     """
     return {
-        "codigoSKU": (item.sku or "")[:15],
-        "descricao": (item.title or item.sku or "")[:200],
-        "gtin": (getattr(item, "ean", None) or "")[:15],
+        "codigoSKU": (sku or "")[:15],
+        "descricao": (descricao or sku or "")[:200],
+        "gtin": (gtin or "")[:15],
         "cnpjCadastro": _digits(creds.cnpj),
         "tipo": 1,        # 1 = Simples
         "status": 1,      # 1 = Normal
@@ -75,14 +80,124 @@ def build_produto_payload(item: OrderItem, creds: EShipCreds) -> dict:
     }
 
 
-async def upsert_produto(creds: EShipCreds, item: OrderItem) -> None:
+def build_produto_payload(item: OrderItem, creds: EShipCreds, gtin: str | None = None) -> dict:
+    """Payload de Cadastrar Produto a partir de um item de pedido.
+
+    `gtin` (EAN) é resolvido pelo caller a partir do produto vinculado, pois o
+    OrderItem não armazena o EAN.
+    """
+    return _produto_payload(item.sku or "", item.title or "", gtin, creds)
+
+
+async def _resolve_item_ean(db: AsyncSession, item: OrderItem) -> str | None:
+    """Resolve o EAN do item a partir do produto vinculado (CMIG ou PG)."""
+    from models.cmig import CMIGProduct
+    from models.product import CatalogProduct
+
+    if item.cmig_product_id:
+        ean = (
+            await db.execute(select(CMIGProduct.ean).where(CMIGProduct.id == item.cmig_product_id))
+        ).scalar_one_or_none()
+        if ean:
+            return ean
+    if item.catalog_product_id:
+        ean = (
+            await db.execute(select(CatalogProduct.ean).where(CatalogProduct.id == item.catalog_product_id))
+        ).scalar_one_or_none()
+        if ean:
+            return ean
+    return None
+
+
+async def upsert_produto(creds: EShipCreds, item: OrderItem, gtin: str | None = None) -> None:
     """Garante o produto no eShip antes da ordem (best-effort; não bloqueia)."""
     if not item.sku:
         return
     try:
-        await client.call(creds, FUNC_POST_PRODUTO, build_produto_payload(item, creds))
+        await client.call(creds, FUNC_POST_PRODUTO, build_produto_payload(item, creds, gtin))
     except EShipError as e:
         logger.warning("[eShip] upsert produto sku=%s falhou: %s", item.sku, e)
+
+
+# ─── Cadastro em lote do catálogo da CMIG (pré-cadastro, sem pedido) ──────────
+
+
+def _variant_descricao(product, variant) -> str:
+    """Descrição da variação = título do produto + rótulo (tamanho/cor/voltagem)."""
+    extra = " ".join(
+        str(v) for v in (variant.size_label, variant.color, variant.voltage, variant.variant_name) if v
+    ).strip()
+    base = product.title or variant.sku or ""
+    return f"{base} {extra}".strip() if extra else base
+
+
+def _cmig_skus_to_register(products) -> list[dict]:
+    """Lista de {sku, descricao, gtin} a cadastrar no WMS para os produtos da CMIG.
+
+    Espelha o que o pedido envia (OrderItem.sku): produto COM variações → 1 entrada por
+    variação (SKU da variação, gtin do produto-pai); SEM variações → o próprio produto.
+    Ignora entradas sem SKU e dedup por SKU truncado em 15 (limite do WMS).
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for p in products:
+        variants = list(getattr(p, "variants", None) or [])
+        entries = (
+            [{"sku": v.sku, "descricao": _variant_descricao(p, v), "gtin": p.ean} for v in variants if v.sku]
+            if variants
+            else ([{"sku": p.sku_cmig, "descricao": p.title, "gtin": p.ean}] if p.sku_cmig else [])
+        )
+        for e in entries:
+            key = (e["sku"] or "")[:15]
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(e)
+    return out
+
+
+async def push_cmig_products(db: AsyncSession, cmig_id: int) -> dict:
+    """Cadastra/atualiza em lote os produtos do catálogo da CMIG no eShip (WMS).
+
+    Idempotente (upsert por SKU). Best-effort: uma falha não aborta as demais; o resultado
+    reporta o que foi enviado e o que falhou. Não exige código de armazém (só cadastro).
+    """
+    from models.cmig import CMIGProduct
+
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    creds = creds_from_cmig(cmig)
+    if not creds:
+        raise EShipError("CMIG sem integração eShip ativa/configurada.")
+
+    products = (
+        await db.execute(
+            select(CMIGProduct)
+            .where(CMIGProduct.cmig_id == cmig_id)
+            .options(selectinload(CMIGProduct.variants))
+        )
+    ).scalars().all()
+
+    skus = _cmig_skus_to_register(products)
+    errors: list[dict] = []
+    # Concorrência limitada: corta o tempo total (evita estourar o timeout do proxy num
+    # catálogo grande) sem inundar o WMS de rajada. asyncio é cooperativo → append seguro.
+    sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+    async def _one(entry: dict) -> bool:
+        async with sem:
+            try:
+                await client.call(creds, FUNC_POST_PRODUTO, _produto_payload(
+                    entry["sku"], entry["descricao"], entry["gtin"], creds
+                ))
+                return True
+            except EShipError as e:
+                logger.warning("[eShip] cadastro produto sku=%s falhou: %s", entry["sku"], e)
+                errors.append({"sku": entry["sku"], "error": str(e)})
+                return False
+
+    results = await asyncio.gather(*[_one(e) for e in skus])
+    sent = sum(1 for r in results if r)
+    return {"total": len(skus), "sent": sent, "failed": len(errors), "errors": errors}
 
 
 # ─── Ordem (spec §4) ─────────────────────────────────────────────────────────
@@ -219,7 +334,8 @@ async def push_order(db: AsyncSession, order: Order) -> dict:
         raise EShipError("Configure o código do armazém (codigoArmazemOrigem) na CMIG antes de enviar.")
 
     for item in order.items or []:
-        await upsert_produto(creds, item)
+        ean = await _resolve_item_ean(db, item)
+        await upsert_produto(creds, item, gtin=ean)
 
     resp = await client.call(creds, FUNC_POST_ORDEM, build_ordem_payload(order, creds))
     eship_id = extract_order_id(resp) or (order.platform_order_id or str(order.id))

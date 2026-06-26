@@ -141,6 +141,24 @@ async def get_saldo(
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.post("/cmigs/{cmig_id}/push-products")
+async def push_cmig_products_endpoint(
+    cmig_id: int,
+    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cadastra/atualiza em lote o catálogo da CMIG no eShip (WMS). Idempotente por SKU."""
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    if not cmig:
+        raise HTTPException(status_code=404, detail="CMIG não encontrada")
+    await _assert_cmig_access(db, cmig, current_user)
+    try:
+        result = await service.push_cmig_products(db, cmig_id)
+    except EShipError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"message": "Produtos enviados ao eShip", **result}
+
+
 @router.get("/configs")
 async def list_configs(
     current_user: User = Depends(require_role("admin")),

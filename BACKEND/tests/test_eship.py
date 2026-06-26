@@ -36,17 +36,17 @@ def test_extract_status_nested():
 
 def test_build_ordem_payload():
     from models.order import Order, OrderItem
+    from integrations.eship.config import EShipCreds
 
     o = Order(platform_order_id="ML-1", platform="mercadolivre", buyer_name="Fulano")
     o.items = [OrderItem(sku="SKU1", quantity=2), OrderItem(sku="SKU2", quantity=1)]
-    payload = service.build_ordem_payload(o)
-    assert payload["pedido"] == "ML-1"
-    assert payload["canal"] == "mercadolivre"
-    assert payload["destinatario"]["nome"] == "Fulano"
-    assert payload["itens"] == [
-        {"codigo": "SKU1", "quantidade": 2},
-        {"codigo": "SKU2", "quantidade": 1},
-    ]
+    creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="ARM1", cnpj="123")
+    payload = service.build_ordem_payload(o, creds)
+    assert payload["numeroOrigem"] == "ML-1"
+    assert payload["codigoArmazemOrigem"] == "ARM1"
+    assert payload["cadastroDestinatario"]["nomeDestinatario"] == "Fulano"
+    assert [p["codigoProduto"] for p in payload["produtos"]] == ["SKU1", "SKU2"]
+    assert [p["quantidadeProduto"] for p in payload["produtos"]] == [2, 1]
 
 
 @pytest.mark.asyncio
