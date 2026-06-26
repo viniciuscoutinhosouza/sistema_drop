@@ -107,8 +107,14 @@ def test_push_cmig_products_conta_sent_e_failed(monkeypatch):
             return _Res(None) if self.n == 1 else _Res(prods)
 
     res = asyncio.run(S.push_cmig_products(_DB(), 1))
-    assert res == {"total": 3, "sent": 2, "failed": 1, "errors": [{"sku": "SKU2-G", "error": "boom"}]}
-    assert calls == ["SKU1", "SKU2-P", "SKU2-G"]
+    assert res == {
+        "total": 3,
+        "sent": 2,
+        "failed": 1,
+        "sent_skus": ["SKU1", "SKU2-P"],  # ordenado
+        "errors": [{"sku": "SKU2-G", "error": "boom"}],
+    }
+    assert sorted(calls) == ["SKU1", "SKU2-G", "SKU2-P"]
 
 
 def test_build_produto_payload_recebe_gtin_explicito():

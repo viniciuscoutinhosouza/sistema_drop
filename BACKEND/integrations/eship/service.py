@@ -178,26 +178,32 @@ async def push_cmig_products(db: AsyncSession, cmig_id: int) -> dict:
     ).scalars().all()
 
     skus = _cmig_skus_to_register(products)
+    sent_skus: list[str] = []
     errors: list[dict] = []
     # Concorrência limitada: corta o tempo total (evita estourar o timeout do proxy num
     # catálogo grande) sem inundar o WMS de rajada. asyncio é cooperativo → append seguro.
     sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
 
-    async def _one(entry: dict) -> bool:
+    async def _one(entry: dict) -> None:
         async with sem:
             try:
                 await client.call(creds, FUNC_POST_PRODUTO, _produto_payload(
                     entry["sku"], entry["descricao"], entry["gtin"], creds
                 ))
-                return True
+                sent_skus.append(entry["sku"])
             except EShipError as e:
                 logger.warning("[eShip] cadastro produto sku=%s falhou: %s", entry["sku"], e)
                 errors.append({"sku": entry["sku"], "error": str(e)})
-                return False
 
-    results = await asyncio.gather(*[_one(e) for e in skus])
-    sent = sum(1 for r in results if r)
-    return {"total": len(skus), "sent": sent, "failed": len(errors), "errors": errors}
+    await asyncio.gather(*[_one(e) for e in skus])
+    sent_skus.sort()
+    return {
+        "total": len(skus),
+        "sent": len(sent_skus),
+        "failed": len(errors),
+        "sent_skus": sent_skus,
+        "errors": errors,
+    }
 
 
 # ─── Ordem (spec §4) ─────────────────────────────────────────────────────────

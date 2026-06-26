@@ -17,6 +17,8 @@ WMS como efeito colateral do envio de um pedido.
   idempotente). Best-effort: retorna `{total, sent, failed, errors}`.
 - Concorrência limitada (Semaphore=5) — corta o tempo total p/ não estourar o timeout do
   proxy num catálogo grande, sem inundar o WMS (correção do HIGH da auditoria).
+- Resposta inclui `sent_skus` (lista ordenada dos SKUs enviados) além de `errors`; a tela
+  mostra "Ver SKUs enviados" (lista recolhível) e "SKUs com erro" — antes só a contagem.
 - `_produto_payload(sku, descricao, gtin, creds)`: builder genérico reusado pelo caminho de
   pedido (`build_produto_payload`) e pelo lote.
 - Router: `POST /integrations/eship/cmigs/{cmig_id}/push-products` (admin/ugo/ac +

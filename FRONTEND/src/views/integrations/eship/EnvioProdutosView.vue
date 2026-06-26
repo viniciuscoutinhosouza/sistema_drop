@@ -47,13 +47,20 @@
                     <i class="fas mr-1" :class="pushLoading[c.cmig_id] ? 'fa-spinner fa-spin' : 'fa-cloud-upload-alt'"></i>
                     {{ pushLoading[c.cmig_id] ? 'Enviando produtos…' : 'Enviar produtos ao WMS' }}
                   </button>
-                  <div v-if="pushResult[c.cmig_id]" class="small mb-2"
-                       :class="pushResult[c.cmig_id].failed ? 'text-warning' : 'text-success'">
-                    <i class="fas fa-check-circle mr-1"></i>
-                    {{ pushResult[c.cmig_id].sent }}/{{ pushResult[c.cmig_id].total }} enviado(s)<span
-                      v-if="pushResult[c.cmig_id].failed">, {{ pushResult[c.cmig_id].failed }} com erro</span>.
-                    <pre v-if="pushResult[c.cmig_id].errors?.length" class="bg-light p-2 small mb-0 mt-1"
-                         style="max-height:140px;overflow:auto">{{ pushErrorsText(c.cmig_id) }}</pre>
+                  <div v-if="pushResult[c.cmig_id]" class="small mb-2">
+                    <div :class="pushResult[c.cmig_id].failed ? 'text-warning' : 'text-success'">
+                      <i class="fas fa-check-circle mr-1"></i>
+                      {{ pushResult[c.cmig_id].sent }}/{{ pushResult[c.cmig_id].total }} enviado(s)<span
+                        v-if="pushResult[c.cmig_id].failed">, {{ pushResult[c.cmig_id].failed }} com erro</span>.
+                    </div>
+                    <details v-if="pushResult[c.cmig_id].sent_skus?.length" class="mt-1">
+                      <summary class="text-success" style="cursor:pointer">Ver SKUs enviados ({{ pushResult[c.cmig_id].sent }})</summary>
+                      <pre class="bg-light p-2 small mb-0 mt-1" style="max-height:140px;overflow:auto">{{ pushResult[c.cmig_id].sent_skus.join('\n') }}</pre>
+                    </details>
+                    <div v-if="pushResult[c.cmig_id].errors?.length" class="mt-1">
+                      <span class="text-danger">SKUs com erro:</span>
+                      <pre class="bg-light p-2 small mb-0 mt-1" style="max-height:140px;overflow:auto">{{ pushErrorsText(c.cmig_id) }}</pre>
+                    </div>
                   </div>
 
                   <div class="input-group input-group-sm mb-2">
