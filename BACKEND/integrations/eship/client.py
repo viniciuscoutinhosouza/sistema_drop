@@ -47,7 +47,25 @@ async def call(cfg: EShipConfig, funcao: str, payload: dict | None = None) -> di
         raise EShipError(f"eShip {funcao} respondeu {resp.status_code}: {resp.text[:300]}")
 
     try:
-        return resp.json()
+        data = resp.json()
     except ValueError:
         # Algumas funções podem devolver texto puro.
         return {"raw": resp.text}
+
+    # O eShip responde HTTP 200 MESMO em erro de negócio, sinalizando no campo `erros`
+    # (ex.: {"erros":[{"erro":{"mensagem":"...","codigo":"MAP0014"}}]}). Sem isto, uma
+    # falha (função inexistente, payload inválido) era contada como sucesso.
+    erros = data.get("erros") if isinstance(data, dict) else None
+    if erros:  # None / [] / {} / "" são falsy → sucesso
+        msg, cod = _extract_eship_error(erros)
+        raise EShipError(f"eShip {funcao} retornou erro{f' {cod}' if cod else ''}: {msg}")
+    return data
+
+
+def _extract_eship_error(erros) -> tuple[str, str]:
+    """Extrai (mensagem, codigo) do envelope `erros` do eShip, tolerante a formatos."""
+    node = erros[0] if isinstance(erros, list) and erros else erros
+    if isinstance(node, dict):
+        e = node.get("erro") if isinstance(node.get("erro"), dict) else node
+        return str(e.get("mensagem") or e.get("message") or e or "erro desconhecido"), str(e.get("codigo") or "")
+    return str(node)[:200], ""
