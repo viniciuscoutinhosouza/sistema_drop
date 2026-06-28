@@ -15,7 +15,12 @@ from fastapi.staticfiles import StaticFiles
 
 import models  # noqa: F401 — registra todos os ORM models no SQLAlchemy
 from config import get_settings
+from logging_filters import install_log_redaction
 from socket_manager import sio
+
+# Redige token/segredos das query strings nos logs (o token JWT do WebSocket vinha em texto
+# claro no access log do uvicorn). Idempotente; instalado o quanto antes.
+install_log_redaction()
 
 settings = get_settings()
 
@@ -24,6 +29,9 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     # Startup
     print("MIG ECOMMERCE API starting...")
+    # Reforça a redação anexando o filtro também aos handlers já criados pelo uvicorn
+    # (pega records que sobem por propagação de loggers-filho não listados).
+    install_log_redaction(include_handlers=True)
     from tasks.scheduler import start_scheduler
 
     start_scheduler()
