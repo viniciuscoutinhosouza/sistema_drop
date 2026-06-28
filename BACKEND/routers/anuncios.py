@@ -563,6 +563,47 @@ def _strip_unwritable_stock(ml_payload: dict, listing) -> str | None:
     return None
 
 
+_CATEGORY_REJECTED_MSG = (
+    "O Mercado Livre não permitiu mudar para esta categoria — itens com vendas só podem ir "
+    "para uma categoria compatível (mesmo domínio). A categoria anterior foi mantida."
+)
+
+
+async def _try_apply_category_change(
+    access_token: str, listing, new_attributes: list, old_category_id, old_attributes_json
+) -> str | None:
+    """Tenta trocar a categoria do anúncio no ML via PUT isolado.
+
+    O ML aceita a troca quando a categoria de destino é compatível (itens com venda só
+    podem ir para o mesmo domínio). Se recusar, REVERTE `category_id`/`attributes_json`
+    locais (evita divergência DB↔ML) e retorna o aviso. Sucesso → None.
+    Os atributos da nova categoria acompanham a troca (a ficha técnica muda com a categoria).
+    """
+    payload: dict = {"category_id": listing.category_id}
+    if new_attributes:
+        payload["attributes"] = new_attributes
+
+    def _reject() -> str:
+        listing.category_id = old_category_id
+        listing.attributes_json = old_attributes_json
+        return _CATEGORY_REJECTED_MSG
+
+    try:
+        resp = await ml_service.update_item(access_token, listing.platform_item_id, payload)
+    except Exception as exc:  # noqa: BLE001 — qualquer recusa do ML vira aviso, não derruba o resto
+        logger.warning("[ML] troca de categoria do item %s recusada: %s",
+                       listing.platform_item_id, getattr(exc, "detail", None) or str(exc))
+        return _reject()
+
+    # `update_item` pode auto-curar dropando `category_id` (field_not_updatable) e retornar 200:
+    # nesse caso a categoria NÃO foi trocada de fato → trata como recusa.
+    skipped = resp.get("_skipped_fields") or []
+    resp_cat = resp.get("category_id")
+    if "category_id" in skipped or (resp_cat and resp_cat != listing.category_id):
+        return _reject()
+    return None
+
+
 def _clear_stale_variation_picture_ids(ml_payload: dict, listing) -> None:
     """ETAPA 1: ao enviar `pictures` para um anúncio COM variações, zera
     `variations[].picture_ids` no 1º PUT — senão o ML rejeita os picture_ids
@@ -4069,6 +4110,11 @@ async def update_anuncio(
     """Atualiza anúncio no DB e, se tiver platform_item_id, sincroniza completamente no ML."""
     listing = await _get_listing_or_404(listing_id, current_user, db)
 
+    # Estado antigo p/ detectar troca de categoria e reverter se o ML recusar.
+    _old_category_id = listing.category_id
+    _old_attributes_json = listing.attributes_json
+    category_changed = bool(body.get("category_id")) and body["category_id"] != _old_category_id
+
     # Salva campos simples no DB
     for field in (
         "sale_price",
@@ -4165,6 +4211,7 @@ async def update_anuncio(
     ml_skipped: list[str] = []
     fiscal_sync_warning: str | None = None
     pictures_warning: str | None = None
+    category_warning: str | None = None
 
     # Variáveis compartilhadas entre o bloco ML e o bloco fiscal (declaradas fora
     # para que o fiscal execute mesmo quando o update ML falhar).
@@ -4178,6 +4225,15 @@ async def update_anuncio(
             _access_token = await _get_valid_token(listing.account, db)
             _cmig_crt = await _resolve_cmig_crt(listing.account, db)
             _product = listing.cmig_product or listing.catalog_product
+
+            # Troca de categoria: PUT isolado (o ML só aceita destino compatível p/ itens com
+            # venda). Pode reverter listing.category_id/attributes_json → o form abaixo já usa
+            # o estado consistente.
+            if category_changed:
+                category_warning = await _try_apply_category_change(
+                    _access_token, listing, body.get("attributes") or [],
+                    _old_category_id, _old_attributes_json,
+                )
 
             # Monta form consolidado com dados do body ou do DB como fallback.
             # family_name NÃO é incluído — ML rejeita a alteração após criação (causa:374).
@@ -4214,8 +4270,13 @@ async def update_anuncio(
             form["pictures"] = _consolidate_with_variation_pics(form["pictures"], listing)
 
             ml_payload = _build_ml_payload(_product, form, for_update=True)
-            # ML rejeita mudança de categoria após criação
+            # Categoria é tratada à parte (PUT isolado acima) — nunca vai no PUT principal.
             ml_payload.pop("category_id", None)
+            # Quando a categoria mudou, os atributos da nova categoria já foram aplicados (ou
+            # revertidos) no passo isolado — não reenviar atributos aqui (evita mandar atributos
+            # da nova categoria a um item que ficou na antiga).
+            if category_changed:
+                ml_payload.pop("attributes", None)
             # ML rejeita title em contas com family_name (não Lojas Oficiais)
             if not getattr(listing.account, "is_official_store", False):
                 ml_payload.pop("title", None)
@@ -4302,6 +4363,8 @@ async def update_anuncio(
         result["fiscal_sync_warning"] = fiscal_sync_warning
     if pictures_warning:
         result["ml_pictures_warning"] = pictures_warning
+    if category_warning:
+        result["ml_category_warning"] = category_warning
     if cascade_summary["cmig_updated"] or cascade_summary["pg_updated"]:
         result["_cascade"] = cascade_summary
     return result
@@ -5018,6 +5081,8 @@ async def sync_listing_to_ml(
         "cmig_crt": cmig_crt,
     }
     ml_payload = _build_ml_payload(product, form, for_update=True)
+    # Categoria nunca é trocada aqui (re-push idempotente). A troca de categoria é
+    # exclusiva da edição (update_anuncio → _try_apply_category_change).
     ml_payload.pop("category_id", None)
     if not getattr(listing.account, "is_official_store", False):
         ml_payload.pop("title", None)

@@ -2554,6 +2554,7 @@ async function saveWizard() {
       payload.catalog_product_id = wf.value.product_id
     }
 
+    let categoryRejected = false
     if (wizard.value.isEdit) {
       // Se o SKU mudou em edição, perguntar sobre cascata pro CMIG/PG vinculado
       const skuChanged = wizard.value.originalSku && payload.sku && payload.sku !== wizard.value.originalSku
@@ -2585,13 +2586,22 @@ async function saveWizard() {
       if (data?.fiscal_sync_warning) {
         toast.warning(`Dados fiscais: ${data.fiscal_sync_warning}`)
       }
+      if (data?.ml_category_warning) {
+        toast.warning(data.ml_category_warning)
+        categoryRejected = true  // ML recusou a troca → não persistir a categoria no produto
+      }
+      if (data?.ml_pictures_warning) {
+        toast.warning(data.ml_pictures_warning)
+      }
     } else {
       await api.post('/anuncios/publish', payload)
       toast.success('Anúncio publicado!')
     }
 
     // Persiste categoria/atributos no produto para reuso futuro (best-effort).
-    if (wf.value.product_id && wizardPickerMarketplace.value) {
+    // NÃO persiste quando o ML recusou a troca — senão o produto guardaria uma categoria
+    // rejeitada que seria re-tentada na próxima edição.
+    if (wf.value.product_id && wizardPickerMarketplace.value && !categoryRejected) {
       await persistCategoryToProduct(
         wizardCategorySel.value,
         wf.value.product_type === 'cmig' ? 'cmig' : 'catalog',

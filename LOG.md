@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-06-28 — fix(anuncios): troca de categoria do anúncio agora é enviada ao ML
+
+Bug: ao editar e trocar a categoria, o backend salvava `listing.category_id` mas fazia
+`ml_payload.pop("category_id")` → o ML ficava com a categoria antiga (divergência
+silenciosa, sem aviso). O ML PERMITE trocar categoria via PUT; a regra é compatibilidade
+(item com venda só vai p/ categoria compatível, senão recusa com `item.category_id.invalid`).
+
+- `_try_apply_category_change(token, listing, new_attributes, old_category_id, old_attributes_json)`:
+  PUT isolado de categoria (+ atributos da nova categoria). Sucesso → aplica; recusa
+  (exceção OU `category_id` em `_skipped_fields`/eco divergente) → REVERTE
+  `category_id`/`attributes_json` locais (sem divergência DB↔ML) e retorna aviso.
+- `update_anuncio`: detecta troca (old vs body), roda o passo isolado ANTES do PUT principal;
+  o principal segue sem `category_id` e, quando a categoria mudou, sem `attributes`
+  (já tratados). Expõe `result["ml_category_warning"]`.
+- Frontend (`saveWizard`): `toast.warning` do `ml_category_warning` (e do `ml_pictures_warning`,
+  que era retornado mas não exibido). **Não** persiste a categoria no produto quando o ML
+  recusou (senão re-tentaria a categoria rejeitada na próxima edição) — fix de 1 HIGH da auditoria.
+- Decisão do dono: avisar e manter a categoria antiga quando o ML recusar (não recriar).
+- DESCARTADO: guiar por `/items/{id}/available_upgrades` — teste real mostrou que esse
+  endpoint retorna UPGRADES DE TIPO DE ANÚNCIO (Premium/Diamante), NÃO categorias compatíveis.
+  Não há endpoint ML confiável p/ "categorias compatíveis"; o próprio PUT já valida (atende).
+- Testes: tests/test_anuncios_category.py (sucesso/skipped/exceção). Suite 65/2 (baseline).
+- Auditorias quality/consistency sem CRITICAL; 1 HIGH (persist da categoria rejeitada) corrigido.
+
+---
+
 ## 2026-06-28 — feat(eship): catálogo inteiro no modal — ordenar, filtrar por empresa, paginar na tela
 
 Modal "Listar produtos no eShip" passou a carregar o CATÁLOGO INTEIRO de uma vez
