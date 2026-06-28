@@ -130,15 +130,23 @@ async def list_cmig_integrations(
 async def list_eship_products_endpoint(
     cmig_id: int,
     page: int = 1,
+    all: bool = False,
+    refresh: bool = False,
     current_user: User = Depends(require_role("admin", "ugo", "ac")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Lista os produtos cadastrados no eShip (WMS) com info + estoque, paginado."""
+    """Lista os produtos cadastrados no eShip (WMS) com info + estoque.
+
+    `all=true`: busca o catálogo inteiro (todas as páginas) para ordenar/filtrar na
+    tela (cacheado; `refresh=true` recarrega). Caso contrário, retorna a página `page`.
+    """
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
     await _assert_cmig_access(db, cmig, current_user)
     try:
+        if all:
+            return await service.list_all_eship_products(db, cmig_id, force=refresh)
         return await service.list_eship_products(db, cmig_id, page)
     except EShipError as e:
         raise HTTPException(status_code=502, detail=str(e))

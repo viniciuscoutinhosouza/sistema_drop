@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import re
+import time
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -45,6 +46,12 @@ ANEXO_ETIQUETA = 7  # ETIQUETA
 
 # Cadastro em lote: nº máx. de chamadas simultâneas ao WMS (equilíbrio tempo × rajada)
 _PUSH_CONCURRENCY = 5
+# Listagem do catálogo inteiro: concorrência de páginas, teto de segurança e cache
+_PRODUTOS_FETCH_CONCURRENCY = 12
+_PRODUTOS_MAX_PAGES = 300
+_PRODUTOS_TOTAL_DEADLINE = 45  # segundos — teto agregado da carga (abaixo do proxy_read_timeout)
+_PRODUTOS_CACHE_TTL = 300  # segundos — evita re-buscar o catálogo inteiro a cada abertura
+_produtos_cache: dict[int, tuple[float, dict]] = {}
 
 
 def _digits(s: str | None) -> str:
@@ -480,6 +487,75 @@ async def list_eship_products(db: AsyncSession, cmig_id: int, page: int = 1) -> 
         "total": pag.get("totalObjetos"),
         "por_pagina": pag.get("registrosPorPagina"),
     }
+
+
+async def list_all_eship_products(db: AsyncSession, cmig_id: int, force: bool = False) -> dict:
+    """Busca TODO o catálogo de produtos do eShip (todas as páginas) de uma vez.
+
+    A 1ª página revela o total de páginas; as demais são buscadas com concorrência
+    limitada. Best-effort por página (uma página que falhar não derruba o resto).
+    Para o frontend ordenar/filtrar (inclusive por empresa) sobre a lista completa.
+    Cacheado por `_PRODUTOS_CACHE_TTL` segundos por CMIG (use `force=True` p/ recarregar).
+    """
+    now = time.monotonic()
+    if not force:
+        cached = _produtos_cache.get(cmig_id)
+        if cached and (now - cached[0]) < _PRODUTOS_CACHE_TTL:
+            return cached[1]
+
+    creds = creds_from_cmig(
+        (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    )
+    if not creds:
+        raise EShipError("CMIG sem integração eShip ativa/configurada.")
+
+    first = await client.call(creds, FUNC_GET_PRODUTO, {"pagina": 1})
+    body = ((first or {}).get("corpo") or {}).get("body") or {}
+    pag = body.get("dadosPaginacao") or {}
+    try:
+        total_pages = int(pag.get("quantidadePaginas") or 1)
+    except (ValueError, TypeError):
+        total_pages = 1
+    cap = min(max(total_pages, 1), _PRODUTOS_MAX_PAGES)
+
+    # by_page[pg] = lista (ok, pode ser []) ou None (falhou/não buscada → buraco no catálogo)
+    by_page: dict[int, list | None] = {1: body.get("dados") or []}
+    if cap > 1:
+        sem = asyncio.Semaphore(_PRODUTOS_FETCH_CONCURRENCY)
+
+        async def _fetch(pg: int) -> None:
+            async with sem:
+                try:
+                    r = await client.call(creds, FUNC_GET_PRODUTO, {"pagina": pg})
+                    by_page[pg] = (((r or {}).get("corpo") or {}).get("body") or {}).get("dados") or []
+                except EShipError as e:
+                    logger.warning("[eShip] GetProduto página %s falhou: %s", pg, e)
+                    by_page[pg] = None  # distingue falha de página vazia
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*[_fetch(pg) for pg in range(2, cap + 1)]),
+                timeout=_PRODUTOS_TOTAL_DEADLINE,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[eShip] carga do catálogo cmig=%s excedeu %ss; retornando parcial",
+                           cmig_id, _PRODUTOS_TOTAL_DEADLINE)
+
+    # Páginas com None (falha) ou ausentes (timeout) = buracos → resultado PARCIAL.
+    paginas_falhas = sum(1 for pg in range(1, cap + 1) if by_page.get(pg) is None)
+    rows = [_eship_produto_row(p) for pg in range(1, cap + 1) for p in (by_page.get(pg) or [])]
+    result = {
+        "produtos": rows,
+        "total": pag.get("totalObjetos"),
+        "paginas": total_pages,
+        "truncado": total_pages > cap,
+        "parcial": paginas_falhas > 0,
+        "paginas_falhas": paginas_falhas,
+    }
+    # Só cacheia carga COMPLETA (sem páginas falhas) — não fixa um catálogo furado por 5min.
+    if not result["parcial"]:
+        _produtos_cache[cmig_id] = (now, result)
+    return result
 
 
 async def get_saldo_estoque(db: AsyncSession, cmig_id: int, sku: str | None = None) -> dict:

@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-06-28 — feat(eship): catálogo inteiro no modal — ordenar, filtrar por empresa, paginar na tela
+
+Modal "Listar produtos no eShip" passou a carregar o CATÁLOGO INTEIRO de uma vez
+(decisão do dono) para ordenação/filtro globais:
+- Backend `list_all_eship_products(db, cmig_id, force)`: busca a 1ª página (revela
+  total), demais páginas com `asyncio.Semaphore(12)` + `asyncio.wait_for` (deadline
+  agregado 45s), teto 300 páginas. Cache em memória por CMIG (TTL 300s; `refresh=true`
+  recarrega). Endpoint `?all=true&refresh=bool`.
+- Frontend: ordenação por coluna (Código, Cód. barras, Descrição, Empresa, Status),
+  **dropdown de empresas** (montado dos dados), busca textual, paginação client-side
+  (50/pág) e botão recarregar.
+- Robustez (auditoria, 2 HIGH corrigidos): páginas que falham viram buraco SINALIZADO
+  (`parcial`/`paginas_falhas` + banner "Catálogo parcial…"), e carga parcial NÃO é
+  cacheada (não fixa catálogo furado por 5min); deadline agregado evita estourar o
+  proxy. Guard no parse de `quantidadePaginas`.
+- Testes: +1 (página falha → parcial + sem cache); cache limpo entre testes. Suite 62/2.
+- DEPLOY: confirmar `proxy_read_timeout` do nginx ≥ 60s (1ª carga pode levar ~20-40s).
+
+---
+
 ## 2026-06-27 — feat(eship): listar produtos do WMS (Integração → Produtos)
 
 - Submenu/H1/meta.title "Envio de Produtos" → **"Produtos"** (path /integracao/envio-produtos

@@ -182,6 +182,58 @@ def test_list_eship_products_mapeia_resposta(monkeypatch):
     assert len(res["produtos"]) == 1 and res["produtos"][0]["codigo"] == "A"
 
 
+def _page(n, codigos, paginas=3, total=6):
+    return {"corpo": {"body": {
+        "dadosPaginacao": {"paginaAtual": n, "quantidadePaginas": paginas, "totalObjetos": total},
+        "dados": [{"codigo": c} for c in codigos],
+    }}}
+
+
+class _Res1:
+    def scalar_one_or_none(self): return object()
+class _DB1:
+    async def execute(self, q): return _Res1()
+
+
+def test_list_all_eship_products_agrega_paginas(monkeypatch):
+    S._produtos_cache.clear()
+    pages = {1: _page(1, ["A", "B"]), 2: _page(2, ["C", "D"]), 3: _page(3, ["E", "F"])}
+
+    async def fake_call(creds, funcao, payload):
+        return pages[payload["pagina"]]
+
+    monkeypatch.setattr(S.client, "call", fake_call)
+    monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: _creds())
+
+    res = asyncio.run(S.list_all_eship_products(_DB1(), 1))
+    assert [p["codigo"] for p in res["produtos"]] == ["A", "B", "C", "D", "E", "F"]
+    assert res["total"] == 6 and res["paginas"] == 3 and res["truncado"] is False
+    assert res["parcial"] is False and res["paginas_falhas"] == 0
+    # carga completa fica cacheada
+    assert 1 in S._produtos_cache
+
+
+def test_list_all_eship_products_pagina_falha_marca_parcial_e_nao_cacheia(monkeypatch):
+    S._produtos_cache.clear()
+    pages = {1: _page(1, ["A", "B"]), 3: _page(3, ["E", "F"])}  # página 2 falha
+
+    async def fake_call(creds, funcao, payload):
+        pg = payload["pagina"]
+        if pg == 2:
+            raise EShipError("timeout pág 2")
+        return pages[pg]
+
+    monkeypatch.setattr(S.client, "call", fake_call)
+    monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: _creds())
+
+    res = asyncio.run(S.list_all_eship_products(_DB1(), 99))
+    # produtos da página 2 ausentes, mas as demais aparecem
+    assert [p["codigo"] for p in res["produtos"]] == ["A", "B", "E", "F"]
+    assert res["parcial"] is True and res["paginas_falhas"] == 1
+    # carga parcial NÃO é cacheada
+    assert 99 not in S._produtos_cache
+
+
 def test_push_cmig_products_sem_creds_levanta(monkeypatch):
     monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: None)
 

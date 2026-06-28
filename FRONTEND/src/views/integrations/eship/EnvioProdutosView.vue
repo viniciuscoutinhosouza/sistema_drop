@@ -95,7 +95,7 @@
           <div class="card-body py-2 small text-muted">
             <ul class="mb-0 pl-3">
               <li>A apikey do eShip é cadastrada em cada <strong>Conta MIG</strong> (Contas MIG → abrir a empresa → card "Integração eShip").</li>
-              <li><strong>Listar produtos no eShip</strong> (botão acima) mostra os produtos cadastrados no WMS com estoque (físico, disponível, reservado). A busca filtra a página carregada.</li>
+              <li><strong>Listar produtos no eShip</strong> (botão acima) carrega o catálogo do WMS com estoque (físico, disponível, reservado). Dá para <strong>ordenar</strong> por coluna, <strong>filtrar por empresa</strong> e buscar.</li>
               <li><strong>Enviar produtos ao WMS</strong> (botão acima) pré-cadastra todo o catálogo da empresa no eShip (por SKU; idempotente). Útil antes do primeiro pedido.</li>
               <li>O envio do <strong>pedido</strong> ao eShip é feito na tela de <strong>Pedidos</strong> (ação eShip por pedido) ou automaticamente no fluxo de separação — os produtos do pedido também são cadastrados automaticamente.</li>
               <li>O eShip é a <strong>fonte de verdade do estoque físico</strong> — consulte o saldo por SKU acima.</li>
@@ -112,24 +112,47 @@
           <div class="modal-content">
             <div class="modal-header py-2">
               <h5 class="modal-title"><i class="fas fa-box mr-1"></i>Produtos no eShip — {{ prod.nome }}</h5>
+              <button class="btn btn-sm btn-outline-secondary ml-auto mr-2" :disabled="prod.loading"
+                      title="Recarregar do eShip" @click="carregarProdutos(true)">
+                <i class="fas fa-sync-alt" :class="{ 'fa-spin': prod.loading }"></i>
+              </button>
               <button type="button" class="close" @click="prod.show = false"><span>&times;</span></button>
             </div>
             <div class="modal-body p-2">
-              <div class="d-flex align-items-center mb-2" style="gap:8px">
-                <input v-model="prod.filter" class="form-control form-control-sm" style="max-width:300px"
-                       placeholder="Filtrar nesta página (código, descrição, EAN, empresa)">
-                <span class="text-muted small ml-auto" v-if="prod.total != null">Total no eShip: <strong>{{ prod.total }}</strong></span>
+              <div class="d-flex align-items-center flex-wrap mb-2" style="gap:8px">
+                <input v-model="prod.filter" @input="resetPage" class="form-control form-control-sm" style="max-width:260px"
+                       placeholder="Buscar (código, descrição, EAN, empresa)">
+                <select v-model="prod.empresa" @change="resetPage" class="form-control form-control-sm" style="max-width:280px">
+                  <option value="">Todas as empresas ({{ empresas.length }})</option>
+                  <option v-for="e in empresas" :key="e" :value="e">{{ e }}</option>
+                </select>
+                <span class="text-muted small ml-auto">
+                  {{ produtosFiltrados.length }} de {{ prod.rows.length }}<span v-if="prod.total != null"> · eShip: {{ prod.total }}</span>
+                </span>
               </div>
-              <div v-if="prod.loading" class="text-center py-4"><i class="fas fa-spinner fa-spin fa-2x text-muted"></i></div>
+              <div v-if="prod.parcial" class="small text-danger mb-2">
+                <i class="fas fa-exclamation-triangle mr-1"></i>Catálogo parcial — {{ prod.paginasFalhas }} página(s) não puderam ser lidas; alguns produtos podem não aparecer. Tente recarregar.
+              </div>
+              <div v-if="prod.truncado" class="small text-warning mb-2">
+                <i class="fas fa-exclamation-triangle mr-1"></i>Catálogo muito grande — exibindo os primeiros itens.
+              </div>
+              <div v-if="prod.loading" class="text-center py-5">
+                <i class="fas fa-spinner fa-spin fa-2x text-muted d-block mb-2"></i>
+                <span class="text-muted small">Carregando catálogo do eShip… (pode levar alguns segundos)</span>
+              </div>
               <table v-else class="table table-sm table-hover small mb-0">
                 <thead class="thead-light">
                   <tr>
-                    <th>Código</th><th>Cód. barras</th><th>Descrição</th><th>Empresa</th><th>Status</th>
+                    <th style="cursor:pointer;white-space:nowrap" @click="sortBy('codigo')">Código <i :class="sortIcon('codigo')"></i></th>
+                    <th style="cursor:pointer;white-space:nowrap" @click="sortBy('codigo_barras')">Cód. barras <i :class="sortIcon('codigo_barras')"></i></th>
+                    <th style="cursor:pointer" @click="sortBy('descricao')">Descrição <i :class="sortIcon('descricao')"></i></th>
+                    <th style="cursor:pointer;white-space:nowrap" @click="sortBy('empresa')">Empresa <i :class="sortIcon('empresa')"></i></th>
+                    <th style="cursor:pointer" @click="sortBy('status')">Status <i :class="sortIcon('status')"></i></th>
                     <th class="text-center">Full</th><th class="text-right">Físico</th><th class="text-right">Disp.</th><th class="text-right">Reserv.</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(p, i) in produtosFiltrados" :key="p.codigo || i">
+                  <tr v-for="(p, i) in produtosPagina" :key="p.codigo || i">
                     <td class="text-nowrap font-weight-bold">{{ p.codigo }}</td>
                     <td class="text-nowrap">{{ p.codigo_barras || '—' }}</td>
                     <td>{{ p.descricao }}</td>
@@ -140,18 +163,18 @@
                     <td class="text-right">{{ p.total_disponivel ?? '—' }}</td>
                     <td class="text-right">{{ p.total_reservado ?? '—' }}</td>
                   </tr>
-                  <tr v-if="!produtosFiltrados.length">
+                  <tr v-if="!produtosPagina.length">
                     <td colspan="9" class="text-center text-muted py-3">Nenhum produto.</td>
                   </tr>
                 </tbody>
               </table>
             </div>
             <div class="modal-footer py-2 justify-content-start">
-              <button class="btn btn-sm btn-outline-secondary" :disabled="prod.pagina <= 1 || prod.loading" @click="loadProdutos(prod.pagina - 1)">
+              <button class="btn btn-sm btn-outline-secondary" :disabled="prod.page <= 1 || prod.loading" @click="prod.page--">
                 <i class="fas fa-chevron-left"></i> Anterior
               </button>
-              <span class="mx-2 small text-muted">Página {{ prod.pagina }}<span v-if="prod.paginas"> de {{ prod.paginas }}</span></span>
-              <button class="btn btn-sm btn-outline-secondary" :disabled="(prod.paginas && prod.pagina >= prod.paginas) || prod.loading" @click="loadProdutos(prod.pagina + 1)">
+              <span class="mx-2 small text-muted">Página {{ prod.page }} de {{ totalPaginas }}</span>
+              <button class="btn btn-sm btn-outline-secondary" :disabled="prod.page >= totalPaginas || prod.loading" @click="prod.page++">
                 Próxima <i class="fas fa-chevron-right"></i>
               </button>
             </div>
@@ -177,14 +200,56 @@ const saldoLoading = reactive({})
 const pushLoading = reactive({})
 const pushResult = reactive({})
 
-// Modal de listagem de produtos do eShip
-const prod = reactive({ show: false, cmigId: null, nome: '', loading: false, rows: [], pagina: 1, paginas: null, total: null, filter: '' })
+// Modal de listagem de produtos do eShip — catálogo inteiro carregado de uma vez;
+// busca, filtro por empresa, ordenação e paginação são feitos na tela.
+const prod = reactive({
+  show: false, cmigId: null, nome: '', loading: false,
+  rows: [], total: null, paginas: null, truncado: false, parcial: false, paginasFalhas: 0,
+  filter: '', empresa: '',
+  sortKey: 'descricao', sortDir: 'asc',
+  page: 1, pageSize: 50,
+})
+
+const empresas = computed(() => {
+  const set = new Set()
+  for (const p of prod.rows) if (p.empresa) set.add(p.empresa)
+  return [...set].sort((a, b) => a.localeCompare(b, 'pt-BR'))
+})
+
 const produtosFiltrados = computed(() => {
   const f = (prod.filter || '').trim().toLowerCase()
-  if (!f) return prod.rows
-  return prod.rows.filter(p => [p.codigo, p.codigo_barras, p.descricao, p.empresa]
-    .some(v => (v ?? '').toString().toLowerCase().includes(f)))
+  const emp = prod.empresa
+  const arr = prod.rows.filter(p => {
+    if (emp && p.empresa !== emp) return false
+    if (f && ![p.codigo, p.codigo_barras, p.descricao, p.empresa]
+      .some(v => (v ?? '').toString().toLowerCase().includes(f))) return false
+    return true
+  })
+  const k = prod.sortKey
+  const dir = prod.sortDir === 'desc' ? -1 : 1
+  return arr.sort((a, b) => {
+    const va = (a[k] ?? '').toString().toLowerCase()
+    const vb = (b[k] ?? '').toString().toLowerCase()
+    return va < vb ? -dir : va > vb ? dir : 0
+  })
 })
+
+const totalPaginas = computed(() => Math.max(1, Math.ceil(produtosFiltrados.value.length / prod.pageSize)))
+const produtosPagina = computed(() => {
+  const start = (prod.page - 1) * prod.pageSize
+  return produtosFiltrados.value.slice(start, start + prod.pageSize)
+})
+
+function sortBy(key) {
+  if (prod.sortKey === key) prod.sortDir = prod.sortDir === 'asc' ? 'desc' : 'asc'
+  else { prod.sortKey = key; prod.sortDir = 'asc' }
+  prod.page = 1
+}
+function sortIcon(key) {
+  if (prod.sortKey !== key) return 'fas fa-sort text-muted'
+  return prod.sortDir === 'asc' ? 'fas fa-sort-up' : 'fas fa-sort-down'
+}
+function resetPage() { prod.page = 1 }
 
 function statusLabel(c) {
   if (!c.eship_configured) return 'Não configurado'
@@ -236,25 +301,27 @@ async function enviarProdutos(c) {
 async function abrirProdutos(c) {
   prod.cmigId = c.cmig_id
   prod.nome = c.company_name || ('CMIG #' + c.cmig_id)
-  prod.filter = ''
-  prod.rows = []
-  prod.pagina = 1
-  prod.paginas = null
-  prod.total = null
+  prod.filter = ''; prod.empresa = ''; prod.sortKey = 'descricao'; prod.sortDir = 'asc'
+  prod.rows = []; prod.total = null; prod.paginas = null; prod.truncado = false
+  prod.parcial = false; prod.paginasFalhas = 0; prod.page = 1
   prod.show = true
-  await loadProdutos(1)
+  await carregarProdutos()
 }
 
-async function loadProdutos(page) {
-  if (page < 1 || !prod.cmigId) return
+async function carregarProdutos(refresh = false) {
+  if (!prod.cmigId) return
   prod.loading = true
   try {
-    const { data } = await api.get(`/integrations/eship/cmigs/${prod.cmigId}/produtos`, { params: { page } })
+    const params = { all: true }
+    if (refresh) params.refresh = true
+    const { data } = await api.get(`/integrations/eship/cmigs/${prod.cmigId}/produtos`, { params })
     prod.rows = data.produtos || []
-    prod.pagina = data.pagina || page
-    prod.paginas = data.paginas ?? null
     prod.total = data.total ?? null
-    prod.filter = ''
+    prod.paginas = data.paginas ?? null
+    prod.truncado = !!data.truncado
+    prod.parcial = !!data.parcial
+    prod.paginasFalhas = data.paginas_falhas ?? 0
+    prod.page = 1
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao listar produtos do eShip')
   } finally {
