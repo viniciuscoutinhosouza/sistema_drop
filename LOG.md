@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-06-28 — feat(estoque/anúncios): teto do fixo, pausa/reativação automática e sync horário de metadados ML (ADR-0014)
+
+Revisão do ciclo de estoque dos anúncios + sincronização com o ML. 5 pontos pedidos pelo dono:
+
+1. **Estoque fixo vira TETO** — `sync_stock` e publish/edit enviam `min(fixed_quantity,
+   disponível)`; nunca anuncia mais do que existe. Fixo sem vínculo de produto mantém o valor
+   puro (anúncio isca). (`tasks/sync_stock.py`, `routers/anuncios.py`)
+2. **Pausa/reativação automática** — nova coluna `product_listings.auto_paused` (migration 114).
+   Não-FULL com disponível (LOCAL+FULL via `available_to_push` puro) = 0 → `paused`; quando volta
+   → `active`. Só reativa o que o SISTEMA pausou; nunca um anúncio pausado manualmente. Query do
+   job reinclui `auto_paused=True` para poder reativar. Respeita ADR-0008.
+3. **PG→FULL já vira CMIG** (ADR-0010) — confirmado, sem mudança.
+4. **FULL identificado no anúncio (derivado na leitura)** — `_serialize_listing` expõe
+   `has_full_stock`, `full_cmig_product_id` e saldos Local (PG/CMIG) + FULL (sempre CMIG), via
+   `load_full_per_account_map` (batch, sem N+1). Sem coluna redundante: o gatilho é o crédito da
+   NF-e em `full_stock`.
+5. **Job horário `sync_listings_from_ml`** — traz do ML título/preço/promoções (Seller Promotions
+   v2 — `deal_ids`/`original_price` não são confiáveis)/descrição/status/`logistic_type`-FULL/
+   atributos/fotos/categoria/visitas. **NÃO traz estoque** (`skip_stock=True`). Padrão
+   `tracked_job`+`task_db`, sequencial por conta, rollback por conta. Registrado no scheduler
+   (`IntervalTrigger(hours=1)`). Nova `ml_service.get_item_promotions`.
+
+Helper `_apply_ml_item_to_listing` estendido (skip_stock/category/visits/promo + limpa
+`auto_paused` quando o ML mostra ativo); import inline ganhou a mesma limpeza (paridade — 1 HIGH
+da auditoria). Auditado por quality-guardian + consistency-auditor + adr-consistency-checker
+(sem CRITICAL/HIGH em aberto). `py_compile` OK; `pytest -m "not integration"` 65 passed (2 falhas
+pré-existentes em `test_orders.py`, não relacionadas). **Pendente:** rodar migration 114 no Oracle.
+
 ## 2026-06-28 — fix(anuncios): troca de categoria do anúncio agora é enviada ao ML
 
 Bug: ao editar e trocar a categoria, o backend salvava `listing.category_id` mas fazia

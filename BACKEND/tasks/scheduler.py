@@ -132,6 +132,18 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Sync horário de METADADOS dos anúncios do ML (sem estoque) — ADR-0014.
+    # Detecta mudanças feitas direto no painel do ML (promoção, descrição, status, FULL, etc.).
+    from tasks.sync_listings_from_ml import sync_all_listings_from_ml
+
+    scheduler.add_job(
+        sync_all_listings_from_ml,
+        IntervalTrigger(hours=1),
+        id="sync_listings_from_ml",
+        name="Sync Metadados dos Anúncios (ML, sem estoque)",
+        replace_existing=True,
+    )
+
     from tasks.prune_logs import prune_job_executions
 
     scheduler.add_job(

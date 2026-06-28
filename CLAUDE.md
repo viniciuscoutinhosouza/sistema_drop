@@ -312,6 +312,7 @@ Ao declarar conclusão, **explicitar quais checks foram executados**. Falhou? Co
 | `debug-specialist` | Bugs, erros, comportamento inesperado |
 | `deploy-operator` | Qualquer deploy em produção |
 | `migration-specialist` | Migrações de dados/legados, alterações de schema multi-tabela em `Scripts SQL/` |
+| `mercado-livre-especialista` | Decisões sobre a **API do ML** (como fazer X, por que o ML recusou). Regra: nunca afirmar "não dá" sem verificar na doc oficial/testar. Use antes de concluir algo sobre o ML. |
 | `session-closer` | Ao final de sessão de trabalho significativa |
 
 ### ADRs (Architecture Decision Records)
@@ -330,6 +331,7 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0011](DOCs/decisions/ADR-0011-estudos-assincronos-ia-ml.md) — Estudos assíncronos IA+ML (job in-process por request + estudo persistido como memória)
 - [ADR-0012](DOCs/decisions/ADR-0012-coletor-ml-local-camoufox.md) — Coletor de busca ML local (Camoufox) via HTTP, fora do servidor Oracle (3ª fonte opt-in da Análise de Concorrência)
 - [ADR-0013](DOCs/decisions/ADR-0013-datahora-utc-armazenamento-conversao-borda.md) — Data/hora: UTC aware no armazenamento/transporte, conversão para America/Sao_Paulo na borda (fonte única: `utils/formatters.js` + `services/datetime_br.py`)
+- [ADR-0014](DOCs/decisions/ADR-0014-estoque-anuncio-pausa-auto-e-sync-ml-metadados.md) — Estoque fixo vira teto (`min(fixo, disponível)`); pausa/reativação automática do anúncio por disponibilidade (`auto_paused`); FULL derivado na leitura (sem coluna redundante); job horário que sincroniza metadados do ML (promoções/descrição/status/FULL) **menos estoque**
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 
@@ -369,9 +371,9 @@ Ver `docs/lessons-learned.md` para armadilhas conhecidas documentadas (L-001 a L
 > Atualizar ao fechar cada fase de nível **Full**. Formato fixo — uma janela de contexto nova deve entender o projeto lendo só esta seção.
 
 - **Objetivo final:** Sistema de gestão multi-conta (Mercado Livre + Shopee) para dropshippers e galpões, com fiscal NF-e integrado.
-- **Fase atual:** Maturidade de processo e infraestrutura (governança, ADRs, agentes, Docker, CI/CD, suite pytest).
-- **Último ponto validado:** `8e698d0` — pull do GitHub com agentes de processo, ADRs 0001-0003, tests/, Docker, GitHub Actions CI, migrations 58-60, `finalize-no-sefaz`. Adoção cirúrgica do setup Fernando feita em 2026-05-15.
-- **Próximo passo:** Copiar `Wallet_MIGECOMMERCE/` do desktop antigo, instalar deps (`pip install -r requirements.txt` + `npm install`), validar `pytest -m "not integration"` e smoke do backend.
+- **Fase atual:** Ciclo de estoque dos anúncios + sincronização com o ML (ADR-0014).
+- **Último ponto validado:** ADR-0014 implementado (2026-06-28) — estoque fixo vira teto `min(fixo, disponível)`; pausa/reativação automática do anúncio por disponibilidade (coluna `auto_paused`, migration 114, só reativa o que o sistema pausou); FULL derivado na leitura dos anúncios (`has_full_stock`/`full_cmig_product_id`/saldos Local+FULL, sem coluna redundante); novo job horário `sync_listings_from_ml` que traz metadados do ML (título/preço/promoções via Seller Promotions v2/descrição/status/`logistic_type`-FULL/atributos/fotos/categoria/visitas) **menos estoque** (`skip_stock=True`). Auditado por quality-guardian + consistency-auditor + adr-consistency-checker (sem CRITICAL/HIGH em aberto). `py_compile` OK; `pytest -m "not integration"` 65 passed / 2 falhas **pré-existentes** em `test_orders.py` (não relacionadas).
+- **Próximo passo:** Rodar a migration `114_listing_auto_paused.sql` no Oracle. Opcional: UI consumir `has_full_stock`/`auto_paused` (badge "tem FULL" e distinguir pausa automática de manual). Smoke do backend com `.env` real.
 - **Bloqueios:** `BACKEND/Wallet_MIGECOMMERCE/` ausente — sem ela o backend não conecta no Oracle ATP.
 - **Riscos ativos:** Nenhum.
 - **Decisões pendentes:** Deploy em produção via Docker (caminho do `docker-compose.yml` novo) ou seguir com uvicorn + supervisor — definir antes do próximo deploy.

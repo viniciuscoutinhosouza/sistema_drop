@@ -3,9 +3,16 @@ sync_stock_job – Executa a cada 30 minutos.
 
 Modos de estoque por listing (stock_mode):
   'product'  – usa o estoque real do produto PG/CMIG vinculado (comportamento original)
-  'fixed'    – usa fixed_quantity;
-               se keep_stock_fixed=True o job restaura o valor a cada ciclo (estoque fixo);
+  'fixed'    – usa fixed_quantity como TETO (ADR-0014):
+               se keep_stock_fixed=True e há vínculo de produto, envia min(fixed_quantity,
+                 disponível) — nunca anuncia mais do que existe;
+               se keep_stock_fixed=True sem vínculo, envia fixed_quantity puro (anúncio isca);
                se keep_stock_fixed=False o job pula este listing (estoque gerenciado apenas por vendas)
+
+Pausa/reativação automática (ADR-0014): para anúncios NÃO-FULL do ML, quando o disponível
+real (LOCAL+FULL via available_to_push) zera, o anúncio é pausado (auto_paused=True); quando
+o estoque volta, é reativado. Só reativa o que ESTE job pausou — nunca um anúncio pausado
+manualmente pelo dono.
 
 Contadores no result_json:
   listings_processed      – total iterado
@@ -20,12 +27,13 @@ Contadores no result_json:
 import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from database import AsyncSyncSession, task_db
 from models.cmig import CMIGProduct
 from models.integration import MarketplaceAccount
 from models.product import CatalogProduct, DropshipperProduct, ProductListing
+from services.ml_service import update_item_status as ml_update_status
 from services.ml_service import update_item_stock as ml_update_stock
 from services.shopee_service import update_item_stock as shopee_update_stock
 from tasks._job_wrapper import tracked_job
@@ -41,6 +49,8 @@ async def sync_all_stock() -> None:
             "listings_updated": 0,
             "listings_skipped_full": 0,
             "listings_skipped_fixed": 0,
+            "listings_auto_paused": 0,
+            "listings_auto_reactivated": 0,
             "listings_unresolved": 0,
             "unresolved_by_reason": {},
             "errors": 0,
@@ -50,11 +60,14 @@ async def sync_all_stock() -> None:
             await _sync(db, stats)
         logger.info(
             "sync_stock_job: concluído (processed=%s updated=%s skipped_full=%s "
-            "skipped_fixed=%s unresolved=%s errors=%s unresolved_detail=%s)",
+            "skipped_fixed=%s auto_paused=%s auto_reactivated=%s unresolved=%s errors=%s "
+            "unresolved_detail=%s)",
             stats["listings_processed"],
             stats["listings_updated"],
             stats["listings_skipped_full"],
             stats["listings_skipped_fixed"],
+            stats["listings_auto_paused"],
+            stats["listings_auto_reactivated"],
             stats["listings_unresolved"],
             stats["errors"],
             stats["unresolved_by_reason"],
@@ -67,9 +80,15 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
         select(ProductListing, MarketplaceAccount)
         .join(MarketplaceAccount, ProductListing.account_id == MarketplaceAccount.id)
         .where(
-            ProductListing.status == "published",
+            # Inclui os auto-pausados pelo sistema para que possam ser REATIVADOS quando o
+            # estoque voltar (eles têm status='paused' mas precisam continuar sendo avaliados).
+            # Anúncios pausados manualmente (auto_paused=False, status='paused') ficam de fora.
+            or_(
+                ProductListing.status == "published",
+                ProductListing.auto_paused == True,  # noqa: E712
+            ),
             ProductListing.platform_item_id.isnot(None),
-            MarketplaceAccount.is_active == True,
+            MarketplaceAccount.is_active == True,  # noqa: E712
         )
     )
     rows = result.all()
@@ -88,14 +107,35 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
 
         stock_mode = listing.stock_mode or "product"
 
+        # disponivel = disponível real do produto (LOCAL+FULL via available_to_push). É a base
+        #   da decisão de pausar/reativar (ADR-0008: só zera quando LOCAL e FULL = 0).
+        # stock     = quantidade enviada ao ML (pode ser o teto do fixo).
+        # Em anúncio fixo SEM vínculo de produto, disponivel=None → não há como medir o real,
+        #   então não pausamos/reativamos por estoque (preserva o anúncio "isca").
+        disponivel: int | None = None
+
         if stock_mode == "fixed":
             if not listing.keep_stock_fixed:
                 stats["listings_skipped_fixed"] += 1
                 continue
-            stock = int(listing.fixed_quantity or 1)
+            fixed = int(listing.fixed_quantity or 1)
+            if _listing_has_product(listing):
+                try:
+                    disponivel = await _compute_product_stock(db, listing)
+                except Exception as exc:
+                    stats["errors"] += 1
+                    logger.warning(
+                        "sync_stock: erro ao calcular estoque listing_id=%s: %s", listing.id, exc
+                    )
+                    _append_error(stats, listing, str(exc), "Verifique o vínculo do produto com este anúncio no painel")
+                    continue
+                # Estoque fixo é TETO: nunca anuncia mais do que o disponível (ADR-0014).
+                stock = min(fixed, disponivel)
+            else:
+                stock = fixed
         else:
             try:
-                stock = await _compute_product_stock(db, listing)
+                disponivel = await _compute_product_stock(db, listing)
             except Exception as exc:
                 stats["errors"] += 1
                 logger.warning(
@@ -103,6 +143,7 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
                 )
                 _append_error(stats, listing, str(exc), "Verifique o vínculo do produto com este anúncio no painel")
                 continue
+            stock = disponivel
 
         try:
             if account.platform == "mercadolivre":
@@ -124,6 +165,10 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
                         outcome,
                         stock,
                     )
+                # Pausa/reativação automática por disponibilidade (ADR-0014).
+                # Só para anúncios não-FULL (FULL já foi pulado lá em cima) e quando temos
+                # uma medida real de disponível.
+                await _apply_auto_pause(db, account, listing, disponivel, stats)
             elif account.platform == "shopee":
                 await shopee_update_stock(
                     account.access_token,
@@ -145,6 +190,56 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
             _append_error(stats, listing, str(exc), "Acesse o Mercado Livre e verifique o status do anúncio")
 
     await db.commit()
+
+
+def _listing_has_product(listing: ProductListing) -> bool:
+    """True se o anúncio tem vínculo de produto resolvível (PG, CMIG ou Dropshipper)."""
+    return bool(listing.catalog_product_id or listing.cmig_product_id or listing.product_id)
+
+
+async def _apply_auto_pause(
+    db: AsyncSyncSession,
+    account: MarketplaceAccount,
+    listing: ProductListing,
+    disponivel: int | None,
+    stats: dict,
+) -> None:
+    """Pausa o anúncio quando o disponível (LOCAL+FULL) zera; reativa quando volta.
+
+    Nunca reativa um anúncio pausado manualmente pelo dono — só os que ESTE job pausou
+    (auto_paused=True). `disponivel=None` (fixo sem vínculo) → não mexe no status."""
+    if disponivel is None:
+        return
+    try:
+        if disponivel <= 0 and not listing.auto_paused:
+            await ml_update_status(account.access_token, listing.platform_item_id, "paused")
+            listing.auto_paused = True
+            listing.status = "paused"
+            stats["listings_auto_paused"] = stats.get("listings_auto_paused", 0) + 1
+            logger.info(
+                "sync_stock: pausado por estoque zerado listing_id=%s item=%s",
+                listing.id,
+                listing.platform_item_id,
+            )
+        elif disponivel > 0 and listing.auto_paused:
+            await ml_update_status(account.access_token, listing.platform_item_id, "active")
+            listing.auto_paused = False
+            listing.status = "published"
+            stats["listings_auto_reactivated"] = stats.get("listings_auto_reactivated", 0) + 1
+            logger.info(
+                "sync_stock: reativado (estoque voltou) listing_id=%s item=%s",
+                listing.id,
+                listing.platform_item_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — tolerância por anúncio
+        stats["errors"] += 1
+        logger.warning(
+            "sync_stock: falha ao pausar/reativar listing_id=%s item=%s: %s",
+            listing.id,
+            listing.platform_item_id,
+            exc,
+        )
+        _append_error(stats, listing, str(exc), "Verifique manualmente o status do anúncio no Mercado Livre")
 
 
 _MAX_ERROR_DETAILS = 20

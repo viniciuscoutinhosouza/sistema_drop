@@ -2613,6 +2613,38 @@ async def get_item_promotion(access_token: str, item_id: str) -> dict:
     return result
 
 
+async def get_item_promotions(access_token: str, item_id: str) -> dict:
+    """Promoções/ofertas que um item participa — fonte CANÔNICA (Seller Promotions v2).
+
+    Os campos `deal_ids`/`original_price` do próprio item NÃO são confiáveis (o ML pode
+    retornar `[]`/`null` mesmo com promoção ativa). Por isso o job de metadados detecta
+    promoção por aqui. `app_version=v2` é OBRIGATÓRIO (sem ele → 400 Invalid app_version).
+
+    Retorna {"promotions": [...], "active": bool, "active_type": str|None}, onde `active`
+    indica que há ao menos uma oferta vigente (status started/active).
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/seller-promotions/items/{item_id}",
+                headers=headers,
+                params={"app_version": "v2"},
+            )
+    except Exception:
+        return {"promotions": [], "active": False, "active_type": None}
+    if resp.status_code != 200:
+        return {"promotions": [], "active": False, "active_type": None}
+    data = resp.json()
+    promos = data if isinstance(data, list) else (data.get("results") or [])
+    active_type = None
+    for p in promos:
+        if (p.get("status") or "").lower() in ("started", "active"):
+            active_type = p.get("type")
+            break
+    return {"promotions": promos, "active": active_type is not None, "active_type": active_type}
+
+
 def _extract_nested(obj, *keys):
     """Navega estrutura aninhada com segurança; retorna None se não encontrar."""
     for key in keys:

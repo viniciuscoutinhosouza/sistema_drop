@@ -226,6 +226,9 @@ class ProductListing(Base):
         Boolean, nullable=True, default=False
     )  # true = anúncio DE catálogo; false + ml_catalog_id = optin
     status = Column(String(20), nullable=False, default="draft")
+    # auto_paused=True → o SISTEMA pausou por estoque zerado (LOCAL+FULL). O sync_stock só
+    # reativa anúncios com este flag; nunca reativa um anúncio pausado manualmente (ADR-0014).
+    auto_paused = Column(Boolean, default=False, nullable=False)
     error_message = Column(String(2000))
     published_at = Column(TIMESTAMP(timezone=True))
     last_sync_at = Column(TIMESTAMP(timezone=True))

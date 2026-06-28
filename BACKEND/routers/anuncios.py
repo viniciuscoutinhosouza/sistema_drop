@@ -535,6 +535,15 @@ def _listing_is_full(listing) -> bool:
     return (listing.logistic_type or "").strip().lower() == "fulfillment" or bool(listing.is_full)
 
 
+def _listing_has_product_link(listing) -> bool:
+    """True se o anúncio tem vínculo de produto resolvível (PG, CMIG ou Dropshipper)."""
+    return bool(
+        getattr(listing, "catalog_product_id", None)
+        or getattr(listing, "cmig_product_id", None)
+        or getattr(listing, "product_id", None)
+    )
+
+
 def _strip_unwritable_stock(ml_payload: dict, listing) -> str | None:
     """Remove `available_quantity` do payload de UPDATE quando o estoque NÃO é
     editável via API do ML — os demais campos do anúncio seguem normalmente.
@@ -847,6 +856,26 @@ def _serialize_listing(
     elif listing.cmig_product and getattr(listing.cmig_product, "cost_price", None) is not None:
         product_cost = float(listing.cmig_product.cost_price)
 
+    # FULL derivado (ADR-0014): saldo do FULL para o produto+conta deste anúncio, lido do
+    # mapa batch (sem N+1). O FULL é sempre do CMIG; para anúncio só-PG o mapa já segue o
+    # vínculo pg_product_id → CMIG espelho (load_full_per_account_map).
+    _full_key = (
+        ("cmig", listing.cmig_product_id)
+        if listing.cmig_product_id
+        else (("pg", listing.catalog_product_id) if listing.catalog_product_id else (None, None))
+    )
+    _full_entry = (
+        (full_per_account_map or {}).get(_full_key, {}).get(listing.account_id, {})
+        if full_per_account_map is not None
+        else {}
+    )
+    _full_available = max(
+        0, int(_full_entry.get("qty", 0) or 0) - int(_full_entry.get("reserved_qty", 0) or 0)
+    )
+    # has_full_stock: True quando há saldo disponível no FULL (derivado, nunca persistido).
+    # None quando o mapa não foi fornecido (caller single-listing não calcula FULL live).
+    has_full_stock = (_full_available > 0) if full_per_account_map is not None else None
+
     return {
         "id": listing.id,
         "account_id": listing.account_id,
@@ -969,6 +998,13 @@ def _serialize_listing(
         "cmig_product": cmig_product,
         "catalog_product": catalog_product,
         "is_linked": cmig_product is not None or catalog_product is not None,
+        # FULL derivado (ADR-0014): o anúncio "tem FULL" + qual CMIG segura esse FULL.
+        # Para anúncio CMIG é o próprio cmig_product_id; para anúncio só-PG o saldo aparece
+        # em full_stock_available (segue o espelho), mas o id do espelho não é resolvido aqui
+        # para evitar N+1 — a UI usa has_full_stock + o vínculo PG↔CMIG já exposto.
+        "has_full_stock": has_full_stock,
+        "full_cmig_product_id": listing.cmig_product_id,
+        "auto_paused": bool(listing.auto_paused) if listing.auto_paused is not None else False,
     }
 
 
@@ -1577,6 +1613,10 @@ async def import_anuncios(
             existing.title_override = title
             existing.sale_price = price
             existing.status = item_status
+            # ML mostra ativo → não está mais "pausado pelo sistema" (paridade com
+            # _apply_ml_item_to_listing; evita re-pausa indevida — ADR-0014).
+            if item_status == "published" and getattr(existing, "auto_paused", False):
+                existing.auto_paused = False
             existing.category_id = category_id or existing.category_id
             if category_name:
                 existing.category_name = category_name
@@ -3648,7 +3688,15 @@ async def publish_anuncio(
         # gerar vendas que o vendedor não consegue entregar.
         available_quantity = await _refresh_product_stock(prod, db)
     else:
+        # Estoque fixo é TETO (ADR-0014): não anuncia mais do que o disponível LOCAL.
+        # Se LOCAL=0, mantém o fixo aqui e deixa o sync_stock (que enxerga o FULL) ajustar/pausar
+        # — assim não zeramos indevidamente um fixo lastreado no FULL no momento da publicação.
         available_quantity = fixed_quantity
+        if prod is not None:
+            local_stock = await _refresh_product_stock(prod, db)
+            local_available = max(0, local_stock - int(getattr(prod, "reserved_quantity", 0) or 0))
+            if local_available > 0:
+                available_quantity = min(fixed_quantity, local_available)
 
     fiscal_sync_warning = None
     if mode == "create":
@@ -3929,11 +3977,18 @@ async def publish_anuncios_as_family(
                 })
                 continue
 
-            # Estoque: recalcula real ou usa fixo
+            # Estoque: recalcula real ou usa fixo como TETO (ADR-0014)
             if stock_mode == "product":
                 available_quantity = await _refresh_product_stock(prod, db)
             else:
                 available_quantity = fixed_quantity
+                if prod is not None:
+                    local_stock = await _refresh_product_stock(prod, db)
+                    local_available = max(
+                        0, local_stock - int(getattr(prod, "reserved_quantity", 0) or 0)
+                    )
+                    if local_available > 0:
+                        available_quantity = min(fixed_quantity, local_available)
 
             # Atributos: começa do PMC (Material, Marca, Cor, etc.) + sobrescreve
             # MODEL pelo compartilhado + acrescenta diferenciador per-produto.
@@ -4146,10 +4201,18 @@ async def update_anuncio(
     if "family_name" in body:
         listing.family_name_ml = body["family_name"] or None
 
-    # Recalcula available_quantity de acordo com o modo de estoque
+    # Recalcula available_quantity de acordo com o modo de estoque.
+    # Estoque fixo é TETO (ADR-0014): nunca anuncia mais do que o disponível (LOCAL+FULL).
     new_mode = body.get("stock_mode", listing.stock_mode or "product")
     if new_mode == "fixed":
-        listing.available_quantity = int(body.get("fixed_quantity") or listing.fixed_quantity or 1)
+        fixed_qty = int(body.get("fixed_quantity") or listing.fixed_quantity or 1)
+        if _listing_has_product_link(listing):
+            from services.full_stock_service import available_to_push
+
+            disponivel = await available_to_push(db, listing)
+            listing.available_quantity = min(fixed_qty, disponivel)
+        else:
+            listing.available_quantity = fixed_qty
     elif "available_quantity" in body:
         listing.available_quantity = int(body["available_quantity"])
 
@@ -4705,6 +4768,12 @@ def _apply_ml_item_to_listing(
     description_text: str | None,
     *,
     preserve_local_stock: bool = True,
+    skip_stock: bool = False,
+    category_name: str | None = None,
+    category_path_json: str | None = None,
+    visits_7d: int | None = None,
+    promo_active: bool | None = None,
+    promo_type: str | None = None,
 ) -> None:
     """Aplica os campos de um item ML (resp. de GET /items/{id}) num ProductListing.
 
@@ -4715,6 +4784,13 @@ def _apply_ml_item_to_listing(
     - `preserve_local_stock=True`: NÃO sobrescreve available_quantity em anúncios
       não-Full (preserva o estoque local de cross-docking). Para Full, atualiza
       qty_full lendo do ML.
+    - `skip_stock=True` (job de metadados, ADR-0014): NÃO toca em estoque nenhum
+      (available_quantity / qty_full / qty_local) — nem para Full. O estoque vem do
+      sistema (NF-e/pedidos), nunca do ML.
+    - `category_name`/`category_path_json`/`visits_7d`: paridade com o import em lote;
+      quando fornecidos (não-None), são gravados.
+    - `promo_active`/`promo_type`: quando `promo_active is not None` (fonte canônica
+      Seller Promotions), define/limpa `promo_type` de forma autoritativa.
     """
     title = item.get("title", "") or ""
     permalink = item.get("permalink", "") or ""
@@ -4829,6 +4905,10 @@ def _apply_ml_item_to_listing(
     listing.title_override = title
     listing.sale_price = price
     listing.status = item_status
+    # Se o ML mostra o anúncio ATIVO, ele não está mais "pausado pelo sistema" (o dono pode
+    # tê-lo reativado manualmente) — limpa auto_paused para o estado não ficar preso (ADR-0014).
+    if item_status == "published" and getattr(listing, "auto_paused", False):
+        listing.auto_paused = False
     listing.category_id = category_id or listing.category_id
     listing.listing_type = listing_type or listing.listing_type
     listing.is_full = is_full
@@ -4866,8 +4946,12 @@ def _apply_ml_item_to_listing(
     if attributes_json:
         listing.attributes_json = attributes_json
 
-    # Estoque: Full sempre lê do ML; não-Full preserva local se preserve_local_stock=True
-    if is_full:
+    # Estoque (ADR-0014): com skip_stock NÃO trazemos estoque do ML (nem Full) — o estoque
+    # é do sistema (NF-e/pedidos). Caso contrário, mantém o comportamento legado:
+    # Full sempre lê do ML; não-Full preserva local se preserve_local_stock=True.
+    if skip_stock:
+        pass  # não toca em available_quantity / qty_full / qty_local
+    elif is_full:
         listing.qty_full = available_qty
         listing.qty_local = 0
         listing.available_quantity = available_qty
@@ -4877,7 +4961,22 @@ def _apply_ml_item_to_listing(
         listing.qty_full = 0
     # else: preserva available_quantity/qty_local locais
 
-    # Promoção
+    # Categoria / visitas — paridade com o import em lote (gravados só quando fornecidos)
+    if category_name is not None:
+        listing.category_name = category_name or listing.category_name
+    if category_path_json is not None:
+        listing.category_path_json = category_path_json
+    if visits_7d is not None:
+        listing.visits_7d = int(visits_7d or 0)
+
+    # Automação de preço do ML (PRICE_DISCOUNT/PRICE_MATCHING) detectada pelas tags do item
+    _item_tags = [t.lower() for t in (item.get("tags") or [])]
+    listing.has_auto_price_adj = any(
+        t in ml_service._AUTO_PRICE_TAGS or "automat" in t or "smart_pric" in t
+        for t in _item_tags
+    )
+
+    # Preço regular / desconto (best-effort via price vs original_price)
     if regular_price is not None:
         listing.regular_price = regular_price
         listing.promo_discount_pct = promo_disc_pct
@@ -4886,8 +4985,14 @@ def _apply_ml_item_to_listing(
         and price >= float(listing.regular_price or 0) * 0.99
     ):
         listing.regular_price = None
-        listing.promo_type = None
         listing.promo_discount_pct = None
+        if promo_active is None:
+            listing.promo_type = None
+
+    # Tipo de promoção — fonte canônica (Seller Promotions). Quando o caller informa
+    # promo_active, ele manda; senão preserva o comportamento legado acima.
+    if promo_active is not None:
+        listing.promo_type = promo_type if promo_active else None
 
     listing.last_sync_at = datetime.now(UTC)
     # Vínculo de produto (cmig/catalog) e overrides locais nunca são tocados aqui.
