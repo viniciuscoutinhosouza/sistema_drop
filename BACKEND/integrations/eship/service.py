@@ -438,6 +438,50 @@ async def get_falhas(db: AsyncSession, order: Order) -> dict:
     )
 
 
+def _eship_produto_row(p: dict) -> dict:
+    """Extrai os campos relevantes (info + estoque) de um produto do GetProduto."""
+    cad = p.get("cadastro") if isinstance(p.get("cadastro"), dict) else {}
+    st = p.get("status") if isinstance(p.get("status"), dict) else {}
+    tp = p.get("tipo") if isinstance(p.get("tipo"), dict) else {}
+    return {
+        "codigo": p.get("codigo"),
+        "codigo_barras": p.get("codigoBarras"),
+        "descricao": p.get("descricao"),
+        "empresa": cad.get("nome"),
+        "status": st.get("descricao"),
+        "tipo": tp.get("descricao"),
+        "is_full": bool(p.get("itsFull")),
+        "total_fisico": p.get("totalFisico"),
+        "total_disponivel": p.get("totalDisponivel"),
+        "total_reservado": p.get("totalReservado"),
+        "total_enderecado": p.get("totalEnderecado"),
+        "peso_bruto": p.get("pesoBruto"),
+    }
+
+
+async def list_eship_products(db: AsyncSession, cmig_id: int, page: int = 1) -> dict:
+    """Lista os produtos cadastrados no eShip (WMS) com info + estoque, paginado.
+
+    O eShip pagina por `pagina` (25/página) e não filtra por SKU/texto via API — a
+    busca é feita no frontend sobre a página carregada.
+    """
+    creds = creds_from_cmig(
+        (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    )
+    if not creds:
+        raise EShipError("CMIG sem integração eShip ativa/configurada.")
+    resp = await client.call(creds, FUNC_GET_PRODUTO, {"pagina": max(1, int(page or 1))})
+    body = ((resp or {}).get("corpo") or {}).get("body") or {}
+    pag = body.get("dadosPaginacao") or {}
+    return {
+        "produtos": [_eship_produto_row(p) for p in (body.get("dados") or [])],
+        "pagina": pag.get("paginaAtual") or page,
+        "paginas": pag.get("quantidadePaginas"),
+        "total": pag.get("totalObjetos"),
+        "por_pagina": pag.get("registrosPorPagina"),
+    }
+
+
 async def get_saldo_estoque(db: AsyncSession, cmig_id: int, sku: str | None = None) -> dict:
     """Consulta saldo de estoque no eShip (WMS = fonte de verdade do físico). spec §8."""
     creds = creds_from_cmig(

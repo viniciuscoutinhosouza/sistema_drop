@@ -4,8 +4,8 @@
       <div class="container-fluid">
         <div class="row mb-2">
           <div class="col-sm-8">
-            <h1 class="m-0"><i class="fas fa-truck-loading text-primary mr-2"></i>Envio de Produtos (eShip)</h1>
-            <small class="text-muted">Integração com o WMS eShip — produtos, pedidos, NF-e/etiqueta e saldo de estoque por empresa.</small>
+            <h1 class="m-0"><i class="fas fa-box text-primary mr-2"></i>Produtos (eShip)</h1>
+            <small class="text-muted">Integração com o WMS eShip — listar/enviar produtos e consultar saldo de estoque por empresa.</small>
           </div>
         </div>
       </div>
@@ -74,6 +74,11 @@
                     </div>
                   </div>
                   <pre v-if="saldo[c.cmig_id]" class="bg-light p-2 small mb-0" style="max-height:180px;overflow:auto">{{ saldo[c.cmig_id] }}</pre>
+
+                  <!-- Listar produtos cadastrados no eShip (com estoque) -->
+                  <button class="btn btn-sm btn-outline-info btn-block mt-2" @click="abrirProdutos(c)">
+                    <i class="fas fa-list mr-1"></i>Listar produtos no eShip
+                  </button>
                 </div>
                 <div v-else class="text-center py-2">
                   <RouterLink :to="`/cmigs/${c.cmig_id}`" class="btn btn-sm btn-outline-primary">
@@ -90,6 +95,7 @@
           <div class="card-body py-2 small text-muted">
             <ul class="mb-0 pl-3">
               <li>A apikey do eShip é cadastrada em cada <strong>Conta MIG</strong> (Contas MIG → abrir a empresa → card "Integração eShip").</li>
+              <li><strong>Listar produtos no eShip</strong> (botão acima) mostra os produtos cadastrados no WMS com estoque (físico, disponível, reservado). A busca filtra a página carregada.</li>
               <li><strong>Enviar produtos ao WMS</strong> (botão acima) pré-cadastra todo o catálogo da empresa no eShip (por SKU; idempotente). Útil antes do primeiro pedido.</li>
               <li>O envio do <strong>pedido</strong> ao eShip é feito na tela de <strong>Pedidos</strong> (ação eShip por pedido) ou automaticamente no fluxo de separação — os produtos do pedido também são cadastrados automaticamente.</li>
               <li>O eShip é a <strong>fonte de verdade do estoque físico</strong> — consulte o saldo por SKU acima.</li>
@@ -98,11 +104,67 @@
         </div>
       </div>
     </section>
+
+    <!-- Modal: produtos no eShip (info + estoque) -->
+    <div v-if="prod.show">
+      <div class="modal fade show d-block" tabindex="-1" @click.self="prod.show = false">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header py-2">
+              <h5 class="modal-title"><i class="fas fa-box mr-1"></i>Produtos no eShip — {{ prod.nome }}</h5>
+              <button type="button" class="close" @click="prod.show = false"><span>&times;</span></button>
+            </div>
+            <div class="modal-body p-2">
+              <div class="d-flex align-items-center mb-2" style="gap:8px">
+                <input v-model="prod.filter" class="form-control form-control-sm" style="max-width:300px"
+                       placeholder="Filtrar nesta página (código, descrição, EAN, empresa)">
+                <span class="text-muted small ml-auto" v-if="prod.total != null">Total no eShip: <strong>{{ prod.total }}</strong></span>
+              </div>
+              <div v-if="prod.loading" class="text-center py-4"><i class="fas fa-spinner fa-spin fa-2x text-muted"></i></div>
+              <table v-else class="table table-sm table-hover small mb-0">
+                <thead class="thead-light">
+                  <tr>
+                    <th>Código</th><th>Cód. barras</th><th>Descrição</th><th>Empresa</th><th>Status</th>
+                    <th class="text-center">Full</th><th class="text-right">Físico</th><th class="text-right">Disp.</th><th class="text-right">Reserv.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(p, i) in produtosFiltrados" :key="p.codigo || i">
+                    <td class="text-nowrap font-weight-bold">{{ p.codigo }}</td>
+                    <td class="text-nowrap">{{ p.codigo_barras || '—' }}</td>
+                    <td>{{ p.descricao }}</td>
+                    <td class="text-nowrap">{{ p.empresa || '—' }}</td>
+                    <td>{{ p.status || '—' }}</td>
+                    <td class="text-center"><span v-if="p.is_full" class="badge badge-info">Full</span></td>
+                    <td class="text-right">{{ p.total_fisico ?? '—' }}</td>
+                    <td class="text-right">{{ p.total_disponivel ?? '—' }}</td>
+                    <td class="text-right">{{ p.total_reservado ?? '—' }}</td>
+                  </tr>
+                  <tr v-if="!produtosFiltrados.length">
+                    <td colspan="9" class="text-center text-muted py-3">Nenhum produto.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-footer py-2 justify-content-start">
+              <button class="btn btn-sm btn-outline-secondary" :disabled="prod.pagina <= 1 || prod.loading" @click="loadProdutos(prod.pagina - 1)">
+                <i class="fas fa-chevron-left"></i> Anterior
+              </button>
+              <span class="mx-2 small text-muted">Página {{ prod.pagina }}<span v-if="prod.paginas"> de {{ prod.paginas }}</span></span>
+              <button class="btn btn-sm btn-outline-secondary" :disabled="(prod.paginas && prod.pagina >= prod.paginas) || prod.loading" @click="loadProdutos(prod.pagina + 1)">
+                Próxima <i class="fas fa-chevron-right"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-backdrop fade show"></div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 
@@ -114,6 +176,15 @@ const saldo = reactive({})
 const saldoLoading = reactive({})
 const pushLoading = reactive({})
 const pushResult = reactive({})
+
+// Modal de listagem de produtos do eShip
+const prod = reactive({ show: false, cmigId: null, nome: '', loading: false, rows: [], pagina: 1, paginas: null, total: null, filter: '' })
+const produtosFiltrados = computed(() => {
+  const f = (prod.filter || '').trim().toLowerCase()
+  if (!f) return prod.rows
+  return prod.rows.filter(p => [p.codigo, p.codigo_barras, p.descricao, p.empresa]
+    .some(v => (v ?? '').toString().toLowerCase().includes(f)))
+})
 
 function statusLabel(c) {
   if (!c.eship_configured) return 'Não configurado'
@@ -159,6 +230,35 @@ async function enviarProdutos(c) {
     toast.error(e.response?.data?.detail || 'Erro ao enviar produtos ao WMS')
   } finally {
     pushLoading[c.cmig_id] = false
+  }
+}
+
+async function abrirProdutos(c) {
+  prod.cmigId = c.cmig_id
+  prod.nome = c.company_name || ('CMIG #' + c.cmig_id)
+  prod.filter = ''
+  prod.rows = []
+  prod.pagina = 1
+  prod.paginas = null
+  prod.total = null
+  prod.show = true
+  await loadProdutos(1)
+}
+
+async function loadProdutos(page) {
+  if (page < 1 || !prod.cmigId) return
+  prod.loading = true
+  try {
+    const { data } = await api.get(`/integrations/eship/cmigs/${prod.cmigId}/produtos`, { params: { page } })
+    prod.rows = data.produtos || []
+    prod.pagina = data.pagina || page
+    prod.paginas = data.paginas ?? null
+    prod.total = data.total ?? null
+    prod.filter = ''
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao listar produtos do eShip')
+  } finally {
+    prod.loading = false
   }
 }
 

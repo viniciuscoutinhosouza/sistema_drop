@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-06-27 — feat(eship): listar produtos do WMS (Integração → Produtos)
+
+- Submenu/H1/meta.title "Envio de Produtos" → **"Produtos"** (path /integracao/envio-produtos
+  inalterado). Mantidas as funções existentes (enviar ao WMS, saldo).
+- Botão "Listar produtos no eShip" por CMIG → modal (Bootstrap modal-xl) com tabela paginada
+  (Anterior/Próxima) + filtro client-side na página carregada. Colunas: código, cód. barras,
+  descrição, empresa, status, Full, e estoque (físico/disponível/reservado).
+- Backend: `service.list_eship_products(db, cmig_id, page)` chama `webServiceGetProduto`
+  (`{"pagina": N}`, 25/pág) e mapeia via `_eship_produto_row` (info + estoque já vêm no
+  GetProduto: totalFisico/totalDisponivel/totalReservado/itsFull). Endpoint
+  GET /integrations/eship/cmigs/{id}/produtos (admin/ugo/ac + _assert_cmig_access).
+- Fix de segurança (auditoria HIGH): `_assert_cmig_access`/`_accessible_cmig_ids` — ugo com
+  `warehouse_id` nulo deixava de barrar CMIG órfã (None != None). Corrigido (afeta também
+  /saldo e /push-products).
+- Testes: +3 em tests/test_eship_products.py. Suite 60/2 (baseline MockResult).
+- LIMITAÇÃO conhecida: o `webServiceGetProduto` retorna o catálogo do ARMAZÉM INTEIRO (todas
+  as empresas do 3PL, ~6850 itens), não só da CMIG — não há filtro server-side que funcione.
+  A coluna "Empresa" identifica o dono de cada SKU; filtro client-side ajuda. Escopo por
+  empresa fica como follow-up (depende de parâmetro de filtro do eShip).
+
+---
+
+## 2026-06-25 — fix(eship): client detecta erro de negócio em HTTP 200 (`erros`)
+
+Diagnóstico: "33 produtos enviados" era FALSO — nada foi cadastrado no WMS. Causas:
+1. O eShip responde HTTP **200 mesmo em erro**, sinalizando no corpo `erros`
+   (ex.: `{"erros":[{"erro":{"mensagem":"Função ... não existe.","codigo":"MAP0014"}}]}`).
+   O `client.call` só checava o status HTTP → contava o erro como sucesso.
+2. Teste direto na API (apikey do dono): `webServicePostProduto`, `webServicePostOrdem`,
+   `webServiceGetOrdem`, `webServicePostVariacao`, `webServicePostEntrada`,
+   `webServiceGetCadastro` → TODAS retornam `MAP0014 "função não existe"`. Só
+   `webServiceGetProduto` e `webServiceGetSaldoEstoque` estão habilitadas para essa
+   apikey/conta Armazenaki. Ou seja, as funções de ESCRITA (cadastro de produto, envio
+   de ordem) não estão habilitadas para a chave — é config do lado do eShip, não do código.
+
+Correção (código): `client.call` agora inspeciona `data["erros"]` e levanta `EShipError`
+com a mensagem/código reais (`_extract_eship_error`, tolerante a formatos). Resultado: o
+sistema deixa de reportar falso "enviado" — passa a mostrar o erro real (ex.: MAP0014).
+Aplica-se a TODAS as funções eShip (produto, ordem, saldo).
+- Testes: tests/test_eship_client.py (5 casos: erro em 200, sucesso erros=null/[], !=200,
+  texto puro). Suite 57/2 (baseline MockResult).
+- AÇÃO DO DONO (fora do código): pedir ao eShip/Armazenaki para habilitar as funções de
+  escrita (webServicePostProduto, webServicePostOrdem…) na apikey de integração. Também:
+  `webServiceGetProduto` ignora o filtro por SKU (retorna catálogo inteiro) — confirmar o
+  parâmetro correto na spec.
+
+---
+
 ## 2026-06-25 — feat(eship): cadastro em lote do catálogo da CMIG no WMS
 
 Nova ação "Enviar produtos ao WMS" na tela Integração → Envio de Produtos: pré-cadastra

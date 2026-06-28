@@ -261,8 +261,8 @@ const routes = [
       // Integração eShip (WMS) — Admin
       { path: 'settings/eship', component: EShipConfigView, meta: { title: 'Integração eShip', role: 'admin' } },
 
-      // Integração > Envio de Produtos (eShip por empresa)
-      { path: 'integracao/envio-produtos', component: EnvioProdutosView, meta: { title: 'Envio de Produtos (eShip)' } },
+      // Integração > Produtos (eShip por empresa)
+      { path: 'integracao/envio-produtos', component: EnvioProdutosView, meta: { title: 'Produtos (eShip)' } },
 
       // Tabela NCM — Admin
       { path: 'settings/ncm', component: NcmView, meta: { title: 'Tabela NCM', role: 'admin' } },

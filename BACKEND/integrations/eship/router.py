@@ -32,7 +32,8 @@ async def _assert_cmig_access(db: AsyncSession, cmig: CMIG, user: User) -> None:
     if user.role == "admin":
         return
     if user.role == "ugo":
-        if cmig.warehouse_id != user.warehouse_id:
+        # warehouse_id nulo (ugo sem galpão / CMIG órfã) NÃO concede acesso.
+        if not user.warehouse_id or cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         return
     if user.role == "ac":
@@ -54,6 +55,8 @@ async def _accessible_cmig_ids(db: AsyncSession, user: User) -> set[int] | None:
     if user.role == "admin":
         return None
     if user.role == "ugo":
+        if not user.warehouse_id:
+            return set()  # ugo sem galpão não vê nenhuma CMIG
         rows = (
             await db.execute(select(CMIG.id).where(CMIG.warehouse_id == user.warehouse_id))
         ).all()
@@ -121,6 +124,24 @@ async def list_cmig_integrations(
         }
         for c in cmigs
     ]
+
+
+@router.get("/cmigs/{cmig_id}/produtos")
+async def list_eship_products_endpoint(
+    cmig_id: int,
+    page: int = 1,
+    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lista os produtos cadastrados no eShip (WMS) com info + estoque, paginado."""
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    if not cmig:
+        raise HTTPException(status_code=404, detail="CMIG não encontrada")
+    await _assert_cmig_access(db, cmig, current_user)
+    try:
+        return await service.list_eship_products(db, cmig_id, page)
+    except EShipError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @router.get("/cmigs/{cmig_id}/saldo")

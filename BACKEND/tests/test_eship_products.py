@@ -142,6 +142,46 @@ def test_resolve_item_ean_sem_vinculo_retorna_none():
     assert asyncio.run(S._resolve_item_ean(_DB(), item)) is None
 
 
+def test_eship_produto_row_extrai_info_e_estoque():
+    p = {
+        "codigo": "WF-01", "codigoBarras": "789", "descricao": "X",
+        "cadastro": {"nome": "EMP"}, "status": {"descricao": "Normal"},
+        "tipo": {"descricao": "Simples"}, "itsFull": True,
+        "totalFisico": 5, "totalDisponivel": 3, "totalReservado": 2,
+    }
+    r = S._eship_produto_row(p)
+    assert r["codigo"] == "WF-01" and r["codigo_barras"] == "789" and r["empresa"] == "EMP"
+    assert r["status"] == "Normal" and r["tipo"] == "Simples" and r["is_full"] is True
+    assert (r["total_fisico"], r["total_disponivel"], r["total_reservado"]) == (5, 3, 2)
+
+
+def test_eship_produto_row_campos_ausentes_nao_quebra():
+    r = S._eship_produto_row({"codigo": "X"})
+    assert r["empresa"] is None and r["status"] is None and r["is_full"] is False
+
+
+def test_list_eship_products_mapeia_resposta(monkeypatch):
+    async def fake_call(creds, funcao, payload):
+        assert funcao == "webServiceGetProduto"
+        assert payload == {"pagina": 2}
+        return {"corpo": {"body": {
+            "dadosPaginacao": {"paginaAtual": 2, "quantidadePaginas": 10, "totalObjetos": 250, "registrosPorPagina": 25},
+            "dados": [{"codigo": "A", "status": {"descricao": "Normal"}}],
+        }}}
+
+    monkeypatch.setattr(S.client, "call", fake_call)
+    monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: _creds())
+
+    class _Res:
+        def scalar_one_or_none(self): return object()
+    class _DB:
+        async def execute(self, q): return _Res()
+
+    res = asyncio.run(S.list_eship_products(_DB(), 1, 2))
+    assert res["pagina"] == 2 and res["paginas"] == 10 and res["total"] == 250
+    assert len(res["produtos"]) == 1 and res["produtos"][0]["codigo"] == "A"
+
+
 def test_push_cmig_products_sem_creds_levanta(monkeypatch):
     monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: None)
 
