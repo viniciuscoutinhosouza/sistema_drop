@@ -24,7 +24,10 @@ async def get_config(db: AsyncSession) -> SMTPConfig | None:
     return res.scalar_one_or_none()
 
 
-def _send_sync(cfg: SMTPConfig, to: str, subject: str, html: str, text: str | None) -> None:
+def _send_sync(
+    cfg: SMTPConfig, to: str, subject: str, html: str, text: str | None,
+    attachments: list[tuple[str, bytes, str, str]] | None = None,
+) -> None:
     msg = EmailMessage()
     msg["Subject"] = subject
     from_addr = cfg.from_email or cfg.username
@@ -32,6 +35,8 @@ def _send_sync(cfg: SMTPConfig, to: str, subject: str, html: str, text: str | No
     msg["To"] = to
     msg.set_content(text or "Seu cliente de e-mail não suporta HTML.")
     msg.add_alternative(html, subtype="html")
+    for filename, data, maintype, subtype in (attachments or []):
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
 
     port = int(cfg.port or (465 if cfg.use_ssl else 587))
     ctx = ssl.create_default_context()
@@ -52,16 +57,17 @@ def _send_sync(cfg: SMTPConfig, to: str, subject: str, html: str, text: str | No
 
 
 async def send_email(
-    db: AsyncSession, to: str, subject: str, html: str, text: str | None = None
+    db: AsyncSession, to: str, subject: str, html: str, text: str | None = None,
+    attachments: list[tuple[str, bytes, str, str]] | None = None,
 ) -> None:
-    """Envia um e-mail usando a config ativa. Levanta exceção em erro de envio
-    ou se o SMTP não estiver configurado/ativo (útil para o botão "Enviar teste")."""
+    """Envia um e-mail usando a config ativa. `attachments`: lista de
+    (filename, bytes, maintype, subtype). Levanta exceção em erro de envio."""
     cfg = await get_config(db)
     if not cfg or not cfg.is_active:
         raise RuntimeError("Servidor de e-mail não configurado ou inativo.")
     if not cfg.host or not cfg.from_email:
         raise RuntimeError("Configuração SMTP incompleta (host/remetente).")
-    await asyncio.to_thread(_send_sync, cfg, to, subject, html, text)
+    await asyncio.to_thread(_send_sync, cfg, to, subject, html, text, attachments)
 
 
 async def send_otp_email(

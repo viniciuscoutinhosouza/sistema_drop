@@ -58,7 +58,7 @@
                 <label class="small mb-1">Origem</label>
                 <select v-model="filters.source" class="form-control form-control-sm" @change="reload">
                   <option value="all">Todas</option>
-                  <option value="fiscal">Sistema (Focus NFe)</option>
+                  <option value="fiscal">Sistema (SEFAZ)</option>
                   <option value="ml">Faturador ML</option>
                 </select>
               </div>
@@ -371,14 +371,13 @@ async function doExport(kind) {
 // Visualiza a DANFE de uma NF-e individual (abre em nova aba)
 async function viewDanfe(inv) {
   if (!inv.danfe_available) { toast.warning('DANFE não disponível para esta NF-e'); return }
-  if (inv.source === 'fiscal') {
-    window.open(inv.danfe_url, '_blank')
-    return
-  }
   docLoading.value[rowKey(inv)] = 'danfe'
   try {
-    const { data } = await api.get(
-      `/orders/${inv.order_id}/invoices/${inv.ml_invoice_id}/danfe`, { responseType: 'blob' })
+    // NF-e própria (SEFAZ): gera/baixa do backend; ML: via pedido.
+    const path = inv.source === 'fiscal'
+      ? `/invoices/${inv.id}/danfe`
+      : `/orders/${inv.order_id}/invoices/${inv.ml_invoice_id}/danfe`
+    const { data } = await api.get(path, { responseType: 'blob' })
     const url = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }))
     window.open(url, '_blank')
     setTimeout(() => URL.revokeObjectURL(url), 60000)
@@ -392,14 +391,12 @@ async function viewDanfe(inv) {
 // Baixa o XML de uma NF-e individual
 async function downloadXml(inv) {
   if (!inv.xml_available) { toast.warning('XML não disponível para esta NF-e'); return }
-  if (inv.source === 'fiscal') {
-    window.open(inv.xml_url, '_blank')
-    return
-  }
   docLoading.value[rowKey(inv)] = 'xml'
   try {
-    const { data } = await api.get(
-      `/orders/${inv.order_id}/invoices/${inv.ml_invoice_id}/xml`, { responseType: 'blob' })
+    const path = inv.source === 'fiscal'
+      ? `/invoices/${inv.id}/xml`
+      : `/orders/${inv.order_id}/invoices/${inv.ml_invoice_id}/xml`
+    const { data } = await api.get(path, { responseType: 'blob' })
     const url = URL.createObjectURL(new Blob([data], { type: 'application/xml' }))
     const a = document.createElement('a')
     a.href = url

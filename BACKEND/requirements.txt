@@ -34,8 +34,19 @@ reportlab>=4.0.0
 python-barcode>=0.15.1
 Pillow>=10.0.0
 
-# Certificado A1 (.pfx) — validação local antes de enviar ao Focus
+# Exportação de relatórios em Excel (Vendas do Mês)
+openpyxl>=3.1.0
+
+# Certificado A1 (.pfx) — leitura PKCS#12 + senha cifrada (Fernet) no banco
 cryptography>=42.0.0
+
+# Emissão própria de NF-e (SEFAZ direto): XML 4.00, assinatura XMLDSig SHA-1, SOAP mTLS
+lxml>=5.0
+signxml>=3.2
+urllib3>=2.0
+
+# DANFE/DANFCE em PDF a partir do XML autorizado
+brazilfiscalreport>=1.0
 
 # CORS
 # (built into FastAPI/Starlette)

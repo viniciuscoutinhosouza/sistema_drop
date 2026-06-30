@@ -25,6 +25,7 @@ class CMIG(Base):
     neighborhood = Column(String(100))
     city = Column(String(100))
     state = Column(String(2))
+    ibge_code = Column(String(7))  # código IBGE do município (cMunFG/enderEmit na NF-e própria)
     is_active = Column(Boolean, nullable=False, default=True)
     # Integração eShip (WMS) — credenciais por empresa (a apikey é única por empresa).
     eship_base_url = Column(String(500))        # ex: https://armazenaki.eship.com.br/v3

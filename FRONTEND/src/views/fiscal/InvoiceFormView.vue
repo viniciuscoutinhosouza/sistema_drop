@@ -1119,7 +1119,7 @@ async function calculateTaxes() {
 }
 
 async function transmit() {
-  if (!confirm('Transmitir esta NFe para a SEFAZ via Focus NFe? Após a autorização, ela não poderá ser editada.')) return
+  if (!confirm('Transmitir esta NFe diretamente à SEFAZ? Após a autorização, ela não poderá ser editada.')) return
   transmitting.value = true
   try {
     await saveHeader({ silent: true })
@@ -1127,7 +1127,7 @@ async function transmit() {
     if (result.status === 'authorized') {
       toast.success('NFe autorizada!')
     } else if (result.status === 'processing') {
-      toast.info('NFe em processamento — aguarde o webhook do Focus.')
+      toast.info('NFe em processamento — use "Atualizar status" para consultar a SEFAZ.')
     } else {
       toast.warning(`Status: ${result.status} — ${result.focus_message || ''}`)
     }

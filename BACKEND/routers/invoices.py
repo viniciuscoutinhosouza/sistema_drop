@@ -6,6 +6,7 @@ import uuid as _uuid
 import zipfile as _zipfile
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path as _Path
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -27,7 +28,9 @@ from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
 from services import ml_service as _ml
-from services.fiscal import dfe_service, focus_service
+from services.fiscal import dfe_service, sefaz_service
+from services.fiscal.sefaz.exceptions import FiscalError as _SefazFiscalError
+from services.fiscal.sefaz.exceptions import SefazError as _SefazNetError
 from services.fiscal.icms_table import compute_difal, get_icms_rate
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
 from services.fiscal.tax_calculator import calculate_item_taxes, suggest_cfop
@@ -488,8 +491,10 @@ async def _collect_outbound_rows(
                     "xml_url": inv.xml_url,
                     "danfe_url": inv.danfe_url,
                     "ml_invoice_id": None,
-                    "xml_available": bool(inv.xml_url),
-                    "danfe_available": bool(inv.danfe_url),
+                    # NF-e própria (SEFAZ) guarda o XML local → baixa pelos endpoints
+                    # /invoices/{id}/xml|danfe (não por URL). Disponível quando autorizada.
+                    "xml_available": bool(inv.xml_url) or (inv.status == "authorized" and bool(inv.xml_local_path)),
+                    "danfe_available": bool(inv.danfe_url) or (inv.status == "authorized" and bool(inv.xml_local_path)),
                 }
             )
 
@@ -753,15 +758,27 @@ async def export_outbound_invoices(
                 label = f"NFe {r['nfe_number'] or r['access_key'] or r['id']}"
                 try:
                     if r["source"] == "fiscal":
-                        url = r["xml_url"] if kind == "xml" else r["danfe_url"]
-                        if not url:
-                            errors.append(f"{label}: sem URL de {kind}")
+                        # NF-e própria (SEFAZ): XML autorizado é local; DANFE é gerado.
+                        finv = (
+                            await db.execute(select(Invoice).where(Invoice.id == r["id"]))
+                        ).scalar_one_or_none()
+                        if not finv or not finv.xml_local_path:
+                            errors.append(f"{label}: XML autorizado indisponível")
                             continue
-                        resp = await client.get(url)
-                        if resp.status_code != 200:
-                            errors.append(f"{label}: Focus retornou HTTP {resp.status_code}")
+                        try:
+                            xml_text = _read_authorized_xml(finv)
+                        except HTTPException:
+                            errors.append(f"{label}: arquivo XML não encontrado")
                             continue
-                        content = resp.content
+                        if kind == "xml":
+                            content = xml_text.encode("utf-8")
+                        else:
+                            from services.fiscal.sefaz.danfe import DanfeError, gerar_danfe
+                            try:
+                                content = await asyncio.to_thread(gerar_danfe, xml_text)
+                            except DanfeError as e:
+                                errors.append(f"{label}: falha ao gerar DANFE ({e})")
+                                continue
                     else:  # ml
                         acc = accounts_by_order.get(r["order_id"])
                         inv_id = r["ml_invoice_id"]
@@ -1382,10 +1399,15 @@ def _validate_ready_to_transmit(inv: Invoice, cfg: CMIGFiscalConfig, person: Per
         raise HTTPException(
             status_code=400, detail=f"NFe em status '{inv.status}' não pode ser transmitida"
         )
-    if not cfg.focus_company_token:
-        raise HTTPException(status_code=400, detail="CMIG não está registrada no Focus NFe")
-    if not cfg.certificate_uploaded_at:
-        raise HTTPException(status_code=400, detail="Certificado A1 não enviado")
+    if not (cfg.cert_path and cfg.cert_pass_encrypted):
+        raise HTTPException(
+            status_code=400,
+            detail="Certificado A1 não configurado para esta CMIG (envie o .pfx em Configuração Fiscal)",
+        )
+    if not cfg.manual_nfe_serie:
+        raise HTTPException(
+            status_code=400, detail="Configure a Série da NF-e manual (SEFAZ) na Configuração Fiscal"
+        )
     if not person:
         raise HTTPException(status_code=400, detail="Selecione o destinatário antes de transmitir")
     if not inv.items:
@@ -1406,7 +1428,7 @@ async def transmit_invoice(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Transmite NFe para o Focus NFe (que envia à SEFAZ)."""
+    """Transmite a NFe diretamente à SEFAZ (mTLS + XMLDSig), via série manual configurável."""
     inv = await _get_invoice_for_edit(invoice_id, current_user, db)
     cfg = await _get_fiscal_config(inv.cmig_id, db)
     cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
@@ -1415,62 +1437,25 @@ async def transmit_invoice(
         person = (
             await db.execute(select(Person).where(Person.id == inv.person_id))
         ).scalar_one_or_none()
-    carrier = None
-    if inv.carrier_person_id:
-        carrier = (
-            await db.execute(select(Person).where(Person.id == inv.carrier_person_id))
-        ).scalar_one_or_none()
 
     _validate_ready_to_transmit(inv, cfg, person)
 
-    # Gerar referência única (Focus exige)
-    ref = inv.focus_ref or f"inv-{inv.id}-{_uuid.uuid4().hex[:8]}"
-    inv.focus_ref = ref
-    inv.status = "queued"
-    await db.commit()
-
-    payload = focus_service._build_nfe_payload(inv, cmig, cfg, person, inv.items, carrier)
-
     try:
-        result = await focus_service.emit_nfe(cfg, payload, ref)
-    except focus_service.FocusError as e:
-        inv.status = "rejected"
-        inv.focus_status = "erro_envio"
-        inv.focus_message = e.message[:2000] if e.message else None
-        await db.commit()
-        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
+        await sefaz_service.emitir(db, inv, cmig, cfg, person, list(inv.items))
+    except sefaz_service.SefazServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _SefazNetError as e:
+        # Rede/SEFAZ fora — a nota fica em 'processing'; o usuário recupera com
+        # "Atualizar status" (consulta N-6 pela chave, sem reemitir).
+        raise HTTPException(
+            status_code=502,
+            detail=f"SEFAZ indisponível: {e}. Use 'Atualizar status' para retomar.",
+        )
+    except _SefazFiscalError as e:
+        raise HTTPException(status_code=422, detail=f"Falha fiscal ao montar a NF-e: {e}")
 
-    # Focus retorna {status, ref} ou {status, ref, ...} sincronamente.
-    # Status possíveis: "processando_autorizacao", "autorizado", "denegado", "cancelado", "erro_autorizacao"
-    inv.focus_status = result.get("status") or "enviado"
-    inv.focus_message = result.get("mensagem_sefaz") or result.get("mensagem")
-
-    if inv.focus_status == "autorizado":
-        await _apply_authorized(inv, cfg, result)
-    elif inv.focus_status in ("erro_autorizacao", "denegado"):
-        inv.status = "denied" if inv.focus_status == "denegado" else "rejected"
-    else:
-        inv.status = "processing"
-
-    await db.commit()
     await db.refresh(inv, attribute_names=["items"])
     return _serialize(inv, with_items=True)
-
-
-async def _apply_authorized(inv: Invoice, cfg: CMIGFiscalConfig, focus_payload: dict):
-    """Atualiza Invoice com dados retornados pelo Focus quando NFe é autorizada."""
-    inv.status = "authorized"
-    inv.access_key = focus_payload.get("chave_nfe") or inv.access_key
-    inv.nfe_number = (
-        int(focus_payload.get("numero")) if focus_payload.get("numero") else inv.nfe_number
-    )
-    inv.serie = int(focus_payload.get("serie")) if focus_payload.get("serie") else inv.serie
-    inv.xml_url = focus_service.absolutize_focus_url(
-        cfg, focus_payload.get("caminho_xml_nota_fiscal") or ""
-    )
-    inv.danfe_url = focus_service.absolutize_focus_url(
-        cfg, focus_payload.get("caminho_danfe") or ""
-    )
 
 
 async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
@@ -1638,35 +1623,28 @@ async def refresh_status(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Reconsulta o status da NFe no Focus (útil para invoices em 'processing')."""
+    """Reconsulta o status da NFe na SEFAZ pela chave (regra N-6) — recupera notas em 'processing'."""
     inv = (await db.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, current_user, db)
-    if not inv.focus_ref:
+    if not inv.access_key:
         raise HTTPException(status_code=400, detail="NFe ainda não foi transmitida")
     cfg = await _get_fiscal_config(inv.cmig_id, db)
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
 
     try:
-        result = await focus_service.consult_nfe(cfg, inv.focus_ref)
-    except focus_service.FocusError as e:
-        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
+        result = await sefaz_service.consultar(db, inv, cmig, cfg)
+    except sefaz_service.SefazServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _SefazNetError as e:
+        raise HTTPException(status_code=502, detail=f"SEFAZ indisponível: {e}")
 
-    inv.focus_status = result.get("status") or inv.focus_status
-    inv.focus_message = result.get("mensagem_sefaz") or result.get("mensagem")
-    if inv.focus_status == "autorizado":
-        await _apply_authorized(inv, cfg, result)
-    elif inv.focus_status == "cancelado":
-        inv.status = "cancelled"
-    elif inv.focus_status == "denegado":
-        inv.status = "denied"
-    elif inv.focus_status in ("erro_autorizacao",):
-        inv.status = "rejected"
-    await db.commit()
     return {
         "status": inv.status,
-        "focus_status": inv.focus_status,
-        "focus_message": inv.focus_message,
+        "cstat": result.get("cstat"),
+        "motivo": result.get("motivo"),
+        "protocolo": result.get("protocolo"),
     }
 
 
@@ -1684,34 +1662,37 @@ async def cancel_invoice(
     await _check_cmig_access(inv.cmig_id, current_user, db)
     if inv.status != "authorized":
         raise HTTPException(status_code=400, detail="Apenas NFes autorizadas podem ser canceladas")
-    if not inv.focus_ref:
-        raise HTTPException(status_code=400, detail="NFe sem referência Focus")
+    if not inv.access_key:
+        raise HTTPException(status_code=400, detail="NFe sem chave de acesso")
 
     reason = (body.get("reason") or "").strip()
-    if len(reason) < 15:
+    if len(reason) < 15 or len(reason) > 255:
         raise HTTPException(
-            status_code=422, detail="Justificativa deve ter no mínimo 15 caracteres"
+            status_code=422, detail="Justificativa deve ter entre 15 e 255 caracteres"
         )
 
     cfg = await _get_fiscal_config(inv.cmig_id, db)
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
     try:
-        result = await focus_service.cancel_nfe(cfg, inv.focus_ref, reason)
-    except focus_service.FocusError as e:
-        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
+        result = await sefaz_service.cancelar(db, inv, cmig, cfg, reason)
+    except sefaz_service.SefazServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _SefazNetError as e:
+        raise HTTPException(status_code=502, detail=f"SEFAZ indisponível: {e}")
 
-    inv.status = "cancelled"
-    inv.cancelled_at = datetime.utcnow()
-    inv.cancel_reason = reason
-    inv.cancel_protocol = result.get("numero_protocolo") or result.get("protocolo")
+    if not result.get("cancelada"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"SEFAZ não cancelou (cStat {result.get('cstat')}): {result.get('motivo')}",
+        )
     db.add(
         InvoiceEvent(
             invoice_id=inv.id,
             event_type="cancellation",
             reason=reason,
-            focus_ref=inv.focus_ref,
             sefaz_protocol=inv.cancel_protocol,
-            sefaz_status_code=str(result.get("status_sefaz") or ""),
-            sefaz_message=result.get("mensagem_sefaz") or result.get("mensagem"),
+            sefaz_status_code=str(result.get("cstat") or ""),
+            sefaz_message=result.get("motivo"),
             created_by_user_id=current_user.id,
         )
     )
@@ -1733,35 +1714,97 @@ async def send_correction_letter(
     await _check_cmig_access(inv.cmig_id, current_user, db)
     if inv.status != "authorized":
         raise HTTPException(status_code=400, detail="CCe só pode ser emitida para NFe autorizada")
-    if not inv.focus_ref:
-        raise HTTPException(status_code=400, detail="NFe sem referência Focus")
+    if not inv.access_key:
+        raise HTTPException(status_code=400, detail="NFe sem chave de acesso")
 
     text = (body.get("text") or "").strip()
     if len(text) < 15 or len(text) > 1000:
         raise HTTPException(status_code=422, detail="Texto deve ter entre 15 e 1000 caracteres")
 
     cfg = await _get_fiscal_config(inv.cmig_id, db)
-    try:
-        result = await focus_service.correction_letter(cfg, inv.focus_ref, text)
-    except focus_service.FocusError as e:
-        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
-
-    # Próximo número da CCe (sequência)
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
+    # Próximo número da CCe (sequência — vale sempre a última)
     cce_count = sum(1 for ev in (inv.events or []) if ev.event_type == "correction_letter")
+    n_seq = cce_count + 1
+    try:
+        result = await sefaz_service.carta_correcao(db, inv, cmig, cfg, text, n_seq)
+    except sefaz_service.SefazServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _SefazNetError as e:
+        raise HTTPException(status_code=502, detail=f"SEFAZ indisponível: {e}")
+
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"SEFAZ recusou a CC-e (cStat {result.get('cstat')}): {result.get('motivo')}",
+        )
     db.add(
         InvoiceEvent(
             invoice_id=inv.id,
             event_type="correction_letter",
-            sequence_number=cce_count + 1,
+            sequence_number=n_seq,
             reason=text,
-            focus_ref=inv.focus_ref,
-            sefaz_protocol=result.get("numero_protocolo") or result.get("protocolo"),
-            sefaz_message=result.get("mensagem_sefaz") or result.get("mensagem"),
+            sefaz_protocol=result.get("protocolo"),
+            sefaz_message=result.get("motivo"),
             created_by_user_id=current_user.id,
         )
     )
     await db.commit()
     return {"detail": "Carta de correção enviada"}
+
+
+def _read_authorized_xml(inv: Invoice) -> str:
+    """Lê o XML autorizado (procNFe) gravado localmente."""
+    if not inv.xml_local_path:
+        raise HTTPException(status_code=404, detail="XML da NF-e não disponível")
+    p = _Path(inv.xml_local_path)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Arquivo XML não encontrado no servidor")
+    return p.read_text(encoding="utf-8")
+
+
+@router.get("/{invoice_id}/xml")
+async def download_xml(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Baixa o XML autorizado (procNFe) da NF-e própria."""
+    inv = (await db.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="NFe não encontrada")
+    await _check_cmig_access(inv.cmig_id, current_user, db)
+    xml = _read_authorized_xml(inv)
+    fname = f"NFe-{inv.access_key or inv.id}.xml"
+    return Response(
+        content=xml.encode("utf-8"), media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.get("/{invoice_id}/danfe")
+async def download_danfe(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Gera e baixa o DANFE PDF da NF-e própria (a partir do XML autorizado)."""
+    from services.fiscal.sefaz.danfe import DanfeError, gerar_danfe
+
+    inv = (await db.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="NFe não encontrada")
+    await _check_cmig_access(inv.cmig_id, current_user, db)
+    xml = _read_authorized_xml(inv)
+    try:
+        pdf = await asyncio.to_thread(gerar_danfe, xml)
+    except DanfeError as e:
+        raise HTTPException(status_code=422, detail=f"Falha ao gerar DANFE: {e}")
+    fname = f"DANFE-{inv.access_key or inv.id}.pdf"
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{fname}"'},
+    )
 
 
 @router.post("/{invoice_id}/email")
@@ -1771,37 +1814,56 @@ async def email_invoice(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Envia XML+DANFE por e-mail. Body: {emails: ['a@b.com', ...]}"""
+    """Envia o XML + DANFE da NF-e autorizada por e-mail, via SMTP próprio."""
+    from services.fiscal.sefaz.danfe import DanfeError, gerar_danfe
+
     inv = (await db.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, current_user, db)
     if inv.status != "authorized":
-        raise HTTPException(status_code=400, detail="Só é possível enviar e-mail de NFe autorizada")
-    if not inv.focus_ref:
-        raise HTTPException(status_code=400, detail="NFe sem referência Focus")
+        raise HTTPException(status_code=400, detail="Só é possível enviar e-mail de NF-e autorizada")
 
     emails = body.get("emails") or []
     if isinstance(emails, str):
         emails = [e.strip() for e in emails.split(",") if e.strip()]
-    if not emails:
-        # fallback: e-mail do destinatário
-        if inv.person_id:
-            person = (
-                await db.execute(select(Person).where(Person.id == inv.person_id))
-            ).scalar_one_or_none()
-            if person and person.email:
-                emails = [person.email]
+    if not emails and inv.person_id:
+        person = (
+            await db.execute(select(Person).where(Person.id == inv.person_id))
+        ).scalar_one_or_none()
+        if person and person.email:
+            emails = [person.email]
     if not emails:
         raise HTTPException(status_code=422, detail="Informe ao menos um e-mail")
 
-    cfg = await _get_fiscal_config(inv.cmig_id, db)
+    xml = _read_authorized_xml(inv)
     try:
-        await focus_service.send_email(cfg, inv.focus_ref, emails)
-    except focus_service.FocusError as e:
-        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
+        pdf = await asyncio.to_thread(gerar_danfe, xml)
+    except DanfeError as e:
+        raise HTTPException(status_code=422, detail=f"Falha ao gerar DANFE: {e}")
 
-    return {"detail": f"E-mail enviado para {len(emails)} destinatário(s)"}
+    chave = inv.access_key or str(inv.id)
+    attachments = [
+        (f"NFe-{chave}.xml", xml.encode("utf-8"), "application", "xml"),
+        (f"DANFE-{chave}.pdf", pdf, "application", "pdf"),
+    ]
+    from services import email_service
+
+    subject = f"NF-e {inv.nfe_number or ''} — chave {chave}"
+    html = (
+        "<p>Segue em anexo a NF-e (XML) e o DANFE (PDF).</p>"
+        f"<p>Chave de acesso: <strong>{chave}</strong></p>"
+    )
+    sent = 0
+    for to in emails:
+        try:
+            await email_service.send_email(db, to, subject, html, attachments=attachments)
+            sent += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[nfe] falha ao enviar e-mail para %s: %s", to, e)
+    if sent == 0:
+        raise HTTPException(status_code=502, detail="Falha ao enviar e-mail (verifique a config SMTP).")
+    return {"detail": f"E-mail enviado para {sent} destinatário(s)"}
 
 
 # ── DFe — coleta de NFes recebidas e manifestação ────────────────────────────
@@ -1866,26 +1928,27 @@ async def manifest_invoice(
             )
 
     cfg = await _get_fiscal_config(inv.cmig_id, db)
-    if not cfg.focus_company_token:
-        raise HTTPException(status_code=400, detail="CMIG sem token Focus NFe")
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
 
     try:
-        result = await focus_service.manifest(cfg, inv.access_key, tipo, justificativa)
-    except focus_service.FocusError as e:
-        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
+        result = await sefaz_service.manifestar(db, inv, cmig, cfg, tipo, justificativa)
+    except sefaz_service.SefazServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _SefazNetError as e:
+        raise HTTPException(status_code=502, detail=f"SEFAZ indisponível: {e}")
 
-    inv.manifestation = tipo
-    inv.manifestation_at = datetime.utcnow()
-    inv.manifestation_protocol = result.get("numero_protocolo") or result.get("protocolo")
-
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"SEFAZ recusou a manifestação (cStat {result.get('cstat')}): {result.get('motivo')}",
+        )
     db.add(
         InvoiceEvent(
             invoice_id=inv.id,
             event_type="manifestation",
             reason=justificativa,
-            focus_ref=inv.focus_ref,
             sefaz_protocol=inv.manifestation_protocol,
-            sefaz_message=result.get("mensagem_sefaz") or result.get("mensagem") or tipo,
+            sefaz_message=result.get("motivo") or tipo,
             created_by_user_id=current_user.id,
         )
     )
@@ -2970,31 +3033,29 @@ async def inutilize_nfe_range(
     if not nro_ini:
         raise HTTPException(status_code=422, detail="nro_ini obrigatório")
 
-    cfg = await _get_fiscal_config(cmig_id, db)
-    if not cfg.focus_company_token:
-        raise HTTPException(status_code=400, detail="CMIG não registrada no Focus NFe")
-
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
+    cfg = await _get_fiscal_config(cmig_id, db)
+    if not (cfg.cert_path and cfg.cert_pass_encrypted):
+        raise HTTPException(status_code=400, detail="CMIG sem certificado A1 configurado")
 
     try:
-        result = await focus_service.inutilize_nfe(
-            cfg=cfg,
-            cnpj=cmig.cnpj,
-            ano=int(ano),
-            serie=int(serie),
-            nro_ini=int(nro_ini),
-            nro_fim=int(nro_fim),
-            justificativa=justificativa,
+        result = await sefaz_service.inutilizar(
+            db, cmig, cfg, serie=int(serie), n_ini=int(nro_ini), n_fim=int(nro_fim),
+            ano=int(ano), justificativa=justificativa,
         )
-    except focus_service.FocusError as e:
-        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
+    except sefaz_service.SefazServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _SefazNetError as e:
+        raise HTTPException(status_code=502, detail=f"SEFAZ indisponível: {e}")
 
-    # Registrar evento de inutilização (sem invoice_id — range nunca emitido)
-    # Criamos um InvoiceEvent avulso associado à menor Invoice existente da CMIG
-    # ou simplesmente logamos no status retornado.
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"SEFAZ não inutilizou (cStat {result.get('cstat')}): {result.get('motivo')}",
+        )
     return {
-        "detail": f"Numeração {nro_ini}-{nro_fim} (série {serie}/{ano}) inutilizada com sucesso",
-        "focus_response": result,
+        "detail": f"Numeração {nro_ini}-{nro_fim} (série {serie}/{ano}) inutilizada",
+        "protocolo": result.get("protocolo"),
     }

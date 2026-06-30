@@ -44,7 +44,7 @@
                   <option :value="null">Todas</option>
                   <option value="xml_upload">Upload XML</option>
                   <option value="manual">Manual</option>
-                  <option value="dfe_focus">DFe Focus</option>
+                  <option value="dfe_focus">DFe</option>
                 </select>
               </div>
               <div class="col-md-2">

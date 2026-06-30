@@ -1,30 +1,41 @@
-"""Orquestra a coleta de NFes recebidas via DFe (Focus NFe → SEFAZ-RS).
+"""Orquestra a coleta de NFes recebidas via Distribuição de DFe (SEFAZ — Ambiente Nacional).
 
-Fluxo:
-1. `sync_received_for_cmig` lista as NFes do CNPJ via Focus, dedup por chave,
-   baixa o XML completo das novas, parseia e cria Invoice de entrada.
-2. `process_received_nfe` é o entrypoint do webhook (1 chave por vez).
-3. `update_stock_from_invoice` movimenta estoque CMIG por EAN.
+Fluxo (emissão/recebimento próprios, sem Focus):
+1. `sync_received_for_cmig` consulta a Distribuição de DFe a partir do último NSU,
+   dedup por chave, parseia o XML completo (docZip) e cria Invoice de entrada.
+2. `update_stock_from_invoice` movimenta estoque CMIG por EAN.
+
+Rate-limit (regra do AN): quando ultNSU==maxNSU não há novos; cStat 656 = consumo
+indevido → aguardar ~1h. O `ultimo_nsu` é persistido por CMIG em CMIGFiscalConfig.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import and_, select
 from sqlalchemy.orm import selectinload
 
+from config import get_settings
 from database import task_db
 from models.cmig import CMIG
-from models.fiscal import CMIGFiscalConfig, DFeSyncLog, Invoice, InvoiceItem
+from models.fiscal import CMIGFiscalConfig, DFeRecebido, DFeSyncLog, Invoice, InvoiceItem
 from models.notification import Notification
 from models.person import Person
-from services.fiscal import focus_service
+from services.fiscal import sefaz_service
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
+from services.fiscal.sefaz import distribuicao
+from services.fiscal.sefaz.xml_builder import codigo_uf
 
 log = logging.getLogger(__name__)
+
+_MAX_BATCHES_PER_RUN = 20  # bound do loop ultNSU→maxNSU por execução
+_RE_CHAVE = re.compile(r"(\d{44})")
 
 # Limiar de erros consecutivos antes de emitir alerta via Socket.io
 _MAX_CONSECUTIVE_ERRORS = 3
@@ -42,9 +53,7 @@ async def sync_all() -> dict:
         cfgs = (
             (
                 await db.execute(
-                    select(CMIGFiscalConfig).where(
-                        CMIGFiscalConfig.focus_company_token.is_not(None)
-                    )
+                    select(CMIGFiscalConfig).where(CMIGFiscalConfig.cert_path.is_not(None))
                 )
             )
             .scalars()
@@ -113,7 +122,7 @@ async def _emit_dfe_error_alert(cmig_id: int, error: str) -> None:
             "dfe_sync_error",
             {
                 "cmig_id": cmig_id,
-                "message": f"DFe sync falhou {_MAX_CONSECUTIVE_ERRORS}× consecutivas. Verifique token Focus.",
+                "message": f"DFe sync falhou {_MAX_CONSECUTIVE_ERRORS}× consecutivas. Verifique o certificado A1 / credenciamento.",
                 "error": error[:500],
             },
             room=f"cmig_{cmig_id}",
@@ -123,81 +132,110 @@ async def _emit_dfe_error_alert(cmig_id: int, error: str) -> None:
 
 
 async def sync_received_for_cmig(cmig_id: int) -> dict:
-    """Sincroniza NFes recebidas para uma CMIG específica.
-    Cria Invoices novas para chaves que ainda não existem."""
+    """Consulta a Distribuição de DFe da CMIG (loop ultNSU→maxNSU, bounded) e cria
+    Invoices de entrada para NF-e completas novas. Persiste o último NSU processado."""
     async with task_db() as db:
         cfg = (
             await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))
         ).scalar_one_or_none()
-        if not cfg or not cfg.focus_company_token:
-            raise ValueError("CMIG sem configuração Focus NFe")
-
+        if not cfg or not cfg.cert_path:
+            raise ValueError("CMIG sem certificado A1 configurado (emissão própria)")
         cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one()
+        if not cmig.cnpj or not cmig.state:
+            raise ValueError("CMIG sem CNPJ/UF para a Distribuição de DFe")
 
-        # Listar resumos via Focus
-        try:
-            documentos = await focus_service.list_received(cfg, cmig.cnpj)
-        except focus_service.FocusError as e:
-            raise ValueError(f"Focus NFe: {e.message}")
+        pfx_path, senha = sefaz_service.resolve_cert(cfg)
+        settings = get_settings()
+        ambiente = sefaz_service._AMB.get(cfg.environment or "homolog", "homologacao")
+        cnpj = re.sub(r"\D", "", cmig.cnpj)
+        c_uf = codigo_uf(cmig.state.upper())
 
         new_count = 0
         skipped = 0
         errors: list[str] = []
+        ult = cfg.ultimo_nsu or "0"
 
-        for doc in documentos:
-            chave = doc.get("chave_nfe") or doc.get("chave") or ""
-            if not chave or len(chave) != 44:
-                continue
-            # Dedup: se já existe Invoice com essa access_key, pula
-            existing = (
-                await db.execute(select(Invoice.id).where(Invoice.access_key == chave))
-            ).scalar_one_or_none()
-            if existing:
-                skipped += 1
-                continue
-            try:
-                await _create_invoice_from_received(db, cfg, cmig, chave)
-                new_count += 1
-            except Exception as e:
-                log.exception("Erro ao processar chave %s: %s", chave, e)
-                errors.append(f"{chave[:20]}…: {e}")
+        for _ in range(_MAX_BATCHES_PER_RUN):
+            ret = await asyncio.to_thread(
+                distribuicao.consultar_dfe,
+                cnpj=cnpj, c_uf=c_uf, ambiente=ambiente, ult_nsu=ult,
+                pfx_path=pfx_path, pfx_password=senha,
+                timeout=int(settings.NFE_SEFAZ_TIMEOUT),
+                verify_ssl=sefaz_service._verify_ssl(cfg.environment or "homolog"),
+                runtime_dir=str(Path(settings.NFE_CERTS_DIR) / "runtime"),
+            )
+            if ret.cstat == distribuicao.CSTAT_CONSUMO_INDEVIDO:
+                errors.append("consumo indevido (656) — aguardando janela de ~1h")
+                break
+            if ret.cstat not in (distribuicao.CSTAT_DOCS_ENCONTRADOS, distribuicao.CSTAT_NENHUM_DOC):
+                errors.append(f"cStat {ret.cstat}: {ret.motivo}")
+                break
 
-        await db.commit()
+            for doc in ret.docs:
+                try:
+                    r = await _process_dfe_doc(db, cmig, doc)
+                    if r == "new":
+                        new_count += 1
+                    elif r == "skip":
+                        skipped += 1
+                except Exception as e:  # noqa: BLE001
+                    log.exception("Erro ao processar docZip NSU %s: %s", doc.nsu, e)
+                    errors.append(f"NSU {doc.nsu}: {e}")
+
+            ult = ret.ult_nsu or ult
+            cfg.ultimo_nsu = ult
+            await db.commit()
+            if not ret.docs or not ret.tem_mais:
+                break
 
     return {"new": new_count, "skipped": skipped, "errors": errors}
 
 
-async def process_received_nfe(cmig_id: int, chave: str) -> Invoice | None:
-    """Entrypoint do webhook — processa 1 chave."""
-    async with task_db() as db:
-        # Dedup
-        existing = (
-            await db.execute(select(Invoice).where(Invoice.access_key == chave))
-        ).scalar_one_or_none()
-        if existing:
-            return existing
-
-        cfg = (
-            await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))
-        ).scalar_one_or_none()
-        if not cfg or not cfg.focus_company_token:
-            raise ValueError("CMIG sem configuração Focus NFe")
-
-        cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one()
-        inv = await _create_invoice_from_received(db, cfg, cmig, chave)
-        await db.commit()
-        return inv
+def _extract_chave(xml: str) -> str | None:
+    m = _RE_CHAVE.search(xml)
+    return m.group(1) if m else None
 
 
-async def _create_invoice_from_received(
-    db, cfg: CMIGFiscalConfig, cmig: CMIG, chave: str
+async def _process_dfe_doc(db, cmig: CMIG, doc) -> str:
+    """Trata um docZip: registra em dfe_recebidos; cria Invoice se for NF-e completa nova.
+
+    Retorna 'new' | 'skip' | 'event'."""
+    chave = _extract_chave(doc.xml)
+    # Dedup do NSU
+    exists_nsu = (
+        await db.execute(
+            select(DFeRecebido.id).where(
+                and_(DFeRecebido.cmig_id == cmig.id, DFeRecebido.nsu == doc.nsu)
+            )
+        )
+    ).scalar_one_or_none()
+    if not exists_nsu:
+        db.add(DFeRecebido(
+            cmig_id=cmig.id, nsu=doc.nsu, chave=chave, schema_dfe=doc.schema,
+            resumo_json=doc.xml if doc.is_resumo_nfe else None,
+            xml=doc.xml if doc.is_nfe_completa else None,
+        ))
+    if doc.is_evento or doc.is_resumo_nfe or not doc.is_nfe_completa:
+        return "event"
+    if not chave:
+        return "event"
+    # Dedup do Invoice por chave
+    existing = (
+        await db.execute(select(Invoice.id).where(Invoice.access_key == chave))
+    ).scalar_one_or_none()
+    if existing:
+        return "skip"
+    cfg = (
+        await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig.id))
+    ).scalar_one_or_none()
+    await _create_invoice_from_xml(db, cfg, cmig, chave, doc.xml.encode("utf-8"))
+    return "new"
+
+
+async def _create_invoice_from_xml(
+    db, cfg: CMIGFiscalConfig, cmig: CMIG, chave: str, xml_bytes: bytes
 ) -> Invoice:
-    """Baixa XML, parseia e cria Invoice (direction='in', source='dfe_focus')."""
-    try:
-        xml_bytes = await focus_service.download_received_xml(cfg, chave)
-    except focus_service.FocusError as e:
-        raise RuntimeError(f"Falha ao baixar XML: {e.message}")
-
+    """Parseia o XML completo e cria Invoice (direction='in', source='dfe_focus')."""
     parsed = parse_nfe_xml(xml_bytes)
 
     # Upsert fornecedor

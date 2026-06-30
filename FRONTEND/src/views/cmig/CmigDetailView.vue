@@ -104,7 +104,7 @@
               </div>
             </div>
 
-            <!-- Configuração Fiscal (NF-e via Focus NFe) -->
+            <!-- Configuração Fiscal (NF-e via SEFAZ) -->
             <CmigFiscalConfigCard v-if="cmig" :cmig-id="Number(cmig.id)" />
 
             <!-- Integração eShip (WMS) -->

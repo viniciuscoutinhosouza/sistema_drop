@@ -39,11 +39,25 @@ class Settings(BaseSettings):
     # Platform fee (R$) charged per order payment
     PLATFORM_FEE: float = 2.00
 
-    # Focus NFe (provedor de emissão de NFe)
-    FOCUS_NFE_BASE_HOMOLOG: str = "https://homologacao.focusnfe.com.br"
-    FOCUS_NFE_BASE_PROD: str = "https://api.focusnfe.com.br"
-    FOCUS_NFE_TIMEOUT: float = 60.0
-    FOCUS_NFE_WEBHOOK_SECRET: str = ""
+    # Emissão própria de NF-e (SEFAZ direto — mTLS + XMLDSig). Ver ADR e
+    # DOCs/guia-implementacao-nfe-oracle.md.
+    # Master key (Fernet) p/ cifrar a senha do certificado A1 em repouso no banco.
+    # String aleatória longa; NUNCA commitar. Perder a key inutiliza as senhas cifradas.
+    NFE_CERT_MASTER_KEY: str = ""
+    # Diretório restrito (fora de static/) onde os .pfx das CMIGs ficam no servidor.
+    NFE_CERTS_DIR: str = ".secrets/certs"
+    # Diretório dos XMLs autorizados (procNFe) — FORA de static/ (dado fiscal/LGPD de
+    # terceiros; só baixável pelo endpoint autenticado GET /invoices/{id}/xml).
+    NFE_XML_DIR: str = "data/nfe_xml"
+    # cabundle ICP-Brasil (produção exige). Vazio → usa o trust store do sistema.
+    NFE_ICP_CABUNDLE: str = ""
+    # Verificação TLS do servidor da SEFAZ. False só em dev local.
+    NFE_VERIFY_SSL: bool = False
+    # Distribuição de DFe — Ambiente Nacional (pull das NF-e recebidas pelo CNPJ).
+    NFE_DFE_AN_HOMOLOG: str = "https://hom1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
+    NFE_DFE_AN_PROD: str = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
+    # Timeout (s) das chamadas SOAP à SEFAZ.
+    NFE_SEFAZ_TIMEOUT: float = 90.0
 
     # Coletor ML local (Camoufox) — busca livre que a API do ML bloqueou (403).
     # Roda na máquina do operador (IP residencial), exposta por túnel; o backend

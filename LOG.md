@@ -4,6 +4,209 @@
 
 ---
 
+## 2026-06-29 — feat(nfe): emissão própria SEFAZ — Fechamento (auditoria + ADRs)
+
+Auditoria Full em paralelo (quality-guardian + consistency-auditor + adr-consistency-checker).
+Achados CRITICAL/HIGH corrigidos antes de fechar:
+
+- **CRITICAL (LGPD/IDOR):** XML autorizado era gravado em `static/uploads/nfe/...` (servido por
+  HTTP sem auth → qualquer um com a chave baixava NF-e de terceiros). Movido para `NFE_XML_DIR`
+  (`data/nfe_xml`, fora de `static/`, no `.gitignore`); download só pelo endpoint autenticado.
+- **HIGH (DoS):** `distribuicao` agora usa parser lxml endurecido (`resolve_entities=False,
+  no_network=True, huge_tree=False` — anti billion-laughs/XXE) e descompressão do `docZip` com
+  **teto de 8 MB** em stream (anti zip-bomb). Conteúdo do DFe é de terceiros.
+- **HIGH (ADR-0013):** `build_nota_emissao` usava `issue_date.astimezone(BR_TZ)` (errado p/ datetime
+  naive → `dhEmi` deslocada ~3h). Trocado por `to_br(issue_date)`.
+- **HIGH (paridade):** download de XML/DANFE da NF-e própria na tela **Saídas** (individual + export
+  ZIP) usava `xml_url`/`danfe_url` do Focus (NULL na emissão própria). Corrigido: `xml_available`/
+  `danfe_available` derivam de `status=authorized`+`xml_local_path`; `SaidasView` baixa pelos
+  endpoints `/invoices/{id}/xml|danfe`; export lê o XML local e gera DANFE.
+- **MEDIUM:** TLS sempre verificado em produção (`_verify_ssl(environment)` força `True` quando
+  `producao`, anti-MITM no mTLS).
+- **ADRs criadas:** [ADR-0015](DOCs/decisions/ADR-0015-emissao-propria-nfe-sefaz.md) (emissão própria
+  SEFAZ + cofre do certificado + transmissão síncrona) e
+  [ADR-0016](DOCs/decisions/ADR-0016-distribuicao-dfe-propria.md) (Distribuição DFe própria + NSU).
+  Registradas no CLAUDE.md.
+- **Verificação pós-fix:** `pytest -m "not integration"` → **78 passed / 2 pré-existentes**; smoke do
+  parser DFe + teto zip-bomb (50 MB → cortado); `npm run build` OK; `py_compile` OK.
+- **Pendências não-bloqueantes (registradas):** `emission_provider` default ainda `'focus'` (não dirige
+  lógica); inutilização sem UI (fase futura); strings/docstrings "Focus" cosméticas; `inbound_source=
+  'dfe_focus'` mantido como legado.
+
+---
+
+## 2026-06-29 — feat(nfe): emissão própria SEFAZ — Fase 4 (DANFE + inutilização + e-mail próprio)
+
+- **`services/fiscal/sefaz/danfe.py`** (novo) — `gerar_danfe` (BrazilFiscalReport) a partir do XML
+  autorizado; `empacotar_nfeproc` (NFe assinada + protNFe) e `extrair_protNFe`. **`sefaz_service.emitir`**
+  passa a gravar o **procNFe** completo (não só a NFe assinada) p/ DANFE/XML.
+- **`routers/invoices.py`** — `GET /{id}/xml` (procNFe) e `GET /{id}/danfe` (PDF on-the-fly);
+  `POST /{id}/email` reativado via **SMTP próprio** com XML+DANFE em anexo; `POST /inutilize`
+  reativado via SEFAZ.
+- **`services/fiscal/sefaz/inutilizacao.py`** (novo) — `inutilizar_nfe` (NfeInutilizacao4, cStat 102) +
+  endpoints `inutilizacao` no catálogo RJ/SVRS e SP. Adaptador `sefaz_service.inutilizar`.
+- **`services/email_service.py`** — `send_email` ganha `attachments` (XML/PDF).
+- **Frontend** — `InvoiceDetailView.vue`: botões "Baixar XML/DANFE" agora baixam por blob dos novos
+  endpoints (em vez das URLs do Focus). `npm run build` OK.
+- **requirements.txt** — `brazilfiscalreport>=1.0`.
+- **Verificação:** DANFE PDF gerado de um XML 4.00 montado (4.8 KB, `%PDF`); `pytest -m "not
+  integration"` → **78 passed / 2 pré-existentes**; `py_compile` OK; `npm run build` OK.
+
+---
+
+## 2026-06-29 — feat(nfe): emissão própria SEFAZ — Fase 3 (Distribuição DFe própria + remoção do Focus)
+
+Entrada (NF-e recebidas) deixa de depender do Focus: passa pela **Distribuição de DFe** própria
+(NFeDistribuicaoDFe, Ambiente Nacional). Focus removido por completo do backend.
+
+- **`services/fiscal/sefaz/distribuicao.py`** (novo) — `consultar_dfe` monta `distDFeInt` v1.01
+  (envelope `nfeDistDFeInteresse>nfeDadosMsg`), consulta por `distNSU/ultNSU`, decodifica `docZip`
+  (base64+gzip), classifica schema (NFe completa/resumo/evento). Trata cStat 138/137/656 e
+  `ultNSU==maxNSU` (sem mais). Estrutura/versão confirmadas na NT 2014.002 (Portal NF-e/MOC).
+- **`services/fiscal/sefaz/cancelamento.py`** — `manifestar` (Ciência 210210 / Confirmação 210200 /
+  Desconhecimento 210220 / Operação não realizada 210240) ao **Ambiente Nacional** (cOrgao=91,
+  endpoint `SEFAZ_EVENTO_AN`).
+- **`services/fiscal/dfe_service.py`** — reescrito: `sync_received_for_cmig` faz o loop
+  ultNSU→maxNSU (bounded), upsert em `dfe_recebidos`, cria Invoice de entrada das NF-e completas
+  novas e persiste `cfg.ultimo_nsu`. `_create_invoice_from_xml` (sem download Focus). Filtro de
+  CMIGs passa a `cert_path` (não mais `focus_company_token`). `process_received_nfe` removido.
+- **`services/fiscal/sefaz_service.py`** — `manifestar(db, inv, cmig, cfg, tipo, justificativa)`.
+- **`routers/invoices.py`** — `manifest` via SEFAZ; `inutilize` retorna 501 (fase futura). `email`
+  já era 501. `sync-received` reusa o novo `sync_received_for_cmig`.
+- **`routers/webhooks.py`** — `/focus-nfe` e `/focus-nfe-recebida` **removidos**.
+  **`tasks/fiscal_alerts.py`** — `_refresh_stale_invoices` agora é a consulta N-6 SEFAZ pela chave.
+- **`config.py`** — settings `FOCUS_*` removidas. **`services/fiscal/focus_service.py` DELETADO**
+  (sem referências remanescentes). ORM `DFeRecebido` (models/fiscal.py).
+- **Verificação:** `pytest -m "not integration"` → **78 passed / 2 falhas pré-existentes**;
+  `py_compile` OK em todo o conjunto.
+- **A confirmar em homologação** (não testável sem cert + AN): endpoints AN da Distribuição/Recepção
+  de Evento e o `versao=1.01` do `distDFeInt` — validar antes do go-live; ajustáveis no catálogo
+  `SEFAZ_DFE_AN`/`SEFAZ_EVENTO_AN`. **Pendente:** DANFE (Fase 4) + inutilização + email SMTP próprio.
+
+---
+
+## 2026-06-29 — feat(nfe): emissão própria SEFAZ — Fase 1 (núcleo + emissão manual)
+
+Camada fiscal própria portada do projeto NFE_VendasProduto (validado cStat=100) e adaptada ao
+Sistema Drop; o botão "Transmitir SEFAZ" da emissão manual deixa de usar o Focus.
+
+- **Camada pura** `services/fiscal/sefaz/`: `exceptions`, `models` (dataclasses Decimal),
+  `chave` (DV mód 11 + cNF), `xml_builder` (NFe 4.00; **CSOSN 102 e 500**, **PIS/COFINS CST 99**,
+  **sem IPI**, **sem ICMSUFDest** — correções fiscais do Consultor-Fiscal-NFE; `idDest` calculado;
+  devolução finalidade 4 com refNFe), `signer` (XMLDSig SHA-1 via signxml), `sefaz_client`
+  (SOAP 1.2 + mTLS urllib3 + SECLEVEL=1/OP_LEGACY; catálogo RJ/SVRS + SP; PEM temporário em dir
+  restrito), `emitter` (pipeline indSinc=1), `consulta` (N-6), `cancelamento` (110111 + CC-e 110110
+  com xCondUso e limites). Testes `tests/test_sefaz_fiscal.py` (7) — DV com vetor real, CSOSN
+  102/500, CST 99, sem IPI/ICMSUFDest, idDest intra/inter. Assinatura SHA-1 verificada com cert
+  self-signed (rsa-sha1 + X509 único).
+- **Adaptador** `services/fiscal/sefaz_service.py` — `build_nota_emissao` (Invoice/CMIG/Person/
+  CMIGProduct → NotaEmissao), `reservar_numero` (PL/SQL `NFE_NEXTVAL_MANUAL`, congela chave/cNF
+  antes da SEFAZ), `resolve_cert` (decifra senha), `emitir`/`cancelar`/`carta_correcao`/`consultar`
+  (bloqueantes via `asyncio.to_thread`; log em `invoice_sefaz_logs`; XML salvo em
+  `static/uploads/nfe/{cmig}/{chave}.xml`). Pré-valida cadastros (IBGE/IE/NCM) antes de consumir
+  numeração. Gating de produção (`production_released`).
+- **`routers/invoices.py`** — `transmit`/`cancel`/`correction-letter`/`refresh-status` desviados
+  para `sefaz_service` (refresh agora é a consulta N-6 pela chave). `email` desabilitado no MVP
+  (501). `_validate_ready_to_transmit` passa a exigir `cert_path`+`manual_nfe_serie`. `_apply_authorized`
+  (Focus) removido.
+- **`models/cmig.py` + migration `118_cmig_ibge.sql`** — `cmigs.ibge_code` (cMunFG/enderEmit).
+  **`models/fiscal.py`** — ORM `InvoiceSefazLog`. **requirements.txt** — `lxml`/`signxml`/`urllib3`.
+- **Frontend** — textos "Focus" → "SEFAZ" em InvoiceForm/InvoiceDetail/Entradas/Saídas/CmigDetail/
+  _helpers. `npm run build` OK.
+- **Verificação:** `pytest -m "not integration"` → **78 passed / 2 falhas pré-existentes**
+  (`test_orders.py` MockResult.scalar, não relacionadas). `npm run build` OK. `py_compile` OK.
+- **Pendente (próximas fases):** Distribuição DFe própria (entrada), DANFE (BrazilFiscalReport),
+  e o **smoke real em homologação RJ/SP** (exige cert A1 + `NFE_CERT_MASTER_KEY` + migrations
+  115-118 no Oracle + cadastro completo da CMIG: IBGE, IE, série manual). Limpeza final do
+  `focus_service` só após a Distribuição DFe (entrada ainda o usa).
+
+---
+
+## 2026-06-28 — feat(nfe): emissão própria SEFAZ — Fase 0 (fundação), substituindo Focus
+
+Início da troca do provedor Focus NFe por emissão própria direta à SEFAZ (mTLS + XMLDSig + SOAP),
+reaproveitando os models existentes (CMIG=emitente, Person=cliente, CMIGProduct=produto,
+Invoice/InvoiceItem=nota). Mantém intacta a NF-e dos pedidos de marketplace (Faturador ML). Plano
+e correções fiscais validadas pelo Consultor-Fiscal-NFE (DIFAL não se aplica ao Simples — Tema 1093;
+PIS/COFINS CST 99; ST de revenda = CSOSN 500). **Fase 0 entregue e verificada:**
+
+- **Migrations** `Scripts SQL/115_nfe_sefaz_config.sql` (cmig_fiscal_config: `cert_path`,
+  `cert_pass_encrypted`, `production_released`, `manual_nfe_serie`/`manual_nfe_next_number`(`_homolog`),
+  `aliquota_fecp`, `ultimo_nsu`), `116_invoice_sefaz.sql` (invoices: `auth_protocol`/`sefaz_cstat`/
+  `sefaz_xmotivo`/`environment`/`emission_provider` + tabelas `invoice_sefaz_logs` append-only com
+  trigger imutável e `dfe_recebidos` p/ Distribuição DFe própria), `117_nfe_nextval.sql` (função
+  PL/SQL `NFE_NEXTVAL_MANUAL` — numeração atômica por ambiente). Idempotentes (DECLARE/EXCEPTION).
+- **`services/fiscal/cert_crypto.py`** — cifra a senha do certificado A1 (Fernet, master key
+  `NFE_CERT_MASTER_KEY`) para repouso no banco. Teste `tests/test_cert_crypto.py` (4 passed).
+- **`routers/fiscal_config.py`** — `register-focus` removido; `POST /certificate` reescrito: grava o
+  `.pfx` em diretório restrito (`NFE_CERTS_DIR`, fora de static/) + senha cifrada no banco; série
+  manual SEFAZ/produção/FECP editáveis com validação anticolisão com a série do marketplace.
+- **`config.py`** — settings `NFE_CERT_MASTER_KEY`, `NFE_CERTS_DIR`, `NFE_ICP_CABUNDLE`,
+  `NFE_VERIFY_SSL`, `NFE_DFE_AN_HOMOLOG/PROD`, `NFE_SEFAZ_TIMEOUT`. **`.gitignore`** ignora
+  `.secrets/`/`*.pfx`. **models/fiscal.py** — novas colunas no ORM (CMIGFiscalConfig + Invoice).
+- **Frontend** — `CmigFiscalConfigCard.vue` (removido bloco/modal Focus; novo certificado A1 SEFAZ
+  sem token mestre, série manual + nº por ambiente + FECP + toggle "Produção liberada") e
+  `FiscalConfigView.vue` (textos Focus → SEFAZ). `npm run build` OK.
+- **Variáveis de ambiente novas (provisionar no `.env`, nunca commitar):** `NFE_CERT_MASTER_KEY`
+  (string aleatória longa — perder a key inutiliza as senhas cifradas), `NFE_CERTS_DIR`,
+  `NFE_VERIFY_SSL` (True só em produção, com cabundle ICP-Brasil), `NFE_ICP_CABUNDLE`.
+- **Próximo:** Fase 1 — camada pura `services/fiscal/sefaz/` (chave/xml_builder/signer/sefaz_client/
+  emitter/consulta) + `sefaz_service` + desvio do `transmit`. **Bloqueio:** idealmente portar o
+  `fiscal/` do projeto-fonte (NFE_VendasProduto, cStat=100) — confirmar disponibilidade.
+
+---
+
+## 2026-06-28 — docs(fiscal): agente Consultor-Fiscal-NFE + skill fiscal-tributario-nfe
+
+- **Novo agente** `.claude/agents/Consultor-Fiscal-NFE.md` — especialista fiscal-tributário e de
+  documentos fiscais eletrônicos (NF-e/NFC-e/CT-e/MDF-e). Mesmo padrão do
+  `mercado-livre-especialista`: regra de ouro anti-erro (nunca cravar alíquota/regra sem ancorar na
+  legislação vigente — LC 123, RICMS da UF, NT da SEFAZ — e/ou testar em homologação), mapa de
+  referências da skill, contexto do módulo fiscal do Drop (CRT, snapshot imutável, ADR-0008/0009).
+- **Nova skill** `.claude/skills/fiscal-tributario-nfe/` (progressive disclosure, padrão da
+  `mercado-livre-api`): `SKILL.md` + 6 referências:
+  - `regimes-tributarios.md` — Simples (anexos, Fator R, alíquota efetiva, DAS, segregação),
+    Lucro Presumido (presunção IRPJ/CSLL, PIS/COFINS cumulativo) e Lucro Real (lucro ajustado,
+    PIS/COFINS não-cumulativo) + apuração e Reforma Tributária.
+  - `credito-debito-impostos.md` — não-cumulatividade, ICMS próprio, ICMS-ST (MVA/IVA ajustada),
+    DIFAL EC 87/2015, FECP, IPI, PIS/COFINS, ISS, apuração débito−crédito.
+  - `emissao-nfe.md` — modelos 55/65, config do emitente, anatomia da NF-e 4.00, campos que
+    rejeitam, ambientes/status, finalidades, contingência, DANFE, NT 2025.002.
+  - `eventos-fiscais.md` — árvore de decisão "errei a nota e agora?", CC-e, cancelamento,
+    inutilização, complementar/ajuste/devolução, manifestação do destinatário, denegação.
+  - `documentos-transporte.md` — CT-e, MDF-e, `modFrete` (CIF/FOB), grupo de transporte da NF-e.
+  - `tabelas-fiscais.md` — origem, CST ICMS, CSOSN, CST IPI/PIS/COFINS, CFOP, NCM/CEST, indicadores.
+- SKILL.md e agente apontam para `DOCs/guia-implementacao-nfe-oracle.md` como fonte do **código**
+  (DDL/SOAP/mTLS/A1), reservando a skill para a **regra fiscal**.
+
+---
+
+## 2026-06-28 — feat(relatorios): menu pai "Relatórios" + tela "Vendas do Mês" (grid + PDF/Excel)
+
+- **Menu pai "Relatórios"** (nav-treeview) com 2 submenus: "Relatórios em PDF" (= o atual
+  `/cmig-reports`, movido de "Minhas Contas", sem mudar rota) e "Vendas do Mês" (novo
+  `/relatorios/vendas-mes`, menu_key `relatorio_vendas`). MENU_CATALOG e _legacyMenus
+  (admin/ac/go) atualizados; cmig_reports realocado p/ seção RELATÓRIOS.
+- **Vendas do Mês** (por conta de marketplace + mês): grid agregado por produto com
+  qtd vendida (BRUTA), cancelada, **entregue** (= entregues + despachados/a caminho:
+  `shipment_status` ∈ shipped/delivered/in_transit/out_for_delivery/first_visit), custo,
+  venda, lucro bruto, % do lucro, Taxa/Frete **rateados** proporcionalmente à venda,
+  **LL Parcial** (= Lucro Bruto − Taxa − Frete) e **% do LL Parcial**. Líquido =
+  vendida−cancelada alimenta venda/custo. Custo = `OrderItem.unit_cost` (fallback
+  `cost_price` do produto; flag `custo_incompleto`). Mês via `COALESCE(paid_at, created_at)`
+  com bounds BR→UTC. Totais de Taxa/Frete somados **por ORDER** (sem double-count).
+- Backend: `services/sales_report_service.py` (build + resync), `services/sales_report_export.py`
+  (PDF reportlab + Excel **openpyxl** — nova dep em requirements.txt), `routers/sales_report.py`
+  (`GET /reports/monthly-sales`, `POST .../refresh`, `GET .../export?format=pdf|xlsx`;
+  `require_role("admin","ac","go")` + `_get_account_or_403`). Registrado em main.py.
+- "Atualizar" re-sincroniza os pedidos da conta no período (reusa `sync_ml_integration`);
+  token expirado retorna aviso específico; demais falhas degradam mostrando os dados salvos.
+- Frontend: `views/reports/MonthlySalesView.vue`. Testes: tests/test_sales_report.py. Suite 67/2.
+- Auditorias quality/consistency: 2 HIGH corrigidos (removido `ugo` do guard; token expirado
+  tratado à parte). **DEPLOY: `pip install -r requirements.txt` no servidor (nova dep openpyxl).**
+
+---
+
 ## 2026-06-28 — feat(estoque/anúncios): teto do fixo, pausa/reativação automática e sync horário de metadados ML (ADR-0014)
 
 Revisão do ciclo de estoque dos anúncios + sincronização com o ML. 5 pontos pedidos pelo dono:

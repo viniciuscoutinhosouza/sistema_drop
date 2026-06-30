@@ -54,15 +54,11 @@
               <label class="small mb-1">CNAE</label>
               <input v-model="form.cnae" class="form-control" :disabled="!canEdit">
             </div>
-            <div class="col-md-2">
-              <label class="small mb-1">Série NF-e</label>
+            <div class="col-md-3">
+              <label class="small mb-1">Série NF-e (marketplace)</label>
               <input v-model.number="form.nfe_serie" type="number" min="1" class="form-control" :disabled="!canEdit">
             </div>
-            <div class="col-md-2">
-              <label class="small mb-1">Próximo número</label>
-              <input v-model.number="form.nfe_next_number" type="number" min="1" class="form-control" :disabled="!canEdit">
-            </div>
-            <div class="col-md-2">
+            <div class="col-md-3">
               <label class="small mb-1">E-mail fiscal (cópia)</label>
               <input v-model="form.fiscal_email_copy" type="email" class="form-control" :disabled="!canEdit">
             </div>
@@ -83,6 +79,45 @@
             </div>
           </div>
 
+          <!-- Emissão própria SEFAZ: série manual configurável + FECP -->
+          <h6 class="text-muted mt-4 mb-2"><i class="fas fa-paper-plane mr-1"></i>Emissão manual via SEFAZ</h6>
+          <div class="row">
+            <div class="col-md-3">
+              <label class="small mb-1">
+                Série NF-e manual (SEFAZ)
+                <i class="fas fa-info-circle text-muted" title="Série específica dos lançamentos manuais de entrada/saída transmitidos direto à SEFAZ. Deve ser diferente da série do marketplace."></i>
+              </label>
+              <input v-model.number="form.manual_nfe_serie" type="number" min="1" class="form-control" :disabled="!canEdit">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">Próximo nº (produção)</label>
+              <input v-model.number="form.manual_nfe_next_number" type="number" min="1" class="form-control" :disabled="!canEdit">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">Próximo nº (homologação)</label>
+              <input v-model.number="form.manual_nfe_next_number_homolog" type="number" min="1" class="form-control" :disabled="!canEdit">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">
+                Alíquota FECP %
+                <i class="fas fa-info-circle text-muted" title="Fundo de Combate à Pobreza (ex.: RJ 2%). Aplicado por produto conforme a lista do RICMS da UF."></i>
+              </label>
+              <input v-model.number="form.aliquota_fecp" type="number" step="0.01" min="0" max="100" class="form-control" :disabled="!canEdit">
+            </div>
+          </div>
+          <div class="row mt-2" v-if="canEdit">
+            <div class="col-md-12">
+              <div class="custom-control custom-switch">
+                <input type="checkbox" class="custom-control-input" id="prodReleased"
+                       v-model="form.production_released">
+                <label class="custom-control-label small" for="prodReleased">
+                  <strong>Produção liberada</strong> — emitir NF-e real à SEFAZ (desligado = só homologação).
+                  Ligar somente após o credenciamento da empresa na SEFAZ da UF.
+                </label>
+              </div>
+            </div>
+          </div>
+
           <div class="text-right mt-3" v-if="canEdit">
             <button type="submit" class="btn btn-primary" :disabled="saving">
               <i class="fas" :class="saving ? 'fa-spinner fa-spin' : 'fa-save'"></i>
@@ -93,71 +128,28 @@
 
         <hr>
 
-        <!-- Focus NFe -->
+        <!-- Certificado A1 (emissão própria SEFAZ) -->
         <div class="row">
-          <div class="col-md-6">
-            <h6 class="text-muted mb-2"><i class="fas fa-shield-alt mr-1"></i>Provedor Focus NFe</h6>
-            <p class="mb-2">
-              <span class="badge" :class="config.focus_registered ? 'badge-success' : 'badge-secondary'">
-                {{ config.focus_registered ? 'Registrado' : 'Não registrado' }}
-              </span>
-              <small v-if="config.focus_registered_at" class="d-block text-muted mt-1">
-                Registrado em {{ formatDate(config.focus_registered_at) }}
-              </small>
-            </p>
-            <button v-if="canEdit" class="btn btn-sm btn-outline-info" @click="showFocusModal = true">
-              <i class="fas fa-link mr-1"></i> {{ config.focus_registered ? 'Re-registrar' : 'Registrar no Focus NFe' }}
-            </button>
-          </div>
-          <div class="col-md-6">
-            <h6 class="text-muted mb-2"><i class="fas fa-key mr-1"></i>Certificado Digital A1 (.pfx)</h6>
+          <div class="col-md-12">
+            <h6 class="text-muted mb-2"><i class="fas fa-key mr-1"></i>Certificado Digital A1 (.pfx) — emissão SEFAZ</h6>
             <p class="mb-2">
               <span class="badge" :class="config.certificate_loaded ? 'badge-success' : 'badge-secondary'">
                 {{ config.certificate_loaded ? 'Carregado' : 'Não carregado' }}
               </span>
+              <small class="d-block text-muted mt-1">
+                O certificado fica armazenado em diretório restrito no servidor e a senha é
+                guardada cifrada no banco. Cada CNPJ exige o seu próprio certificado.
+              </small>
             </p>
-            <button v-if="canEdit" class="btn btn-sm btn-outline-info"
-                    :disabled="!config.focus_registered" @click="showCertModal = true"
-                    :title="config.focus_registered ? '' : 'Registre a empresa no Focus NFe primeiro'">
-              <i class="fas fa-upload mr-1"></i> Enviar Certificado
+            <button v-if="canEdit" class="btn btn-sm btn-outline-info" @click="showCertModal = true">
+              <i class="fas fa-upload mr-1"></i> {{ config.certificate_loaded ? 'Substituir Certificado' : 'Enviar Certificado' }}
             </button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Modal: Registrar Focus -->
-    <div v-if="showFocusModal" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title"><i class="fas fa-link mr-2"></i>Registrar empresa no Focus NFe</h5>
-            <button type="button" class="close" @click="showFocusModal = false"><span>&times;</span></button>
-          </div>
-          <div class="modal-body">
-            <p class="text-muted small">
-              Cole abaixo seu <strong>token mestre</strong> do Focus NFe (do painel da sua conta master).
-              O sistema usa esse token para registrar este CNPJ e obter um token específico da empresa.
-            </p>
-            <div class="form-group">
-              <label class="small">Token mestre Focus NFe <span class="text-danger">*</span></label>
-              <input v-model="masterTokenFocus" class="form-control" type="password"
-                     placeholder="cole aqui o token mestre">
-            </div>
-            <div v-if="focusError" class="alert alert-danger small">{{ focusError }}</div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn btn-secondary" @click="showFocusModal = false">Cancelar</button>
-            <button class="btn btn-primary" :disabled="registering || !masterTokenFocus" @click="registerFocus">
-              <i class="fas" :class="registering ? 'fa-spinner fa-spin' : 'fa-link'"></i>
-              {{ registering ? 'Registrando...' : 'Registrar' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Modal: Upload Certificado -->
+    <!-- Modal: Upload Certificado A1 -->
     <div v-if="showCertModal" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
       <div class="modal-dialog">
         <div class="modal-content">
@@ -167,13 +159,10 @@
           </div>
           <div class="modal-body">
             <p class="text-muted small">
-              Selecione o arquivo .pfx do certificado A1 e informe a senha. O arquivo é enviado
-              direto para o cofre do Focus NFe — não fica armazenado no nosso servidor.
+              Selecione o arquivo .pfx do certificado A1 e informe a senha. O arquivo é armazenado
+              em diretório restrito no servidor e a senha fica <strong>cifrada</strong> no banco —
+              usada apenas no momento da transmissão à SEFAZ.
             </p>
-            <div class="form-group">
-              <label class="small">Token mestre Focus NFe <span class="text-danger">*</span></label>
-              <input v-model="masterTokenCert" class="form-control" type="password">
-            </div>
             <div class="form-group">
               <label class="small">Arquivo .pfx <span class="text-danger">*</span></label>
               <input ref="pfxInput" type="file" accept=".pfx,application/x-pkcs12" class="form-control-file"
@@ -216,13 +205,7 @@ const loading = ref(true)
 const saving = ref(false)
 const config = ref({})
 
-const showFocusModal = ref(false)
-const masterTokenFocus = ref('')
-const registering = ref(false)
-const focusError = ref('')
-
 const showCertModal = ref(false)
-const masterTokenCert = ref('')
 const certPassword = ref('')
 const pfxFile = ref(null)
 const pfxInput = ref(null)
@@ -230,7 +213,7 @@ const uploadingCert = ref(false)
 const certError = ref('')
 
 const canSubmitCert = computed(() =>
-  !!masterTokenCert.value && !!pfxFile.value && !!certPassword.value && !uploadingCert.value
+  !!pfxFile.value && !!certPassword.value && !uploadingCert.value
 )
 const form = reactive({
   crt: 1,
@@ -239,7 +222,11 @@ const form = reactive({
   im: '',
   cnae: '',
   nfe_serie: 1,
-  nfe_next_number: 1,
+  manual_nfe_serie: null,
+  manual_nfe_next_number: 1,
+  manual_nfe_next_number_homolog: 1,
+  aliquota_fecp: 0,
+  production_released: false,
   default_natureza_operacao: 'Venda de mercadoria',
   fiscal_email_copy: '',
   tax_estimate_pct: 0,
@@ -289,7 +276,11 @@ async function load() {
       im: data.im ?? '',
       cnae: data.cnae ?? '',
       nfe_serie: data.nfe_serie ?? 1,
-      nfe_next_number: data.nfe_next_number ?? 1,
+      manual_nfe_serie: data.manual_nfe_serie ?? null,
+      manual_nfe_next_number: data.manual_nfe_next_number ?? 1,
+      manual_nfe_next_number_homolog: data.manual_nfe_next_number_homolog ?? 1,
+      aliquota_fecp: data.aliquota_fecp ?? 0,
+      production_released: !!data.production_released,
       default_natureza_operacao: data.default_natureza_operacao ?? 'Venda de mercadoria',
       fiscal_email_copy: data.fiscal_email_copy ?? '',
       tax_estimate_pct: data.tax_estimate_pct ?? 0,
@@ -314,24 +305,6 @@ async function save() {
   }
 }
 
-async function registerFocus() {
-  registering.value = true
-  focusError.value = ''
-  try {
-    const { data } = await api.post(`/cmigs/${props.cmigId}/fiscal-config/register-focus`, {
-      master_token: masterTokenFocus.value,
-    })
-    config.value = data.config
-    toast.success('Empresa registrada no Focus NFe!')
-    showFocusModal.value = false
-    masterTokenFocus.value = ''
-  } catch (e) {
-    focusError.value = e.response?.data?.detail || 'Erro ao registrar no Focus'
-  } finally {
-    registering.value = false
-  }
-}
-
 function onPfxChange(e) {
   const f = e.target.files?.[0]
   if (f) pfxFile.value = f
@@ -342,16 +315,14 @@ async function uploadCert() {
   uploadingCert.value = true
   certError.value = ''
   const formData = new FormData()
-  formData.append('master_token', masterTokenCert.value)
   formData.append('password', certPassword.value)
   formData.append('pfx_file', pfxFile.value)
   try {
     await api.post(`/cmigs/${props.cmigId}/fiscal-config/certificate`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
-    toast.success('Certificado enviado com sucesso!')
+    toast.success('Certificado armazenado com sucesso!')
     showCertModal.value = false
-    masterTokenCert.value = ''
     certPassword.value = ''
     pfxFile.value = null
     if (pfxInput.value) pfxInput.value.value = ''

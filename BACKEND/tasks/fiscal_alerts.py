@@ -14,7 +14,6 @@ from database import task_db
 from models.cmig import CMIG
 from models.fiscal import CMIGFiscalConfig, Invoice
 from models.notification import Notification
-from services.fiscal import focus_service
 from tasks._job_wrapper import tracked_job
 
 log = logging.getLogger(__name__)
@@ -118,16 +117,21 @@ async def _check_expiring_certificates(db, stats: dict):
 
 
 async def _refresh_stale_invoices(db, stats: dict):
-    """Para invoices em queued/processing há > 1h, reconsulta Focus."""
-    cutoff = datetime.utcnow() - timedelta(hours=1)
+    """Para notas próprias presas em 'processing' há > 1h, consulta a SEFAZ pela
+    chave (regra N-6) e finaliza o status — recupera transmissões interrompidas."""
+    from models.cmig import CMIG
+    from services.fiscal import sefaz_service
+    from services.fiscal.sefaz.exceptions import FiscalError, SefazError
 
+    cutoff = datetime.utcnow() - timedelta(hours=1)
     stale = (
         (
             await db.execute(
                 select(Invoice).where(
                     and_(
                         Invoice.status.in_(("queued", "processing")),
-                        Invoice.focus_ref.is_not(None),
+                        Invoice.emission_provider == "sefaz",
+                        Invoice.access_key.is_not(None),
                         Invoice.updated_at <= cutoff,
                     )
                 )
@@ -143,45 +147,15 @@ async def _refresh_stale_invoices(db, stats: dict):
                 select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == inv.cmig_id)
             )
         ).scalar_one_or_none()
-        if not cfg or not cfg.focus_company_token:
+        if not cfg or not cfg.cert_path:
             continue
-
+        cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one_or_none()
+        if not cmig:
+            continue
         try:
-            result = await focus_service.consult_nfe(cfg, inv.focus_ref)
-        except focus_service.FocusError as e:
-            log.warning("Falha consultando NFe %s: %s", inv.focus_ref, e.message)
+            await sefaz_service.consultar(db, inv, cmig, cfg)  # já dá commit + atualiza status
+            stats["stale_invoices"] += 1
+        except (sefaz_service.SefazServiceError, SefazError, FiscalError) as e:
+            log.warning("Falha consultando NFe %s na SEFAZ: %s", inv.access_key, e)
             stats["errors"] += 1
             continue
-
-        focus_status = result.get("status")
-        inv.focus_status = focus_status or inv.focus_status
-        inv.focus_message = result.get("mensagem_sefaz") or result.get("mensagem")
-
-        if focus_status == "autorizado":
-            inv.status = "authorized"
-            inv.access_key = result.get("chave_nfe") or inv.access_key
-            if result.get("numero"):
-                try:
-                    inv.nfe_number = int(result["numero"])
-                except (ValueError, TypeError):
-                    pass
-            if result.get("serie"):
-                try:
-                    inv.serie = int(result["serie"])
-                except (ValueError, TypeError):
-                    pass
-            inv.xml_url = focus_service.absolutize_focus_url(
-                cfg, result.get("caminho_xml_nota_fiscal") or ""
-            )
-            inv.danfe_url = focus_service.absolutize_focus_url(
-                cfg, result.get("caminho_danfe") or ""
-            )
-        elif focus_status == "cancelado":
-            inv.status = "cancelled"
-        elif focus_status == "denegado":
-            inv.status = "denied"
-        elif focus_status == "erro_autorizacao":
-            inv.status = "rejected"
-        stats["stale_invoices"] += 1
-
-    await db.commit()

@@ -81,7 +81,7 @@ export const fmt = {
     const map = {
       xml_upload: 'Upload XML',
       manual: 'Manual',
-      dfe_focus: 'DFe Focus',
+      dfe_focus: 'DFe',
     }
     return map[s] || '—'
   },

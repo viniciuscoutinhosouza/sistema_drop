@@ -1,15 +1,18 @@
+import os
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import get_settings
 from database import get_db
 from dependencies import get_current_user
 from models.cmig import CMIG, CMIGAdministrator
 from models.fiscal import CMIGFiscalConfig
 from models.user import User
-from services.fiscal import focus_service
+from services.fiscal import cert_crypto
 
 router = APIRouter()
 
@@ -60,12 +63,8 @@ def _serialize(cfg: CMIGFiscalConfig | None) -> dict:
         "cmig_id": cfg.cmig_id,
         "crt": cfg.crt,
         "environment": cfg.environment,
-        "focus_registered": bool(cfg.focus_company_token),
-        "focus_company_id": cfg.focus_company_id,
-        "focus_registered_at": cfg.focus_registered_at.isoformat()
-        if cfg.focus_registered_at
-        else None,
-        "certificate_loaded": bool(cfg.certificate_uploaded_at),
+        # Certificado A1 (emissão própria SEFAZ): armazenado local, senha cifrada no banco
+        "certificate_loaded": bool(cfg.cert_path and cfg.cert_pass_encrypted),
         "certificate_uploaded_at": cfg.certificate_uploaded_at.isoformat()
         if cfg.certificate_uploaded_at
         else None,
@@ -73,12 +72,18 @@ def _serialize(cfg: CMIGFiscalConfig | None) -> dict:
         if cfg.certificate_expires_at
         else None,
         "certificate_subject": cfg.certificate_subject,
+        "production_released": bool(cfg.production_released),
         "ie": cfg.ie,
         "im": cfg.im,
         "cnae": cfg.cnae,
         "default_natureza_operacao": cfg.default_natureza_operacao,
         "nfe_serie": cfg.nfe_serie,
         "nfe_next_number": cfg.nfe_next_number,
+        # Série específica configurável da emissão MANUAL via SEFAZ (separada do marketplace)
+        "manual_nfe_serie": cfg.manual_nfe_serie,
+        "manual_nfe_next_number": cfg.manual_nfe_next_number,
+        "manual_nfe_next_number_homolog": cfg.manual_nfe_next_number_homolog,
+        "aliquota_fecp": float(cfg.aliquota_fecp) if cfg.aliquota_fecp is not None else 0,
         "csc_id": cfg.csc_id,
         "csc_token_set": bool(cfg.csc_token),
         "fiscal_email_copy": cfg.fiscal_email_copy,
@@ -139,6 +144,11 @@ async def update_fiscal_config(
         "default_natureza_operacao",
         "nfe_serie",
         "nfe_next_number",
+        "manual_nfe_serie",
+        "manual_nfe_next_number",
+        "manual_nfe_next_number_homolog",
+        "aliquota_fecp",
+        "production_released",
         "fiscal_email_copy",
         "tax_estimate_pct",
         "tax_regime_mode",
@@ -148,6 +158,16 @@ async def update_fiscal_config(
     if body.get("environment") and body["environment"] not in ("homolog", "production"):
         raise HTTPException(
             status_code=422, detail="environment deve ser 'homolog' ou 'production'"
+        )
+    if "production_released" in body:
+        body["production_released"] = 1 if body.get("production_released") else 0
+    # A série manual SEFAZ não pode colidir com a série do Faturador ML (nfe_serie) do mesmo CNPJ.
+    new_manual_serie = body.get("manual_nfe_serie", getattr(cfg, "manual_nfe_serie", None))
+    new_ml_serie = body.get("nfe_serie", getattr(cfg, "nfe_serie", None))
+    if new_manual_serie is not None and new_ml_serie is not None and new_manual_serie == new_ml_serie:
+        raise HTTPException(
+            status_code=422,
+            detail="A série da NF-e manual (SEFAZ) deve ser diferente da série do marketplace (nfe_serie).",
         )
     if body.get("tax_regime_mode") and body["tax_regime_mode"] not in (
         "legacy", "transition", "reform"
@@ -166,25 +186,24 @@ async def update_fiscal_config(
     return _serialize(cfg)
 
 
-# ── Registro Focus NFe ────────────────────────────────────────────────────────
+# ── Certificado A1 (emissão própria SEFAZ) ─────────────────────────────────────
 
 
-@router.post("/register-focus")
-async def register_focus(
+@router.post("/certificate")
+async def upload_certificate(
     cmig_id: int,
-    body: dict,
+    password: str = Form(...),
+    pfx_file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Registra a empresa (CNPJ) no Focus NFe. Requer master_token (do dev).
-    Salva o token específico da empresa em cfg.focus_company_token."""
+    """Upload do certificado A1 (.pfx) da CMIG para emissão própria à SEFAZ.
+
+    O .pfx é gravado em diretório RESTRITO no servidor (fora de static/) e a senha
+    é arquivada CIFRADA no banco (Fernet master key). Nada vai para terceiros."""
     cmig = await _check_cmig_access(cmig_id, current_user, db)
     if current_user.role not in ("ac", "admin"):
-        raise HTTPException(status_code=403, detail="Apenas AC ou admin podem registrar no Focus")
-
-    master_token = (body.get("master_token") or "").strip()
-    if not master_token:
-        raise HTTPException(status_code=422, detail="master_token é obrigatório")
+        raise HTTPException(status_code=403, detail="Apenas AC ou admin podem subir certificado")
 
     cfg = (
         await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))
@@ -194,78 +213,35 @@ async def register_focus(
         db.add(cfg)
         await db.flush()
 
-    if not cfg.crt:
-        raise HTTPException(status_code=400, detail="Configure o CRT antes de registrar no Focus")
-    if not cmig.cnpj:
-        raise HTTPException(status_code=400, detail="CMIG sem CNPJ cadastrado")
-
-    try:
-        result = await focus_service.register_company(cfg, cmig, master_token)
-    except focus_service.FocusError as e:
-        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
-
-    # Focus retorna `token_homologacao` ou `token_producao` da empresa registrada
-    company_token = (
-        result.get("token_homologacao")
-        if cfg.environment == "homolog"
-        else result.get("token_producao")
-    )
-    if not company_token:
-        # Algumas respostas do Focus retornam ambos; tentar o oposto também
-        company_token = result.get("token_producao") or result.get("token_homologacao")
-
-    cfg.focus_company_token = company_token
-    cfg.focus_company_id = result.get("id") or result.get("uuid") or _digits_only(cmig.cnpj)
-    cfg.focus_registered_at = datetime.utcnow()
-
-    await db.commit()
-    await db.refresh(cfg)
-    return {
-        "detail": "Empresa registrada no Focus NFe",
-        "focus_company_id": cfg.focus_company_id,
-        "config": _serialize(cfg),
-    }
-
-
-@router.post("/certificate")
-async def upload_certificate(
-    cmig_id: int,
-    master_token: str = Form(...),
-    password: str = Form(...),
-    pfx_file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Upload do certificado A1 (.pfx) — repassa para o Focus NFe.
-    O .pfx NÃO é salvo localmente: vai direto para o cofre do Focus."""
-    cmig = await _check_cmig_access(cmig_id, current_user, db)
-    if current_user.role not in ("ac", "admin"):
-        raise HTTPException(status_code=403, detail="Apenas AC ou admin podem subir certificado")
-
-    cfg = (
-        await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))
-    ).scalar_one_or_none()
-    if not cfg:
-        raise HTTPException(
-            status_code=400, detail="Configure a CMIG no Focus antes de enviar o certificado"
-        )
-
     pfx_bytes = await pfx_file.read()
     if not pfx_bytes:
         raise HTTPException(status_code=422, detail="Arquivo .pfx vazio")
     if len(pfx_bytes) > 5 * 1024 * 1024:
         raise HTTPException(status_code=422, detail="Arquivo .pfx muito grande (máx 5MB)")
 
-    # Validar localmente que o .pfx + senha são válidos antes de enviar
+    # Validar o .pfx + senha antes de qualquer persistência
     expires_at, subject = _validate_pfx(pfx_bytes, password)
     if not expires_at:
         raise HTTPException(status_code=422, detail="Certificado inválido ou senha incorreta")
 
+    # Cifrar a senha ANTES de gravar nada (falha cedo se a master key não estiver configurada)
     try:
-        await focus_service.upload_certificate(cfg, cmig, master_token, pfx_bytes, password)
-    except focus_service.FocusError as e:
-        raise HTTPException(status_code=502, detail=f"Focus NFe: {e.message}")
+        pass_token = cert_crypto.encrypt(password)
+    except cert_crypto.CertCryptoError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+    # Gravar o .pfx em diretório restrito (fora de static/, que é servido por HTTP)
+    certs_dir = Path(get_settings().NFE_CERTS_DIR)
+    certs_dir.mkdir(parents=True, exist_ok=True)
+    cert_path = certs_dir / f"cmig_{cmig_id}.pfx"
+    cert_path.write_bytes(pfx_bytes)
+    try:
+        os.chmod(cert_path, 0o600)  # best-effort (no-op efetivo no Windows)
+    except OSError:
+        pass
+
+    cfg.cert_path = str(cert_path)
+    cfg.cert_pass_encrypted = pass_token
     cfg.certificate_uploaded_at = datetime.utcnow()
     cfg.certificate_expires_at = expires_at
     cfg.certificate_subject = subject
@@ -273,16 +249,10 @@ async def upload_certificate(
     await db.refresh(cfg)
 
     return {
-        "detail": "Certificado enviado para o Focus NFe",
+        "detail": "Certificado A1 armazenado para emissão própria à SEFAZ",
         "certificate_subject": subject,
         "certificate_expires_at": expires_at.isoformat() if expires_at else None,
     }
-
-
-def _digits_only(s: str | None) -> str:
-    import re
-
-    return re.sub(r"\D", "", s or "")
 
 
 def _validate_pfx(pfx_bytes: bytes, password: str):

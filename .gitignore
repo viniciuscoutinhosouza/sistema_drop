@@ -25,6 +25,18 @@ Wallet_*/
 *.sso
 *.ora
 tnsnames.ora
+
+# Certificados A1 (emissão própria NF-e) — nunca commitar
+.secrets/
+*.pfx
+BACKEND/.secrets/
+
+# XMLs autorizados de NF-e (dado fiscal/LGPD) — fora do git
+BACKEND/data/nfe_xml/
+data/nfe_xml/
+
+# Projeto-fonte do amigo (material de estudo da emissão própria) — contém .pfx/.env/credenciais
+DOCs/NFE_VendasProduto/
 sqlnet.ora
 cwallet.sso
 

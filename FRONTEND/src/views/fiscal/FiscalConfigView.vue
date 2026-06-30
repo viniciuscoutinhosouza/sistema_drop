@@ -5,7 +5,7 @@
         <div class="row mb-2">
           <div class="col-sm-6">
             <h1 class="m-0"><i class="fas fa-cogs text-secondary mr-2"></i>Configuração Fiscal</h1>
-            <small class="text-muted">Certificado Digital, Focus NFe e parâmetros de emissão por CMIG</small>
+            <small class="text-muted">Certificado Digital A1, série SEFAZ e parâmetros de emissão por CMIG</small>
           </div>
         </div>
       </div>
@@ -40,7 +40,7 @@
         <div v-if="!selectedCmigId" class="card">
           <div class="card-body text-center py-5 text-muted">
             <i class="fas fa-arrow-up fa-2x mb-3 d-block"></i>
-            Selecione uma CMIG acima para configurar o certificado digital e o Focus NFe.
+            Selecione uma CMIG acima para configurar o certificado digital e a emissão à SEFAZ.
           </div>
         </div>
 
@@ -58,10 +58,10 @@
           </div>
           <div class="card-body py-2">
             <ol class="mb-0 small text-muted pl-3">
-              <li>Preencha os dados fiscais (CRT, IE, CNAE) e salve.</li>
-              <li>Clique em <strong>Registrar no Focus NFe</strong> informando o token mestre.</li>
-              <li>Após registrar, clique em <strong>Enviar Certificado</strong> e faça upload do arquivo <code>.pfx</code>.</li>
-              <li>Configure o ambiente como <strong>Produção</strong> apenas quando os testes em Homologação estiverem concluídos.</li>
+              <li>Preencha os dados fiscais (CRT, IE, CNAE) e a <strong>série NF-e manual (SEFAZ)</strong>, e salve.</li>
+              <li>Clique em <strong>Enviar Certificado</strong> e faça upload do arquivo <code>.pfx</code> com a senha.</li>
+              <li>Teste em <strong>Homologação</strong> emitindo uma NF-e e conferindo a autorização (cStat=100).</li>
+              <li>Marque <strong>Produção liberada</strong> e troque o ambiente para <strong>Produção</strong> apenas após o credenciamento da empresa na SEFAZ da UF.</li>
             </ol>
           </div>
         </div>

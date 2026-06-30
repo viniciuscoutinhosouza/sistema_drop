@@ -26,15 +26,28 @@ class CMIGFiscalConfig(Base):
     crt = Column(Integer, nullable=False, default=1)  # 1=Simples 2=SimplesExc 3=Normal 4=MEI
     environment = Column(String(20), nullable=False, default="homolog")
 
-    # Focus NFe
+    # Focus NFe (LEGACY — emissão própria SEFAZ abaixo substitui; mantido p/ compat)
     focus_company_token = Column(String(200))
     focus_company_id = Column(String(100))
     focus_registered_at = Column(TIMESTAMP(timezone=True))
 
-    # Certificado A1 (.pfx) — armazenado no Focus, espelhamos metadados
+    # Certificado A1 (.pfx) — agora armazenado LOCAL no servidor; senha CIFRADA no banco
     certificate_uploaded_at = Column(TIMESTAMP(timezone=True))
     certificate_expires_at = Column(TIMESTAMP(timezone=True))
     certificate_subject = Column(String(500))
+    cert_path = Column(String(255))             # caminho do .pfx no servidor (fora de static/)
+    cert_pass_encrypted = Column(String(512))   # senha do .pfx cifrada (Fernet) — nunca em claro
+
+    # Emissão própria SEFAZ
+    production_released = Column(Integer, default=0, nullable=False)  # go-live faseado por empresa
+    aliquota_fecp = Column(Numeric(5, 2), default=0)                 # FECP (ex.: RJ 2%) por produto
+    ultimo_nsu = Column(String(20), default="0")                     # Distribuição DFe (NSU por CNPJ)
+
+    # Série específica configurável p/ emissão MANUAL via SEFAZ (separada do marketplace),
+    # numeração desdobrada por ambiente.
+    manual_nfe_serie = Column(Integer)
+    manual_nfe_next_number = Column(Integer, default=1)
+    manual_nfe_next_number_homolog = Column(Integer, default=1)
 
     # Dados fiscais complementares
     ie = Column(String(20))
@@ -103,10 +116,15 @@ class Invoice(Base):
     manifestation_protocol = Column(String(50))
     stock_updated = Column(Boolean, nullable=False, default=False)
 
-    # Focus NFe
+    # Focus NFe (LEGACY) + emissão própria SEFAZ
     focus_ref = Column(String(100))
     focus_status = Column(String(50))
     focus_message = Column(String(2000))
+    auth_protocol = Column(String(20))      # nProt da autorização SEFAZ (cStat=100)
+    sefaz_cstat = Column(String(4))         # último cStat da nota
+    sefaz_xmotivo = Column(String(255))     # último xMotivo
+    environment = Column(String(12))        # ambiente fixado na emissão: homolog | production
+    emission_provider = Column(String(10), default="focus")  # focus | sefaz
 
     # Arquivos
     xml_url = Column(String(1000))
@@ -252,6 +270,40 @@ class InvoiceEvent(Base):
     created_by_user_id = Column(Integer, ForeignKey("users.id"))
 
     invoice = relationship("Invoice", back_populates="events")
+
+
+class InvoiceSefazLog(Base):
+    """Log bruto request/response SOAP da SEFAZ (append-only, migration 116)."""
+
+    __tablename__ = "invoice_sefaz_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"))
+    cmig_id = Column(Integer, nullable=False)
+    operation = Column(String(40), nullable=False)  # autorizacao|consulta|cancelamento|cce|distribuicao
+    cstat = Column(String(4))
+    xmotivo = Column(String(255))
+    payload_request = Column(Text)
+    payload_response = Column(Text)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+
+
+class DFeRecebido(Base):
+    """Documento da Distribuição de DFe (entrada própria, migration 116)."""
+
+    __tablename__ = "dfe_recebidos"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cmig_id = Column(Integer, nullable=False)
+    nsu = Column(String(20), nullable=False)
+    chave = Column(String(44))
+    schema_dfe = Column(String(60))
+    resumo_json = Column(Text)
+    xml = Column(Text)
+    manifestacao = Column(String(20), default="pending")
+    manifestacao_at = Column(TIMESTAMP(timezone=True))
+    invoice_id = Column(Integer, ForeignKey("invoices.id"))
+    criado_em = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
 
 
 class CFOPCode(Base):

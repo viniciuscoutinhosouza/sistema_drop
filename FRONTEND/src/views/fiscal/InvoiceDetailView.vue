@@ -184,12 +184,14 @@
             <div class="card">
               <div class="card-header"><h3 class="card-title">Ações</h3></div>
               <div class="card-body">
-                <a v-if="invoice.xml_url" :href="invoice.xml_url" target="_blank" class="btn btn-outline-info mr-2 mb-2">
+                <button v-if="invoice.status === 'authorized'" class="btn btn-outline-info mr-2 mb-2"
+                        :disabled="downloading" @click="baixar('xml')">
                   <i class="fas fa-file-code mr-1"></i> Baixar XML
-                </a>
-                <a v-if="invoice.danfe_url" :href="invoice.danfe_url" target="_blank" class="btn btn-outline-info mr-2 mb-2">
+                </button>
+                <button v-if="invoice.status === 'authorized'" class="btn btn-outline-info mr-2 mb-2"
+                        :disabled="downloading" @click="baixar('danfe')">
                   <i class="fas fa-file-pdf mr-1"></i> Baixar DANFE
-                </a>
+                </button>
                 <button v-if="invoice.status === 'authorized'" class="btn btn-info mr-2 mb-2" @click="showEmailModal = true">
                   <i class="fas fa-envelope mr-1"></i> Enviar por e-mail
                 </button>
@@ -228,7 +230,7 @@
                 </button>
 
                 <div v-if="invoice.focus_message" class="alert alert-info mt-2 small mb-0">
-                  <strong>Focus/SEFAZ:</strong> {{ invoice.focus_message }}
+                  <strong>SEFAZ:</strong> {{ invoice.focus_message }}
                 </div>
               </div>
             </div>
@@ -393,6 +395,29 @@ const emailList = ref('')
 const acting = ref(false)
 const refreshing = ref(false)
 const reapplyingStock = ref(false)
+const downloading = ref(false)
+
+async function baixar(kind) {
+  if (!invoice.value) return
+  downloading.value = true
+  try {
+    const { data } = await api.get(`/invoices/${invoice.value.id}/${kind}`, { responseType: 'blob' })
+    const ext = kind === 'danfe' ? 'pdf' : 'xml'
+    const chave = invoice.value.access_key || invoice.value.id
+    const url = URL.createObjectURL(new Blob([data]))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${kind === 'danfe' ? 'DANFE' : 'NFe'}-${chave}.${ext}`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || `Erro ao baixar ${kind.toUpperCase()}`)
+  } finally {
+    downloading.value = false
+  }
+}
 
 const directionIcon = computed(() => invoice.value?.direction === 'in' ? 'fa-arrow-down text-warning' : 'fa-arrow-up text-success')
 const directionLabel = computed(() => invoice.value?.direction === 'in' ? 'Entrada' : 'Saída')
