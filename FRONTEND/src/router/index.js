@@ -84,6 +84,7 @@ const CampaignAdsView = () => import('@/views/campanha-ads/CampaignAdsView.vue')
 
 // Relatórios CMIG (AC)
 const CmigReportsView = () => import('@/views/cmig-reports/CmigReportsView.vue')
+const MonthlySalesView = () => import('@/views/reports/MonthlySalesView.vue')
 
 // Simulador ML
 const SimuladorView = () => import('@/views/simulator/SimuladorView.vue')
@@ -244,7 +245,8 @@ const routes = [
       { path: 'campanha-ads', component: CampaignAdsView, meta: { title: 'Campanha ADS', role: 'ac' } },
 
       // Relatórios CMIG — AC
-      { path: 'cmig-reports', component: CmigReportsView, meta: { title: 'Relatórios CMIG', role: 'ac' } },
+      { path: 'cmig-reports', component: CmigReportsView, meta: { title: 'Relatórios em PDF', role: 'ac' } },
+      { path: 'relatorios/vendas-mes', component: MonthlySalesView, meta: { title: 'Vendas do Mês' } },
 
       // Atendimento (Mensagens + Perguntas) — AC e Admin
       { path: 'messages', component: MessagesView, meta: { title: 'Central de Atendimento' } },

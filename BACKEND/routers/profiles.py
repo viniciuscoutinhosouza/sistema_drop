@@ -18,7 +18,8 @@ MENU_CATALOG: list[dict] = [
     # Seção AC
     {"key": "cmig",             "label": "Contas MIG (CMIG)",        "section": "MINHAS CONTAS"},
     {"key": "integrations",     "label": "Contas Marketplace (CM)",  "section": "MINHAS CONTAS"},
-    {"key": "cmig_reports",     "label": "Relatórios CMIG",          "section": "MINHAS CONTAS"},
+    {"key": "cmig_reports",     "label": "Relatórios em PDF",        "section": "RELATÓRIOS"},
+    {"key": "relatorio_vendas", "label": "Vendas do Mês",            "section": "RELATÓRIOS"},
     {"key": "full_cnpjs",       "label": "CNPJs FULL",               "section": "MINHAS CONTAS"},
     {"key": "anuncios",         "label": "Anúncios",                 "section": "OPERAÇÕES"},
     {"key": "campanha_ads",     "label": "Campanha ADS",             "section": "OPERAÇÕES"},

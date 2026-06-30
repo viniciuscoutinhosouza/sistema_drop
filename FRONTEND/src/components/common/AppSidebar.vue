@@ -54,7 +54,7 @@
           <!-- ══ MENUS DINÂMICOS (perfil de acesso) — recolhíveis ════════════ -->
 
           <!-- MINHAS CONTAS (GC / AC) -->
-          <li v-if="canSee('cmig') || canSee('integrations') || canSee('cmig_reports') || canSee('full_cnpjs')"
+          <li v-if="canSee('cmig') || canSee('integrations') || canSee('full_cnpjs')"
               class="nav-item" :class="{ 'menu-open': sections.contas }">
             <a href="#" class="nav-link" @click.prevent="toggle('contas')">
               <i class="nav-icon fas fa-briefcase"></i>
@@ -71,14 +71,30 @@
                   <i class="nav-icon fas fa-plug"></i><p>Contas Marketplace (CM)</p>
                 </RouterLink>
               </li>
-              <li v-if="canSee('cmig_reports')" class="nav-item">
-                <RouterLink to="/cmig-reports" class="nav-link" :class="{ active: route.path.startsWith('/cmig-reports') }">
-                  <i class="nav-icon fas fa-file-pdf"></i><p>Relatórios</p>
-                </RouterLink>
-              </li>
               <li v-if="canSee('full_cnpjs')" class="nav-item">
                 <RouterLink to="/full-cnpjs" class="nav-link" :class="{ active: route.path.startsWith('/full-cnpjs') }">
                   <i class="nav-icon fas fa-warehouse"></i><p>CNPJs FULL</p>
+                </RouterLink>
+              </li>
+            </ul>
+          </li>
+
+          <!-- RELATÓRIOS -->
+          <li v-if="canSee('cmig_reports') || canSee('relatorio_vendas')"
+              class="nav-item" :class="{ 'menu-open': sections.relatorios }">
+            <a href="#" class="nav-link" @click.prevent="toggle('relatorios')">
+              <i class="nav-icon fas fa-chart-line"></i>
+              <p>Relatórios <i class="right fas fa-angle-left"></i></p>
+            </a>
+            <ul class="nav nav-treeview">
+              <li v-if="canSee('cmig_reports')" class="nav-item">
+                <RouterLink to="/cmig-reports" class="nav-link" :class="{ active: route.path.startsWith('/cmig-reports') }">
+                  <i class="nav-icon fas fa-file-pdf"></i><p>Relatórios em PDF</p>
+                </RouterLink>
+              </li>
+              <li v-if="canSee('relatorio_vendas')" class="nav-item">
+                <RouterLink to="/relatorios/vendas-mes" class="nav-link" :class="{ active: route.path.startsWith('/relatorios/vendas-mes') }">
+                  <i class="nav-icon fas fa-coins"></i><p>Vendas do Mês</p>
                 </RouterLink>
               </li>
             </ul>
@@ -386,6 +402,7 @@ const sections = reactive({
   estoque: false,
   fiscal: false,
   integracao: false,
+  relatorios: false,
   monitoramento: false,
   gestao: false,
   admin: false,
@@ -403,7 +420,8 @@ function toggle(key) {
 
 // Qual seção contém a rota atual — abre automaticamente ao navegar / carregar
 function sectionForPath(path) {
-  if (/^\/(cmigs|cmig-products|integrations|cmig-reports|full-cnpjs)/.test(path)) return 'contas'
+  if (/^\/(cmig-reports|relatorios)/.test(path)) return 'relatorios'
+  if (/^\/(cmigs|cmig-products|integrations|full-cnpjs)/.test(path)) return 'contas'
   if (/^\/(anuncios|campanha-ads|messages|financial|orders|catalog|manual-orders|estoque)/.test(path)) return 'operacoes'
   if (path.startsWith('/returns')) return path === '/returns/aguardando-retorno' ? 'estoque' : 'operacoes'
   if (path === '/inventario' || path.startsWith('/inventario/')) return 'estoque'
@@ -448,7 +466,7 @@ const roleLabel = computed(() => {
 // Mapa legado: qual menu_key cada role vê por padrão (sem perfil configurado)
 const _legacyMenus = {
   admin: new Set([
-    'cmig','integrations','cmig_reports','full_cnpjs','anuncios','campanha_ads','atendimento','financeiro',
+    'cmig','integrations','cmig_reports','relatorio_vendas','full_cnpjs','anuncios','campanha_ads','atendimento','financeiro',
     'pedidos','catalog','pedido_manual','devolucoes','estoque',
     'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
     'pg','separacao','ag_retorno','inventario','inventario_criar','rotinas',
@@ -457,7 +475,7 @@ const _legacyMenus = {
     'config_usuarios','config_email','config_eship','config_ncm','config_ai','config_api_console','config_perfis',
   ]),
   ac: new Set([
-    'cmig','integrations','cmig_reports','full_cnpjs','anuncios','campanha_ads','atendimento','financeiro',
+    'cmig','integrations','cmig_reports','relatorio_vendas','full_cnpjs','anuncios','campanha_ads','atendimento','financeiro',
     'pedidos','catalog','pedido_manual','devolucoes','estoque',
     'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
     'inventario','integracao_envio',
@@ -466,7 +484,7 @@ const _legacyMenus = {
     'pg','cmig','pedidos','estoque','separacao','ag_retorno','inventario','inventario_criar','devolucoes',
     'pessoas','fiscal_entradas','fiscal_saidas','rotinas','config_usuarios','integracao_envio',
   ]),
-  go: new Set(['rotinas','go_empresa','go_usuarios','inventario']),
+  go: new Set(['rotinas','go_empresa','go_usuarios','inventario','relatorio_vendas']),
 }
 
 function canSee(menuKey) {

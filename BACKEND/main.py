@@ -70,6 +70,7 @@ from routers import (
     campaign_ads,
     catalog,
     cfop,
+    sales_report,
     claims,
     competitor_analysis,
     cmig_reports,
@@ -147,6 +148,7 @@ app.include_router(
 app.include_router(
     cmig_reports.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/reports", tags=["CMIGReports"]
 )
+app.include_router(sales_report.router, prefix=f"{PREFIX}/reports", tags=["Reports"])
 app.include_router(invoices.router, prefix=f"{PREFIX}/invoices", tags=["Invoices"])
 app.include_router(cfop.router, prefix=f"{PREFIX}/cfop", tags=["CFOP"])
 app.include_router(ncm.router, prefix=f"{PREFIX}/ncm", tags=["NCM"])
