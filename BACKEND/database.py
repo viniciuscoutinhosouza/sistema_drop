@@ -7,6 +7,8 @@ DB operations run in asyncio.to_thread() so FastAPI async routes work as-is.
 """
 
 import asyncio
+import functools
+from concurrent.futures import ThreadPoolExecutor
 
 import oracledb
 from sqlalchemy import create_engine, event
@@ -18,6 +20,15 @@ from config import get_settings
 settings = get_settings()
 oracledb.defaults.fetch_lobs = False
 
+# Executor DEDICADO ao banco. O AsyncSyncSession roda o Oracle (blocking) aqui,
+# ISOLADO do executor default do asyncio (que serve SEFAZ/DANFE/email/PDF). Sem
+# essa separação, uma rajada de chamadas externas lentas drena as threads e trava
+# o banco — foi o modo de falha do incidente 2026-07-01. Ver ADR-0001 e config.py.
+_DB_EXECUTOR = ThreadPoolExecutor(
+    max_workers=settings.ORACLE_DB_EXECUTOR_WORKERS,
+    thread_name_prefix="db",
+)
+
 
 def _make_oracle_connection():
     """Create a synchronous Oracle connection using the wallet (thin mode)."""
@@ -25,19 +36,27 @@ def _make_oracle_connection():
         user=settings.ORACLE_USER,
         password=settings.ORACLE_PASSWORD,
         dsn=settings.ORACLE_DSN,
+        # Limita o ESTABELECIMENTO da conexão TCP (segundos) — sem isso um ATP
+        # inacessível pendura a thread no connect indefinidamente.
+        tcp_connect_timeout=settings.ORACLE_CONNECT_TIMEOUT_SECONDS,
     )
     if settings.ORACLE_WALLET_DIR:
         kwargs["config_dir"] = settings.ORACLE_WALLET_DIR
         kwargs["wallet_location"] = settings.ORACLE_WALLET_DIR
         kwargs["wallet_password"] = settings.ORACLE_WALLET_PASSWORD
-    return oracledb.connect(**kwargs)
+    conn = oracledb.connect(**kwargs)
+    # Aborta qualquer round-trip que exceda o limite (ms), em vez de segurar a
+    # thread "para sempre" numa conexão semi-morta (o Recv-Q travado do incidente).
+    if settings.ORACLE_CALL_TIMEOUT_MS and settings.ORACLE_CALL_TIMEOUT_MS > 0:
+        conn.call_timeout = settings.ORACLE_CALL_TIMEOUT_MS
+    return conn
 
 
 _sync_engine = create_engine(
     "oracle+oracledb://",
     creator=_make_oracle_connection,
-    pool_size=5,
-    max_overflow=10,
+    pool_size=settings.ORACLE_POOL_SIZE,
+    max_overflow=settings.ORACLE_MAX_OVERFLOW,
     pool_pre_ping=True,
     # Recycle connections after 25 min — Oracle ATP drops idle TCP after ~30 min
     pool_recycle=1500,
@@ -82,26 +101,34 @@ class AsyncSyncSession:
     async def __aexit__(self, *_):
         await self.close()
 
+    async def _run(self, fn, *args, **kwargs):
+        """Roda a operação bloqueante do banco no executor DEDICADO (não no
+        default do asyncio), preservando o contravar como asyncio.to_thread faz."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _DB_EXECUTOR, functools.partial(fn, *args, **kwargs)
+        )
+
     async def execute(self, statement, *args, **kwargs):
-        return await asyncio.to_thread(self._s.execute, statement, *args, **kwargs)
+        return await self._run(self._s.execute, statement, *args, **kwargs)
 
     async def scalar(self, statement, *args, **kwargs):
-        return await asyncio.to_thread(self._s.scalar, statement, *args, **kwargs)
+        return await self._run(self._s.scalar, statement, *args, **kwargs)
 
     async def flush(self, objects=None):
-        return await asyncio.to_thread(self._s.flush, objects)
+        return await self._run(self._s.flush, objects)
 
     async def commit(self):
-        return await asyncio.to_thread(self._s.commit)
+        return await self._run(self._s.commit)
 
     async def rollback(self):
-        return await asyncio.to_thread(self._s.rollback)
+        return await self._run(self._s.rollback)
 
     async def close(self):
-        return await asyncio.to_thread(self._s.close)
+        return await self._run(self._s.close)
 
     async def refresh(self, instance, *args, **kwargs):
-        return await asyncio.to_thread(self._s.refresh, instance, *args, **kwargs)
+        return await self._run(self._s.refresh, instance, *args, **kwargs)
 
     def add(self, instance):
         self._s.add(instance)

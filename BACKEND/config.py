@@ -11,6 +11,27 @@ class Settings(BaseSettings):
     ORACLE_WALLET_DIR: str = ""  # path to unzipped Oracle Cloud Wallet folder
     ORACLE_WALLET_PASSWORD: str = ""  # password set when downloading the wallet from Oracle Cloud
 
+    # Pool de conexões + concorrência do AsyncSyncSession (ver ADR-0001).
+    # Incidente 2026-07-01: o executor DEFAULT do asyncio (~5 threads em 1 vCPU)
+    # esgotou porque jobs do APScheduler ficaram presos num round-trip Oracle SEM
+    # timeout → todo request que toca o banco congelou. Correção: executor dedicado
+    # ao banco + call_timeout no oracledb. Teto de conexões (POOL_SIZE+MAX_OVERFLOW)
+    # deve ficar < 20 (limite de sessões do ATP Always Free).
+    ORACLE_POOL_SIZE: int = 8
+    ORACLE_MAX_OVERFLOW: int = 7
+    # Threads dedicadas ao banco (isoladas do executor de SEFAZ/DANFE/email).
+    # ≈ teto de conexões: mais threads que conexões só empilha na fila do pool.
+    ORACLE_DB_EXECUTOR_WORKERS: int = 16
+    # Aborta um round-trip Oracle pendurado (ms) para a thread não travar "para
+    # sempre" numa conexão semi-morta. 0 = sem limite. Folgado o bastante para não
+    # abortar batch NFe/relatórios (queries por round-trip, não a transação inteira).
+    ORACLE_CALL_TIMEOUT_MS: int = 120000
+    # Timeout (s) do ESTABELECIMENTO da conexão TCP com o ATP.
+    ORACLE_CONNECT_TIMEOUT_SECONDS: int = 15
+    # Executor default do asyncio (SEFAZ/DANFE/email/PDF rodam em asyncio.to_thread) —
+    # separado do pool do banco para que uma rajada de emissões NF-e não recongele o DB.
+    ASYNCIO_DEFAULT_EXECUTOR_WORKERS: int = 12
+
     # JWT
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
