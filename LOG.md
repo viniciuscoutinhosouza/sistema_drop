@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-07-01 — feat(cmig): colaboradores por seleção de AC ou convite por e-mail + aprovação do admin
+
+Corrige o bug "conta nova não adiciona colaboradores" na tela **Contas MIG** e adiciona o fluxo de
+convite. Commit `fbbc8da`, deploy validado em produção (migration 119 aplicada).
+
+- **Causa do bug:** o `CollaboratorsModal` carregava `/users?role=ac`, que exige a permissão de menu
+  `config_usuarios` → AC novo tomava 403 e o `catch` esvaziava o dropdown silenciosamente. Além disso
+  uma conta nova pode ser o único AC (lista vazia) — sem caminho de convite.
+- **Parte 1 (selecionar AC):** novo `GET /cmigs/{id}/collaborators/candidates` (acessível ao DONO,
+  não exige `config_usuarios`) lista ACs ativos elegíveis; o modal usa isso e mostra erro em vez de
+  esvaziar. `POST /cmigs/{id}/admins` valida usuário existe / é `ac` / está ativo (erro claro, não FK).
+  Removido o campo legado "ID do AC" do `CmigDetailView`.
+- **Parte 2 (convite + aprovação):** migration 119 (`user_invites`); `POST /cmigs/{id}/invites` (dono)
+  cria convite + envia e-mail (se SMTP off, devolve o link); `GET/POST /invites/{token}` PÚBLICOS para
+  o cadastro do convidado (`User` inativo, `pending_approval`); `GET /users/approvals` +
+  approve/reject (admin geral) liberam o login (`is_active=True`). Nova view "Aprovações de Cadastro"
+  (Administração, menu key `config_aprovacoes`) e página pública `/cadastro-convite/:token`.
+- **Fluxo:** dono convida → pessoa se cadastra → admin geral libera → dono vincula pela lista.
+- Auditado (consistency + quality): sem bloqueantes; lacunas de reject/órfão corrigidas (reject remove
+  o usuário órfão p/ não bloquear o e-mail; approve resolve convite órfão). Pendências não-bloqueantes:
+  expiração de convite (`expired` é dead code), cancel/resend, helper `assert_eligible_ac` duplicado.
+
+### fix(db): isola executor do banco + pool/timeouts — reconciliação de drift (commit `bb93bd9`)
+
+Durante o deploy acima, o backend crashou no startup (`AttributeError: ... ASYNCIO_DEFAULT_EXECUTOR_WORKERS`).
+Causa: `main.py` (commitado) já referenciava o setting, mas `config.py` e `database.py` — que carregam a
+correção de um incidente de executor esgotado (executor DEDICADO ao banco, isolado do default de
+SEFAZ/DANFE/email; `tcp_connect_timeout` + `call_timeout`; `pool_size/max_overflow` parametrizados <20
+sessões do ATP) — estavam como mudanças **locais não commitadas**. O deploy-operator corrigiu à mão no
+servidor; em seguida commitei a correção de verdade (`bb93bd9`) e redeployei para eliminar o drift e
+ativar a isolação do executor do banco (que ainda não estava viva em produção). Validado: `/docs` 200,
+`/api/v1/cmigs` 401, endpoint que toca o banco ~49ms, PM2 estável. Ver ADR-0001.
+
+---
+
 ## 2026-06-29 — feat(nfe): emissão própria SEFAZ — Fechamento (auditoria + ADRs)
 
 Auditoria Full em paralelo (quality-guardian + consistency-auditor + adr-consistency-checker).
