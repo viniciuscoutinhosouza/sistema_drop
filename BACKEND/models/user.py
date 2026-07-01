@@ -83,6 +83,27 @@ class User(Base):
     )
 
 
+class UserInvite(Base):
+    """Convite de colaborador por e-mail.
+
+    Fluxo: dono da CMIG convida → pessoa se cadastra (User inativo) → admin geral
+    aprova (ativa o login) → dono vincula como colaborador (CMIGAdministrator).
+    status: pending_registration → pending_approval → active | rejected | expired
+    """
+
+    __tablename__ = "user_invites"
+
+    id = Column(Integer, primary_key=True)
+    cmig_id = Column(Integer, ForeignKey("cmigs.id"))          # contexto de quem convidou
+    email = Column(String(255), nullable=False)
+    invited_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"))          # setado após o cadastro
+    token = Column(String(80), nullable=False, unique=True)
+    status = Column(String(20), nullable=False, default="pending_registration")
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    resolved_at = Column(TIMESTAMP(timezone=True))
+
+
 class ACProfile(Base):
     """Perfil do Administrador de Conta (AC). Contém endereço e vínculo com plano de acesso."""
 

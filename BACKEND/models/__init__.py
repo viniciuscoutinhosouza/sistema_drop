@@ -1,4 +1,5 @@
 # Importar todos os modelos para garantir registro no SQLAlchemy ORM
+from integrations.eship.config import EShipConfig  # noqa: F401 — módulo isolado eShip
 from models.cmig import (  # noqa: F401
     CMIG,
     CMIGAdministrator,
@@ -6,7 +7,6 @@ from models.cmig import (  # noqa: F401
     CMIGProductComponent,
     CMIGProductImage,
 )
-from integrations.eship.config import EShipConfig  # noqa: F401 — módulo isolado eShip
 from models.competitor_analysis import CompetitorAnalysis  # noqa: F401
 from models.dre import DREEntry, DRESnapshot  # noqa: F401
 from models.financial import FinancialTransaction  # noqa: F401
@@ -66,6 +66,7 @@ from models.user import (  # noqa: F401
     ACSubscription,
     RefreshToken,
     User,
+    UserInvite,
 )
 from models.warehouse import Warehouse  # noqa: F401
 from models.webhook import WebhookEvent  # noqa: F401

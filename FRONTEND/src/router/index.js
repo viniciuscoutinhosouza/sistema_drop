@@ -7,6 +7,7 @@ const DashboardLayout = () => import('@/layouts/DashboardLayout.vue')
 // Auth views
 const LoginView = () => import('@/views/auth/LoginView.vue')
 const RegisterView = () => import('@/views/auth/RegisterView.vue')
+const InviteRegisterView = () => import('@/views/auth/InviteRegisterView.vue')
 const OAuthSuccessView = () => import('@/views/auth/OAuthSuccessView.vue')
 
 // Dashboard
@@ -121,6 +122,7 @@ const ApiConsoleView = () => import('@/views/admin/ApiConsoleView.vue')
 
 // Gestão de Perfis de Acesso — Admin only
 const ProfilesView = () => import('@/views/admin/ProfilesView.vue')
+const UserApprovalsView = () => import('@/views/admin/UserApprovalsView.vue')
 
 // Monitoramento de Rotinas (UGO + GO + Admin)
 const SchedulerMonitoringView = () => import('@/views/monitoring/SchedulerMonitoringView.vue')
@@ -142,6 +144,12 @@ const routes = [
     path: '/register',
     component: AuthLayout,
     children: [{ path: '', component: RegisterView }],
+    meta: { guestOnly: true },
+  },
+  {
+    path: '/cadastro-convite/:token',
+    component: AuthLayout,
+    children: [{ path: '', component: InviteRegisterView }],
     meta: { guestOnly: true },
   },
   {
@@ -272,6 +280,7 @@ const routes = [
       // Console de API do Marketplace — Admin only
       { path: 'admin/api-console', component: ApiConsoleView, meta: { title: 'Console de API', role: 'admin' } },
       { path: 'admin/profiles',    component: ProfilesView,   meta: { title: 'Gestão de Perfis', role: 'admin' } },
+      { path: 'admin/user-approvals', component: UserApprovalsView, meta: { title: 'Aprovações de Cadastro', role: 'admin' } },
 
       // Simulador ML — todos os usuários
       { path: 'simulator', component: SimuladorView, meta: { title: 'Simulador ML' } },

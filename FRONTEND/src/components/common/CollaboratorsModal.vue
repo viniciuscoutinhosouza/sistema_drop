@@ -12,8 +12,22 @@
         <div class="modal-body">
           <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
 
-          <!-- Adicionar colaborador -->
-          <form class="form-inline mb-3" @submit.prevent="add">
+          <!-- Abas: selecionar AC existente vs convidar por email (convite só p/ CMIG) -->
+          <ul class="nav nav-pills nav-sm mb-3">
+            <li class="nav-item">
+              <a class="nav-link py-1 px-3" :class="{ active: tab === 'select' }" href="#" @click.prevent="tab = 'select'">
+                <i class="fas fa-user-check mr-1"></i>Selecionar AC
+              </a>
+            </li>
+            <li class="nav-item" v-if="isCmig">
+              <a class="nav-link py-1 px-3" :class="{ active: tab === 'invite' }" href="#" @click.prevent="tab = 'invite'">
+                <i class="fas fa-envelope mr-1"></i>Convidar por e-mail
+              </a>
+            </li>
+          </ul>
+
+          <!-- Selecionar AC existente -->
+          <form v-if="tab === 'select'" class="form-inline mb-3" @submit.prevent="add">
             <label class="mr-2 mb-0"><i class="fas fa-user-plus mr-1"></i>Adicionar AC:</label>
             <select v-model.number="selectedUserId" class="form-control form-control-sm mr-2" style="min-width:260px">
               <option :value="null">— selecione um AC —</option>
@@ -26,7 +40,41 @@
               <i v-if="saving" class="fas fa-spinner fa-spin mr-1"></i>
               <i v-else class="fas fa-plus mr-1"></i>Adicionar
             </button>
+            <small v-if="!availableAcs.length && !acsError" class="text-muted ml-2 mt-1 d-block w-100">
+              Nenhum Gestor de Conta disponível para adicionar. Use "Convidar por e-mail" para trazer alguém novo.
+            </small>
+            <small v-if="acsError" class="text-danger ml-2 mt-1 d-block w-100">{{ acsError }}</small>
           </form>
+
+          <!-- Convidar por e-mail -->
+          <div v-if="tab === 'invite'" class="mb-3">
+            <p class="small text-muted mb-2">
+              A pessoa recebe um link para se cadastrar. Após o cadastro, o administrador libera o acesso
+              e então você poderá adicioná-la pela aba "Selecionar AC".
+            </p>
+            <form class="form-inline" @submit.prevent="invite">
+              <input v-model="inviteEmail" type="email" class="form-control form-control-sm mr-2"
+                     style="min-width:280px" placeholder="email@colaborador.com" required>
+              <button type="submit" class="btn btn-sm btn-primary" :disabled="inviting || !inviteEmail">
+                <i v-if="inviting" class="fas fa-spinner fa-spin mr-1"></i>
+                <i v-else class="fas fa-paper-plane mr-1"></i>Enviar convite
+              </button>
+            </form>
+            <div v-if="inviteResult" class="alert py-2 mt-2"
+                 :class="inviteResult.already_user ? 'alert-info' : (inviteResult.email_sent ? 'alert-success' : 'alert-warning')">
+              <div v-if="inviteResult.already_user">{{ inviteResult.message }}</div>
+              <div v-else-if="inviteResult.email_sent">Convite enviado para <strong>{{ inviteEmailSent }}</strong>.</div>
+              <div v-else>
+                E-mail não pôde ser enviado (SMTP inativo). Copie o link e envie manualmente:
+                <div class="input-group input-group-sm mt-1">
+                  <input :value="inviteResult.invite_link" class="form-control" readonly>
+                  <div class="input-group-append">
+                    <button class="btn btn-outline-secondary" @click="copyLink(inviteResult.invite_link)"><i class="fas fa-copy"></i></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
 
           <div v-if="loading" class="text-center py-3">
             <i class="fas fa-spinner fa-spin"></i> Carregando...
@@ -95,7 +143,15 @@ const loading        = ref(false)
 const saving         = ref(false)
 const removingId     = ref(null)
 const error          = ref('')
+const acsError       = ref('')
 const selectedUserId = ref(null)
+const tab            = ref('select')
+const inviteEmail    = ref('')
+const inviteEmailSent = ref('')
+const inviting       = ref(false)
+const inviteResult   = ref(null)
+
+const isCmig = computed(() => props.entityType === 'cmig')
 
 const baseUrl = computed(() => {
   if (!props.entityId) return ''
@@ -124,11 +180,48 @@ async function loadAdmins() {
 }
 
 async function loadAcs() {
+  acsError.value = ''
   try {
-    const { data } = await api.get('/users?role=ac')
+    // CMIG: endpoint dedicado acessível ao dono (não depende de config_usuarios).
+    // Account: mantém o endpoint de usuários existente.
+    const url = isCmig.value
+      ? `/cmigs/${props.entityId}/collaborators/candidates`
+      : '/users?role=ac'
+    const { data } = await api.get(url)
     allAcs.value = data
-  } catch {
+  } catch (e) {
     allAcs.value = []
+    acsError.value = e.response?.data?.detail || 'Não foi possível carregar a lista de Gestores de Conta.'
+  }
+}
+
+async function invite() {
+  if (!inviteEmail.value) return
+  inviting.value = true
+  inviteResult.value = null
+  try {
+    const { data } = await api.post(`/cmigs/${props.entityId}/invites`, { email: inviteEmail.value })
+    inviteResult.value = data
+    inviteEmailSent.value = inviteEmail.value
+    if (data.already_user) {
+      // já é AC ativo — recarrega candidatos p/ aparecer na aba Selecionar
+      await loadAcs()
+    } else {
+      inviteEmail.value = ''
+    }
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao enviar convite.')
+  } finally {
+    inviting.value = false
+  }
+}
+
+async function copyLink(link) {
+  try {
+    await navigator.clipboard.writeText(link)
+    toast.success('Link copiado')
+  } catch {
+    toast.info(link)
   }
 }
 
@@ -166,6 +259,9 @@ watch(() => props.visible, (v) => {
   if (v) {
     selectedUserId.value = null
     error.value = ''
+    tab.value = 'select'
+    inviteEmail.value = ''
+    inviteResult.value = null
     loadAdmins()
     loadAcs()
   }

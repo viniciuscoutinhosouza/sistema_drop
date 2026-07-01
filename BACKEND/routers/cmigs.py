@@ -1,4 +1,5 @@
 import os as _os
+import secrets as _secrets
 import shutil as _shutil
 import uuid as _uuid_mod
 from datetime import date as _date
@@ -10,6 +11,7 @@ from sqlalchemy import update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from config import get_settings
 from database import get_db
 from dependencies import get_current_user
 from models.cmig import (
@@ -29,7 +31,7 @@ from models.product import (
     ProductListing,
     ProductMarketplaceCategory,
 )
-from models.user import User
+from models.user import User, UserInvite
 from models.warehouse import Warehouse
 from schemas.cmig import (
     CMIGAdminAdd,
@@ -43,6 +45,7 @@ from schemas.cmig import (
     NFeConfigOut,
     NFeConfigUpdate,
 )
+from services import email_service
 
 router = APIRouter()
 
@@ -394,6 +397,42 @@ async def list_cmig_admins(
     ]
 
 
+@router.get("/{cmig_id}/collaborators/candidates")
+async def list_collaborator_candidates(
+    cmig_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lista ACs ativos elegíveis para virar colaboradores desta CMIG.
+
+    Acessível ao DONO da CMIG (não depende do menu 'config_usuarios'). Exclui quem
+    já é administrador e o próprio usuário.
+    """
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db, require_owner=True)
+
+    existing = {
+        r[0]
+        for r in (
+            await db.execute(
+                select(CMIGAdministrator.user_id).where(CMIGAdministrator.cmig_id == cmig_id)
+            )
+        ).all()
+    }
+    rows = (
+        await db.execute(
+            select(User)
+            .where(User.role == "ac", User.is_active == True)  # noqa: E712
+            .order_by(User.full_name)
+        )
+    ).scalars().all()
+    return [
+        {"id": u.id, "full_name": u.full_name, "email": u.email, "role": u.role}
+        for u in rows
+        if u.id not in existing and u.id != current_user.id
+    ]
+
+
 @router.post("/{cmig_id}/admins", status_code=201)
 async def add_cmig_admin(
     cmig_id: int,
@@ -403,6 +442,20 @@ async def add_cmig_admin(
 ):
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db, require_owner=True)
+
+    # Valida o usuário: existe, é AC e está ativo (evita erro genérico de FK).
+    target = (
+        await db.execute(select(User).where(User.id == body.user_id))
+    ).scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    if target.role != "ac":
+        raise HTTPException(status_code=400, detail="Somente Gestores de Conta (AC) podem ser colaboradores")
+    if not target.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail="Usuário aguardando liberação do administrador — ainda não pode ser vinculado",
+        )
 
     dup = await db.execute(
         select(CMIGAdministrator).where(
@@ -416,6 +469,102 @@ async def add_cmig_admin(
     db.add(entry)
     await db.commit()
     return {"detail": "Co-administrador adicionado com sucesso"}
+
+
+@router.post("/{cmig_id}/invites", status_code=201)
+async def invite_collaborator(
+    cmig_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Convida um colaborador por e-mail. O convidado se cadastra por um link e o
+    administrador geral libera o acesso; depois o dono vincula pela lista de ACs.
+
+    Se o e-mail já for um AC ativo, informa que ele pode ser adicionado direto.
+    """
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db, require_owner=True)
+
+    email = (body.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=422, detail="Informe um e-mail válido")
+
+    existing_user = (
+        await db.execute(select(User).where(func.lower(User.email) == email))
+    ).scalar_one_or_none()
+    if existing_user:
+        if existing_user.role == "ac" and existing_user.is_active:
+            return {
+                "already_user": True,
+                "message": "Este e-mail já é um Gestor de Conta ativo — selecione-o na lista de ACs para adicionar como colaborador.",
+            }
+        if existing_user.role == "ac" and not existing_user.is_active:
+            raise HTTPException(
+                status_code=409,
+                detail="Este e-mail já iniciou um cadastro e aguarda a liberação do administrador.",
+            )
+        raise HTTPException(
+            status_code=409,
+            detail="Já existe um usuário com este e-mail (não elegível). Verifique com o administrador.",
+        )
+
+    # Reaproveita convite pendente do mesmo e-mail/CMIG, se houver.
+    invite = (
+        await db.execute(
+            select(UserInvite).where(
+                and_(
+                    func.lower(UserInvite.email) == email,
+                    UserInvite.cmig_id == cmig_id,
+                    UserInvite.status.in_(("pending_registration", "pending_approval")),
+                )
+            )
+        )
+    ).scalar_one_or_none()
+    if not invite:
+        invite = UserInvite(
+            cmig_id=cmig_id,
+            email=email,
+            invited_by_user_id=current_user.id,
+            token=_secrets.token_urlsafe(32),
+            status="pending_registration",
+        )
+        db.add(invite)
+        await db.flush()
+
+    link = f"{get_settings().FRONTEND_URL.rstrip('/')}/cadastro-convite/{invite.token}"
+
+    # Envia o e-mail (best-effort); se o SMTP estiver off, devolve o link p/ envio manual.
+    sent = False
+    try:
+        subject = "Convite para colaborar em uma conta — MIG ECOMMERCE"
+        html = _invite_email_html(cmig, current_user, link)
+        await email_service.send_email(db, email, subject, html)
+        sent = True
+    except Exception:  # noqa: BLE001
+        sent = False
+
+    await db.commit()
+    return {"already_user": False, "email_sent": sent, "invite_link": link}
+
+
+def _invite_email_html(cmig, inviter, link: str) -> str:
+    empresa = cmig.company_name or cmig.trade_name or "uma conta"
+    return f"""\
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto">
+      <h2 style="color:#2c3e50">Você foi convidado(a) para colaborar</h2>
+      <p><strong>{inviter.full_name}</strong> convidou você para colaborar na conta
+      <strong>{empresa}</strong> no sistema MIG ECOMMERCE.</p>
+      <p>Clique no botão abaixo para criar seu cadastro. Após o cadastro, o administrador
+      liberará seu acesso.</p>
+      <p style="text-align:center;margin:24px 0">
+        <a href="{link}" style="background:#007bff;color:#fff;padding:12px 24px;
+           border-radius:6px;text-decoration:none">Criar meu cadastro</a>
+      </p>
+      <p style="color:#888;font-size:13px">Ou copie e cole este link no navegador:<br>{link}</p>
+      <hr style="border:none;border-top:1px solid #eee">
+      <p style="color:#aaa;font-size:12px">MIG ECOMMERCE — Sistema Drop</p>
+    </div>"""
 
 
 @router.delete("/{cmig_id}/admins/{user_id}", status_code=204)

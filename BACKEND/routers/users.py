@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -6,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user, require_menu_permission, require_role
-from models.user import AccessPlan, ACProfile, User
+from models.cmig import CMIG
+from models.user import AccessPlan, ACProfile, User, UserInvite
 from models.warehouse import Warehouse
 from schemas.user import AddressSchema, PreferencesUpdate, ProfileOut, ProfileUpdate
 from services.viacep_service import fetch_address
@@ -14,6 +16,95 @@ from services.viacep_service import fetch_address
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ─── Aprovações de cadastro (convites de colaborador) — admin geral ──────────
+
+
+@router.get("/approvals")
+async def list_pending_approvals(
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fila de usuários que se cadastraram por convite e aguardam liberação do admin."""
+    rows = (
+        await db.execute(
+            select(UserInvite, User, CMIG)
+            .join(User, UserInvite.user_id == User.id)
+            .outerjoin(CMIG, UserInvite.cmig_id == CMIG.id)
+            .where(UserInvite.status == "pending_approval")
+            .order_by(UserInvite.created_at.desc())
+        )
+    ).all()
+    return [
+        {
+            "invite_id": inv.id,
+            "user_id": u.id,
+            "full_name": u.full_name,
+            "email": u.email,
+            "whatsapp": u.whatsapp,
+            "cmig_id": inv.cmig_id,
+            "company_name": (c.company_name or c.trade_name) if c else None,
+            "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        }
+        for inv, u, c in rows
+    ]
+
+
+@router.post("/approvals/{invite_id}/approve")
+async def approve_registration(
+    invite_id: int,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Libera o acesso do usuário cadastrado por convite (ativa o login)."""
+    invite = (
+        await db.execute(select(UserInvite).where(UserInvite.id == invite_id))
+    ).scalar_one_or_none()
+    if not invite or invite.status != "pending_approval":
+        raise HTTPException(status_code=404, detail="Cadastro pendente não encontrado")
+    user = (
+        await db.execute(select(User).where(User.id == invite.user_id))
+    ).scalar_one_or_none()
+    if not user:
+        # Usuário removido por outra via: resolve o convite p/ não travar a fila.
+        invite.status = "rejected"
+        invite.resolved_at = datetime.now(UTC)
+        await db.commit()
+        raise HTTPException(status_code=404, detail="Usuário do convite não existe mais — convite encerrado")
+    user.is_active = True
+    invite.status = "active"
+    invite.resolved_at = datetime.now(UTC)
+    await db.commit()
+    return {"message": "Acesso liberado. O dono da conta já pode vincular o colaborador.", "user_id": user.id}
+
+
+@router.post("/approvals/{invite_id}/reject")
+async def reject_registration(
+    invite_id: int,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recusa o cadastro: mantém o usuário inativo e marca o convite como recusado."""
+    invite = (
+        await db.execute(select(UserInvite).where(UserInvite.id == invite_id))
+    ).scalar_one_or_none()
+    if not invite or invite.status != "pending_approval":
+        raise HTTPException(status_code=404, detail="Cadastro pendente não encontrado")
+
+    # Remove o usuário órfão (nunca ativado, sem vínculos/login) para NÃO bloquear
+    # permanentemente o e-mail — um novo convite ao mesmo endereço volta a funcionar.
+    # Desvincula do convite antes de deletar (FK user_invites.user_id → users.id).
+    user = (
+        await db.execute(select(User).where(User.id == invite.user_id))
+    ).scalar_one_or_none()
+    invite.status = "rejected"
+    invite.resolved_at = datetime.now(UTC)
+    invite.user_id = None
+    if user and not user.is_active:
+        db.delete(user)
+    await db.commit()
+    return {"message": "Cadastro recusado."}
 
 
 # ─── Perfil do usuário autenticado ───────────────────────────────────────────

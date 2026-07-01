@@ -51,6 +51,7 @@ MENU_CATALOG: list[dict] = [
     {"key": "go_usuarios",      "label": "Usuários (GO)",            "section": "GESTÃO (GO)"},
     # Administração
     {"key": "config_usuarios",    "label": "Usuários",               "section": "ADMINISTRAÇÃO"},
+    {"key": "config_aprovacoes",  "label": "Aprovações de Cadastro", "section": "ADMINISTRAÇÃO"},
     {"key": "config_email",       "label": "Servidor de E-mail",     "section": "ADMINISTRAÇÃO"},
     {"key": "config_ncm",         "label": "Tabela NCM",             "section": "ADMINISTRAÇÃO"},
     {"key": "config_ai",          "label": "Configuração de IA",     "section": "ADMINISTRAÇÃO"},

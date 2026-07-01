@@ -307,13 +307,18 @@
           </li>
 
           <!-- ADMINISTRAÇÃO -->
-          <li v-if="canSee('config_usuarios') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_api_console') || canSee('config_perfis')"
+          <li v-if="canSee('config_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_api_console') || canSee('config_perfis')"
               class="nav-item" :class="{ 'menu-open': sections.admin }">
             <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') }" @click.prevent="toggle('admin')">
               <i class="nav-icon fas fa-cog"></i>
               <p>Administração <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
+              <li v-if="canSee('config_aprovacoes')" class="nav-item">
+                <RouterLink to="/admin/user-approvals" class="nav-link" :class="{ active: route.path === '/admin/user-approvals' }">
+                  <i class="far fa-circle nav-icon"></i><p>Aprovações de Cadastro <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
+                </RouterLink>
+              </li>
               <li v-if="canSee('config_usuarios')" class="nav-item">
                 <RouterLink to="/settings/users" class="nav-link" :class="{ active: route.path === '/settings/users' }">
                   <i class="far fa-circle nav-icon"></i><p>Usuários</p>
@@ -472,7 +477,7 @@ const _legacyMenus = {
     'pg','separacao','ag_retorno','inventario','inventario_criar','rotinas',
     'integracao_envio',
     'go_empresa','go_usuarios',
-    'config_usuarios','config_email','config_eship','config_ncm','config_ai','config_api_console','config_perfis',
+    'config_usuarios','config_aprovacoes','config_email','config_eship','config_ncm','config_ai','config_api_console','config_perfis',
   ]),
   ac: new Set([
     'cmig','integrations','cmig_reports','relatorio_vendas','full_cnpjs','anuncios','campanha_ads','atendimento','financeiro',

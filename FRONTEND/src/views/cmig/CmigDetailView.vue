@@ -110,21 +110,28 @@
             <!-- Integração eShip (WMS) -->
             <CmigEShipConfigCard v-if="cmig" :cmig-id="Number(cmig.id)" />
 
-            <!-- Co-administradores -->
+            <!-- Colaboradores -->
             <div class="card" v-if="isAC">
               <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-users mr-2"></i>Co-administradores</h3>
+                <h3 class="card-title"><i class="fas fa-users mr-2"></i>Colaboradores</h3>
               </div>
               <div class="card-body">
-                <p class="text-muted">Adicione outros ACs cadastrados para co-administrar esta CMIG.</p>
-                <div class="input-group">
-                  <input v-model="coAdminId" type="number" class="form-control" placeholder="ID do AC" />
-                  <div class="input-group-append">
-                    <button class="btn btn-outline-primary" @click="addCoAdmin">Adicionar</button>
-                  </div>
-                </div>
+                <p class="text-muted mb-2">
+                  Selecione Gestores de Conta cadastrados ou convide por e-mail para co-administrar esta CMIG.
+                </p>
+                <button class="btn btn-outline-primary" @click="showCollab = true">
+                  <i class="fas fa-user-friends mr-1"></i>Gerenciar colaboradores
+                </button>
               </div>
             </div>
+            <CollaboratorsModal
+              v-if="cmig"
+              :visible="showCollab"
+              entity-type="cmig"
+              :entity-id="Number(cmig.id)"
+              :entity-label="cmig.company_name || cmig.trade_name"
+              @close="showCollab = false"
+            />
 
             <!-- IA de Atendimento -->
             <div class="card" v-if="isAC || isAdmin">
@@ -223,6 +230,7 @@ import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import CmigFiscalConfigCard from '@/components/cmigs/CmigFiscalConfigCard.vue'
 import CmigEShipConfigCard from '@/components/cmigs/CmigEShipConfigCard.vue'
+import CollaboratorsModal from '@/components/common/CollaboratorsModal.vue'
 
 const route = useRoute()
 const authStore = useAuthStore()
@@ -234,7 +242,7 @@ const cms = ref([])
 const loadingNfe = ref(false)
 const showNFeModal = ref(false)
 const savingNfe = ref(false)
-const coAdminId = ref('')
+const showCollab = ref(false)
 
 const nfeForm = ref({ cm_id: '', shipping_method: 'FULL_ML', issuer: 'marketplace', notes: '' })
 
@@ -312,14 +320,4 @@ async function deleteNfe(cfg) {
   loadNfeConfigs()
 }
 
-async function addCoAdmin() {
-  if (!coAdminId.value) return
-  try {
-    await api.post(`/cmigs/${cmigId.value}/admins`, { user_id: Number(coAdminId.value) })
-    toast.success('Co-administrador adicionado!')
-    coAdminId.value = ''
-  } catch (e) {
-    toast.error(e.response?.data?.detail || 'Erro ao adicionar co-admin.')
-  }
-}
 </script>

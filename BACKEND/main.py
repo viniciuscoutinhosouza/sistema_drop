@@ -32,6 +32,21 @@ async def lifespan(app: FastAPI):
     # Reforça a redação anexando o filtro também aos handlers já criados pelo uvicorn
     # (pega records que sobem por propagação de loggers-filho não listados).
     install_log_redaction(include_handlers=True)
+
+    # Executor default do asyncio: usado por asyncio.to_thread nas chamadas
+    # bloqueantes NÃO-banco (SEFAZ mTLS, geração de DANFE/PDF, email). O banco tem
+    # executor PRÓPRIO (database._DB_EXECUTOR). Sem este ajuste o default fica em
+    # ~5 threads (min(32, cpu+4)) numa VM de 1 vCPU — gargalo do incidente 2026-07-01.
+    import asyncio as _asyncio
+    from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+
+    _asyncio.get_running_loop().set_default_executor(
+        _ThreadPoolExecutor(
+            max_workers=settings.ASYNCIO_DEFAULT_EXECUTOR_WORKERS,
+            thread_name_prefix="io",
+        )
+    )
+
     from tasks.scheduler import start_scheduler
 
     start_scheduler()
@@ -64,17 +79,14 @@ from routers import (
     admin_api_console,
     ai_config,
     anuncios,
-    marketplace_settings,
-    media,
     auth,
     campaign_ads,
     catalog,
     cfop,
-    sales_report,
     claims,
-    competitor_analysis,
     cmig_reports,
     cmigs,
+    competitor_analysis,
     dashboard,
     financial,
     fiscal_config,
@@ -82,9 +94,12 @@ from routers import (
     goes,
     integrations,
     inventories,
+    invites,
     invoices,
     listings,
     manual_orders,
+    marketplace_settings,
+    media,
     message_templates,
     messages,
     ncm,
@@ -95,6 +110,7 @@ from routers import (
     products,
     profiles,
     returns,
+    sales_report,
     scheduler_monitoring,
     separation,
     settings_email,
@@ -152,6 +168,7 @@ app.include_router(sales_report.router, prefix=f"{PREFIX}/reports", tags=["Repor
 app.include_router(invoices.router, prefix=f"{PREFIX}/invoices", tags=["Invoices"])
 app.include_router(cfop.router, prefix=f"{PREFIX}/cfop", tags=["CFOP"])
 app.include_router(ncm.router, prefix=f"{PREFIX}/ncm", tags=["NCM"])
+app.include_router(invites.router, prefix=f"{PREFIX}/invites", tags=["Invites"])
 app.include_router(
     admin_api_console.router,
     prefix=f"{PREFIX}/admin/api-console",
