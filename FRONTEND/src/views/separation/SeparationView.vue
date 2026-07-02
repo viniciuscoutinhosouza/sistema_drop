@@ -179,6 +179,10 @@
           </select>
           <button class="btn btn-sm btn-light mr-1" @click="printAllLabels"><i class="fas fa-tags mr-1"></i> Etiquetas</button>
           <button class="btn btn-sm btn-light mr-1" @click="cartNfe"><i class="fas fa-file-invoice mr-1"></i> NF-e</button>
+          <button class="btn btn-sm btn-warning text-dark mr-1" @click="downloadBundle" :disabled="downloadingBundle"
+                  title="Baixa NF-e (PDF+XML) e etiquetas de todos os pedidos num único ZIP">
+            <i class="fas mr-1" :class="downloadingBundle ? 'fa-spinner fa-spin' : 'fa-file-archive'"></i> Baixar tudo (ZIP)
+          </button>
           <button class="btn btn-sm btn-success mr-1" @click="concludeCart" :disabled="!allLabelPrinted"
                   :title="allLabelPrinted ? '' : 'Imprima a etiqueta de todos os pedidos para concluir'">
             <i class="fas fa-check mr-1"></i> Concluir
@@ -297,6 +301,7 @@ const openCarts = ref([])
 const activeCart = ref(null)
 const layouts = ref([{ key: '10x15', label: 'Térmica 10x15' }, { key: 'a4_4up', label: 'A4 (4 por página)' }])
 const layout = ref('10x15')
+const downloadingBundle = ref(false)
 const bipCode = ref({})
 const bipRefs = ref({})
 const addModal = reactive({ show: false, order: null })
@@ -504,6 +509,32 @@ async function cartNfe() {
     for (const n of ready) await openDanfe(n.order_id)
     await refreshCart()
   } catch (e) { toast.error(e.response?.data?.detail || 'Erro na NF-e') }
+}
+
+// ── Baixar tudo (ZIP): etiquetas + DANFE + XML ──
+async function downloadBundle() {
+  if (!activeCart.value || downloadingBundle.value) return
+  downloadingBundle.value = true
+  try {
+    const { data } = await api.get(`/separation/carts/${activeCart.value.id}/bundle.zip`,
+      { responseType: 'blob', params: { layout: layout.value } })
+    const url = URL.createObjectURL(new Blob([data], { type: 'application/zip' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${activeCart.value.cart_number}-documentos.zip`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+    toast.success('ZIP gerado. Confira o _avisos.txt caso algum pedido tenha ficado de fora.')
+    await refreshCart()
+  } catch (e) {
+    let msg = 'Erro ao gerar o ZIP'
+    try { msg = JSON.parse(await e.response.data.text()).detail || msg } catch { /* ignore */ }
+    toast.error(msg)
+  } finally {
+    downloadingBundle.value = false
+  }
 }
 
 function nfeIconClass(o) {

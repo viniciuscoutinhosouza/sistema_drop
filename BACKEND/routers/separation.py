@@ -11,8 +11,13 @@ Fluxo:
 Permissão: require_menu_permission("separacao"). Escopo por galpão (warehouse_id);
 admin enxerga todos.
 """
+import asyncio
+import io as _io
 import logging
+import re as _re
+import zipfile as _zipfile
 from datetime import UTC, datetime
+from pathlib import Path as _Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -1157,6 +1162,234 @@ async def order_danfe(
     return Response(
         content=content, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="DANFE_{order.id}.pdf"'},
+    )
+
+
+# ── "Baixar tudo (ZIP)" da gaiola — etiquetas + DANFE + XML ──────────────────
+
+_BUNDLE_MAX_ORDERS = 200  # teto de segurança (muitas chamadas ML sequenciais)
+
+
+async def _bundle_ensure_nfe(db: AsyncSession, entries: list) -> None:
+    """Tenta emitir a NF-e (ML) dos pedidos da gaiola sem nota. Best-effort, in-place.
+
+    Reusa o claim atômico anti-dupla de cart_emit_nfe + _sync_nfe para trazer o
+    resultado (a nota pode já sair autorizada)."""
+    for _pco, order in entries:
+        if order.nfe_key or order.nfe_status in ("authorized", "pending", "in_process"):
+            continue
+        if order.platform != "mercadolivre":
+            continue
+        acc = (
+            await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+        ).scalar_one_or_none()
+        if not acc or not acc.access_token:
+            continue
+        claim = await db.execute(
+            sa_update(Order)
+            .where(Order.id == order.id, Order.nfe_status.is_(None), Order.nfe_key.is_(None))
+            .values(nfe_status="pending")
+        )
+        await db.commit()
+        if getattr(claim, "rowcount", 0) == 0:
+            continue
+        try:
+            await _ml.emit_nfe(acc.access_token, acc.platform_user_id, [int(order.platform_order_id)])
+            await _sync_nfe(db, order, acc)
+        except Exception as exc:  # noqa: BLE001 — best-effort; reverte o claim
+            await db.execute(
+                sa_update(Order)
+                .where(Order.id == order.id, Order.nfe_status == "pending", Order.nfe_key.is_(None))
+                .values(nfe_status=None)
+            )
+            await db.commit()
+            logger.warning("bundle emit-nfe order=%s: %s", order.id, exc)
+
+
+async def _bundle_docs(db: AsyncSession, order: Order) -> tuple[bytes, bytes, str] | None:
+    """(danfe_pdf, xml_bytes, chave) do pedido, ou None se a NF-e não está disponível."""
+    # NF-e própria (SEFAZ)
+    if order.invoice_id:
+        from models.fiscal import Invoice as _Invoice
+        from services.fiscal.sefaz.danfe import gerar_danfe
+
+        inv = (
+            await db.execute(select(_Invoice).where(_Invoice.id == order.invoice_id))
+        ).scalar_one_or_none()
+        if inv and inv.status == "authorized" and inv.xml_local_path:
+            p = _Path(inv.xml_local_path)
+            if p.exists():
+                xml = p.read_text(encoding="utf-8")
+                try:
+                    danfe = await asyncio.to_thread(gerar_danfe, xml)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("bundle danfe própria order=%s: %s", order.id, exc)
+                    return None
+                return danfe, xml.encode("utf-8"), (inv.access_key or order.nfe_key or str(order.id))
+        return None
+    # NF-e do Faturador ML
+    if order.platform == "mercadolivre":
+        iid = _invoice_id_from_order(order)
+        if not iid:
+            return None
+        acc = (
+            await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+        ).scalar_one_or_none()
+        if not acc or not acc.access_token:
+            return None
+        try:
+            xml_bytes, _ = await _ml.fetch_invoice_file(
+                acc.access_token,
+                f"/users/{acc.platform_user_id}/invoices/documents/xml/{iid}/authorized",
+            )
+            danfe_bytes, _ = await _ml.fetch_invoice_file(
+                acc.access_token,
+                f"/users/{acc.platform_user_id}/invoices/sites/MLB/documents/danfe/{iid}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("bundle docs ML order=%s: %s", order.id, exc)
+            return None
+        return danfe_bytes, xml_bytes, (order.nfe_key or str(iid))
+    return None
+
+
+def _safe(s: str) -> str:
+    return _re.sub(r"[^\w\-]", "_", s or "").strip("_") or "x"
+
+
+def _assemble_bundle_zip(
+    cart_number: str,
+    docs: list[tuple[str, str, bytes, bytes]],
+    label_files: list[tuple[str, bytes]],
+    avisos: list[str],
+) -> bytes:
+    """Empacota o ZIP da gaiola (função pura, testável).
+
+    docs: (ref_pedido, chave, danfe_pdf, xml_bytes). label_files: (nome_relativo, bytes).
+    Estrutura: {cart}/Etiquetas/*.pdf, {cart}/NF-e/{ref}-{chave}.{pdf,xml}, {cart}/_avisos.txt.
+    """
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
+        for name, content in label_files:
+            zf.writestr(f"{cart_number}/{name}", content)
+        for ref, chave, danfe, xml in docs:
+            zf.writestr(f"{cart_number}/NF-e/{ref}-{chave}.pdf", danfe)
+            zf.writestr(f"{cart_number}/NF-e/{ref}-{chave}.xml", xml)
+        if avisos:
+            zf.writestr(f"{cart_number}/_avisos.txt", "\n".join(avisos))
+    return buf.getvalue()
+
+
+@router.get("/carts/{cart_id}/bundle.zip")
+async def cart_bundle(
+    cart_id: int,
+    layout: str = Query("10x15"),
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Baixa TUDO da gaiola num único ZIP: etiquetas + DANFE (PDF) + XML das NF-e.
+
+    Regra: o pedido só entra no ZIP se a NF-e estiver autorizada — tenta emitir a
+    faltante antes; quem não conseguir fica de fora e é listado em _avisos.txt.
+    Marca etiqueta e NF-e como impressas nos pedidos incluídos (libera 'Concluir')."""
+    cart = await _get_cart_scoped(db, cart_id, current_user)
+    if cart.status in ("cancelled", "delivered"):
+        # Emissão fiscal é irreversível — não emitir NF-e por gaiola encerrada (paridade cart_emit_nfe).
+        raise HTTPException(status_code=409, detail=f"Gaiola '{cart.status}' não gera novo pacote de documentos")
+    wh = _order_warehouse_clause(current_user)
+    pcos = (
+        await db.execute(select(PickingCartOrder).where(PickingCartOrder.cart_id == cart_id))
+    ).scalars().all()
+
+    entries: list[tuple[PickingCartOrder, Order]] = []
+    for pco in pcos:
+        order = await _load_order_scoped(db, pco.order_id, wh)
+        if order:
+            entries.append((pco, order))
+
+    avisos: list[str] = []
+    if len(entries) > _BUNDLE_MAX_ORDERS:
+        avisos.append(
+            f"Gaiola com {len(entries)} pedidos — processados os primeiros {_BUNDLE_MAX_ORDERS}."
+        )
+        entries = entries[:_BUNDLE_MAX_ORDERS]
+
+    # 1) Garante NF-e (emite as faltantes; best-effort)
+    await _bundle_ensure_nfe(db, entries)
+
+    # 2) Coleta DANFE+XML dos autorizados; separa etiquetas por conta ML / manual
+    included: list[tuple[PickingCartOrder, Order, str, bytes, bytes]] = []
+    ml_by_acc: dict[int, list[Order]] = {}
+    manual_orders: list[Order] = []
+    for pco, order in entries:
+        label = f"Pedido #{order.id} ({order.buyer_name or 's/ nome'})"
+        docs = await _bundle_docs(db, order)
+        if not docs:
+            avisos.append(f"{label}: NF-e não disponível/autorizada — não incluído.")
+            continue
+        danfe, xml, chave = docs
+        included.append((pco, order, chave, danfe, xml))
+        if await _scan_blocks_label(db, cart, pco):
+            avisos.append(f"{label}: bipagem incompleta — etiqueta não gerada; NF-e incluída.")
+        elif order.platform == "mercadolivre" and order.shipment_id:
+            ml_by_acc.setdefault(order.account_id, []).append(order)
+        else:
+            manual_orders.append(order)
+
+    if not included:
+        raise HTTPException(status_code=404, detail="Nenhum pedido com NF-e autorizada para incluir no ZIP")
+
+    # 3) Etiquetas dos incluídos (ML combinada por conta + bloco manual)
+    label_files: list[tuple[str, bytes]] = []
+    label_ok: set[int] = set()
+    for acc_id, orders in ml_by_acc.items():
+        acc = (
+            await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == acc_id))
+        ).scalar_one_or_none()
+        if not acc or not acc.access_token:
+            avisos.append(f"Conta {acc_id}: sem token — etiquetas ML não geradas.")
+            continue
+        shipment_ids = ",".join(str(o.shipment_id) for o in orders)
+        try:
+            pdf, _ = await _ml.get_shipment_label(acc.access_token, shipment_ids, "pdf")
+            label_files.append((f"Etiquetas/ml_{_safe(_account_label(acc))}.pdf", pdf))
+            label_ok.update(o.id for o in orders)
+        except Exception as exc:  # noqa: BLE001
+            avisos.append(f"Conta {_account_label(acc)}: falha ao gerar etiquetas ML ({str(exc)[:120]}).")
+    if manual_orders:
+        try:
+            meta = await _order_labels_meta(db, manual_orders)
+            pdf = render_shipping_labels(meta, layout=layout)
+            label_files.append(("Etiquetas/manual.pdf", pdf))
+            label_ok.update(o.id for o in manual_orders)
+        except Exception as exc:  # noqa: BLE001
+            avisos.append(f"Etiquetas manuais: falha ({str(exc)[:120]}).")
+
+    # 4) Monta o ZIP
+    base = cart.cart_number
+    docs = [(str(o.platform_order_id or o.id), chave, danfe, xml) for _p, o, chave, danfe, xml in included]
+    zip_bytes = _assemble_bundle_zip(base, docs, label_files, avisos)
+
+    # 5) Carimba impresso (NF-e sempre; etiqueta quando gerada) → libera 'Concluir'
+    now = datetime.now(UTC)
+    for pco, order, _chave, _danfe, _xml in included:
+        pco.nfe_printed_at = now
+        pco.nfe_printed_by = current_user.id
+        if order.id in label_ok:
+            pco.label_printed_at = now
+            pco.label_printed_by = current_user.id
+            if pco.item_status != "separated":
+                pco.item_status = "separated"
+                pco.separated_at = now
+                pco.separated_by = current_user.id
+                order.status = "separated"
+                order.separated_at = now
+                order.separated_by = current_user.id
+    await db.commit()
+
+    return Response(
+        content=zip_bytes, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{base}-documentos.zip"'},
     )
 
 

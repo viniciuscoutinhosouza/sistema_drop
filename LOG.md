@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-07-01 — feat(separacao): botão "Baixar tudo (ZIP)" da gaiola (NF-e PDF + XML + etiquetas)
+
+No workspace da gaiola (Separação > Separar Pedido), um único botão baixa um ZIP com todas as
+etiquetas + DANFE (PDF) + XML das NF-e dos pedidos.
+
+- **`routers/separation.py`** — novo `GET /carts/{cart_id}/bundle.zip` (`cart_bundle`): tenta emitir
+  a NF-e faltante (`_bundle_ensure_nfe`, reusa claim atômico + `_sync_nfe`), coleta DANFE+XML
+  (`_bundle_docs`: ML via `_ml.fetch_invoice_file`; própria via `Invoice.xml_local_path`+`gerar_danfe`),
+  gera etiquetas (ML `get_shipment_label` por conta + `render_shipping_labels` manual), monta o ZIP
+  (`_assemble_bundle_zip`, função pura) e **carimba** `nfe_printed_at`/`label_printed_at` nos incluídos
+  (libera "Concluir"). Regra: **pedido só entra se a NF-e estiver autorizada**; quem falhar sai em
+  `_avisos.txt`. Guard de gaiola `cancelled`/`delivered` (409). Escopo por galpão igual aos vizinhos.
+- **`SeparationView.vue`** — botão "Baixar tudo (ZIP)" (spinner `downloadingBundle`, download blob,
+  erro-blob, `refreshCart` no sucesso).
+- **Verificação:** `tests/test_separation_bundle.py` (2) do empacotador; `pytest -m "not integration"`
+  **80 passed / 2 pré-existentes**; `npm run build` OK. Auditado (quality-guardian + consistency-auditor)
+  — sem CRITICAL/HIGH; MÉDIO (guard de status) corrigido.
+- **Nota operacional:** gaiola grande faz muitas chamadas ML sequenciais — teto `_BUNDLE_MAX_ORDERS=200`;
+  atenção ao `proxy_read_timeout` do nginx em gaiolas volumosas.
+
+---
+
 ## 2026-07-01 — feat(cmig): colaboradores por seleção de AC ou convite por e-mail + aprovação do admin
 
 Corrige o bug "conta nova não adiciona colaboradores" na tela **Contas MIG** e adiciona o fluxo de
