@@ -502,3 +502,69 @@ function canSee(menuKey) {
   return _legacyMenus[role.value]?.has(menuKey) ?? false
 }
 </script>
+
+<style scoped>
+/* ── Hierarquia pai × filho no sidebar (sem cor forte no texto) ───────────────
+   Pai (1º nível): branco + semibold. Filho: cinza, menor, recuado e ligado por
+   uma linha-guia vertical. Menu aberto: realce sutil + barra fina de acento.
+   `>` direto garante que só o 1º nível é "pai". */
+
+/* Menus PAI (1º nível) — branco, semibold */
+.main-sidebar .nav-sidebar > .nav-item > .nav-link {
+  color: #ffffff;
+  font-weight: 600;
+}
+.main-sidebar .nav-sidebar > .nav-item > .nav-link .nav-icon,
+.main-sidebar .nav-sidebar > .nav-item > .nav-link p > .right {
+  color: #ffffff;
+}
+
+/* "Sair" continua vermelho */
+.main-sidebar .nav-sidebar > .nav-item > .nav-link.text-danger,
+.main-sidebar .nav-sidebar > .nav-item > .nav-link.text-danger .nav-icon {
+  color: #dc3545 !important;
+}
+
+/* Menu PAI ABERTO — realce sutil (fundo levíssimo + barra fina de acento à
+   esquerda via box-shadow inset, sem deslocar o texto). :not(.active) para o
+   item ativo manter o realce azul do AdminLTE. */
+.main-sidebar .nav-sidebar > .nav-item.menu-open > .nav-link:not(.active) {
+  background-color: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 3px 0 0 #20c997;
+}
+
+/* Filhos (nav-treeview) — cinza, menores, recuados, com linha-guia vertical
+   verde (mesmo acento da barra do menu pai aberto). */
+.main-sidebar .nav-sidebar > .nav-item > .nav-treeview {
+  margin-left: 1.15rem;
+  border-left: 2px solid #20c997;
+}
+.main-sidebar .nav-sidebar .nav-treeview > .nav-item > .nav-link {
+  color: #aeb6c2;
+  font-weight: 400;
+  font-size: 0.9rem;
+  padding-left: 0.85rem;
+}
+.main-sidebar .nav-sidebar .nav-treeview > .nav-item > .nav-link .nav-icon {
+  color: #8a93a2;
+  font-size: 0.85rem;
+}
+.main-sidebar .nav-sidebar .nav-treeview > .nav-item > .nav-link:hover {
+  color: #ffffff;
+}
+.main-sidebar .nav-sidebar .nav-treeview > .nav-item > .nav-link:hover .nav-icon {
+  color: #ffffff;
+}
+
+/* Filho ATIVO (rota atual) — fundo com contraste claro (verde água) + barra de
+   acento à esquerda e texto branco/semibold, para destacar bem o selecionado. */
+.main-sidebar .nav-sidebar .nav-treeview > .nav-item > .nav-link.active {
+  background-color: rgba(32, 201, 151, 0.28);
+  box-shadow: inset 3px 0 0 #20c997;
+  color: #ffffff;
+  font-weight: 600;
+}
+.main-sidebar .nav-sidebar .nav-treeview > .nav-item > .nav-link.active .nav-icon {
+  color: #ffffff;
+}
+</style>

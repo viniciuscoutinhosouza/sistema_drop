@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-01 — style(sidebar): hierarquia pai × filho no menu lateral
+
+Diferenciação visual dos menus no sidebar (AdminLTE dark), por hierarquia em vez de cor forte
+(a 1ª tentativa em verde saturado no texto ficou pesada).
+
+- **`AppSidebar.vue`** (`<style scoped>`): menu PAI (1º nível) branco + semibold; FILHOS cinza,
+  menores, recuados e ligados por uma linha-guia vertical **verde** (`#20c997`); menu pai ABERTO
+  com realce sutil (fundo levíssimo + barra de acento verde à esquerda via box-shadow inset, sem
+  deslocar o texto). Submenu SELECIONADO com fundo verde água de bom contraste
+  (`rgba(32,201,151,.28)`) + barra de acento + texto branco. "Sair" segue vermelho; item ativo
+  preserva o realce do AdminLTE (especificidade maior). `npm run build` OK.
+
+---
+
 ## 2026-07-01 — feat(separacao): botão "Baixar tudo (ZIP)" da gaiola (NF-e PDF + XML + etiquetas)
 
 No workspace da gaiola (Separação > Separar Pedido), um único botão baixa um ZIP com todas as
