@@ -95,7 +95,7 @@
           <div class="card-body py-2 small text-muted">
             <ul class="mb-0 pl-3">
               <li>A apikey do eShip é cadastrada em cada <strong>Conta MIG</strong> (Contas MIG → abrir a empresa → card "Integração eShip").</li>
-              <li><strong>Listar produtos no eShip</strong> (botão acima) carrega o catálogo do WMS com estoque (físico, disponível, reservado). Dá para <strong>ordenar</strong> por coluna, <strong>filtrar por empresa</strong> e buscar.</li>
+              <li><strong>Listar produtos no eShip</strong> (botão acima) traz os produtos <strong>desta empresa</strong> no WMS com estoque (Full, físico, disponível, reservado). Dá para <strong>ordenar</strong> por coluna e buscar.</li>
               <li><strong>Enviar produtos ao WMS</strong> (botão acima) pré-cadastra todo o catálogo da empresa no eShip (por SKU; idempotente). Útil antes do primeiro pedido.</li>
               <li>O envio do <strong>pedido</strong> ao eShip é feito na tela de <strong>Pedidos</strong> (ação eShip por pedido) ou automaticamente no fluxo de separação — os produtos do pedido também são cadastrados automaticamente.</li>
               <li>O eShip é a <strong>fonte de verdade do estoque físico</strong> — consulte o saldo por SKU acima.</li>
@@ -121,14 +121,14 @@
             <div class="modal-body p-2">
               <div class="d-flex align-items-center flex-wrap mb-2" style="gap:8px">
                 <input v-model="prod.filter" @input="resetPage" class="form-control form-control-sm" style="max-width:260px"
-                       placeholder="Buscar (código, descrição, EAN, empresa)">
-                <select v-model="prod.empresa" @change="resetPage" class="form-control form-control-sm" style="max-width:280px">
-                  <option value="">Todas as empresas ({{ empresas.length }})</option>
-                  <option v-for="e in empresas" :key="e" :value="e">{{ e }}</option>
-                </select>
+                       placeholder="Buscar (código, descrição, EAN)">
                 <span class="text-muted small ml-auto">
-                  {{ produtosFiltrados.length }} de {{ prod.rows.length }}<span v-if="prod.total != null"> · eShip: {{ prod.total }}</span>
+                  {{ produtosFiltrados.length }} de {{ prod.rows.length }} produto(s) desta empresa<span
+                    v-if="prod.totalCatalogo != null"> · catálogo WMS: {{ prod.totalCatalogo }}</span>
                 </span>
+              </div>
+              <div v-if="prod.escopoIndefinido" class="small text-warning mb-2">
+                <i class="fas fa-exclamation-triangle mr-1"></i>Cadastre o CNPJ/CPF desta empresa (Contas MIG → abrir a empresa) para listar os produtos dela no WMS.
               </div>
               <div v-if="prod.parcial" class="small text-danger mb-2">
                 <i class="fas fa-exclamation-triangle mr-1"></i>Catálogo parcial — {{ prod.paginasFalhas }} página(s) não puderam ser lidas; alguns produtos podem não aparecer. Tente recarregar.
@@ -146,7 +146,6 @@
                     <th style="cursor:pointer;white-space:nowrap" @click="sortBy('codigo')">Código <i :class="sortIcon('codigo')"></i></th>
                     <th style="cursor:pointer;white-space:nowrap" @click="sortBy('codigo_barras')">Cód. barras <i :class="sortIcon('codigo_barras')"></i></th>
                     <th style="cursor:pointer" @click="sortBy('descricao')">Descrição <i :class="sortIcon('descricao')"></i></th>
-                    <th style="cursor:pointer;white-space:nowrap" @click="sortBy('empresa')">Empresa <i :class="sortIcon('empresa')"></i></th>
                     <th style="cursor:pointer" @click="sortBy('status')">Status <i :class="sortIcon('status')"></i></th>
                     <th class="text-center">Full</th><th class="text-right">Físico</th><th class="text-right">Disp.</th><th class="text-right">Reserv.</th>
                   </tr>
@@ -156,7 +155,6 @@
                     <td class="text-nowrap font-weight-bold">{{ p.codigo }}</td>
                     <td class="text-nowrap">{{ p.codigo_barras || '—' }}</td>
                     <td>{{ p.descricao }}</td>
-                    <td class="text-nowrap">{{ p.empresa || '—' }}</td>
                     <td>{{ p.status || '—' }}</td>
                     <td class="text-center"><span v-if="p.is_full" class="badge badge-info">Full</span></td>
                     <td class="text-right">{{ p.total_fisico ?? '—' }}</td>
@@ -164,7 +162,7 @@
                     <td class="text-right">{{ p.total_reservado ?? '—' }}</td>
                   </tr>
                   <tr v-if="!produtosPagina.length">
-                    <td colspan="9" class="text-center text-muted py-3">Nenhum produto.</td>
+                    <td colspan="8" class="text-center text-muted py-3">Nenhum produto desta empresa no WMS.</td>
                   </tr>
                 </tbody>
               </table>
@@ -177,6 +175,16 @@
               <button class="btn btn-sm btn-outline-secondary" :disabled="prod.page >= totalPaginas || prod.loading" @click="prod.page++">
                 Próxima <i class="fas fa-chevron-right"></i>
               </button>
+              <div class="btn-group btn-group-sm ml-auto">
+                <button class="btn btn-outline-danger" title="Exportar em PDF"
+                        :disabled="prod.loading || !!exporting || !prod.rows.length" @click="exportar('pdf')">
+                  <i class="fas" :class="exporting === 'pdf' ? 'fa-spinner fa-spin' : 'fa-file-pdf'"></i> PDF
+                </button>
+                <button class="btn btn-outline-success" title="Exportar em Excel"
+                        :disabled="prod.loading || !!exporting || !prod.rows.length" @click="exportar('xlsx')">
+                  <i class="fas" :class="exporting === 'xlsx' ? 'fa-spinner fa-spin' : 'fa-file-excel'"></i> Excel
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -199,29 +207,24 @@ const saldo = reactive({})
 const saldoLoading = reactive({})
 const pushLoading = reactive({})
 const pushResult = reactive({})
+const exporting = ref('')  // '', 'pdf' ou 'xlsx' — formato em exportação
 
-// Modal de listagem de produtos do eShip — catálogo inteiro carregado de uma vez;
-// busca, filtro por empresa, ordenação e paginação são feitos na tela.
+// Modal de listagem de produtos do eShip — produtos DA EMPRESA (CMIG) carregados de uma vez;
+// busca, ordenação e paginação são feitos na tela. O WMS é multi-tenant e o backend já
+// escopa por empresa (a API não filtra por cadastro) — aqui não há mais filtro por empresa.
 const prod = reactive({
   show: false, cmigId: null, nome: '', loading: false,
-  rows: [], total: null, paginas: null, truncado: false, parcial: false, paginasFalhas: 0,
-  filter: '', empresa: '',
+  rows: [], total: null, totalCatalogo: null, paginas: null, truncado: false,
+  parcial: false, paginasFalhas: 0, escopoIndefinido: false,
+  filter: '',
   sortKey: 'descricao', sortDir: 'asc',
   page: 1, pageSize: 50,
 })
 
-const empresas = computed(() => {
-  const set = new Set()
-  for (const p of prod.rows) if (p.empresa) set.add(p.empresa)
-  return [...set].sort((a, b) => a.localeCompare(b, 'pt-BR'))
-})
-
 const produtosFiltrados = computed(() => {
   const f = (prod.filter || '').trim().toLowerCase()
-  const emp = prod.empresa
   const arr = prod.rows.filter(p => {
-    if (emp && p.empresa !== emp) return false
-    if (f && ![p.codigo, p.codigo_barras, p.descricao, p.empresa]
+    if (f && ![p.codigo, p.codigo_barras, p.descricao]
       .some(v => (v ?? '').toString().toLowerCase().includes(f))) return false
     return true
   })
@@ -301,9 +304,10 @@ async function enviarProdutos(c) {
 async function abrirProdutos(c) {
   prod.cmigId = c.cmig_id
   prod.nome = c.company_name || ('CMIG #' + c.cmig_id)
-  prod.filter = ''; prod.empresa = ''; prod.sortKey = 'descricao'; prod.sortDir = 'asc'
-  prod.rows = []; prod.total = null; prod.paginas = null; prod.truncado = false
-  prod.parcial = false; prod.paginasFalhas = 0; prod.page = 1
+  prod.filter = ''; prod.sortKey = 'descricao'; prod.sortDir = 'asc'
+  prod.rows = []; prod.total = null; prod.totalCatalogo = null; prod.paginas = null
+  prod.truncado = false; prod.parcial = false; prod.paginasFalhas = 0
+  prod.escopoIndefinido = false; prod.page = 1
   prod.show = true
   await carregarProdutos()
 }
@@ -317,15 +321,47 @@ async function carregarProdutos(refresh = false) {
     const { data } = await api.get(`/integrations/eship/cmigs/${prod.cmigId}/produtos`, { params })
     prod.rows = data.produtos || []
     prod.total = data.total ?? null
+    prod.totalCatalogo = data.total_catalogo ?? null
     prod.paginas = data.paginas ?? null
     prod.truncado = !!data.truncado
     prod.parcial = !!data.parcial
     prod.paginasFalhas = data.paginas_falhas ?? 0
+    prod.escopoIndefinido = !!data.escopo_indefinido
     prod.page = 1
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao listar produtos do eShip')
   } finally {
     prod.loading = false
+  }
+}
+
+async function exportar(format) {
+  if (!prod.cmigId || exporting.value) return
+  exporting.value = format
+  try {
+    const { data } = await api.get(`/integrations/eship/cmigs/${prod.cmigId}/produtos/export`, {
+      params: { format },
+      responseType: 'blob',
+    })
+    const ext = format === 'xlsx' ? 'xlsx' : 'pdf'
+    const url = URL.createObjectURL(new Blob([data]))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `produtos-eship-cmig-${prod.cmigId}.${ext}`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    // com responseType:blob, o erro do backend vem como Blob → tenta extrair o detail
+    let msg = 'Erro ao exportar'
+    try {
+      const txt = await e.response?.data?.text?.()
+      if (txt) msg = JSON.parse(txt).detail || msg
+    } catch { /* mantém msg padrão */ }
+    toast.error(msg)
+  } finally {
+    exporting.value = ''
   }
 }
 

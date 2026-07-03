@@ -160,37 +160,75 @@ def test_eship_produto_row_campos_ausentes_nao_quebra():
     assert r["empresa"] is None and r["status"] is None and r["is_full"] is False
 
 
-def test_list_eship_products_mapeia_resposta(monkeypatch):
+_TARGET_CNPJ = "12345678000199"  # dígitos do _creds()/_cmig_ns()
+
+
+def _cmig_ns(cnpj="12.345.678/0001-99", cpf=None):
+    return types.SimpleNamespace(cnpj=cnpj, cpf=cpf)
+
+
+def test_list_eship_products_mapeia_resposta_e_filtra_empresa(monkeypatch):
     async def fake_call(creds, funcao, payload):
+        if funcao == S.FUNC_GET_SALDO:  # enriquecimento de estoque
+            return {"corpo": {"body": {
+                "dadosPaginacao": {"paginaAtual": 1, "quantidadePaginas": 1, "totalObjetos": 1},
+                "dados": [{"pro_produto_id": "1", "codigo": "A", "saldo": "7.0000",
+                           "saldodisponivel": "5.0000", "saldoreservado": "2.0000"}],
+            }}}
         assert funcao == "webServiceGetProduto"
-        assert payload == {"pagina": 2}
+        assert payload == {"pagina": 2, "quantidadeRegistros": 100}
         return {"corpo": {"body": {
-            "dadosPaginacao": {"paginaAtual": 2, "quantidadePaginas": 10, "totalObjetos": 250, "registrosPorPagina": 25},
-            "dados": [{"codigo": "A", "status": {"descricao": "Normal"}}],
+            "dadosPaginacao": {"paginaAtual": 2, "quantidadePaginas": 10, "totalObjetos": 250, "registrosPorPagina": 100},
+            "dados": [
+                {"id": 1, "codigo": "A", "status": {"descricao": "Normal"}, "cadastro": {"cnpj": _TARGET_CNPJ}},
+                {"codigo": "X", "cadastro": {"cnpj": "99999999999999"}},  # outra empresa → filtrada
+            ],
         }}}
 
     monkeypatch.setattr(S.client, "call", fake_call)
     monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: _creds())
 
     class _Res:
-        def scalar_one_or_none(self): return object()
+        def scalar_one_or_none(self): return _cmig_ns()
     class _DB:
         async def execute(self, q): return _Res()
 
     res = asyncio.run(S.list_eship_products(_DB(), 1, 2))
     assert res["pagina"] == 2 and res["paginas"] == 10 and res["total"] == 250
-    assert len(res["produtos"]) == 1 and res["produtos"][0]["codigo"] == "A"
+    assert [p["codigo"] for p in res["produtos"]] == ["A"]  # X (outra empresa) filtrado
+    a = res["produtos"][0]  # estoque veio do GetSaldoEstoque (casado por id/SKU)
+    assert (a["total_fisico"], a["total_disponivel"], a["total_reservado"]) == (7, 5, 2)
 
 
-def _page(n, codigos, paginas=3, total=6):
+def test_list_eship_products_sem_documento_nao_consulta_wms(monkeypatch):
+    called = []
+
+    async def fake_call(creds, funcao, payload):
+        called.append(payload)
+        return {"corpo": {"body": {"dadosPaginacao": {}, "dados": [{"codigo": "A"}]}}}
+
+    monkeypatch.setattr(S.client, "call", fake_call)
+    monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: _creds())
+
+    class _Res:
+        def scalar_one_or_none(self): return _cmig_ns(cnpj=None, cpf=None)
+    class _DB:
+        async def execute(self, q): return _Res()
+
+    res = asyncio.run(S.list_eship_products(_DB(), 1, 1))
+    assert res["produtos"] == [] and res["total"] == 0 and res["escopo_indefinido"] is True
+    assert called == []  # não vaza catálogo de terceiros
+
+
+def _page(n, codigos, paginas=3, total=6, cnpj=_TARGET_CNPJ):
     return {"corpo": {"body": {
         "dadosPaginacao": {"paginaAtual": n, "quantidadePaginas": paginas, "totalObjetos": total},
-        "dados": [{"codigo": c} for c in codigos],
+        "dados": [{"codigo": c, "cadastro": {"cnpj": cnpj}} for c in codigos],
     }}}
 
 
 class _Res1:
-    def scalar_one_or_none(self): return object()
+    def scalar_one_or_none(self): return _cmig_ns()
 class _DB1:
     async def execute(self, q): return _Res1()
 
@@ -207,8 +245,8 @@ def test_list_all_eship_products_agrega_paginas(monkeypatch):
 
     res = asyncio.run(S.list_all_eship_products(_DB1(), 1))
     assert [p["codigo"] for p in res["produtos"]] == ["A", "B", "C", "D", "E", "F"]
-    assert res["total"] == 6 and res["paginas"] == 3 and res["truncado"] is False
-    assert res["parcial"] is False and res["paginas_falhas"] == 0
+    assert res["total"] == 6 and res["total_catalogo"] == 6 and res["paginas"] == 3
+    assert res["truncado"] is False and res["parcial"] is False and res["paginas_falhas"] == 0
     # carga completa fica cacheada
     assert 1 in S._produtos_cache
 
@@ -229,9 +267,115 @@ def test_list_all_eship_products_pagina_falha_marca_parcial_e_nao_cacheia(monkey
     res = asyncio.run(S.list_all_eship_products(_DB1(), 99))
     # produtos da página 2 ausentes, mas as demais aparecem
     assert [p["codigo"] for p in res["produtos"]] == ["A", "B", "E", "F"]
-    assert res["parcial"] is True and res["paginas_falhas"] == 1
+    assert res["total"] == 4 and res["parcial"] is True and res["paginas_falhas"] == 1
     # carga parcial NÃO é cacheada
     assert 99 not in S._produtos_cache
+
+
+def test_list_all_filtra_produtos_de_outras_empresas(monkeypatch):
+    S._produtos_cache.clear()
+    # página única multi-tenant: só os produtos da CMIG (cnpj alvo) devem sair
+    page = {"corpo": {"body": {
+        "dadosPaginacao": {"paginaAtual": 1, "quantidadePaginas": 1, "totalObjetos": 3},
+        "dados": [
+            {"codigo": "MINE1", "cadastro": {"cnpj": _TARGET_CNPJ}},
+            {"codigo": "OTHER", "cadastro": {"cnpj": "99999999999999"}},
+            {"codigo": "MINE2", "cadastro": {"cnpj": "12.345.678/0001-99"}},  # com máscara → casa por dígitos
+        ],
+    }}}
+
+    async def fake_call(creds, funcao, payload):
+        return page
+
+    monkeypatch.setattr(S.client, "call", fake_call)
+    monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: _creds())
+
+    res = asyncio.run(S.list_all_eship_products(_DB1(), 7))
+    assert sorted(p["codigo"] for p in res["produtos"]) == ["MINE1", "MINE2"]
+    assert res["total"] == 2 and res["total_catalogo"] == 3
+
+
+def test_list_all_cmig_sem_documento_nao_vaza_catalogo(monkeypatch):
+    S._produtos_cache.clear()
+    called = []
+
+    async def fake_call(creds, funcao, payload):
+        called.append(payload)
+        return _page(1, ["A"])
+
+    monkeypatch.setattr(S.client, "call", fake_call)
+    monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: _creds())
+
+    class _Res:
+        def scalar_one_or_none(self): return _cmig_ns(cnpj=None, cpf=None)
+    class _DB:
+        async def execute(self, q): return _Res()
+
+    res = asyncio.run(S.list_all_eship_products(_DB(), 8))
+    assert res["produtos"] == [] and res["total"] == 0 and res["escopo_indefinido"] is True
+    assert called == []  # nem chega a consultar o WMS (não vaza catálogo de terceiros)
+
+
+def test_list_all_fallback_por_cpf(monkeypatch):
+    S._produtos_cache.clear()
+    page = {"corpo": {"body": {
+        "dadosPaginacao": {"paginaAtual": 1, "quantidadePaginas": 1, "totalObjetos": 2},
+        "dados": [
+            {"codigo": "CPF1", "cadastro": {"cpf": "11122233344"}},
+            {"codigo": "OTHER", "cadastro": {"cnpj": _TARGET_CNPJ}},
+        ],
+    }}}
+
+    async def fake_call(creds, funcao, payload):
+        return page
+
+    monkeypatch.setattr(S.client, "call", fake_call)
+    monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: _creds())
+
+    class _Res:
+        def scalar_one_or_none(self): return _cmig_ns(cnpj=None, cpf="111.222.333-44")
+    class _DB:
+        async def execute(self, q): return _Res()
+
+    res = asyncio.run(S.list_all_eship_products(_DB(), 9))
+    assert [p["codigo"] for p in res["produtos"]] == ["CPF1"]
+
+
+def test_list_all_enriquece_estoque_via_saldo(monkeypatch):
+    S._produtos_cache.clear()
+    prod_page = {"corpo": {"body": {
+        "dadosPaginacao": {"paginaAtual": 1, "quantidadePaginas": 1, "totalObjetos": 2},
+        "dados": [
+            {"id": 7384, "codigo": "438R", "cadastro": {"cnpj": _TARGET_CNPJ}},
+            {"id": 7352, "codigo": "RS-WLQ", "cadastro": {"cnpj": _TARGET_CNPJ}},
+        ],
+    }}}
+    saldo_page = {"corpo": {"body": {
+        "dadosPaginacao": {"paginaAtual": 1, "quantidadePaginas": 1, "totalObjetos": 2},
+        "dados": [
+            # casa por pro_produto_id (== id do produto); valores como string do WMS
+            {"pro_produto_id": "7384", "codigo": "438R", "saldo": "20.0000",
+             "saldodisponivel": "20.0000", "saldoreservado": "0.00000"},
+            {"pro_produto_id": "7352", "codigo": "RS-WLQ", "saldo": "300.0000",
+             "saldodisponivel": "290.0000", "saldoreservado": "10.0000"},
+        ],
+    }}}
+
+    async def fake_call(creds, funcao, payload):
+        return saldo_page if funcao == S.FUNC_GET_SALDO else prod_page
+
+    monkeypatch.setattr(S.client, "call", fake_call)
+    monkeypatch.setattr(S, "creds_from_cmig", lambda cmig: _creds())
+
+    res = asyncio.run(S.list_all_eship_products(_DB1(), 12))
+    rows = {r["codigo"]: r for r in res["produtos"]}
+    assert (rows["438R"]["total_fisico"], rows["438R"]["total_disponivel"], rows["438R"]["total_reservado"]) == (20, 20, 0)
+    assert (rows["RS-WLQ"]["total_fisico"], rows["RS-WLQ"]["total_disponivel"], rows["RS-WLQ"]["total_reservado"]) == (300, 290, 10)
+
+
+def test_num_converte_string_saldo():
+    assert S._num("20.0000") == 20 and S._num("0.00000") == 0
+    assert S._num("2.5000") == 2.5 and S._num(None) == 0 and S._num("x") == 0
 
 
 def test_push_cmig_products_sem_creds_levanta(monkeypatch):
@@ -244,6 +388,6 @@ def test_push_cmig_products_sem_creds_levanta(monkeypatch):
 
     try:
         asyncio.run(S.push_cmig_products(_DB(), 1))
-        assert False, "deveria ter levantado EShipError"
+        raise AssertionError("deveria ter levantado EShipError")
     except EShipError:
         pass

@@ -49,13 +49,89 @@ _PUSH_CONCURRENCY = 5
 # Listagem do catálogo inteiro: concorrência de páginas, teto de segurança e cache
 _PRODUTOS_FETCH_CONCURRENCY = 12
 _PRODUTOS_MAX_PAGES = 300
+# Registros por página do GetProduto: 100 é o teto que a API HONRA (200/500 são ignorados
+# e caem p/ 25). Reduz o nº de páginas ~4x (ex.: 304→76) na varredura do catálogo.
+_PRODUTOS_PAGE_SIZE = 100
 _PRODUTOS_TOTAL_DEADLINE = 45  # segundos — teto agregado da carga (abaixo do proxy_read_timeout)
 _PRODUTOS_CACHE_TTL = 300  # segundos — evita re-buscar o catálogo inteiro a cada abertura
+# Varredura do saldo (GetSaldoEstoque já vem escopado ao depósito da conta — costuma ser 1 pág)
+_SALDO_MAX_PAGES = 100
 _produtos_cache: dict[int, tuple[float, dict]] = {}
 
 
 def _digits(s: str | None) -> str:
     return re.sub(r"\D", "", s or "")
+
+
+def _produto_da_cmig(p: dict, cnpj: str, cpf: str) -> bool:
+    """True se o produto (cadastro do WMS) pertence à empresa (CNPJ/CPF, só dígitos).
+
+    O WMS é multi-tenant e a API **ignora** os filtros de empresa do `webServiceGetProduto`
+    (comprovado ao vivo) — o escopo por empresa é feito aqui, no cliente, casando
+    `cadastro.cnpj`/`cadastro.cpf` do produto. `cnpj`/`cpf` já devem vir só com dígitos.
+    """
+    cad = p.get("cadastro") if isinstance(p.get("cadastro"), dict) else {}
+    return (bool(cnpj) and _digits(cad.get("cnpj")) == cnpj) or (
+        bool(cpf) and _digits(cad.get("cpf")) == cpf
+    )
+
+
+def _num(v) -> float | int:
+    """Converte '20.0000'/'0.00000' (string do saldo) em número (int se inteiro)."""
+    try:
+        f = float(str(v).replace(",", "."))
+    except (TypeError, ValueError):
+        return 0
+    return int(f) if f == int(f) else round(f, 3)
+
+
+async def _fetch_saldo_indexes(creds: EShipCreds) -> tuple[dict, dict]:
+    """Varre o `webServiceGetSaldoEstoque` (já escopado ao depósito da CONTA) e indexa o
+    saldo por `pro_produto_id` e por `codigo` (SKU). Soma linhas (depósitos/lotes) do mesmo
+    produto. O GetProduto NÃO traz estoque na listagem — o saldo real vem daqui.
+
+    Retorna `(por_id, por_codigo)` onde cada valor é `[fisico, disponivel, reservado]`.
+    Best-effort: se o saldo falhar, devolve mapas vazios (produtos ficam com 0).
+    """
+    por_id: dict[str, list] = {}
+    por_cod: dict[str, list] = {}
+    page = 1
+    try:
+        while page <= _SALDO_MAX_PAGES:
+            r = await client.call(
+                creds, FUNC_GET_SALDO, {"pagina": page, "quantidadeRegistros": _PRODUTOS_PAGE_SIZE}
+            )
+            body = ((r or {}).get("corpo") or {}).get("body") or {}
+            for ln in (body.get("dados") or []):
+                fis, dis, res = _num(ln.get("saldo")), _num(ln.get("saldodisponivel")), _num(ln.get("saldoreservado"))
+                pid = str(ln.get("pro_produto_id") or "").strip()
+                cod = str(ln.get("codigo") or "").strip()
+                for key, index in ((pid, por_id), (cod, por_cod)):
+                    if not key:
+                        continue
+                    t = index.setdefault(key, [0, 0, 0])
+                    t[0] += fis
+                    t[1] += dis
+                    t[2] += res
+            pag = body.get("dadosPaginacao") or {}
+            try:
+                total_pages = int(pag.get("quantidadePaginas") or 1)
+            except (ValueError, TypeError):
+                total_pages = 1
+            if page >= total_pages:
+                break
+            page += 1
+    except EShipError as e:
+        logger.warning("[eShip] GetSaldoEstoque falhou: %s", e)
+    return por_id, por_cod
+
+
+def _saldo_for(p: dict, por_id: dict, por_cod: dict) -> list | None:
+    """Saldo `[fisico, disponivel, reservado]` do produto, casando por id (== pro_produto_id)
+    e caindo para o SKU (`codigo`) se preciso."""
+    pid = str(p.get("id") or "").strip()
+    cod = str(p.get("codigo") or "").strip()
+    return por_id.get(pid) or por_cod.get(cod)
 
 
 async def _creds_for_order(db: AsyncSession, order: Order) -> tuple[EShipCreds | None, CMIG | None]:
@@ -445,11 +521,18 @@ async def get_falhas(db: AsyncSession, order: Order) -> dict:
     )
 
 
-def _eship_produto_row(p: dict) -> dict:
-    """Extrai os campos relevantes (info + estoque) de um produto do GetProduto."""
+def _eship_produto_row(p: dict, saldo: list | None = None) -> dict:
+    """Extrai os campos relevantes (info + estoque) de um produto do GetProduto.
+
+    `saldo` = `[fisico, disponivel, reservado]` vindo do GetSaldoEstoque (fonte real do
+    estoque; o GetProduto traz 0 na listagem). Se None, usa os totais do próprio produto.
+    """
     cad = p.get("cadastro") if isinstance(p.get("cadastro"), dict) else {}
     st = p.get("status") if isinstance(p.get("status"), dict) else {}
     tp = p.get("tipo") if isinstance(p.get("tipo"), dict) else {}
+    fisico = saldo[0] if saldo is not None else p.get("totalFisico")
+    disponivel = saldo[1] if saldo is not None else p.get("totalDisponivel")
+    reservado = saldo[2] if saldo is not None else p.get("totalReservado")
     return {
         "codigo": p.get("codigo"),
         "codigo_barras": p.get("codigoBarras"),
@@ -458,44 +541,59 @@ def _eship_produto_row(p: dict) -> dict:
         "status": st.get("descricao"),
         "tipo": tp.get("descricao"),
         "is_full": bool(p.get("itsFull")),
-        "total_fisico": p.get("totalFisico"),
-        "total_disponivel": p.get("totalDisponivel"),
-        "total_reservado": p.get("totalReservado"),
+        "total_fisico": fisico,
+        "total_disponivel": disponivel,
+        "total_reservado": reservado,
         "total_enderecado": p.get("totalEnderecado"),
         "peso_bruto": p.get("pesoBruto"),
     }
 
 
 async def list_eship_products(db: AsyncSession, cmig_id: int, page: int = 1) -> dict:
-    """Lista os produtos cadastrados no eShip (WMS) com info + estoque, paginado.
+    """Lista os produtos do eShip (WMS) com info + estoque, paginado e ESCOPADO à empresa.
 
-    O eShip pagina por `pagina` (25/página) e não filtra por SKU/texto via API — a
-    busca é feita no frontend sobre a página carregada.
+    O WMS é multi-tenant e a API não filtra por empresa (nem por SKU/texto) — o escopo por
+    CMIG é feito no cliente (`cadastro.cnpj`/`cpf`). Usado apenas como fallback paginado; a
+    tela usa `list_all_eship_products`.
     """
-    creds = creds_from_cmig(
-        (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
-    )
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    creds = creds_from_cmig(cmig)
     if not creds:
         raise EShipError("CMIG sem integração eShip ativa/configurada.")
-    resp = await client.call(creds, FUNC_GET_PRODUTO, {"pagina": max(1, int(page or 1))})
+    cnpj, cpf = _digits(getattr(cmig, "cnpj", None)), _digits(getattr(cmig, "cpf", None))
+    if not cnpj and not cpf:
+        # Sem CNPJ/CPF não há como isolar a empresa no WMS multi-tenant → NÃO consulta o
+        # WMS (mesma barreira anti-vazamento de list_all_eship_products).
+        return {
+            "produtos": [], "pagina": 1, "paginas": 0, "total": 0,
+            "por_pagina": _PRODUTOS_PAGE_SIZE, "escopo_indefinido": True,
+        }
+    resp = await client.call(
+        creds, FUNC_GET_PRODUTO,
+        {"pagina": max(1, int(page or 1)), "quantidadeRegistros": _PRODUTOS_PAGE_SIZE},
+    )
     body = ((resp or {}).get("corpo") or {}).get("body") or {}
     pag = body.get("dadosPaginacao") or {}
+    dados = [p for p in (body.get("dados") or []) if _produto_da_cmig(p, cnpj, cpf)]
+    por_id, por_cod = await _fetch_saldo_indexes(creds)
     return {
-        "produtos": [_eship_produto_row(p) for p in (body.get("dados") or [])],
+        "produtos": [_eship_produto_row(p, _saldo_for(p, por_id, por_cod)) for p in dados],
         "pagina": pag.get("paginaAtual") or page,
         "paginas": pag.get("quantidadePaginas"),
         "total": pag.get("totalObjetos"),
         "por_pagina": pag.get("registrosPorPagina"),
+        "escopo_indefinido": False,
     }
 
 
 async def list_all_eship_products(db: AsyncSession, cmig_id: int, force: bool = False) -> dict:
-    """Busca TODO o catálogo de produtos do eShip (todas as páginas) de uma vez.
+    """Busca os produtos do eShip da EMPRESA (CMIG), varrendo o catálogo do WMS.
 
-    A 1ª página revela o total de páginas; as demais são buscadas com concorrência
-    limitada. Best-effort por página (uma página que falhar não derruba o resto).
-    Para o frontend ordenar/filtrar (inclusive por empresa) sobre a lista completa.
-    Cacheado por `_PRODUTOS_CACHE_TTL` segundos por CMIG (use `force=True` p/ recarregar).
+    Como o WMS é multi-tenant e a API ignora o filtro de empresa no GetProduto, varremos
+    todas as páginas (100/pág; concorrência limitada; best-effort por página) e filtramos
+    no cliente por `cadastro.cnpj`/`cpf` da CMIG. `total` = nº de produtos da empresa;
+    `total_catalogo` = tamanho do catálogo inteiro do WMS (contexto). Cacheado por
+    `_PRODUTOS_CACHE_TTL` s por CMIG (use `force=True` p/ recarregar).
     """
     now = time.monotonic()
     if not force:
@@ -503,13 +601,23 @@ async def list_all_eship_products(db: AsyncSession, cmig_id: int, force: bool = 
         if cached and (now - cached[0]) < _PRODUTOS_CACHE_TTL:
             return cached[1]
 
-    creds = creds_from_cmig(
-        (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
-    )
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    creds = creds_from_cmig(cmig)
     if not creds:
         raise EShipError("CMIG sem integração eShip ativa/configurada.")
 
-    first = await client.call(creds, FUNC_GET_PRODUTO, {"pagina": 1})
+    cnpj, cpf = _digits(getattr(cmig, "cnpj", None)), _digits(getattr(cmig, "cpf", None))
+    if not cnpj and not cpf:
+        # Sem CNPJ/CPF não há como isolar a empresa no WMS multi-tenant → NÃO devolve o
+        # catálogo de terceiros. A tela deve pedir o cadastro do documento na CMIG.
+        return {
+            "produtos": [], "total": 0, "total_catalogo": None, "paginas": 0,
+            "truncado": False, "parcial": False, "paginas_falhas": 0, "escopo_indefinido": True,
+        }
+
+    first = await client.call(
+        creds, FUNC_GET_PRODUTO, {"pagina": 1, "quantidadeRegistros": _PRODUTOS_PAGE_SIZE}
+    )
     body = ((first or {}).get("corpo") or {}).get("body") or {}
     pag = body.get("dadosPaginacao") or {}
     try:
@@ -526,7 +634,9 @@ async def list_all_eship_products(db: AsyncSession, cmig_id: int, force: bool = 
         async def _fetch(pg: int) -> None:
             async with sem:
                 try:
-                    r = await client.call(creds, FUNC_GET_PRODUTO, {"pagina": pg})
+                    r = await client.call(
+                        creds, FUNC_GET_PRODUTO, {"pagina": pg, "quantidadeRegistros": _PRODUTOS_PAGE_SIZE}
+                    )
                     by_page[pg] = (((r or {}).get("corpo") or {}).get("body") or {}).get("dados") or []
                 except EShipError as e:
                     logger.warning("[eShip] GetProduto página %s falhou: %s", pg, e)
@@ -537,20 +647,30 @@ async def list_all_eship_products(db: AsyncSession, cmig_id: int, force: bool = 
                 asyncio.gather(*[_fetch(pg) for pg in range(2, cap + 1)]),
                 timeout=_PRODUTOS_TOTAL_DEADLINE,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("[eShip] carga do catálogo cmig=%s excedeu %ss; retornando parcial",
                            cmig_id, _PRODUTOS_TOTAL_DEADLINE)
 
     # Páginas com None (falha) ou ausentes (timeout) = buracos → resultado PARCIAL.
     paginas_falhas = sum(1 for pg in range(1, cap + 1) if by_page.get(pg) is None)
-    rows = [_eship_produto_row(p) for pg in range(1, cap + 1) for p in (by_page.get(pg) or [])]
+    # Escopo por empresa (client-side): a API ignora o filtro de cadastro no GetProduto.
+    da_empresa = [
+        p for pg in range(1, cap + 1) for p in (by_page.get(pg) or [])
+        if _produto_da_cmig(p, cnpj, cpf)
+    ]
+    # Enriquece com o estoque real (GetProduto traz 0 na listagem; o saldo vem do
+    # GetSaldoEstoque, já escopado ao depósito da conta). Junção por id/SKU.
+    por_id, por_cod = await _fetch_saldo_indexes(creds)
+    rows = [_eship_produto_row(p, _saldo_for(p, por_id, por_cod)) for p in da_empresa]
     result = {
         "produtos": rows,
-        "total": pag.get("totalObjetos"),
+        "total": len(rows),
+        "total_catalogo": pag.get("totalObjetos"),
         "paginas": total_pages,
         "truncado": total_pages > cap,
         "parcial": paginas_falhas > 0,
         "paginas_falhas": paginas_falhas,
+        "escopo_indefinido": False,
     }
     # Só cacheia carga COMPLETA (sem páginas falhas) — não fixa um catálogo furado por 5min.
     if not result["parcial"]:

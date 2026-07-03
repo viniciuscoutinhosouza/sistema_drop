@@ -4,7 +4,7 @@
 - Envio manual e sincronização de status de um pedido.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,7 +16,7 @@ from models.order import Order
 from models.user import User
 from models.warehouse import Warehouse
 
-from . import service
+from . import export, service
 from .client import EShipError
 from .config import EShipConfig, get_config
 from .schemas import EShipConfigIn
@@ -150,6 +150,42 @@ async def list_eship_products_endpoint(
         return await service.list_eship_products(db, cmig_id, page)
     except EShipError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get("/cmigs/{cmig_id}/produtos/export")
+async def export_eship_products_endpoint(
+    cmig_id: int,
+    format: str = Query("pdf", pattern="^(pdf|xlsx)$"),
+    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Exporta os produtos da empresa (com estoque) em PDF ou Excel."""
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    if not cmig:
+        raise HTTPException(status_code=404, detail="CMIG não encontrada")
+    await _assert_cmig_access(db, cmig, current_user)
+    try:
+        data = await service.list_all_eship_products(db, cmig_id)
+    except EShipError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if data.get("escopo_indefinido"):
+        raise HTTPException(
+            status_code=400,
+            detail="Cadastre o CNPJ/CPF desta empresa para listar/exportar os produtos dela.",
+        )
+    label = cmig.company_name or f"CMIG #{cmig_id}"
+    fname = f"produtos-eship-cmig-{cmig_id}"
+    if format == "xlsx":
+        return Response(
+            content=export.build_xlsx(data, label),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}.xlsx"'},
+        )
+    return Response(
+        content=export.build_pdf(data, label),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}.pdf"'},
+    )
 
 
 @router.get("/cmigs/{cmig_id}/saldo")

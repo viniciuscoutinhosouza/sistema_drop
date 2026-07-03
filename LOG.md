@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-07-03 — feat(eship): "Listar Produtos no eShip" escopado por empresa (CMIG) + Skill/Agente eShip
+
+**Skill + Agente eShip** (estudo completo da API): criada a skill `eship-api` (`.claude/skills/eship-api/`
+— SKILL.md + 6 references cobrindo os 12 módulos/289 funções, auth RPC, catálogo, produtos/estoque,
+ordens/emissão/status, transporte/recebimento e gotchas) e o agente `eship-especialista`
+(`.claude/agents/eship-especialista.md`). Base: OpenAPI oficial + sondagem read-only. Documentado o
+backlog de correções (status por `id`, `webServiceCancelaOrdem`, `extract_order_id` aninhado,
+`GetOrdem` exige `incluirInfo`, saldo por `codigoProduto`, cap de páginas etc.).
+
+**Listar Produtos no eShip — escopo por empresa** (`integrations/eship/service.py`,
+`EnvioProdutosView.vue`, `test_eship_products.py`): a tela trazia o catálogo inteiro do WMS
+(multi-tenant, ~6.890 produtos de várias empresas). Agora traz **apenas os produtos da CMIG**, com
+Full/físico/disponível/reservado. Como a API **ignora** os filtros de empresa do `webServiceGetProduto`
+(comprovado ao vivo), o escopo é **client-side** casando `produto.cadastro.cnpj`/`cpf` (só dígitos) com
+o documento da CMIG (helper `_produto_da_cmig`). `quantidadeRegistros=100` (teto honrado) reduz a
+varredura de 304→~76 páginas. **Anti-vazamento LGPD:** CMIG sem CNPJ/CPF retorna vazio +
+`escopo_indefinido` **sem** chamar o WMS (nas duas funções de listagem). `total` = itens da empresa;
+`total_catalogo` = catálogo WMS. Frontend: removidos dropdown e coluna "Empresa" (redundantes) e aviso
+quando falta documento. Auditado: consistency-auditor (prévia — C1/C2/H1/H2/H3 incorporados) +
+quality-guardian (sem CRITICAL/HIGH; MEDIUM do `all=false` corrigido). 31 testes eShip passam; ruff
+limpo; `npm run build` OK.
+
+**Estoque real na listagem:** o `webServiceGetProduto` traz estoque **0** na lista (`saldoEstoque=[]`);
+o estoque real vem do `webServiceGetSaldoEstoque` (já escopado ao depósito da conta). Enriquecimento
+(`_fetch_saldo_indexes` + `_eship_produto_row(p, saldo)`) casando `GetProduto.id ==
+GetSaldoEstoque.pro_produto_id` (fallback SKU), somando linhas (depósitos/lotes) e convertendo as
+strings (`_num`). Verificado ao vivo: RS-WLQ=300, 438R=20, 320=2.
+
+**Exportação PDF/Excel** (`integrations/eship/export.py`, endpoint `GET /cmigs/{id}/produtos/export?
+format=pdf|xlsx`, botões no modal): reutiliza `list_all_eship_products` (escopado + estoque),
+espelha o padrão de `services/sales_report_export.py` (reportlab/openpyxl). Guard anti
+formula-injection no XLSX; escaping no PDF; `escopo_indefinido`→400. Auditado (quality-guardian: sem
+CRITICAL/HIGH). 33 testes eShip; PDF/XLSX gerados e validados; `npm run build` OK.
+
+---
+
 ## 2026-07-01 — style(sidebar): hierarquia pai × filho no menu lateral
 
 Diferenciação visual dos menus no sidebar (AdminLTE dark), por hierarquia em vez de cor forte
