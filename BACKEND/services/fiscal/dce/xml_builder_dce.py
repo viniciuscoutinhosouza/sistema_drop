@@ -134,8 +134,11 @@ def montar_xml_dce(dados: dict) -> str:
     g_dest = _sub(inf, "dest")
     if dest.get("cnpj"):
         _sub(g_dest, "CNPJ", dest["cnpj"].replace(".", "").replace("/", "").replace("-", ""))
+    elif dest.get("cpf"):
+        _sub(g_dest, "CPF", dest["cpf"].replace(".", "").replace("-", ""))
     else:
-        _sub(g_dest, "CPF", (dest.get("cpf") or "").replace(".", "").replace("-", ""))
+        # Comprador sem CPF/CNPJ capturado (o ML não expõe): idOutros.
+        _sub(g_dest, "idOutros", dest.get("id_outros") or "CONSUMIDOR")
     # Em homologação (tpAmb=2) o nome do destinatário DEVE ser exatamente esta string (cStat 598).
     x_nome_dest = _X_NOME_HOMOLOG if str(dados["tp_amb"]) == "2" else dest["x_nome"]
     _sub(g_dest, "xNome", x_nome_dest)

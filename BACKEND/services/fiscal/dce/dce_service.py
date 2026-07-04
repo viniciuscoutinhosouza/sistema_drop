@@ -94,14 +94,52 @@ async def _endereco_dest(db, order) -> dict:
     }
 
 
+async def _endereco_emit(db, wh) -> dict:
+    """Endereço do REMETENTE = endereço do Galpão (as CMIGs CPF não têm endereço próprio).
+    Resolve o código IBGE do município do galpão por cidade+UF."""
+    if not wh:
+        raise DceError("Galpão do vendedor não configurado — necessário para o endereço do remetente da DC-e.")
+    cidade = wh.city or ""
+    uf = (wh.state or "").upper()[:2]
+    if not cidade or not uf:
+        raise DceError("Galpão sem cidade/UF configurados (endereço do remetente da DC-e).")
+    c_mun, x_mun = await resolve_municipio(db, uf, cidade)
+    return {
+        "x_lgr": wh.street or "", "nro": str(wh.number or "S/N"),
+        "x_cpl": wh.complement or "", "x_bairro": wh.neighborhood or "",
+        "c_mun": c_mun, "x_mun": x_mun, "uf": uf, "cep": _so_digitos(wh.zip_code),
+    }
+
+
+def _id_outros(order) -> str:
+    """Identificação do destinatário quando não há CPF/CNPJ (idOutros).
+
+    Schema: 2-60 caracteres do range [!-ÿ] — SEM espaço, sem acento. Usa o nome do comprador
+    normalizado (espaços viram '.'); fallback 'CONSUMIDOR'."""
+    import re
+
+    from services.fiscal.dce.ibge import normalize_nome
+
+    base = normalize_nome(order.buyer_name or "")  # maiúsculas, sem acento
+    limpo = re.sub(r"[^A-Za-z0-9:.+\-/()]", "", base.replace(" ", "."))
+    return limpo[:60] if len(limpo) >= 2 else "CONSUMIDOR"
+
+
 async def build_dce_dados(db, order, cmig, mkt_cfg, *, tp_amb: int, serie: int, numero: int) -> dict:
     """Monta o dict de `dados` para `montar_xml_dce` a partir do pedido + config."""
     from models.order import OrderItem
+    from models.warehouse import Warehouse
 
     cnpj_assinante = _so_digitos(mkt_cfg.cnpj)
-    c_uf = (cmig.ibge_code or "")[:2] or _UF_CODIGO.get((cmig.state or "").upper())
-    if not c_uf:
-        raise DceError("UF/código IBGE do remetente (CMIG) não configurado.")
+
+    # Remetente: CPF do vendedor (CMIG) + endereço do Galpão vinculado.
+    wh = None
+    if getattr(cmig, "warehouse_id", None):
+        wh = (
+            await db.execute(select(Warehouse).where(Warehouse.id == cmig.warehouse_id))
+        ).scalar_one_or_none()
+    emit_ender = await _endereco_emit(db, wh)
+    c_uf = emit_ender["c_mun"][:2]  # cUF = 2 primeiros dígitos do IBGE do município do galpão
 
     dh = datetime.now(BR_TZ)
     aamm = dh.strftime("%y%m")
@@ -126,6 +164,7 @@ async def build_dce_dados(db, order, cmig, mkt_cfg, *, tp_amb: int, serie: int, 
         for it in itens_rows
     ]
 
+    # Destinatário: CPF/CNPJ do comprador se houver; senão idOutros (o ML não expõe o CPF).
     dest_doc = _so_digitos(order.buyer_document)
     dest = {
         "x_nome": order.buyer_name or "Consumidor",
@@ -133,14 +172,16 @@ async def build_dce_dados(db, order, cmig, mkt_cfg, *, tp_amb: int, serie: int, 
     }
     if len(dest_doc) == 14:
         dest["cnpj"] = dest_doc
-    else:
+    elif len(dest_doc) == 11:
         dest["cpf"] = dest_doc
+    else:
+        dest["id_outros"] = _id_outros(order)
 
     return {
         "chave": chave,
         "tp_amb": tp_amb,
         "ide": {
-            "c_uf": c_uf, "c_dc": c_dc, "nat_op": _NAT_OP_DCE,
+            "c_uf": c_uf, "c_dc": c_dc,
             "serie": serie, "n_dc": numero,
             "dh_emi": dh.strftime("%Y-%m-%dT%H:%M:%S%z")[:-2] + ":" + dh.strftime("%z")[-2:],
             "tp_emis": 1, "ver_proc": "SistemaDrop-1.0",
@@ -148,12 +189,7 @@ async def build_dce_dados(db, order, cmig, mkt_cfg, *, tp_amb: int, serie: int, 
         "emit": {
             "cpf": _so_digitos(cmig.cpf),
             "x_nome": cmig.company_name or cmig.trade_name or "Remetente",
-            "ender": {
-                "x_lgr": cmig.street or "", "nro": cmig.address_number or "S/N",
-                "x_cpl": cmig.complement or "", "x_bairro": cmig.neighborhood or "",
-                "c_mun": cmig.ibge_code or "", "x_mun": cmig.city or "",
-                "uf": (cmig.state or "").upper(), "cep": _so_digitos(cmig.zip_code),
-            },
+            "ender": emit_ender,
         },
         "marketplace": {
             "cnpj": cnpj_assinante, "x_nome": mkt_cfg.company_name, "site": mkt_cfg.site,
