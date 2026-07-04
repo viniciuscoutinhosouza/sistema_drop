@@ -1455,6 +1455,34 @@ async def emit_order_dce(
     }
 
 
+@router.get("/{order_id}/dace.pdf")
+async def get_order_dace(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """DACE (PDF) da DC-e autorizada do pedido — regenerado do XML persistido."""
+    from models.fiscal import OrderDce
+    from services.fiscal.dce.dace import gerar_dace
+
+    order = await _get_order_checked(db, order_id, current_user)
+    row = (
+        await db.execute(
+            select(OrderDce)
+            .where(OrderDce.order_id == order.id, OrderDce.status == "authorized")
+            .order_by(OrderDce.id.desc())
+        )
+    ).scalars().first()
+    if not row or not row.xml:
+        raise HTTPException(status_code=404, detail="DC-e autorizada não encontrada para este pedido")
+    pdf = gerar_dace(row.xml, row.protocolo)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="DACE_{row.chave}.pdf"'},
+    )
+
+
 @router.post("/{order_id}/sync-nfe")
 async def sync_order_nfe(
     order_id: int,

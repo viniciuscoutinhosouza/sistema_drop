@@ -85,10 +85,10 @@ async def _endereco_dest(db, order) -> dict:
         raise DceError("Endereço do comprador sem cidade/UF — necessário para o município (IBGE) da DC-e.")
     c_mun, x_mun = await resolve_municipio(db, uf, cidade)
     return {
-        "x_lgr": end.get("street_name") or end.get("street") or end.get("logradouro") or "",
+        "x_lgr": _texto(end.get("street_name")) or _texto(end.get("street")) or _texto(end.get("logradouro")),
         "nro": str(end.get("street_number") or end.get("number") or end.get("numero") or "S/N"),
-        "x_cpl": end.get("comment") or end.get("complement") or "",
-        "x_bairro": end.get("neighborhood") or end.get("bairro") or "",
+        "x_cpl": _texto(end.get("comment")) or _texto(end.get("complement")),
+        "x_bairro": _texto(end.get("neighborhood")) or _texto(end.get("bairro")),
         "c_mun": c_mun, "x_mun": x_mun, "uf": uf,
         "cep": _so_digitos(end.get("zip_code") or end.get("zip") or end.get("cep")),
     }
