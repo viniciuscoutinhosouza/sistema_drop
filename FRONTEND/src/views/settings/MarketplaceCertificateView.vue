@@ -73,7 +73,19 @@
                       <i class="fas mr-1" :class="uploading ? 'fa-spinner fa-spin' : 'fa-upload'"></i>
                       {{ uploading ? 'Enviando…' : (status.configured ? 'Substituir certificado' : 'Enviar certificado') }}
                     </button>
+                    <button v-if="status.configured" type="button" class="btn btn-outline-secondary btn-sm ml-2"
+                            :disabled="checking" @click="statusCheck">
+                      <i class="fas mr-1" :class="checking ? 'fa-spinner fa-spin' : 'fa-plug'"></i>
+                      {{ checking ? 'Testando…' : 'Testar conexão SVRS (homologação)' }}
+                    </button>
                   </form>
+
+                  <div v-if="checkResult" class="alert mt-3 mb-0"
+                       :class="checkResult.cstat === '107' ? 'alert-success' : 'alert-warning'">
+                    <div><b>Status do serviço DC-e (homologação):</b></div>
+                    <div>cStat: <b>{{ checkResult.cstat || '—' }}</b> — {{ checkResult.xmotivo || '(sem motivo)' }}</div>
+                    <small class="text-muted">HTTP {{ checkResult.http_status }} · cStat 107 = serviço em operação.</small>
+                  </div>
                 </div>
               </div>
             </div>
@@ -95,6 +107,8 @@ const toast = useToast()
 
 const loading = ref(true)
 const uploading = ref(false)
+const checking = ref(false)
+const checkResult = ref(null)
 const status = reactive({ configured: false })
 const form = reactive({ cnpj: '', company_name: '', site: '', password: '' })
 const pfxFile = ref(null)
@@ -154,6 +168,24 @@ async function upload() {
     toast.error(e.response?.data?.detail || 'Erro ao enviar o certificado')
   } finally {
     uploading.value = false
+  }
+}
+
+async function statusCheck() {
+  if (checking.value) return
+  checking.value = true
+  checkResult.value = null
+  try {
+    const { data } = await api.post(`/marketplace-settings/platform-certificate/${PROFILE}/status-check`, null, {
+      params: { tp_amb: 2 },
+    })
+    checkResult.value = data
+    if (data.cstat === '107') toast.success('SVRS DC-e em operação — certificado e conexão OK.')
+    else toast.warning(`Serviço respondeu cStat ${data.cstat || '?'}.`)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Falha ao testar a conexão com a SVRS')
+  } finally {
+    checking.value = false
   }
 }
 

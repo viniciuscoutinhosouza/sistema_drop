@@ -1357,18 +1357,44 @@ async def emit_order_nfe(
     }
 
 
+async def _dce_feature_ready(db: AsyncSession, order) -> bool:
+    """True quando a emissão real de DC-e está habilitada para este pedido: vendedor autorizado
+    (CMIGFiscalConfig.dce_authorized) + certificado central do marketplace configurado."""
+    from models.fiscal import CMIGFiscalConfig, PlatformCertConfig
+    from services.fiscal.dce.signer_cert import PROFILE_MARKETPLACE_DCE
+
+    if not getattr(order, "cmig_id", None):
+        return False
+    authorized = (
+        await db.execute(
+            select(CMIGFiscalConfig.dce_authorized).where(
+                CMIGFiscalConfig.cmig_id == order.cmig_id
+            )
+        )
+    ).scalar_one_or_none()
+    if not authorized:
+        return False
+    cert = (
+        await db.execute(
+            select(PlatformCertConfig.cert_path).where(
+                PlatformCertConfig.profile_type == PROFILE_MARKETPLACE_DCE
+            )
+        )
+    ).scalar_one_or_none()
+    return bool(cert)
+
+
 @router.post("/{order_id}/emit-dce")
 async def emit_order_dce(
     order_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Emite a DC-e (Declaração de Conteúdo) de um pedido de conta pessoa física.
+    """Emite a DC-e (Declaração de Conteúdo, modelo 68) de um pedido de conta pessoa física.
 
-    Estrutura completa; a chamada de emissão ao ML ainda é um stub (501) até
-    confirmarmos o endpoint exato. Dedup por envio: pedidos de carrinho dividem
-    o mesmo shipment/pack, então a DC-e é uma só — marcamos todos os pedidos do
-    mesmo shipment.
+    A MIG assina com o A1 do CNPJ dela (perfil Marketplace, por conta e ordem) e transmite à
+    SVRS. Dedup por envio: pedidos de carrinho dividem o mesmo shipment/pack, então a DC-e é
+    uma só — marcamos todos os pedidos do mesmo shipment. Ver ADR (DC-e).
     """
     order = await _get_order_checked(db, order_id, current_user)
     if order.platform != "mercadolivre":
@@ -1389,25 +1415,29 @@ async def emit_order_dce(
     if order.dce_status in ("emitted", "pending"):
         return {"ok": True, "already_existed": True, "dce_status": order.dce_status}
 
-    acc_result = await db.execute(
-        select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
-    )
-    account = acc_result.scalar_one_or_none()
-    if not account or not account.access_token:
-        raise HTTPException(status_code=400, detail="Conta sem token válido")
+    # Feature gate (rollout faseado): só emite de verdade quando o vendedor está autorizado
+    # ('por conta e ordem') E o certificado central do marketplace está configurado. Enquanto
+    # não estiver habilitado, mantém o comportamento atual (instrui emitir no painel do ML).
+    if not await _dce_feature_ready(db, order):
+        raise HTTPException(status_code=501, detail=_DCE_PENDING_MSG)
+
+    from services.fiscal.dce.dce_service import emitir_dce_para_pedido
+    from services.fiscal.dce.exceptions import DceError
 
     try:
-        ml_order_id = int(order.platform_order_id)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="ID do pedido inválido para emissão de DC-e")
+        ret = await emitir_dce_para_pedido(db, order)
+    except DceError as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
-    # Chamada de emissão ao ML — stub por enquanto (levanta 501 com mensagem clara).
-    # Quando o endpoint real for confirmado, isto passa a emitir de fato.
-    await _ml.emit_dce(
-        account.access_token, account.platform_user_id, order.shipment_id, [ml_order_id]
-    )
+    if not ret.autorizado:
+        await db.commit()  # persiste a linha OrderDce 'rejected' para auditoria
+        raise HTTPException(
+            status_code=400,
+            detail=f"DC-e não autorizada (cStat {ret.cstat}): {ret.xmotivo or 'sem motivo'}",
+        )
 
-    # (Após emissão real) Dedup por envio: marca todos os pedidos do mesmo shipment.
+    # Dedup por envio: marca todos os pedidos do mesmo shipment como emitidos.
     order.dce_status = "emitted"
     if order.shipment_id:
         await db.execute(
@@ -1416,7 +1446,13 @@ async def emit_order_dce(
             .values(dce_status="emitted")
         )
     await db.commit()
-    return {"ok": True, "dce_status": order.dce_status}
+    return {
+        "ok": True,
+        "dce_status": order.dce_status,
+        "chave": ret.chave,
+        "protocolo": ret.protocolo,
+        "cstat": ret.cstat,
+    }
 
 
 @router.post("/{order_id}/sync-nfe")

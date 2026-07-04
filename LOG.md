@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-07-04 — feat(dce): caminho de emissão SVRS (cliente + orquestração) com feature gate
+
+Liga a emissão real da DC-e à SVRS (Ambiente Nacional / SEFAZ-PR), reaproveitando o transporte
+mTLS/SOAP do NF-e. **Deploy seguro**: gated por `dce_authorized` + cert central — sem cert/autorização,
+o botão mantém o comportamento atual (501 → painel).
+
+- **dce_client.py**: SOAP mTLS com as URLs oficiais (autorização/consulta/status/evento, prod +
+  homologação), envelope `dceDadosMsg` (ns `.../dce/wsdl/{servico}`), extração cStat/protocolo/chDCe.
+- **dce_service.py**: mapeia pedido→DC-e (emit=CPF vendedor + endereço CMIG; marketplace=CNPJ MIG;
+  dest=comprador+IBGE; itens), gera chave modelo 99, assina com A1 da MIG (reusa signer NF-e),
+  transmite, persiste `order_dce`.
+- **routers/orders.py**: `emit-dce` ligado ao serviço + `_dce_feature_ready` (gate faseado).
+- **Smoke**: `POST .../platform-certificate/{profile}/status-check` + botão "Testar conexão SVRS"
+  na telinha (valida cert+mTLS antes de emitir; espera cStat 107).
+- **A confirmar em homologação**: wrapper `enviDCe`/indSinc e tags de retorno (padrão SEFAZ, best-effort).
+- py_compile OK; testes DC-e 7 passed/1 skip; npm build OK.
+
+---
+
 ## 2026-07-04 — feat(dce): fundação da emissão de DC-e perfil Marketplace (Fase 1, parcial)
 
 Fundação para emitir a DC-e (Declaração de Conteúdo Eletrônica, modelo 68 / chave modelo 99) das

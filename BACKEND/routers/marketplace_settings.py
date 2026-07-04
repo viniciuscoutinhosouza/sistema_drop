@@ -301,3 +301,48 @@ async def upload_platform_certificate(
         "certificate_subject": subject,
         "certificate_expires_at": expires_at.isoformat() if expires_at else None,
     }
+
+
+@router.post("/platform-certificate/{profile_type}/status-check")
+async def dce_status_check(
+    profile_type: str,
+    tp_amb: int = 2,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """Smoke da conexão SVRS DC-e: resolve o A1 central e consulta o Status do Serviço.
+
+    Valida certificado + mTLS + envelope antes de qualquer emissão. tp_amb=2 (homologação)
+    por default. Retorna o cStat/xMotivo bruto do serviço."""
+    import contextlib as _cl
+    import os as _os
+
+    from services.fiscal.dce import dce_client
+    from services.fiscal.dce.exceptions import DceError
+    from services.fiscal.dce.signer_cert import resolve_platform_signer_cert
+    from services.fiscal.sefaz.sefaz_client import extract_cert_pem
+
+    try:
+        pfx_path, senha = await resolve_platform_signer_cert(db, profile_type)
+    except DceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    cert_pem, key_pem = extract_cert_pem(pfx_path, senha, runtime_dir=get_settings().NFE_CERTS_DIR)
+    try:
+        verify = tp_amb == 1
+        resp = dce_client.status_servico(tp_amb, cert_pem, key_pem, verify_ssl=verify)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Falha ao conectar na SVRS DC-e: {e}")
+    finally:
+        for f in (cert_pem, key_pem):
+            with _cl.suppress(OSError):
+                _os.remove(f)
+
+    ret = dce_client.extrair_retorno(resp.body)
+    return {
+        "http_status": resp.status_code,
+        "cstat": ret["cstat"],
+        "xmotivo": ret["xmotivo"],
+        "tp_amb": tp_amb,
+        "raw_head": resp.body[:600],
+    }
