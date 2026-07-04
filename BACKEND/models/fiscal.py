@@ -59,6 +59,14 @@ class CMIGFiscalConfig(Base):
     nfe_serie = Column(Integer, default=1)
     nfe_next_number = Column(Integer, default=1)
 
+    # DC-e (Declaração de Conteúdo Eletrônica) — contas de vendedor pessoa física (CPF).
+    # dce_authorized: autorização "por conta e ordem" do vendedor (default 0 = BLOQUEADO). A MIG
+    # só emite a DC-e por ele quando autorizado no cadastro. Ver migration 120.
+    dce_authorized = Column(Integer, default=0, nullable=False)
+    dce_serie = Column(Integer, default=1)
+    dce_next_number = Column(Integer, default=1)
+    dce_next_number_homolog = Column(Integer, default=1)
+
     # NFC-e (futuro)
     csc_id = Column(String(20))
     csc_token = Column(String(100))
@@ -81,6 +89,72 @@ class CMIGFiscalConfig(Base):
     )
 
     cmig = relationship("CMIG", back_populates="fiscal_config")
+
+
+class PlatformCertConfig(Base):
+    """Certificado A1 CENTRAL do assinante (marketplace) — NÃO por CMIG.
+
+    A DC-e das contas de vendedor pessoa física (CPF) é assinada pelo A1 do CNPJ da MIG,
+    no perfil "Marketplace" (por conta e ordem do vendedor). Este cert é único por
+    `profile_type` (ex.: 'marketplace_dce'), diferente do cert-por-CMIG em CMIGFiscalConfig.
+    Migration 120.
+    """
+
+    __tablename__ = "platform_cert_configs"
+    __table_args__ = (UniqueConstraint("profile_type", name="uq_pcc_profile"),)
+
+    id = Column(Integer, primary_key=True)
+    profile_type = Column(String(50), nullable=False)  # 'marketplace_dce' | ...
+    cnpj = Column(String(18), nullable=False)           # CNPJ assinante (MIG)
+    company_name = Column(String(255), nullable=False)  # razão social do assinante
+    site = Column(String(255))                          # Site do marketplace (grupo Marketplace do XML)
+
+    cert_path = Column(String(255))                     # caminho do .pfx no servidor
+    cert_pass_encrypted = Column(String(512))           # senha cifrada (Fernet)
+    certificate_subject = Column(String(500))
+    certificate_uploaded_at = Column(TIMESTAMP(timezone=True))
+    certificate_expires_at = Column(TIMESTAMP(timezone=True))
+
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
+
+
+class OrderDce(Base):
+    """DC-e (modelo 68 / chave modelo 99) emitida para um pedido de conta CPF.
+
+    Tabela PRÓPRIA — não reusa `invoices` (que é NF-e, com unique de chave/série e semântica
+    de tributação que a DC-e não tem). Migration 120.
+    """
+
+    __tablename__ = "order_dce"
+    __table_args__ = (UniqueConstraint("chave", name="uq_order_dce_chave"),)
+
+    id = Column(Integer, primary_key=True)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
+    pack_id = Column(String(50))        # dedup por carrinho/envio
+    shipment_id = Column(String(50))
+    chave = Column(String(44))          # chave de acesso da DC-e (keyed ao CNPJ assinante)
+    protocolo = Column(String(30))      # protocolo de autorização SVRS
+    serie = Column(Integer)
+    numero = Column(Integer)
+    status = Column(String(20), nullable=False, default="draft")  # draft|authorized|rejected|cancelled
+    cstat = Column(String(4))
+    xmotivo = Column(String(255))
+    natureza = Column(String(255))
+    environment = Column(String(12))    # homolog | production
+    signer_cnpj = Column(String(18))    # CNPJ que assinou (MIG)
+    emit_cpf = Column(String(14))       # CPF do remetente (vendedor)
+    xml = Column(Text)                  # CLOB — XML autorizado (procDCe)
+    dace_path = Column(String(1000))    # PDF do DACE
+    emitted_at = Column(TIMESTAMP(timezone=True))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
+    )
+
+    order = relationship("Order")
 
 
 class Invoice(Base):
@@ -304,6 +378,21 @@ class DFeRecebido(Base):
     manifestacao_at = Column(TIMESTAMP(timezone=True))
     invoice_id = Column(Integer, ForeignKey("invoices.id"))
     criado_em = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+
+
+class IbgeMunicipio(Base):
+    """Cache do código IBGE de municípios (cidade+UF → código 7 díg.) — migration 121.
+
+    Usado pela DC-e (cMun do destinatário). Seed sob demanda da API do IBGE, por UF.
+    """
+
+    __tablename__ = "ibge_municipios"
+
+    codigo = Column(String(7), primary_key=True)
+    uf = Column(String(2), nullable=False)
+    nome = Column(String(150), nullable=False)
+    nome_norm = Column(String(150), nullable=False)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
 
 
 class CFOPCode(Base):

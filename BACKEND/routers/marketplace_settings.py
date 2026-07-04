@@ -8,15 +8,22 @@ então a tela sempre mostra um padrão sugerido mesmo sem registro salvo.
 
 import json
 import logging
+import os
+from datetime import datetime
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import get_settings
 from database import get_db
 from dependencies import get_current_user, require_role
+from models.fiscal import PlatformCertConfig
 from models.integration import MarketplaceSetting
 from models.user import User
+from services.fiscal import cert_crypto
+from services.fiscal.pfx_utils import validate_pfx
 
 router = APIRouter(prefix="/api/v1/marketplace-settings", tags=["marketplace-settings"])
 logger = logging.getLogger(__name__)
@@ -195,4 +202,102 @@ async def update_marketplace_settings(
         "message": "Configuração salva.",
         "marketplace": marketplace,
         "settings": _merged(marketplace, _parse(payload)),
+    }
+
+
+# ── Certificado A1 CENTRAL do assinante (marketplace) — usado na DC-e ──────────
+# Diferente do cert por-CMIG (NF-e): este é único por `profile_type` (ex.: 'marketplace_dce')
+# e assina a DC-e das contas de vendedor CPF por conta e ordem, com o A1 da MIG.
+
+
+@router.get("/platform-certificate/{profile_type}")
+async def get_platform_certificate(
+    profile_type: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """Status do certificado central do assinante (ex.: 'marketplace_dce'). Super Admin."""
+    cfg = (
+        await db.execute(
+            select(PlatformCertConfig).where(PlatformCertConfig.profile_type == profile_type)
+        )
+    ).scalar_one_or_none()
+    if not cfg:
+        return {"configured": False, "profile_type": profile_type}
+    return {
+        "configured": bool(cfg.cert_path and cfg.cert_pass_encrypted),
+        "profile_type": cfg.profile_type,
+        "cnpj": cfg.cnpj,
+        "company_name": cfg.company_name,
+        "site": cfg.site,
+        "certificate_subject": cfg.certificate_subject,
+        "certificate_expires_at": cfg.certificate_expires_at.isoformat()
+        if cfg.certificate_expires_at
+        else None,
+    }
+
+
+@router.post("/platform-certificate/{profile_type}")
+async def upload_platform_certificate(
+    profile_type: str,
+    cnpj: str = Form(...),
+    company_name: str = Form(...),
+    password: str = Form(...),
+    site: str = Form(None),
+    pfx_file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """Upload do A1 CENTRAL do assinante marketplace (ex.: A1 da MIG p/ DC-e). Super Admin.
+
+    O .pfx é gravado em diretório restrito no servidor; a senha fica CIFRADA (Fernet) no banco.
+    Armazenado em `platform_cert_configs`, único por `profile_type`."""
+    pfx_bytes = await pfx_file.read()
+    if not pfx_bytes:
+        raise HTTPException(status_code=422, detail="Arquivo .pfx vazio")
+    if len(pfx_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=422, detail="Arquivo .pfx muito grande (máx 5MB)")
+
+    expires_at, subject = validate_pfx(pfx_bytes, password)
+    if not expires_at:
+        raise HTTPException(status_code=422, detail="Certificado inválido ou senha incorreta")
+
+    try:
+        pass_token = cert_crypto.encrypt(password)
+    except cert_crypto.CertCryptoError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    certs_dir = Path(get_settings().NFE_CERTS_DIR)
+    certs_dir.mkdir(parents=True, exist_ok=True)
+    safe_profile = "".join(c for c in profile_type if c.isalnum() or c in ("_", "-"))
+    cert_path = certs_dir / f"platform_{safe_profile}.pfx"
+    cert_path.write_bytes(pfx_bytes)
+    try:
+        os.chmod(cert_path, 0o600)
+    except OSError:
+        pass
+
+    cfg = (
+        await db.execute(
+            select(PlatformCertConfig).where(PlatformCertConfig.profile_type == profile_type)
+        )
+    ).scalar_one_or_none()
+    if not cfg:
+        cfg = PlatformCertConfig(profile_type=profile_type, cnpj=cnpj, company_name=company_name)
+        db.add(cfg)
+    cfg.cnpj = cnpj
+    cfg.company_name = company_name
+    cfg.site = site
+    cfg.cert_path = str(cert_path)
+    cfg.cert_pass_encrypted = pass_token
+    cfg.certificate_uploaded_at = datetime.utcnow()
+    cfg.certificate_expires_at = expires_at
+    cfg.certificate_subject = subject
+    await db.commit()
+
+    return {
+        "detail": f"Certificado central '{profile_type}' armazenado (assinante marketplace)",
+        "cnpj": cnpj,
+        "certificate_subject": subject,
+        "certificate_expires_at": expires_at.isoformat() if expires_at else None,
     }

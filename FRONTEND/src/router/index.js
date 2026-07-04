@@ -114,6 +114,7 @@ const MessagesView = () => import('@/views/messages/MessagesView.vue')
 const AIConfigView = () => import('@/views/settings/AIConfigView.vue')
 const EmailConfigView = () => import('@/views/settings/EmailConfigView.vue')
 const MarketplaceSettingsView = () => import('@/views/settings/MarketplaceSettingsView.vue')
+const MarketplaceCertificateView = () => import('@/views/settings/MarketplaceCertificateView.vue')
 const EShipConfigView = () => import('@/views/integrations/eship/EShipConfigView.vue')
 const EnvioProdutosView = () => import('@/views/integrations/eship/EnvioProdutosView.vue')
 
@@ -264,6 +265,9 @@ const routes = [
 
       // Configuração de Marketplaces — Super Admin
       { path: 'settings/marketplaces', component: MarketplaceSettingsView, meta: { title: 'Config. de Marketplaces', role: 'admin' } },
+
+      // Certificado do Marketplace (A1 central p/ DC-e) — Super Admin
+      { path: 'settings/marketplace-certificate', component: MarketplaceCertificateView, meta: { title: 'Certificado do Marketplace (DC-e)', role: 'admin' } },
 
       // Servidor de E-mail (SMTP) — Admin
       { path: 'settings/email', component: EmailConfigView, meta: { title: 'Servidor de E-mail', role: 'admin' } },

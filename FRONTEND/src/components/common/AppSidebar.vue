@@ -350,6 +350,12 @@
                   <p>Config. de Marketplaces <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
                 </RouterLink>
               </li>
+              <li v-if="canSee('config_marketplaces')" class="nav-item">
+                <RouterLink to="/settings/marketplace-certificate" class="nav-link" :class="{ active: route.path === '/settings/marketplace-certificate' }">
+                  <i class="far fa-circle nav-icon"></i>
+                  <p>Certificado do Marketplace <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
+                </RouterLink>
+              </li>
               <li v-if="canSee('config_api_console')" class="nav-item">
                 <RouterLink to="/admin/api-console" class="nav-link" :class="{ active: route.path === '/admin/api-console' }">
                   <i class="far fa-circle nav-icon"></i>

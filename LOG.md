@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-07-04 — feat(dce): fundação da emissão de DC-e perfil Marketplace (Fase 1, parcial)
+
+Fundação para emitir a DC-e (Declaração de Conteúdo Eletrônica, modelo 68 / chave modelo 99) das
+contas de vendedor CPF: a MIG assina com o A1 do CNPJ dela, por conta e ordem (perfil Marketplace,
+tpEmit=1). Confirmado com o contador (aval + sem credenciamento) e contra fonte primária SVRS.
+
+- **Migrations 120/121** (idempotentes): `platform_cert_configs` (A1 central do assinante),
+  `order_dce` (DC-e por pedido — tabela própria, não reusa `invoices`), flags DC-e em
+  `cmig_fiscal_config` (dce_authorized default 0/bloqueado + numeração), `ibge_municipios` (cache).
+- **models/fiscal.py**: `PlatformCertConfig`, `OrderDce`, `IbgeMunicipio` + flags.
+- **services/fiscal/dce/**: `chave_dce` (modelo 99 — **reconstrói a chave de um DACE real**),
+  `xml_builder_dce` (infDCe tpEmit=1), `ibge` (cidade+UF→código, seed da API IBGE), `signer_cert`
+  (resolvedor do A1 central), `exceptions`. Helper `services/fiscal/pfx_utils.validate_pfx`.
+- **Cert central (telinha)**: `GET/POST /api/v1/marketplace-settings/platform-certificate/{profile}`
+  (Super Admin) + view `MarketplaceCertificateView.vue` + rota + menu Administração → "Certificado
+  do Marketplace". A MIG sobe o A1 (perfil `marketplace_dce`) por aqui.
+- **Testes**: `test_dce_xml` (chave valida DACE real) + `test_dce_ibge` (normalização) — 7 passed,
+  1 skip (XML precisa de lxml, roda no servidor). `npm run build` OK.
+- **Ainda NÃO wired**: cliente SVRS (aguarda URLs WSDL), DACE (PDF), `dce_service` e a troca do stub
+  `emit_dce`. O botão "Emitir DC-e" segue no comportamento atual até a homologação. Spike/plano em
+  `sandbox/dce-spike/` (não versionado).
+
+---
+
 ## 2026-07-03 — feat(eship): "Listar Produtos no eShip" escopado por empresa (CMIG) + Skill/Agente eShip
 
 **Skill + Agente eShip** (estudo completo da API): criada a skill `eship-api` (`.claude/skills/eship-api/`
