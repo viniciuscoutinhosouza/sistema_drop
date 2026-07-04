@@ -37,12 +37,13 @@ DCE_ENDPOINTS: Final[dict[str, dict[str, str]]] = {
     },
 }
 
-# Serviço → nome do serviço no namespace do WSDL (dce/wsdl/{servico}).
-_WSDL_SERVICO: Final[dict[str, str]] = {
-    "status": "DCeStatusServico",
-    "autorizacao": "DCeAutorizacao",
-    "consulta": "DCeConsulta",
-    "evento": "DCeRecepcaoEvento",
+# Serviço → (nome do serviço no WSDL, nome da operação). O WSDL define soapAction obrigatório
+# = {ns}/wsdl/{ServicoWsdl}/{operacao}. Confirmado no WSDL de DCeStatusServico.
+_WSDL_SERVICO: Final[dict[str, tuple[str, str]]] = {
+    "status": ("DCeStatusServico", "dceStatusServico"),
+    "autorizacao": ("DCeAutorizacao", "dceAutorizacao"),
+    "consulta": ("DCeConsulta", "dceConsulta"),
+    "evento": ("DCeRecepcaoEvento", "dceRecepcaoEvento"),
 }
 
 
@@ -50,14 +51,22 @@ def _ambiente_key(tp_amb: int | str) -> str:
     return "producao" if str(tp_amb) == "1" else "homologacao"
 
 
+def _wsdl_ns(servico: str) -> str:
+    return f"{DCE_NAMESPACE}/wsdl/{_WSDL_SERVICO[servico][0]}"
+
+
+def _soap_action(servico: str) -> str:
+    wsdl_service, operacao = _WSDL_SERVICO[servico]
+    return f"{DCE_NAMESPACE}/wsdl/{wsdl_service}/{operacao}"
+
+
 def soap_envelope_dce(servico: str, inner_xml: str) -> str:
-    """Envelope SOAP 1.2 padrão SEFAZ para a DC-e (elemento dceDadosMsg + versaoDados)."""
-    wsdl_ns = f"{DCE_NAMESPACE}/wsdl/{_WSDL_SERVICO[servico]}"
+    """Envelope SOAP 1.2 para a DC-e (elemento dceDadosMsg com <s:any/> = XML filho)."""
     return (
         '<?xml version="1.0" encoding="utf-8"?>'
         '<soap12:Envelope xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">'
         "<soap12:Body>"
-        f'<dceDadosMsg xmlns="{wsdl_ns}" versaoDados="1.00">'
+        f'<dceDadosMsg xmlns="{_wsdl_ns(servico)}">'
         f"{inner_xml}"
         "</dceDadosMsg>"
         "</soap12:Body>"
@@ -69,8 +78,10 @@ def _post(servico: str, inner_xml: str, tp_amb: int | str, cert_pem: str, key_pe
           *, verify_ssl: bool = True) -> SefazResponse:
     url = DCE_ENDPOINTS[_ambiente_key(tp_amb)][servico]
     body = soap_envelope_dce(servico, inner_xml)
+    # SOAP 1.2 + soapAction obrigatório (WSDL): vai no Content-Type como action="...".
     return post_sefaz(
-        url, body, cert_pem, key_pem, verify_ssl=verify_ssl, user_agent="sistemadrop_dce/1.0"
+        url, body, cert_pem, key_pem, verify_ssl=verify_ssl,
+        soap_action=_soap_action(servico), user_agent="sistemadrop_dce/1.0",
     )
 
 
@@ -80,9 +91,9 @@ def status_servico(tp_amb: int | str, cert_pem: str, key_pem: str, *, c_uf: str 
 
     cUF default 41 (PR = autorizador do Ambiente Nacional da DC-e). Ordem tpAmb→cUF→xServ."""
     inner = (
-        f'<consStatServ xmlns="{DCE_NAMESPACE}" versao="1.00">'
+        f'<consStatServDCe xmlns="{DCE_NAMESPACE}" versao="1.00">'
         f"<tpAmb>{tp_amb}</tpAmb><cUF>{c_uf}</cUF><xServ>STATUS</xServ>"
-        "</consStatServ>"
+        "</consStatServDCe>"
     )
     return _post("status", inner, tp_amb, cert_pem, key_pem, verify_ssl=verify_ssl)
 
