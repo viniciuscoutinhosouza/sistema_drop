@@ -24,6 +24,9 @@ TP_EMIT_MARKETPLACE = "1"
 CPAIS_BR = "1058"
 XPAIS_BR = "BRASIL"
 
+# Homologação (tpAmb=2): o nome do destinatário deve ser exatamente esta string.
+_X_NOME_HOMOLOG = "DCE EMITIDA EM AMBIENTE DE HOMOLOGACAO"
+
 # QR-Code / consulta (Ambiente Nacional DC-e — SEFAZ-PR)
 _QR_BASE = "https://www.fazenda.pr.gov.br/dce/qrcode"
 _URL_CHAVE = "https://www.fazenda.pr.gov.br/dce/qrcode"
@@ -114,7 +117,10 @@ def montar_xml_dce(dados: dict) -> str:
 
     # ── emit (REMETENTE = vendedor CPF) ──────────────────────────────────
     g_emit = _sub(inf, "emit")
-    _sub(g_emit, "CPF", (emit["cpf"] or "").replace(".", "").replace("-", ""))
+    if emit.get("cnpj"):
+        _sub(g_emit, "CNPJ", emit["cnpj"].replace(".", "").replace("/", "").replace("-", ""))
+    else:
+        _sub(g_emit, "CPF", (emit.get("cpf") or "").replace(".", "").replace("-", ""))
     _sub(g_emit, "xNome", emit["x_nome"])
     _add_endereco(g_emit, "enderEmit", emit.get("ender") or {})
 
@@ -130,7 +136,9 @@ def montar_xml_dce(dados: dict) -> str:
         _sub(g_dest, "CNPJ", dest["cnpj"].replace(".", "").replace("/", "").replace("-", ""))
     else:
         _sub(g_dest, "CPF", (dest.get("cpf") or "").replace(".", "").replace("-", ""))
-    _sub(g_dest, "xNome", dest["x_nome"])
+    # Em homologação (tpAmb=2) o nome do destinatário DEVE ser exatamente esta string (cStat 598).
+    x_nome_dest = _X_NOME_HOMOLOG if str(dados["tp_amb"]) == "2" else dest["x_nome"]
+    _sub(g_dest, "xNome", x_nome_dest)
     _add_endereco(g_dest, "enderDest", dest.get("ender") or {})
 
     # ── det (itens) ──────────────────────────────────────────────────────

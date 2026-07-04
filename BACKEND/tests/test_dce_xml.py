@@ -19,14 +19,15 @@ def test_chave_real_valida():
 
 
 def test_montar_chave_reconstroi_dace_real():
-    # Layout DFe moderno: nDC(10) tpEmis(1) nSiteAutoriz(1) cDC(6). Reproduz a chave real.
+    # Layout DC-e: nDC(9) tpEmis(1) tpEmit(1) nSiteAutoriz(1) cDC(6). Reproduz a chave real.
     chave = montar_chave_dce(
         c_uf="35",
         aamm="2606",
         cnpj_assinante="03007331000818",
         serie=42,
-        n_dc=229184321,
+        n_dc=22918432,
         tp_emis=1,
+        tp_emit=1,
         c_dc="116956",
         n_site="0",
     )

@@ -6,9 +6,10 @@ Mesmo layout de 44 díg. da NF-e, mas:
 Confirmado contra um DACE real (chave keyed ao CNPJ da EBAZAR/ML). Reaproveita `calc_dv_chave`
 do NF-e (o algoritmo do DV é genérico sobre os 43 primeiros dígitos).
 
-Layout (DFe moderno, confirmado no schema DCe):
-    cUF(2) AAMM(4) CNPJ(14) mod(2) serie(3) nDC(10) tpEmis(1) nSiteAutoriz(1) cDC(6) cDV(1)
-(nSiteAutoriz=0 para autorizador de site único — Ambiente Nacional PR.)
+Layout (DFe DC-e, confirmado decompondo chaves reais autorizadas):
+    cUF(2) AAMM(4) CNPJ(14) mod(2) serie(3) nDC(9) tpEmis(1) tpEmit(1) nSiteAutoriz(1) cDC(6) cDV(1)
+A chave INCLUI o tpEmit (tipo de emitente: 1=Marketplace) — diferente da NF-e.
+nSiteAutoriz=0 para autorizador de site único (Ambiente Nacional PR).
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ def montar_chave_dce(
     n_dc: int,
     tp_emis: int,
     c_dc: str,
+    tp_emit: int = 1,
     n_site: str = "0",
 ) -> str:
     """Monta os 44 dígitos da chave de acesso da DC-e (modelo 99) incluindo o DV."""
@@ -47,10 +49,12 @@ def montar_chave_dce(
         raise ChaveAcessoError(f"cnpj_assinante deve ter 14 dígitos, recebido {len(cnpj_assinante)} chars")
     if not 0 <= serie <= 999:
         raise ChaveAcessoError(f"serie fora de 0..999: {serie}")
-    if not 1 <= n_dc <= 9_999_999_999:
-        raise ChaveAcessoError(f"n_dc fora de 1..9_999_999_999: {n_dc}")
+    if not 1 <= n_dc <= 999_999_999:
+        raise ChaveAcessoError(f"n_dc fora de 1..999_999_999: {n_dc}")
     if not 1 <= tp_emis <= 9:
         raise ChaveAcessoError(f"tp_emis fora de 1..9: {tp_emis}")
+    if not 0 <= tp_emit <= 9:
+        raise ChaveAcessoError(f"tp_emit fora de 0..9: {tp_emit}")
     if not (len(n_site) == 1 and n_site.isdigit()):
         raise ChaveAcessoError(f"n_site deve ter 1 dígito, recebido {n_site!r}")
     if not (len(c_dc) == 6 and c_dc.isdigit()):
@@ -58,7 +62,7 @@ def montar_chave_dce(
 
     chave43 = (
         f"{c_uf}{aamm}{cnpj_assinante}{MODELO_DCE:0>2}{serie:0>3}"
-        f"{n_dc:0>10}{tp_emis:0>1}{n_site}{c_dc}"
+        f"{n_dc:0>9}{tp_emis:0>1}{tp_emit:0>1}{n_site}{c_dc}"
     )
     return chave43 + calc_dv_chave(chave43)
 
