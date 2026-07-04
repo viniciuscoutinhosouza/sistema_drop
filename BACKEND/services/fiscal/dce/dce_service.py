@@ -26,8 +26,8 @@ from services.fiscal.dce.exceptions import DceError
 from services.fiscal.dce.ibge import resolve_municipio
 from services.fiscal.dce.signer_cert import resolve_platform_signer_cert
 from services.fiscal.dce.xml_builder_dce import montar_xml_dce
+from services.fiscal.dce.dce_signer import assinar_xml_dce
 from services.fiscal.sefaz.sefaz_client import extract_cert_pem
-from services.fiscal.sefaz.signer import assinar_xml
 
 # UF → código IBGE (cUF). Vendedores em SP/RJ; mapa completo p/ robustez do destinatário.
 _UF_CODIGO = {
@@ -203,7 +203,7 @@ async def emitir_dce_para_pedido(db, order) -> RetornoDce:
     # Monta + assina (A1 da MIG) + transmite
     pfx_path, senha = await resolve_platform_signer_cert(db)
     xml = montar_xml_dce(dados)
-    xml_assinado = assinar_xml(xml, pfx_path, senha, ref_id=f"DCe{chave}")
+    xml_assinado = assinar_xml_dce(xml, pfx_path, senha, ref_id=f"DCe{chave}")
 
     cert_pem, key_pem = extract_cert_pem(pfx_path, senha, runtime_dir=settings.NFE_CERTS_DIR)
     try:

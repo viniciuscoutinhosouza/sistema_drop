@@ -104,10 +104,12 @@ def autorizar(xml_dce_assinado: str, tp_amb: int | str, cert_pem: str, key_pem: 
 
     ⚠️ Wrapper `enviDCe` (idLote/indSinc/DCe) a confirmar em homologação — pode ser DCe direto.
     """
+    # Remove o prolog <?xml?> do XML assinado — não pode ficar no meio do envelope SOAP.
+    dce = re.sub(r"^\s*<\?xml[^>]*\?>\s*", "", xml_dce_assinado)
     inner = (
         f'<enviDCe xmlns="{DCE_NAMESPACE}" versao="1.00">'
         f"<idLote>{id_lote}</idLote><indSinc>1</indSinc>"
-        f"{xml_dce_assinado}"
+        f"{dce}"
         "</enviDCe>"
     )
     return _post("autorizacao", inner, tp_amb, cert_pem, key_pem, verify_ssl=verify_ssl)

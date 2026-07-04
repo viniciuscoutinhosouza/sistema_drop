@@ -24,6 +24,24 @@ TP_EMIT_MARKETPLACE = "1"
 CPAIS_BR = "1058"
 XPAIS_BR = "BRASIL"
 
+# QR-Code / consulta (Ambiente Nacional DC-e — SEFAZ-PR)
+_QR_BASE = "https://www.fazenda.pr.gov.br/dce/qrcode"
+_URL_CHAVE = "https://www.fazenda.pr.gov.br/dce/qrcode"
+
+# Textos legais obrigatórios da declaração (infDec) — conforme DACE oficial.
+_X_OBS1 = (
+    "É contribuinte de ICMS qualquer pessoa física ou jurídica, que realize, com habitualidade "
+    "ou em volume que caracterize intuito comercial, operações de circulação de mercadoria ou "
+    "prestações de serviços de transportes interestadual e intermunicipal e de comunicação, ainda "
+    "que as operações e prestações se iniciem no exterior, conforme art. 4º da Lei Complementar nº 87/96."
+)
+_X_OBS2 = (
+    "Constitui crime contra a ordem tributária suprimir ou reduzir tributo, ou contribuição social "
+    "e qualquer acessório: quando negar ou deixar de fornecer, quando obrigatório, nota fiscal ou "
+    "documento equivalente, relativa a venda de mercadoria ou prestação de serviço, efetivamente "
+    "realizada ou fornecê-la em desacordo com a legislação (Lei nº 8.137/90, art. 1º, V)."
+)
+
 
 def _fmt(value, casas: int) -> str:
     q = Decimal(10) ** -casas
@@ -31,7 +49,8 @@ def _fmt(value, casas: int) -> str:
 
 
 def _sub(parent, tag: str, text=None):
-    el = etree.SubElement(parent, tag)
+    # Tag qualificada no namespace da DCe — elementos genuinamente em NS_DCE (C14N/assinatura limpa).
+    el = etree.SubElement(parent, f"{{{NS_DCE}}}{tag}")
     if text is not None:
         el.text = str(text)
     return el
@@ -74,20 +93,21 @@ def montar_xml_dce(dados: dict) -> str:
     dest = dados["dest"]
     itens = dados.get("itens") or []
 
-    dce = etree.Element("DCe", nsmap={None: NS_DCE})
-    inf = etree.SubElement(dce, "infDCe", {"versao": VERSAO, "Id": f"DCe{chave}"})
+    dce = etree.Element(f"{{{NS_DCE}}}DCe", nsmap={None: NS_DCE})
+    inf = etree.SubElement(dce, f"{{{NS_DCE}}}infDCe", {"versao": VERSAO, "Id": f"DCe{chave}"})
 
-    # ── ide ──────────────────────────────────────────────────────────────
+    # ── ide (ordem do schema: cUF,cDC,mod,serie,nDC,dhEmi,tpEmis,tpEmit,
+    #         nSiteAutoriz,cDV,tpAmb,verProc — sem natOp) ──────────────────
     g_ide = _sub(inf, "ide")
     _sub(g_ide, "cUF", ide["c_uf"])
-    _sub(g_ide, "cDC", ide["c_dc"])                       # código numérico (8 díg.) = chave[35:43]
-    _sub(g_ide, "natOp", ide.get("nat_op"))
+    _sub(g_ide, "cDC", ide["c_dc"])                       # código de 6 díg. = trecho da chave
     _sub(g_ide, "mod", MODELO)
     _sub(g_ide, "serie", int(ide["serie"]))
     _sub(g_ide, "nDC", int(ide["n_dc"]))
     _sub(g_ide, "dhEmi", ide["dh_emi"])                   # ISO com offset, ex.: 2026-07-01T01:30:00-03:00
     _sub(g_ide, "tpEmis", ide.get("tp_emis", 1))
     _sub(g_ide, "tpEmit", TP_EMIT_MARKETPLACE)
+    _sub(g_ide, "nSiteAutoriz", ide.get("n_site", "0"))   # 0 = autorizador de site único (AN/PR)
     _sub(g_ide, "cDV", chave[43])
     _sub(g_ide, "tpAmb", dados["tp_amb"])                 # 1=produção 2=homologação
     _sub(g_ide, "verProc", ide.get("ver_proc", "SistemaDrop-1.0"))
@@ -102,8 +122,7 @@ def montar_xml_dce(dados: dict) -> str:
     g_mkt = _sub(inf, "Marketplace")
     _sub(g_mkt, "CNPJ", (mkt["cnpj"] or "").replace(".", "").replace("/", "").replace("-", ""))
     _sub(g_mkt, "xNome", mkt["x_nome"])
-    if mkt.get("site"):
-        _sub(g_mkt, "Site", mkt["site"])
+    _sub(g_mkt, "Site", mkt.get("site") or "migecommerce.com.br")  # obrigatório no schema
 
     # ── dest (comprador) ─────────────────────────────────────────────────
     g_dest = _sub(inf, "dest")
@@ -138,5 +157,15 @@ def montar_xml_dce(dados: dict) -> str:
         _sub(g_transp, "modTrans", transp.get("mod_trans", "0"))  # 0=Correios
         if transp.get("cnpj_transp"):
             _sub(g_transp, "CNPJTransp", transp["cnpj_transp"])
+
+    # ── infDec (obrigatório): textos legais da declaração ────────────────
+    g_dec = _sub(inf, "infDec")
+    _sub(g_dec, "xObs1", _X_OBS1)
+    _sub(g_dec, "xObs2", _X_OBS2)
+
+    # ── infDCeSupl (irmão do infDCe): QR-Code + URL de consulta ──────────
+    g_supl = _sub(dce, "infDCeSupl")
+    _sub(g_supl, "qrCodDCe", f"{_QR_BASE}?chDCe={chave}&tpAmb={dados['tp_amb']}")
+    _sub(g_supl, "urlChave", _URL_CHAVE)
 
     return etree.tostring(dce, encoding="unicode")
