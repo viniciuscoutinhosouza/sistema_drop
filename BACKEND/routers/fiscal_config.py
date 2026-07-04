@@ -128,6 +128,12 @@ async def update_fiscal_config(
         raise HTTPException(
             status_code=403, detail="Apenas AC ou admin podem editar configuração fiscal"
         )
+    # Autorização "por conta e ordem" (DC-e) expõe o CNPJ da MIG como assinante — só admin liga.
+    if "dce_authorized" in body and current_user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Apenas admin pode autorizar a emissão de DC-e por conta e ordem (dce_authorized).",
+        )
 
     cfg = (
         await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id))

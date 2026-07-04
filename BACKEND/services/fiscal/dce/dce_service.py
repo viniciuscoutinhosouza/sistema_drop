@@ -212,14 +212,30 @@ async def emitir_dce_para_pedido(db, order) -> RetornoDce:
         raise DceError("CMIG do pedido não encontrada.")
     if not cmig.cpf:
         raise DceError("A DC-e só se aplica a contas de vendedor pessoa física (CPF).")
+    # with_for_update: trava a linha do config durante a leitura/incremento da numeração
+    # (evita duas emissões concorrentes lerem o mesmo nDC → duplicidade na SEFAZ).
     cfg = (
-        await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig.id))
+        await db.execute(
+            select(CMIGFiscalConfig)
+            .where(CMIGFiscalConfig.cmig_id == cmig.id)
+            .with_for_update()
+        )
     ).scalar_one_or_none()
     if not cfg or not cfg.dce_authorized:
         raise DceError(
             "Emissão de DC-e não autorizada para este vendedor. Ative a autorização "
             "'por conta e ordem' no cadastro fiscal da CMIG."
         )
+
+    # Dentro do lock do cfg: re-checa o status atual do pedido (fecha a corrida de dupla
+    # emissão — uma emissão concorrente da mesma CMIG só entra aqui após a outra commitar).
+    from models.order import Order
+
+    fresh_status = (
+        await db.execute(select(Order.dce_status).where(Order.id == order.id))
+    ).scalar_one_or_none()
+    if fresh_status in ("emitted", "pending"):
+        raise DceError("DC-e já emitida ou em processamento para este pedido.")
 
     # Cert central do assinante (A1 da MIG) + config marketplace
     from models.fiscal import PlatformCertConfig

@@ -118,6 +118,21 @@
             </div>
           </div>
 
+          <!-- DC-e (conta pessoa física / CPF): autorização por conta e ordem — só admin -->
+          <div class="row mt-2" v-if="isAdmin">
+            <div class="col-md-12">
+              <div class="custom-control custom-switch">
+                <input type="checkbox" class="custom-control-input" id="dceAuth"
+                       v-model="form.dce_authorized">
+                <label class="custom-control-label small" for="dceAuth">
+                  <strong>Autorizar DC-e (por conta e ordem)</strong> — a MIG emite a Declaração de
+                  Conteúdo pelo vendedor CPF, assinando com o certificado da MIG. Requer o Certificado
+                  do Marketplace configurado.
+                </label>
+              </div>
+            </div>
+          </div>
+
           <div class="text-right mt-3" v-if="canEdit">
             <button type="submit" class="btn btn-primary" :disabled="saving">
               <i class="fas" :class="saving ? 'fa-spinner fa-spin' : 'fa-save'"></i>
@@ -227,12 +242,14 @@ const form = reactive({
   manual_nfe_next_number_homolog: 1,
   aliquota_fecp: 0,
   production_released: false,
+  dce_authorized: false,
   default_natureza_operacao: 'Venda de mercadoria',
   fiscal_email_copy: '',
   tax_estimate_pct: 0,
 })
 
 const canEdit = computed(() => ['ac', 'admin'].includes(authStore.user?.role))
+const isAdmin = computed(() => authStore.user?.role === 'admin')
 
 const daysToExpire = computed(() => {
   if (!config.value.certificate_expires_at) return null
@@ -281,6 +298,7 @@ async function load() {
       manual_nfe_next_number_homolog: data.manual_nfe_next_number_homolog ?? 1,
       aliquota_fecp: data.aliquota_fecp ?? 0,
       production_released: !!data.production_released,
+      dce_authorized: !!data.dce_authorized,
       default_natureza_operacao: data.default_natureza_operacao ?? 'Venda de mercadoria',
       fiscal_email_copy: data.fiscal_email_copy ?? '',
       tax_estimate_pct: data.tax_estimate_pct ?? 0,
@@ -295,7 +313,10 @@ async function load() {
 async function save() {
   saving.value = true
   try {
-    const { data } = await api.patch(`/cmigs/${props.cmigId}/fiscal-config`, form)
+    // dce_authorized só é editável por admin — não enviar no payload de AC (backend rejeita).
+    const payload = { ...form }
+    if (!isAdmin.value) delete payload.dce_authorized
+    const { data } = await api.patch(`/cmigs/${props.cmigId}/fiscal-config`, payload)
     config.value = data
     toast.success('Configuração fiscal salva')
   } catch (e) {

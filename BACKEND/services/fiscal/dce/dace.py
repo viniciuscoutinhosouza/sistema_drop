@@ -62,7 +62,12 @@ def _chave_espacada(chave: str) -> str:
 
 def gerar_dace(xml_assinado: str, protocolo: str | None = None) -> bytes:
     """Gera o PDF do DACE a partir do XML da DC-e assinada/autorizada. Retorna bytes."""
-    root = etree.fromstring(xml_assinado.encode("utf-8")) if isinstance(xml_assinado, str) else xml_assinado
+    if isinstance(xml_assinado, str):
+        # Parser restrito (sem entidades/rede) — defesa XXE, mesmo o XML sendo o nosso próprio.
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        root = etree.fromstring(xml_assinado.encode("utf-8"), parser)
+    else:
+        root = xml_assinado
     if not root.tag.endswith("}DCe") and not root.tag.endswith("DCe"):
         # pode vir só o infDCe ou um procDCe; tenta localizar
         dce = root.find(".//d:DCe", _NS)
