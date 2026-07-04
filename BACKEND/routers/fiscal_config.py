@@ -73,6 +73,8 @@ def _serialize(cfg: CMIGFiscalConfig | None) -> dict:
         else None,
         "certificate_subject": cfg.certificate_subject,
         "production_released": bool(cfg.production_released),
+        # DC-e (conta CPF): autorização "por conta e ordem" p/ a MIG emitir pelo vendedor
+        "dce_authorized": bool(cfg.dce_authorized),
         "ie": cfg.ie,
         "im": cfg.im,
         "cnae": cfg.cnae,
@@ -149,6 +151,7 @@ async def update_fiscal_config(
         "manual_nfe_next_number_homolog",
         "aliquota_fecp",
         "production_released",
+        "dce_authorized",
         "fiscal_email_copy",
         "tax_estimate_pct",
         "tax_regime_mode",
@@ -161,6 +164,8 @@ async def update_fiscal_config(
         )
     if "production_released" in body:
         body["production_released"] = 1 if body.get("production_released") else 0
+    if "dce_authorized" in body:
+        body["dce_authorized"] = 1 if body.get("dce_authorized") else 0
     # A série manual SEFAZ não pode colidir com a série do Faturador ML (nfe_serie) do mesmo CNPJ.
     new_manual_serie = body.get("manual_nfe_serie", getattr(cfg, "manual_nfe_serie", None))
     new_ml_serie = body.get("nfe_serie", getattr(cfg, "nfe_serie", None))

@@ -424,15 +424,15 @@
                   <i class="fas fa-spinner fa-spin mr-1"></i>Processando NF-e…
                 </button>
                 <!-- Conta CPF (pessoa física): não emite NF-e — o ML aguarda a DC-e -->
-                <!-- DC-e já emitida -->
+                <!-- DC-e já emitida — clica para baixar o DACE (PDF) -->
                 <button
                   v-else-if="order.platform === 'mercadolivre' && order.fiscal_issuer_type === 'cpf' && order.dce_status === 'emitted'"
                   class="btn btn-sm btn-success flex-grow-1"
                   style="font-size:.78rem"
-                  disabled
-                  title="Declaração de Conteúdo já emitida — imprima a etiqueta (a DC-e vem inclusa)"
+                  @click="downloadDace(order)"
+                  title="DC-e emitida — clique para baixar o DACE (PDF com QR code)"
                 >
-                  <i class="fas fa-file-signature mr-1"></i>DC-e emitida
+                  <i class="fas fa-file-pdf mr-1"></i>DACE (PDF)
                 </button>
                 <!-- DC-e em processamento -->
                 <button
@@ -1223,8 +1223,7 @@ async function emitNfe(order) {
   }
 }
 
-// Conta pessoa física (CPF): emite a Declaração de Conteúdo (DC-e), não NF-e.
-// A DC-e já vem inclusa na etiqueta do ML — emitir tira o envio de invoice_pending.
+// Conta pessoa física (CPF): a MIG emite a DC-e na SEFAZ por conta e ordem do vendedor.
 async function emitDce(order) {
   dceEmitting.value[order.id] = true
   try {
@@ -1233,17 +1232,32 @@ async function emitDce(order) {
     if (data.already_existed) {
       toast.info('DC-e já estava emitida.')
     } else {
-      toast.success('DC-e emitida — imprima a etiqueta (a declaração vem inclusa).')
+      toast.success(`DC-e autorizada! Protocolo ${data.protocolo || ''}. Baixe o DACE no botão.`)
     }
   } catch (err) {
     const detail = err.response?.data?.detail || 'Erro ao emitir DC-e'
-    toast.error(detail)
-    // Fallback enquanto a emissão automática não está conectada (501): abre o painel do ML.
-    if (err.response?.status === 501 && order.platform_order_id) {
-      window.open(`https://www.mercadolivre.com.br/vendas/${order.platform_order_id}/detalhe`, '_blank')
+    // 501 = emissão ainda não habilitada para este vendedor (autorização/certificado).
+    if (err.response?.status === 501) {
+      toast.warning('Emissão de DC-e ainda não habilitada para este vendedor (autorização/certificado).')
+    } else {
+      toast.error(detail)
     }
   } finally {
     dceEmitting.value[order.id] = false
+  }
+}
+
+// Baixa o DACE (PDF) da DC-e autorizada.
+async function downloadDace(order) {
+  try {
+    const { data } = await api.get(`/orders/${order.id}/dace.pdf`, { responseType: 'blob' })
+    const url = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }))
+    window.open(url, '_blank')
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+  } catch (err) {
+    let msg = 'Erro ao baixar o DACE'
+    try { msg = JSON.parse(await err.response.data.text()).detail || msg } catch { /* ignore */ }
+    toast.error(msg)
   }
 }
 

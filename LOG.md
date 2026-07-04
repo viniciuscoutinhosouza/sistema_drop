@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-07-04 — feat(dce): emissão de DC-e na SEFAZ AUTORIZADA (perfil Marketplace) + DACE (ADR-0017)
+
+A MIG passa a emitir a DC-e das contas CPF **direto na SVRS** (perfil Marketplace, por conta e ordem),
+substituindo o botão que abria o painel do ML. Validado ponta-a-ponta em homologação SEFAZ-PR
+(status 107 → autorização cStat 100) com pedido real, iterando ao vivo com o certificado da MIG.
+
+- **Descobertas da homologação:** soapAction obrigatório + `consStatServDCe`; chave inclui `tpEmit`
+  (`...nDC(9) tpEmis tpEmit nSiteAutoriz cDC(6)...`); assinatura **sem prefixo ds:** (cStat 587);
+  `infDec`/`infDCeSupl` obrigatórios; nome do destinatário fixo em homologação (cStat 598).
+- **Remetente = endereço do Galpão** (IBGE resolvido por cidade+UF); **destinatário = idOutros**
+  quando não há CPF do comprador (o ML não expõe).
+- **DACE (PDF com QR)** — `dace.py` (reportlab) + `GET /orders/{id}/dace.pdf`.
+- **Habilitação:** `CMIGFiscalConfig.dce_authorized` (fiscal-config) + cert central da MIG.
+  Gate: sem autorização/cert → 501 (comportamento antigo). Deploy seguro (default bloqueado).
+- **Frontend:** botão "Emitir DC-e" emite de verdade; "DACE (PDF)" baixa o documento.
+- Módulos `services/fiscal/dce/*`; migrations 120/121; ADR-0017. Testes 8/8.
+
+---
+
+## 2026-07-04 — feat(admin): gestão de Galpões pelo Administrador Geral
+
+O admin não tinha menu para cadastrar/gerir galpões (a única tela era `settings/warehouse`,
+role='go', órfã). Backend já suportava (GET /warehouse mostra todos ao admin; POST/PUT/DELETE
+aceitam `go_id`; admin faz bypass do gate `go_empresa`). Faltava a tela + menu.
+
+- **`views/settings/WarehouseAdminView.vue`** (novo) — CRUD admin: lista todos os galpões (com
+  o GO dono), form criar/editar com **dropdown de GO dono** (obrigatório, via `GET /goes`),
+  CEP lookup, e excluir (`DELETE /warehouse/{id}`, backend bloqueia 409 se houver usuário ativo).
+- **`router/index.js`** — rota `admin/galpoes` (role admin).
+- **`AppSidebar.vue`** — item "Galpões" na seção Administração (menu-key `config_galpoes`) +
+  `_legacyMenus.admin` (incl. `config_marketplaces` que faltava).
+- **`routers/profiles.py`** — `MENU_CATALOG` += `config_galpoes` (aparece na Gestão de Perfis).
+- Sem mudança de lógica no backend (endpoints `/warehouse` reusados). Tela órfã do GO
+  (`settings/warehouse`) permanece como está (fora do escopo).
+- **Verificação:** `npm run build` OK; `py_compile` OK; `pytest -m "not integration"` 94 passed /
+  2 pré-existentes.
+
+---
+
+## 2026-07-04 — fix(go): "Minha Empresa" quebrava com go_id nulo (path /goes/null)
+
+Ao salvar em Gestão > Minha Empresa, erro `int_parsing` em `go_id` (path recebia a string "null").
+Causa: `AppSidebar.vue` montava `/goes/${authStore.user?.go_id}/edit`; para usuário sem empresa
+vinculada (o backend só retorna `go_id` quando role=="go"), o link virava `/goes/null/edit` e o
+PUT falhava.
+
+- **`AppSidebar.vue`** — link "Minha Empresa" e o menu pai "Gestão" só aparecem quando existe
+  `authStore.user?.go_id` (além da permissão `go_empresa`).
+- **`GoFormView.vue`** — `goId` computed ignora `"null"/"undefined"`; navegação direta a
+  `/goes/null/edit` mostra aviso e redireciona (não chama a API); `updateGo` usa `goId.value`.
+- **Verificação:** `npm run build` OK.
+- **Nota:** se algum usuário que É Gestor Operacional legítimo estiver sem `user.go_id` no banco,
+  isso é um problema de vínculo de dados (separado) — o link some corretamente até o vínculo existir.
+
 ## 2026-07-04 — feat(dce): caminho de emissão SVRS (cliente + orquestração) com feature gate
 
 Liga a emissão real da DC-e à SVRS (Ambiente Nacional / SEFAZ-PR), reaproveitando o transporte
