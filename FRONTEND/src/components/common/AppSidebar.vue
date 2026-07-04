@@ -287,13 +287,13 @@
           </li>
 
           <!-- GESTÃO GO -->
-          <li v-if="canSee('go_empresa') || canSee('go_usuarios')" class="nav-item" :class="{ 'menu-open': sections.gestao }">
+          <li v-if="(canSee('go_empresa') && authStore.user?.go_id) || canSee('go_usuarios')" class="nav-item" :class="{ 'menu-open': sections.gestao }">
             <a href="#" class="nav-link" @click.prevent="toggle('gestao')">
               <i class="nav-icon fas fa-sitemap"></i>
               <p>Gestão <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
-              <li v-if="canSee('go_empresa')" class="nav-item">
+              <li v-if="canSee('go_empresa') && authStore.user?.go_id" class="nav-item">
                 <RouterLink :to="`/goes/${authStore.user?.go_id}/edit`" class="nav-link" :class="{ active: route.path.includes('/goes/') && route.path.includes('/edit') }">
                   <i class="nav-icon fas fa-building"></i><p>Minha Empresa</p>
                 </RouterLink>
@@ -307,7 +307,7 @@
           </li>
 
           <!-- ADMINISTRAÇÃO -->
-          <li v-if="canSee('config_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_api_console') || canSee('config_perfis')"
+          <li v-if="canSee('config_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_galpoes') || canSee('config_api_console') || canSee('config_perfis')"
               class="nav-item" :class="{ 'menu-open': sections.admin }">
             <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') }" @click.prevent="toggle('admin')">
               <i class="nav-icon fas fa-cog"></i>
@@ -322,6 +322,12 @@
               <li v-if="canSee('config_usuarios')" class="nav-item">
                 <RouterLink to="/settings/users" class="nav-link" :class="{ active: route.path === '/settings/users' }">
                   <i class="far fa-circle nav-icon"></i><p>Usuários</p>
+                </RouterLink>
+              </li>
+              <li v-if="canSee('config_galpoes')" class="nav-item">
+                <RouterLink to="/admin/galpoes" class="nav-link" :class="{ active: route.path === '/admin/galpoes' }">
+                  <i class="far fa-circle nav-icon"></i>
+                  <p>Galpões <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
                 </RouterLink>
               </li>
               <li v-if="canSee('config_email')" class="nav-item">
@@ -483,7 +489,7 @@ const _legacyMenus = {
     'pg','separacao','ag_retorno','inventario','inventario_criar','rotinas',
     'integracao_envio',
     'go_empresa','go_usuarios',
-    'config_usuarios','config_aprovacoes','config_email','config_eship','config_ncm','config_ai','config_api_console','config_perfis',
+    'config_usuarios','config_aprovacoes','config_email','config_eship','config_ncm','config_ai','config_marketplaces','config_galpoes','config_api_console','config_perfis',
   ]),
   ac: new Set([
     'cmig','integrations','cmig_reports','relatorio_vendas','full_cnpjs','anuncios','campanha_ads','atendimento','financeiro',

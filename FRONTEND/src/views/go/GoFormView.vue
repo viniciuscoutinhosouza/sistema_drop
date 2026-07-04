@@ -193,7 +193,12 @@ const router = useRouter()
 const goStore = useGoStore()
 const toast = useToast()
 
-const isEdit = computed(() => !!route.params.id)
+// route.params.id pode chegar como a string "null"/"undefined" (link montado com go_id ausente).
+const goId = computed(() => {
+  const id = route.params.id
+  return id && id !== 'null' && id !== 'undefined' ? id : null
+})
+const isEdit = computed(() => !!goId.value)
 const saving = ref(false)
 const error = ref('')
 
@@ -225,8 +230,14 @@ const form = ref({
 })
 
 onMounted(async () => {
+  // Navegação direta para /goes/null/edit (usuário sem empresa vinculada) → não chama a API.
+  if (route.params.id && !goId.value) {
+    toast.error('Você não tem uma empresa vinculada para editar.')
+    router.push('/')
+    return
+  }
   if (isEdit.value) {
-    const { data } = await api.get(`/goes/${route.params.id}`)
+    const { data } = await api.get(`/goes/${goId.value}`)
     Object.assign(form.value, data)
   }
 })
@@ -272,7 +283,7 @@ async function submit() {
         notes: form.value.notes,
         is_active: form.value.is_active,
       }
-      await goStore.updateGo(route.params.id, payload)
+      await goStore.updateGo(goId.value, payload)
       toast.success('GO atualizado com sucesso!')
     } else {
       await goStore.createGo(form.value)

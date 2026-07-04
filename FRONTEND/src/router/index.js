@@ -64,6 +64,7 @@ const InventoryFormView = () => import('@/views/inventory/InventoryFormView.vue'
 // Settings
 const UsersView     = () => import('@/views/settings/UsersView.vue')
 const WarehouseView = () => import('@/views/settings/WarehouseView.vue')
+const WarehouseAdminView = () => import('@/views/settings/WarehouseAdminView.vue')
 
 // GOs (admin only)
 const GoListView = () => import('@/views/go/GoListView.vue')
@@ -228,6 +229,9 @@ const routes = [
         component: WarehouseView,
         meta: { title: 'Galpão', role: 'go' },
       },
+
+      // Galpões — gestão pelo Administrador Geral
+      { path: 'admin/galpoes', component: WarehouseAdminView, meta: { title: 'Galpões', role: 'admin' } },
 
       // GOs — somente admin
       { path: 'goes', component: GoListView, meta: { title: 'Gestores Operacionais', role: 'admin' } },

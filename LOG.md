@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-07-04 — feat(admin): gestão de Galpões pelo Administrador Geral + fix menu "Minha Empresa"
+
+**Galpões (admin):** o admin não tinha menu para cadastrar/gerir galpões (a única tela,
+`settings/warehouse` role='go', estava órfã). O backend já suportava (GET /warehouse mostra todos;
+POST/PUT/DELETE aceitam `go_id`; admin bypassa o gate `go_empresa`).
+- `views/settings/WarehouseAdminView.vue` (novo) — CRUD: lista todos os galpões com o GO dono, form
+  criar/editar com **dropdown de GO dono** (obrigatório, via `GET /goes`), CEP lookup, excluir
+  (`DELETE /warehouse/{id}`; backend bloqueia 409 se houver usuário ativo).
+- `router/index.js` rota `admin/galpoes` (role admin); `AppSidebar.vue` item "Galpões" (menu-key
+  `config_galpoes`) + `_legacyMenus.admin`; `routers/profiles.py` `MENU_CATALOG` += `config_galpoes`.
+  Sem mudança de lógica no backend.
+
+**Fix menu "Minha Empresa" (go_id nulo):** o link montava `/goes/${go_id}/edit`; para usuário sem
+empresa vinculada (backend só retorna `go_id` quando role=="go") virava `/goes/null/edit` → erro
+`int_parsing` ao salvar. `AppSidebar.vue`: o link e o menu pai "Gestão" só aparecem quando existe
+`authStore.user?.go_id`. `GoFormView.vue`: `goId` ignora `"null"/"undefined"`; navegação direta
+redireciona com aviso; `updateGo` usa `goId.value`.
+
+**Verificação:** `npm run build` OK; `py_compile` OK; `pytest -m "not integration"` 94 passed / 2
+pré-existentes. Diffs aditivos sobre a base DC-e (nada revertido).
+
+---
+
 ## 2026-07-04 — feat(dce): emissão de DC-e na SEFAZ AUTORIZADA (perfil Marketplace) + DACE (ADR-0017)
 
 A MIG passa a emitir a DC-e das contas CPF **direto na SVRS** (perfil Marketplace, por conta e ordem),
