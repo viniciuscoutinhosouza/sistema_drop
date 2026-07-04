@@ -54,8 +54,19 @@ def _so_digitos(v: str | None) -> str:
     return "".join(c for c in (v or "") if c.isdigit())
 
 
+def _texto(v) -> str:
+    """Extrai texto de um campo que pode ser string OU dict {id,name} (formato ML)."""
+    if isinstance(v, dict):
+        return v.get("name") or v.get("id") or ""
+    return v or ""
+
+
 async def _endereco_dest(db, order) -> dict:
-    """Extrai o endereço do comprador do pedido + resolve o código IBGE do município."""
+    """Extrai o endereço do comprador do pedido (formato ML) + resolve o código IBGE.
+
+    No ML, `city`/`state` vêm como dicts ({id:'BR-SP', name:'São Paulo'}); demais campos:
+    street_name, street_number, neighborhood, zip_code, comment.
+    """
     raw = order.shipping_address
     end = {}
     if raw:
@@ -63,15 +74,20 @@ async def _endereco_dest(db, order) -> dict:
             end = json.loads(raw) if isinstance(raw, str) else dict(raw)
         except (ValueError, TypeError):
             end = {}
-    cidade = end.get("city") or end.get("cidade") or end.get("municipio") or ""
-    uf = (end.get("state") or end.get("uf") or "").upper()[:2]
+    cidade = _texto(end.get("city")) or _texto(end.get("cidade")) or _texto(end.get("municipio"))
+    # UF: do state.id 'BR-SP' -> 'SP'; ou string direta.
+    st = end.get("state")
+    if isinstance(st, dict):
+        uf = (st.get("id") or "").replace("BR-", "")[:2].upper()
+    else:
+        uf = (st or end.get("uf") or "").upper()[:2]
     if not cidade or not uf:
         raise DceError("Endereço do comprador sem cidade/UF — necessário para o município (IBGE) da DC-e.")
     c_mun, x_mun = await resolve_municipio(db, uf, cidade)
     return {
-        "x_lgr": end.get("street") or end.get("logradouro") or end.get("address_line") or "",
-        "nro": end.get("number") or end.get("numero") or "S/N",
-        "x_cpl": end.get("complement") or end.get("comment") or "",
+        "x_lgr": end.get("street_name") or end.get("street") or end.get("logradouro") or "",
+        "nro": str(end.get("street_number") or end.get("number") or end.get("numero") or "S/N"),
+        "x_cpl": end.get("comment") or end.get("complement") or "",
         "x_bairro": end.get("neighborhood") or end.get("bairro") or "",
         "c_mun": c_mun, "x_mun": x_mun, "uf": uf,
         "cep": _so_digitos(end.get("zip_code") or end.get("zip") or end.get("cep")),
