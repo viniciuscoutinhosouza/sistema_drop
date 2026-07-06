@@ -386,6 +386,11 @@ def _serialize_order_list(
         "nfe_status": o.nfe_status,
         "dce_status": o.dce_status,
         "shipment_id": o.shipment_id,
+        # eShip (WMS) — estado do envio completo (Ordem + NF-e + Etiqueta)
+        "eship_order_id": o.eship_order_id,
+        "eship_nfe_attached": bool(o.eship_nfe_attached),
+        "eship_label_attached": bool(o.eship_label_attached),
+        "eship_dispatch_status": o.eship_dispatch_status,
         "estimated_delivery_date": o.estimated_delivery_date.isoformat()
         if o.estimated_delivery_date
         else None,

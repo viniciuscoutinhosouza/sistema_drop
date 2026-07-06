@@ -6,15 +6,20 @@ from integrations.eship.status_map import map_status
 
 
 def test_map_status_known_and_unknown():
-    assert map_status("Expedido") == ("shipped", "shipped")
-    assert map_status(" separado ") == ("ready_to_ship", "separated")
-    assert map_status("ENTREGUE") == ("delivered", "shipped")
-    assert map_status("cancelado") == ("cancelled", None)
-    assert map_status("xpto-desconhecido") == (None, None)
+    # Mapeamento por id numérico (status.id do eShip), não por texto.
+    assert map_status(7) == ("shipped", "shipped")          # Em Expedição
+    assert map_status(8) == ("shipped", "shipped")          # Concluída/Despachada
+    assert map_status(6) == ("ready_to_ship", "separated")  # Aguardando Expedição
+    assert map_status(1) == ("handling", None)              # Lançado
+    assert map_status(10) == ("cancelled", None)            # Cancelada
+    assert map_status("7") == ("shipped", "shipped")        # coage string numérica
+    assert map_status(99) == (None, None)                   # desconhecido
     assert map_status(None) == (None, None)
 
 
 def test_extract_order_id_shapes():
+    # PostOrdem responde {"ordem": {"id": ...}} — o id é aninhado.
+    assert service.extract_order_id({"ordem": {"id": 123, "status": {"id": 1}}}) == "123"
     assert service.extract_order_id({"idOrdem": 123}) == "123"
     assert service.extract_order_id({"id": "ABC"}) == "ABC"
     assert service.extract_order_id({"data": {"ordem": 99}}) == "99"
@@ -22,13 +27,27 @@ def test_extract_order_id_shapes():
     assert service.extract_order_id("texto") is None
 
 
-def test_extract_status_nested():
+def test_extract_status_envelope():
+    # Envelope real: corpo.body.dados[0].status é o objeto {id, descricao, cor}.
     s, track, url = service.extract_status(
-        {"data": {"status": "Expedido", "codigoRastreio": "BR123", "urlRastreio": "http://x"}}
+        {
+            "corpo": {
+                "body": {
+                    "dados": [
+                        {
+                            "status": {"id": 7, "descricao": "Em Expedição"},
+                            "codigoRastreamento": "BR123",
+                            "urlRastreio": "http://x",
+                        }
+                    ]
+                }
+            }
+        }
     )
-    assert s == "Expedido" and track == "BR123" and url == "http://x"
+    assert s == 7 and track == "BR123" and url == "http://x"
 
-    s2, track2, url2 = service.extract_status({"retorno": [{"situacao": "Entregue"}]})
+    # Fallback p/ formato plano antigo (status como string).
+    s2, track2, url2 = service.extract_status({"data": {"status": "Entregue"}})
     assert s2 == "Entregue" and track2 is None and url2 is None
 
     assert service.extract_status({}) == (None, None, None)

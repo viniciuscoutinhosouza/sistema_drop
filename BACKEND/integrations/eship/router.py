@@ -286,19 +286,29 @@ async def _load_order(db: AsyncSession, order_id: int, user: User) -> Order:
     return order
 
 
-@router.post("/orders/{order_id}/push")
-async def push_order_endpoint(
+@router.post("/orders/{order_id}/send")
+async def send_order_endpoint(
     order_id: int,
     current_user: User = Depends(require_role("admin", "ugo")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Envia (ou reenvia) o pedido ao eShip do galpão."""
+    """Envio completo ao eShip: Ordem + NF-e (XML) + Etiqueta (ZPL e PDF).
+
+    Idempotente e tolerante a parcial — reenviar completa só o que ficou pendente.
+    """
     order = await _load_order(db, order_id, current_user)
     try:
-        result = await service.push_order(db, order)
+        result = await service.send_order_full(db, order)
     except EShipError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    return {"message": "Pedido enviado ao eShip", **result}
+    return {
+        "message": "Envio ao eShip processado",
+        **result,
+        "eship_order_id": order.eship_order_id,
+        "nfe_attached": bool(order.eship_nfe_attached),
+        "label_attached": bool(order.eship_label_attached),
+        "dispatch_status": order.eship_dispatch_status,
+    }
 
 
 @router.post("/orders/{order_id}/sync")

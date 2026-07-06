@@ -28,6 +28,12 @@ class Order(Base):
     tracking_url = Column(String(500))
     shipment_id = Column(String(100))
     eship_order_id = Column(String(100))  # ID da ordem no WMS eShip (integração isolada)
+    # Selos de anexo no eShip — guardas de idempotência do envio completo (Ordem+NF-e+Etiqueta)
+    eship_nfe_attached = Column(Integer, default=0)     # 0|1 — XML da NF-e anexado à Ordem
+    eship_label_attached = Column(Integer, default=0)   # 0|1 — etiqueta anexada à Ordem
+    eship_dispatch_status = Column(String(20))          # None|sent|partial|failed|cancelled (obs.)
+    eship_dispatch_error = Column(String(500))          # última pendência/erro do envio
+    eship_dispatch_attempts = Column(Integer, default=0)  # tentativas da rotina automática (Fase 2)
     label_url = Column(String(1000))
     label_cached_at = Column(TIMESTAMP(timezone=True))  # quando a etiqueta foi salva no disco
     nfe_url = Column(String(1000))

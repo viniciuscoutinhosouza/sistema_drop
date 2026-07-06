@@ -1123,13 +1123,13 @@ async def cart_nfe_urls(
 
 
 def _invoice_id_from_order(order: Order) -> str | None:
-    """Extrai o invoice_id (Faturador) do pedido para baixar a DANFE."""
-    stored = str(order.nfe_url or "")
-    if stored.isdigit():
-        return stored
-    if "/danfe/" in stored:
-        return stored.rstrip("/").split("/danfe/")[-1]
-    return None
+    """Extrai o invoice_id (Faturador) do pedido para baixar a DANFE.
+
+    Fonte única em `services.fiscal.order_docs` (compartilhada com a integração eShip).
+    """
+    from services.fiscal.order_docs import invoice_id_from_order
+
+    return invoice_id_from_order(order)
 
 
 @router.get("/orders/{order_id}/danfe")
@@ -1207,49 +1207,47 @@ async def _bundle_ensure_nfe(db: AsyncSession, entries: list) -> None:
 
 
 async def _bundle_docs(db: AsyncSession, order: Order) -> tuple[bytes, bytes, str] | None:
-    """(danfe_pdf, xml_bytes, chave) do pedido, ou None se a NF-e não está disponível."""
-    # NF-e própria (SEFAZ)
-    if order.invoice_id:
-        from models.fiscal import Invoice as _Invoice
+    """(danfe_pdf, xml_bytes, chave) do pedido, ou None se a NF-e não está disponível.
+
+    O XML autorizado vem da fonte única `services.fiscal.order_docs.resolve_nfe_xml`
+    (NF-e própria SEFAZ / Faturador ML / DC-e). Aqui só adicionamos o DANFE (gerado do XML
+    próprio ou baixado do ML). A gaiola não empacota DC-e (comportamento preservado).
+    """
+    from services.fiscal.order_docs import invoice_id_from_order, resolve_nfe_xml
+
+    resolved = await resolve_nfe_xml(db, order)
+    if not resolved:
+        return None
+    xml_bytes, chave, kind = resolved
+
+    if kind == "nfe_sefaz":
         from services.fiscal.sefaz.danfe import gerar_danfe
 
-        inv = (
-            await db.execute(select(_Invoice).where(_Invoice.id == order.invoice_id))
-        ).scalar_one_or_none()
-        if inv and inv.status == "authorized" and inv.xml_local_path:
-            p = _Path(inv.xml_local_path)
-            if p.exists():
-                xml = p.read_text(encoding="utf-8")
-                try:
-                    danfe = await asyncio.to_thread(gerar_danfe, xml)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("bundle danfe própria order=%s: %s", order.id, exc)
-                    return None
-                return danfe, xml.encode("utf-8"), (inv.access_key or order.nfe_key or str(order.id))
-        return None
-    # NF-e do Faturador ML
-    if order.platform == "mercadolivre":
-        iid = _invoice_id_from_order(order)
-        if not iid:
+        try:
+            danfe = await asyncio.to_thread(gerar_danfe, xml_bytes.decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("bundle danfe própria order=%s: %s", order.id, exc)
             return None
+        return danfe, xml_bytes, (chave or order.nfe_key or str(order.id))
+
+    if kind == "nfe_ml":
+        iid = invoice_id_from_order(order)
         acc = (
             await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
         ).scalar_one_or_none()
-        if not acc or not acc.access_token:
+        if not acc or not acc.access_token or not iid:
             return None
         try:
-            xml_bytes, _ = await _ml.fetch_invoice_file(
-                acc.access_token,
-                f"/users/{acc.platform_user_id}/invoices/documents/xml/{iid}/authorized",
-            )
             danfe_bytes, _ = await _ml.fetch_invoice_file(
                 acc.access_token,
                 f"/users/{acc.platform_user_id}/invoices/sites/MLB/documents/danfe/{iid}",
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("bundle docs ML order=%s: %s", order.id, exc)
+            logger.warning("bundle danfe ML order=%s: %s", order.id, exc)
             return None
-        return danfe_bytes, xml_bytes, (order.nfe_key or str(iid))
+        return danfe_bytes, xml_bytes, (chave or str(iid))
+
+    # kind == 'dce' — a Separação não empacota DC-e (preserva comportamento anterior).
     return None
 
 

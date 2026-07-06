@@ -15,12 +15,16 @@ import re
 import time
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from models.cmig import CMIG
+from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
+from services import ml_service as _ml
+from services.fiscal.order_docs import resolve_nfe_xml
 
 from . import client
 from .client import EShipError
@@ -37,12 +41,13 @@ FUNC_POST_ORDEM_XML = "webServicePostOrdemPorXml"
 FUNC_POST_ARQUIVO = "webServicePostArquivoOrdem"
 FUNC_GET_ORDEM = "webServiceGetOrdem"
 FUNC_GET_FALHAS = "webServiceGetFalhasOrdem"
-FUNC_CANCELAR_ORDEM = "webServiceCancelarOrdem"
+# Nome real no spec: "webServiceCancelaOrdem" (SEM o "r" — webServiceCancelarOrdem não existe).
+FUNC_CANCELAR_ORDEM = "webServiceCancelaOrdem"
 FUNC_GET_SALDO = "webServiceGetSaldoEstoque"
 
-# idTipoAnexo (spec §6.3)
-ANEXO_XML_NFE = 4   # XMLDANFE
-ANEXO_ETIQUETA = 7  # ETIQUETA
+# O anexo NÃO usa `idTipoAnexo` (campo inexistente no spec real): o tipo é inferido pelas
+# flags inserirFiscal/atualizarTransporte + a extensão do arquivo (xml/pdf/zpl).
+_XML_PROLOG_RE = re.compile(rb"^\s*<\?xml[^>]*\?>\s*")
 
 # Cadastro em lote: nº máx. de chamadas simultâneas ao WMS (equilíbrio tempo × rajada)
 _PUSH_CONCURRENCY = 5
@@ -292,8 +297,44 @@ async def push_cmig_products(db: AsyncSession, cmig_id: int) -> dict:
 # ─── Ordem (spec §4) ─────────────────────────────────────────────────────────
 
 
+def _addr_text(v) -> str:
+    """Texto de um campo de endereço que pode vir como string, dict `{id,name}` do ML,
+    ou dict já serializado em string (bug antigo). Devolve o `name`/valor limpo."""
+    if v is None:
+        return ""
+    if isinstance(v, dict):
+        return str(v.get("name") or v.get("id") or "").strip()
+    s = str(v)
+    if s.startswith("{") and "name" in s:
+        try:
+            import ast
+
+            d = ast.literal_eval(s)
+            if isinstance(d, dict):
+                return str(d.get("name") or d.get("id") or "").strip()
+        except (ValueError, SyntaxError):
+            pass
+    return s.strip()
+
+
+def _uf_sigla(v) -> str:
+    """UF (2 letras) do estado do ML: `{id:'BR-SP'}` → 'SP'; senão nome/sigla."""
+    raw_id = v.get("id") if isinstance(v, dict) else ""
+    raw_id = str(raw_id or "")
+    if "-" in raw_id:
+        cand = raw_id.split("-")[-1].strip()
+        if len(cand) == 2:
+            return cand.upper()
+    name = _addr_text(v)
+    return name.upper() if len(name) == 2 else name
+
+
 def _parse_address(order: Order) -> dict:
-    """Lê o endereço (CLOB JSON) do pedido com aliases tolerantes (ML/normalizado)."""
+    """Lê o endereço (CLOB JSON) do pedido com aliases tolerantes (ML/normalizado).
+
+    Os campos do ML `city`/`state`/`neighborhood` chegam como objetos `{id, name}` — precisam
+    ser desembrulhados (senão o WMS recebe o dict serializado). `estado` vai como UF (2 letras).
+    """
     raw = {}
     if order.shipping_address:
         try:
@@ -305,8 +346,15 @@ def _parse_address(order: Order) -> dict:
         for k in keys:
             v = raw.get(k)
             if v:
-                return str(v)
+                return _addr_text(v)
         return ""
+
+    def gv(*keys: str):
+        for k in keys:
+            v = raw.get(k)
+            if v:
+                return v
+        return None
 
     return {
         "logradouro": g("street", "logradouro", "address_line"),
@@ -314,7 +362,7 @@ def _parse_address(order: Order) -> dict:
         "complemento": g("complement", "complemento", "comment"),
         "bairro": g("neighborhood", "bairro"),
         "municipio": g("city", "municipio", "cidade"),
-        "estado": g("state", "estado", "uf", "state_id"),
+        "estado": _uf_sigla(gv("state", "estado", "uf", "state_id")),
         "cep": g("zip_code", "cep", "zip", "zip_code_str"),
         "telefone": g("phone", "telefone", "receiver_phone"),
     }
@@ -378,41 +426,86 @@ def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
     }
 
 
+def _coax_id(v) -> str | None:
+    """Normaliza um valor de id que pode vir como escalar ou objeto aninhado (`{id: ...}`)."""
+    if isinstance(v, dict):
+        v = v.get("id")
+    return str(v) if v not in (None, "") else None
+
+
 def extract_order_id(resp: dict) -> str | None:
-    """Extrai o id da ordem da resposta do eShip (chaves tolerantes)."""
+    """Extrai o id da ordem da resposta do eShip.
+
+    O `webServicePostOrdem` responde `{"ordem": {"id": ..., "status": {...}}}` — o id é
+    **aninhado** em `ordem.id`. Mantém a cadeia tolerante para outros formatos, mas só
+    aceita o valor quando resolve para um escalar (nunca serializa o dict inteiro).
+    """
     if not isinstance(resp, dict):
         return None
     for key in ("idOrdem", "ordem", "id", "orderId", "codigo", "codigoOrdem"):
-        if resp.get(key):
-            return str(resp[key])
+        if key in resp:
+            got = _coax_id(resp[key])
+            if got:
+                return got
     data = resp.get("data") or resp.get("retorno") or {}
     if isinstance(data, dict):
         for key in ("idOrdem", "ordem", "id", "codigoOrdem"):
-            if data.get(key):
-                return str(data[key])
+            if key in data:
+                got = _coax_id(data[key])
+                if got:
+                    return got
     return None
 
 
-def extract_status(resp: dict) -> tuple[str | None, str | None, str | None]:
-    """(status_eship, tracking_code, tracking_url) da resposta de GetOrdem."""
+def extract_status(resp: dict) -> tuple[int | str | None, str | None, str | None]:
+    """(status_id, tracking_code, tracking_url) da resposta do GetOrdem.
+
+    O envelope real é `corpo.body.dados[]` e o status é o **objeto** `{id, descricao, cor}`;
+    devolvemos o `status.id` (numérico) para mapear por id (nunca por texto/acento).
+    """
     if not isinstance(resp, dict):
         return None, None, None
-    node = resp.get("data") or resp.get("retorno") or resp
-    if isinstance(node, list) and node:
-        node = node[0]
+    node = None
+    corpo = resp.get("corpo")
+    body = corpo.get("body") if isinstance(corpo, dict) else None
+    dados = body.get("dados") if isinstance(body, dict) else None
+    if isinstance(dados, list) and dados:
+        node = dados[0]
+    elif isinstance(dados, dict):
+        node = dados
+    if node is None:
+        # Fallbacks p/ formatos antigos/planos.
+        node = resp.get("ordem") or resp.get("data") or resp.get("retorno") or resp
+        if isinstance(node, list) and node:
+            node = node[0]
     if not isinstance(node, dict):
         return None, None, None
-    status = node.get("status") or node.get("statusObjeto") or node.get("situacao")
-    rastreio = node.get("rastreio") or node.get("codigoRastreio") or node.get("tracking")
+    status = node.get("status")
+    status_id = status.get("id") if isinstance(status, dict) else status
+    rastreio = (
+        node.get("codigoRastreamento")
+        or node.get("rastreio")
+        or node.get("codigoRastreio")
+        or node.get("tracking")
+    )
     url = node.get("urlRastreio") or node.get("trackingUrl") or node.get("ORDUrl externa")
-    return status, rastreio, url
+    return status_id, rastreio, url
 
 
 # ─── Orquestração ────────────────────────────────────────────────────────────
 
 
+def _is_full_order(order: Order) -> bool:
+    """Pedido FULL (fulfillment) é gerido pelo ML e NÃO vai ao WMS (ADR-0008/0010)."""
+    return (order.shipping_mode or "").lower() == "full" or "fulfillment" in (
+        order.shipping_method or ""
+    ).lower()
+
+
 async def push_order(db: AsyncSession, order: Order) -> dict:
     """Envia o pedido ao eShip da empresa (CMIG). Idempotente por eship_order_id."""
+    if _is_full_order(order):
+        raise EShipError("Pedido FULL é gerido pelo Mercado Livre — não vai ao WMS (eShip).")
     if order.eship_order_id:
         return {"already_sent": True, "eship_order_id": order.eship_order_id}
 
@@ -460,18 +553,27 @@ async def push_order_by_xml(db: AsyncSession, order: Order, xml_content: str,
 
 
 async def attach_file(db: AsyncSession, order: Order, *, content: bytes, extensao: str,
-                      mime_type: str, id_tipo_anexo: int, inserir_fiscal: bool = False,
+                      mime_type: str, inserir_fiscal: bool = False,
                       atualizar_transporte: bool = False) -> dict:
-    """Anexa um arquivo (NF-e XML, DANFE PDF, etiqueta) a uma ordem existente (spec §6)."""
+    """Anexa um arquivo (NF-e XML, DANFE PDF, etiqueta) a uma ordem existente (spec §6).
+
+    O tipo do anexo vem das FLAGS + extensão (não existe `idTipoAnexo` no spec):
+      - NF-e (XML): `inserir_fiscal=True` + `atualizar_transporte=True` + `extensao="xml"`.
+      - Etiqueta: sem `inserir_fiscal`, `extensao="pdf"|"zpl"`.
+    """
     creds, _cmig = await _creds_for_order(db, order)
     if not creds:
         raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    if extensao == "xml":
+        # O WMS recusa o prolog `<?xml?>` embutido (mesma armadilha do SAAJ na DC-e).
+        content = _XML_PROLOG_RE.sub(b"", content)
     payload = {
         "numeroOrigem": order.platform_order_id or str(order.id),
         "arquivoBase": base64.b64encode(content).decode(),
         "extensao": extensao,
         "mimeType": mime_type,
-        "idTipoAnexo": id_tipo_anexo,
     }
     if inserir_fiscal:
         payload["inserirFiscal"] = "1"
@@ -482,24 +584,52 @@ async def attach_file(db: AsyncSession, order: Order, *, content: bytes, extensa
 
 
 async def attach_nfe_xml(db: AsyncSession, order: Order, xml_content: bytes) -> dict:
-    """Anexa o XML da NF-e (idTipoAnexo=4) atualizando dados fiscais e transporte."""
+    """Anexa o XML da NF-e (flags fiscais + transporte)."""
     return await attach_file(
         db, order, content=xml_content, extensao="xml", mime_type="application/xml",
-        id_tipo_anexo=ANEXO_XML_NFE, inserir_fiscal=True, atualizar_transporte=True,
+        inserir_fiscal=True, atualizar_transporte=True,
     )
 
 
 async def attach_label(db: AsyncSession, order: Order, content: bytes,
                        extensao: str = "pdf", mime_type: str = "application/pdf") -> dict:
-    """Anexa a etiqueta de entrega (idTipoAnexo=7)."""
+    """Anexa a etiqueta de entrega (pdf/zpl, sem flag fiscal)."""
     return await attach_file(
         db, order, content=content, extensao=extensao, mime_type=mime_type,
-        id_tipo_anexo=ANEXO_ETIQUETA,
     )
 
 
+async def _resolve_labels(db: AsyncSession, order: Order) -> list[tuple[bytes, str, str]]:
+    """Baixa a etiqueta do ML em ZPL2 e PDF. Retorna `[(bytes, extensao, mime), ...]`.
+
+    Reusa `ml_service.get_shipment_label` (não reimplementa a chamada ML). Uma etiqueta que
+    ainda não estiver liberada (ML 400) é apenas omitida da lista.
+    """
+    if not order.shipment_id:
+        return []
+    acc = (
+        await db.execute(
+            select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
+        )
+    ).scalar_one_or_none()
+    if not acc or not acc.access_token:
+        return []
+    out: list[tuple[bytes, str, str]] = []
+    for fmt, ext, mime in (("zpl2", "zpl", "text/plain"), ("pdf", "pdf", "application/pdf")):
+        try:
+            content, _ctype = await _ml.get_shipment_label(acc.access_token, order.shipment_id, fmt)
+            out.append((content, ext, mime))
+        except Exception as exc:  # noqa: BLE001 — etiqueta indisponível nesse formato agora
+            logger.warning("[eShip] etiqueta %s pedido=%s: %s", fmt, order.id, exc)
+    return out
+
+
 async def cancel_order(db: AsyncSession, order: Order) -> dict:
-    """Cancela a ordem no eShip (spec §7)."""
+    """Cancela a ordem no eShip (spec §7).
+
+    Cancelou no WMS → zera o vínculo e os selos de anexo, para um novo envio poder
+    recriar a Ordem e reanexar (sem isso o pedido ficaria preso em `already_sent`).
+    """
     creds, _cmig = await _creds_for_order(db, order)
     if not creds:
         raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
@@ -507,7 +637,150 @@ async def cancel_order(db: AsyncSession, order: Order) -> dict:
         creds, FUNC_CANCELAR_ORDEM,
         {"numeroOrigem": order.platform_order_id or str(order.id)},
     )
+    order.eship_order_id = None
+    order.eship_nfe_attached = 0
+    order.eship_label_attached = 0
+    order.eship_dispatch_status = "cancelled"
+    order.eship_dispatch_error = None
+    await db.commit()
     return resp
+
+
+async def send_order_full(db: AsyncSession, order: Order) -> dict:
+    """Envio COMPLETO ao eShip: Ordem → NF-e (XML) → Etiqueta (ZPL + PDF).
+
+    Idempotente e tolerante a parcial: cada etapa é pulada se já concluída (selos
+    `eship_nfe_attached`/`eship_label_attached`), e a falha de uma etapa não impede as
+    demais. Retorna o estado granular por etapa (`erros[]` descreve o que ficou pendente).
+    """
+    result: dict = {"ordem": None, "nfe": None, "etiquetas": [], "erros": []}
+
+    if _is_full_order(order):
+        result["erros"].append({
+            "etapa": "ordem",
+            "erro": "Pedido FULL é gerido pelo Mercado Livre — não vai ao WMS (eShip).",
+        })
+        return result
+
+    # Single-flight: claim atômico de "sending" para não anexar em duplicidade sob duplo-clique
+    # ou reenvio concorrente do mesmo pedido (asyncio + AsyncSyncSession não serializam sozinhos).
+    claim = await db.execute(
+        sa_update(Order)
+        .where(
+            Order.id == order.id,
+            or_(
+                Order.eship_dispatch_status.is_(None),
+                Order.eship_dispatch_status != "sending",
+            ),
+        )
+        .values(eship_dispatch_status="sending")
+    )
+    await db.commit()
+    if not getattr(claim, "rowcount", 0):
+        result["erros"].append({
+            "etapa": "lock",
+            "erro": "Envio ao eShip já em andamento para este pedido — aguarde.",
+        })
+        return result
+    order.eship_dispatch_status = "sending"
+
+    try:
+        # 1) Garante a Ordem (push_order é idempotente por eship_order_id).
+        try:
+            push = await push_order(db, order)
+            result["ordem"] = {
+                "eship_order_id": push.get("eship_order_id"),
+                "already_sent": push.get("already_sent", False),
+            }
+        except EShipError as e:
+            result["erros"].append({"etapa": "ordem", "erro": str(e)})
+            return result  # sem Ordem não há onde anexar
+
+        # 2) Anexa a NF-e (XML) — claim atômico do selo (reenvio/concorrência não reanexa).
+        if order.eship_nfe_attached:
+            result["nfe"] = {"status": "already"}
+        else:
+            doc = await resolve_nfe_xml(db, order)
+            if not doc:
+                result["erros"].append({
+                    "etapa": "nfe",
+                    "erro": "NF-e ainda não autorizada / indisponível para este pedido.",
+                })
+            else:
+                xml_bytes, chave, kind = doc
+                won = await db.execute(
+                    sa_update(Order)
+                    .where(Order.id == order.id, Order.eship_nfe_attached == 0)
+                    .values(eship_nfe_attached=1)
+                )
+                await db.commit()
+                if not getattr(won, "rowcount", 0):
+                    result["nfe"] = {"status": "already"}
+                else:
+                    try:
+                        await attach_nfe_xml(db, order, xml_bytes)
+                        order.eship_nfe_attached = 1
+                        result["nfe"] = {"status": "attached", "chave": chave, "kind": kind}
+                    except EShipError as e:
+                        # falhou o anexo → devolve o selo p/ permitir reenvio
+                        await db.execute(
+                            sa_update(Order)
+                            .where(Order.id == order.id)
+                            .values(eship_nfe_attached=0)
+                        )
+                        await db.commit()
+                        order.eship_nfe_attached = 0
+                        result["erros"].append({"etapa": "nfe", "erro": str(e)})
+
+        # 3) Anexa a etiqueta (ZPL + PDF) — claim atômico do selo.
+        if order.eship_label_attached:
+            result["etiquetas"] = [{"status": "already"}]
+        else:
+            won = await db.execute(
+                sa_update(Order)
+                .where(Order.id == order.id, Order.eship_label_attached == 0)
+                .values(eship_label_attached=1)
+            )
+            await db.commit()
+            if not getattr(won, "rowcount", 0):
+                result["etiquetas"] = [{"status": "already"}]
+            else:
+                labels = await _resolve_labels(db, order)
+                anexadas = 0
+                for content, ext, mime in labels:
+                    try:
+                        await attach_label(db, order, content, extensao=ext, mime_type=mime)
+                        result["etiquetas"].append({"status": "attached", "formato": ext})
+                        anexadas += 1
+                    except EShipError as e:
+                        result["erros"].append({"etapa": f"etiqueta:{ext}", "erro": str(e)})
+                if anexadas:
+                    order.eship_label_attached = 1
+                else:
+                    # nada anexou (etiqueta não liberada / falhou) → devolve o selo
+                    await db.execute(
+                        sa_update(Order)
+                        .where(Order.id == order.id)
+                        .values(eship_label_attached=0)
+                    )
+                    await db.commit()
+                    order.eship_label_attached = 0
+                    result["erros"].append({
+                        "etapa": "etiqueta",
+                        "erro": "Etiqueta ainda não liberada pelo Mercado Livre.",
+                    })
+        order.eship_dispatch_status = "sent" if not result["erros"] else "partial"
+    except Exception as e:  # noqa: BLE001 — registra e não deixa o pedido preso em "sending"
+        result["erros"].append({"etapa": "interno", "erro": str(e)})
+        order.eship_dispatch_status = "failed"
+        logger.exception("[eShip] send_order_full pedido=%s falhou", order.id)
+    finally:
+        order.eship_dispatch_error = ("; ".join(x["erro"] for x in result["erros"]) or None)
+        if order.eship_dispatch_error:
+            order.eship_dispatch_error = order.eship_dispatch_error[:500]
+        await db.commit()
+
+    return result
 
 
 async def get_falhas(db: AsyncSession, order: Order) -> dict:
@@ -698,10 +971,16 @@ async def sync_order_status(db: AsyncSession, order: Order) -> bool:
         return False
 
     resp = await client.call(
-        creds, FUNC_GET_ORDEM, {"numeroOrigem": order.platform_order_id or str(order.id)}
+        creds,
+        FUNC_GET_ORDEM,
+        {
+            "numeroOrigem": order.platform_order_id or str(order.id),
+            "incluirInfo": True,  # obrigatório no schema do GetOrdem
+            "pagina": 1,
+        },
     )
-    raw_status, tracking, url = extract_status(resp)
-    ship_status, order_status = map_status(raw_status)
+    status_id, tracking, url = extract_status(resp)
+    ship_status, order_status = map_status(status_id)
 
     changed = False
     if ship_status and ship_status != order.shipment_status:

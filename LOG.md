@@ -4,6 +4,81 @@
 
 ---
 
+## 2026-07-04 — fix(dashboard): KPIs "hoje"/"mês" usavam meia-noite UTC em vez do fuso BR (ADR-0013)
+
+`routers/dashboard.py` `get_kpis` (home Dashboard) montava os limites de dia/mês com
+`datetime.now(UTC).replace(hour=0…/day=1)` → a virada caía às 00:00 UTC (= 21:00 BRT do dia
+anterior). Pedidos da madrugada BR (00:00–03:00) caíam no dia/mês errado; ex.: um pedido de
+30/06 22h BRT era contado em "hoje" (01/07). Corrigido: limites calculados em `datetime.now(BR_TZ)`
+e convertidos para UTC (`.astimezone(UTC)`) só na comparação com `created_at` (TIMESTAMP WITH TIME
+ZONE) — mesmo padrão já usado em `GET /dashboard/marketplace` e `sales_report_service`.
+- O endpoint `/dashboard/marketplace` (tela "Dashboard de Marketplaces") **já estava correto**
+  (janelas em BRT → UTC); nada alterado nele.
+- Verificação: simulação de fuso (pedido 30/06 22h BRT deixa de contar em "hoje"; limites idênticos
+  aos do `/marketplace`); `pytest -m "not integration"` 94 passed / 2 pré-existentes.
+
+---
+
+## 2026-07-05 — feat(eship): Console de API do eShip no Console de API (admin) + diagnóstico do envio
+
+**Console de API do eShip.** A tela Administração > Console de API (antes só ML) ganhou um comutador
+**Mercado Livre / eShip** no topo. O modo eShip: seleciona a CMIG (reusa `GET /integrations/eship/cmigs`,
+apikey nunca exposta), digita a **função** RPC (templates: GetProduto/GetSaldoEstoque/GetOrdem/GetArmazem/
+PostOrdem) + body JSON → `POST /admin/api-console/eship/execute`. O executor faz o POST **cru**
+(`{base}/?api&funcao=...`, apikey no header), decodifica **latin-1** e devolve a resposta crua **incluindo
+`erros`** (não passa pelo `client.call`, que os esconde). Guarda de UI: funções de escrita (Post/Put/Delete/
+Cancela…) exigem confirmação. `funcao` validada por regex; `body_json` deve ser objeto. Admin-only.
+- Backend: `routers/admin_api_console.py` (novo endpoint `/eship/execute`). Front: `ApiConsoleView.vue`
+  (comutador + form eShip com estado separado; painel de Response compartilhado + destaque de `erros`).
+- Auditado (consistency-auditor); HIGH incorporados (reuso do endpoint de CMIGs, `company_name`, guarda de
+  escrita, validação de funcao/body, latin-1 no corpo). `npm run build` OK; smoke real contra a API (GetProduto
+  → 200, apikey só no header).
+- **Catálogo completo de funções (2ª iteração):** gerado do swagger oficial (`FRONTEND/.../eshipCatalog.json`,
+  242 funções). A função virou **dropdown agrupado por módulo**; ao selecionar, um painel mostra os
+  **parâmetros do body** (campo/tipo/obrigatório/descrição) e o body é **pré-preenchido com o template completo**
+  (inclui aninhados como `cadastroDestinatario`/`produtos`). Adicionada a seção **Headers extras** (backend
+  `/eship/execute` repassa headers do usuário, exceto `api`).
+
+**Diagnóstico do envio (venda #2000017245325174).** O `webServicePostOrdem` falha com `MAR6076 Armazém não
+encontrado` para qualquer valor. Causa: o armazém "Armazenaki_Aruja" (id 2) está com `codigo` **vazio** — a
+API pública casa por código; o painel web funciona porque usa o **id** via endpoint interno (`mod=9&func=445&
+idrs[]=2`). Mesmo usuário (86) nos dois. Pendente: Armazenaki cadastrar um `codigo` no armazém (ou vincular a
+apikey). Nosso payload também precisa de `idTipo` (=104 p/ MIG) — a implementar por CMIG. Bug de endereço
+(dict `{id,name}` do ML ia serializado ao WMS) **corrigido** no `_parse_address` (estado vira UF).
+
+## 2026-07-04 — feat(eship): envio completo do pedido ao WMS (Ordem + NF-e + Etiqueta) — Fase 1 (manual)
+
+**Objetivo:** o botão "Enviar ao eShip" passa a mandar a **Ordem + XML da NF-e + Etiqueta** (antes só
+criava a Ordem). Correção também dos bugs conhecidos do módulo. Ordem correta confirmada com o ML:
+NF-e autoriza → ML libera a etiqueta (`invoice_pending` bloqueia). Motor de NF-e = Faturador ML.
+
+**Backend**
+- `services/fiscal/order_docs.py` (novo) — fonte ÚNICA do XML fiscal **autorizado**: NF-e própria
+  SEFAZ (`Invoice.xml_local_path`) → Faturador ML (download `/invoices/documents/xml/{iid}/authorized`,
+  com validação de que o corpo é NF-e, não HTML de erro) → DC-e (`OrderDce`). `separation.py`
+  (`_bundle_docs`/`_invoice_id_from_order`) passou a delegar a ele (de-dup).
+- `integrations/eship/service.py` — `send_order_full` (Ordem→NF-e→etiqueta ZPL+PDF), idempotente por
+  **claim atômico** dos selos (single-flight anti duplo-clique) + tolerante a parcial; `attach_file`
+  sem `idTipoAnexo` (flags `inserirFiscal`/`atualizarTransporte` + strip do prolog `<?xml?>`);
+  `extract_order_id` lê `ordem.id` aninhado; `extract_status` navega `corpo.body.dados[0].status.id`;
+  `map_status` por **id** (1/2/3→handling, 6→ready_to_ship, 7/8→shipped, 10→cancelled); `cancel_order`
+  reseta selos; `sync_order_status` envia `incluirInfo`; guard de **FULL** (não vai ao WMS);
+  `FUNC_CANCELAR_ORDEM`=`webServiceCancelaOrdem`.
+- `integrations/eship/router.py` — `POST /orders/{id}/send` (admin,ugo); **removido** o `/push` órfão.
+- `models/order.py` + `Scripts SQL/122_eship_anexos.sql` — colunas `eship_nfe_attached`,
+  `eship_label_attached`, `eship_dispatch_status`, `eship_dispatch_error`, `eship_dispatch_attempts`.
+- `routers/orders.py` — serializer da lista expõe os campos eShip (selos na tela).
+
+**Frontend**
+- `OrderEShipActions.vue` — botão único **"Enviar ao eShip"** → `/send`; selos NF-e/Etiq; reenvio de
+  pendências; toast granular em falha parcial.
+
+**Auditoria:** consistency-auditor (plano) + quality-guardian/consistency-auditor/adr-consistency-checker
+(fechamento) — HIGH corrigidos (validação de XML baixado, claim anti-duplo-anexo, remoção do `/push`,
+guard de FULL no backend). Sem CRITICAL/BLOQUEADO. `pytest`: 33/33 eShip; suíte 94 passed / 2 falhas
+pré-existentes; `npm run build` OK. **Pendente:** smoke em homologação + 1 envio real (dono) + migration
+122. Fase 2 (rotina automática opt-in por CMIG + auto-emissão) virá em seguida (ADR-0018).
+
 ## 2026-07-04 — feat(admin): gestão de Galpões pelo Administrador Geral + fix menu "Minha Empresa"
 
 **Galpões (admin):** o admin não tinha menu para cadastrar/gerir galpões (a única tela,

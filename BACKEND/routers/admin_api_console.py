@@ -25,7 +25,9 @@ Response:
     "response_body": parsed_json | raw_text
   }
 """
+import json
 import logging
+import re
 import time
 
 import httpx
@@ -35,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import require_role
+from models.cmig import CMIG
 from models.integration import MarketplaceAccount
 from models.user import User
 
@@ -44,6 +47,8 @@ router = APIRouter()
 
 ML_BASE_URL = "https://api.mercadolibre.com"
 ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
+# Nome de função RPC do eShip (webService<Verbo><Entidade>) — evita concatenar lixo na URL.
+_ESHIP_FUNCAO_RE = re.compile(r"^webService[A-Za-z]+$")
 
 
 @router.get("/accounts")
@@ -178,6 +183,97 @@ async def execute_request(
 
     return {
         "request_url": str(resp.request.url),
+        "status": resp.status_code,
+        "elapsed_ms": elapsed_ms,
+        "response_headers": response_headers,
+        "response_body": response_body,
+    }
+
+
+# ── Console do eShip (WMS) ─────────────────────────────────────────────────────
+# A lista de CMIGs vem do endpoint existente GET /integrations/eship/cmigs (apikey
+# nunca exposta). Aqui só o executor: o eShip é RPC (POST único, `funcao` no query,
+# apikey no header). Não passamos por integrations.eship.client.call — ele levanta e
+# ESCONDE o corpo/erros; um console de debug precisa da resposta CRUA (incluindo `erros`).
+
+
+@router.post("/eship/execute")
+async def execute_eship_request(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """Encaminha uma função RPC ao eShip usando as credenciais configuradas da CMIG."""
+    from integrations.eship.config import creds_from_cmig
+
+    cmig_id = body.get("cmig_id")
+    if not cmig_id:
+        raise HTTPException(status_code=422, detail="cmig_id é obrigatório")
+
+    funcao = (body.get("funcao") or "").strip()
+    if not _ESHIP_FUNCAO_RE.match(funcao):
+        raise HTTPException(
+            status_code=422,
+            detail="funcao inválida (esperado o nome RPC, ex: 'webServiceGetProduto')",
+        )
+
+    payload = body.get("body_json")
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=422, detail="body_json deve ser um objeto JSON (o eShip espera objeto)"
+        )
+
+    extra_headers = body.get("headers") or {}
+    if not isinstance(extra_headers, dict):
+        raise HTTPException(status_code=422, detail="headers deve ser um objeto")
+
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == int(cmig_id)))).scalar_one_or_none()
+    if not cmig:
+        raise HTTPException(status_code=404, detail="CMIG não encontrada")
+    creds = creds_from_cmig(cmig)
+    if not creds:
+        raise HTTPException(
+            status_code=422, detail="CMIG sem integração eShip ativa/configurada."
+        )
+
+    base = (creds.base_url or "").rstrip("/")
+    request_url = f"{base}/?api&funcao={funcao}"  # apikey vai no header `api`, não na URL
+    headers = {"api": creds.api_key, "Content-Type": "application/json"}
+    # Headers extras do usuário — o backend é dono do header `api` (apikey), não sobrescrevível.
+    for k, v in extra_headers.items():
+        if not k or str(k).lower() == "api":
+            continue
+        headers[str(k)] = str(v)
+
+    # Audit — nunca logar apikey nem o body (pode conter dados do pedido)
+    logger.info(
+        "[api-console:eship] user=%s cmig=%s funcao=%s", current_user.id, cmig_id, funcao
+    )
+
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(request_url, headers=headers, json=payload)
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Falha ao chamar o eShip: {exc.__class__.__name__}: {exc}",
+        ) from exc
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+    # O eShip responde em ISO-8859-1 (latin-1) — decodificar o CORPO como tal.
+    raw_text = resp.content.decode("latin-1", errors="replace")
+    try:
+        response_body = json.loads(raw_text)
+    except ValueError:
+        response_body = raw_text
+
+    response_headers = {k: v for k, v in resp.headers.items()}
+
+    return {
+        "request_url": request_url,
         "status": resp.status_code,
         "elapsed_ms": elapsed_ms,
         "response_headers": response_headers,
