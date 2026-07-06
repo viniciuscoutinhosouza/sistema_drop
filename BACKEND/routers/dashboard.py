@@ -19,11 +19,19 @@ async def get_kpis(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    now = datetime.now(UTC)
-    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    start_of_prev_month = (start_of_month - timedelta(days=1)).replace(day=1)
-    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    start_of_30d = now - timedelta(days=30)
+    # ADR-0013: "hoje"/"mês" são limites do DIA/MÊS no fuso do Brasil (BRT), convertidos
+    # para UTC só na hora de comparar com created_at (TIMESTAMP WITH TIME ZONE). Usar
+    # datetime.now(UTC) direto colocava a virada do dia/mês às 00:00 UTC (21:00 BRT do dia
+    # anterior), contando pedidos do dia/mês errado perto da meia-noite local.
+    now_brt = datetime.now(BRT)
+    start_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_month_brt = start_today_brt.replace(day=1)
+    start_prev_month_brt = (start_month_brt - timedelta(days=1)).replace(day=1)
+
+    start_of_month = start_month_brt.astimezone(UTC)
+    start_of_prev_month = start_prev_month_brt.astimezone(UTC)
+    start_of_today = start_today_brt.astimezone(UTC)
+    start_of_30d = datetime.now(UTC) - timedelta(days=30)  # janela móvel de 30 dias (instante)
 
     uid = current_user.id
 
