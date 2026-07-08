@@ -594,7 +594,26 @@ async def process_ml_order(
         created_at=ml_created_at,
     )
     db.add(order)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Corrida: outro processo (webhook/sync) inseriu este pedido ao mesmo tempo. O
+        # índice único ux_orders_plat_poid_drop (migration 123) barra a duplicata — re-busca
+        # o pedido já criado e ignora graciosamente (o "vencedor" cuidou de itens/reserva).
+        await db.rollback()
+        dup = (
+            await db.execute(
+                select(Order).where(
+                    Order.platform == "mercadolivre",
+                    Order.platform_order_id == ml_order_id,
+                    Order.dropshipper_id == integration.owner_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if dup:
+            logger.info("[ml] pedido %s criado concorrentemente — duplicata evitada", ml_order_id)
+            return
+        raise
 
     # Compute and store ML platform_fee + ml_fee_pct from order_items[].sale_fee
     _apply_fees_to_order(order, ml_order_data)
@@ -714,7 +733,24 @@ async def process_shopee_order(
         shipping_mode=MODE_DESCONHECIDO,  # Shopee usa rede propria — fora do escopo do bucket ML
     )
     db.add(order)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Corrida: duplicata barrada pelo índice único (migration 123). Re-busca e ignora.
+        await db.rollback()
+        dup = (
+            await db.execute(
+                select(Order).where(
+                    Order.platform == "shopee",
+                    Order.platform_order_id == shopee_order_id,
+                    Order.dropshipper_id == integration.owner_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if dup:
+            logger.info("[shopee] pedido %s criado concorrentemente — duplicata evitada", shopee_order_id)
+            return
+        raise
 
     for item_data in shopee_order_data.get("item_list", []):
         shopee_item_id = item_data.get("item_id")

@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-07-07 — fix(orders): pedido duplicado (aparecia 3× na tela de Pedidos) — race na sincronização
+
+A venda 2000017298867566 aparecia 3× porque havia **3 registros `Order` idênticos** (mesmo
+`created_at` no mesmo segundo) — corrida: webhook + job `sync_orders` inserindo o mesmo pedido ao
+mesmo tempo. `orders.platform_order_id` **não tinha restrição única** (só índice não-único); a dedup
+existia só no app (`process_ml_order`/`process_shopee_order` com `scalar_one_or_none`), que não segura
+inserções concorrentes.
+
+- **Limpeza (produção):** removidas 3 linhas extras (2 pedidos afetados: ids 1689,1690,1385), seus
+  `stock_movements`, e `recompute_reservations_from_movements` corrigiu o `reserved_quantity`
+  (35 produtos PG — estavam super-reservados). Verificado: 1 linha/venda, 0 grupos duplicados.
+- **Prevenção (schema):** migration **123** — índice ÚNICO `ux_orders_plat_poid_drop` em
+  `orders(platform, platform_order_id, dropshipper_id)` (pedidos manuais com `platform_order_id` NULL
+  não entram na unicidade). Inclui dedup defensivo idempotente.
+- **Prevenção (código):** `webhook_service` (ML + Shopee) captura `IntegrityError` no `flush` do insert
+  → rollback + re-busca o pedido criado concorrentemente → ignora graciosamente (sem 500, sem duplicar).
+- **Verificação:** `pytest -m "not integration"` 94 passed / 2 pré-existentes; `py_compile` OK.
+
+---
+
 ## 2026-07-04 — fix(dashboard): KPIs "hoje"/"mês" usavam meia-noite UTC em vez do fuso BR (ADR-0013)
 
 `routers/dashboard.py` `get_kpis` (home Dashboard) montava os limites de dia/mês com
