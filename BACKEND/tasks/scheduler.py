@@ -19,6 +19,7 @@ scheduler = AsyncIOScheduler()
 def start_scheduler():
     from tasks.check_subscriptions import check_overdue_subscriptions
     from tasks.fiscal_alerts import run_fiscal_alerts
+    from tasks.release_orphan_reservations_job import run_release_orphan_reservations
     from tasks.sync_dfe import sync_all_dfe
     from tasks.sync_orders import sync_all_orders
     from tasks.sync_stock import sync_all_stock
@@ -40,6 +41,16 @@ def start_scheduler():
         IntervalTrigger(hours=1),
         id="refresh_tokens",
         name="Refresh OAuth Tokens",
+        replace_existing=True,
+    )
+
+    # Safety-net: libera reservas órfãs de pedidos entregues (idempotente; ver
+    # release_orphan_reservations_job). Complementa o fix no webhook_service.
+    scheduler.add_job(
+        run_release_orphan_reservations,
+        IntervalTrigger(hours=6),
+        id="release_orphan_reservations",
+        name="Release Orphan Reservations",
         replace_existing=True,
     )
 

@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-07 — fix(estoque): reserva órfã de pedidos entregues zerava o disponível do anúncio
+
+Anúncio MLB4794270619 (produto PG 156, "Halter 24kg") mostrava estoque=2 mas 0 disponível:
+`reserved_quantity=3 > stock=2`. Causa: 3 pedidos JÁ ENTREGUES (1341/1343/1415) com movimento
+`reserve` **sem `unreserve`** — a reserva nunca foi liberada. Pedido não-FULL reserva ao ser criado;
+a liberação (`confirm_dispatch`) só dispara na TRANSIÇÃO de `shipment_status`→shipped/delivered num
+sync. Pedidos importados/sincronizados **já entregues** (sem transição observada) reservavam e nunca
+liberavam → reserva órfã → `disponível = estoque − reservado` subestimado (e anúncio auto-pausado).
+**Sistêmico:** 119 pedidos / 32 produtos.
+
+- **Reparo (produção):** `backfill_orphan_reservations(apply)` — liberou 119 pedidos / 32 produtos
+  (produto 156 → reservado 0, disponível 2). Só mexe em `reserved_quantity` (estoque físico é
+  event-sourced — a entrega já é a saída canônica); 0 produtos negativos.
+- **Causa-raiz (código):** `webhook_service.process_ml_order` — ao criar pedido não-FULL já despachado/
+  entregue (`_order_was_dispatched`), libera a reserva recém-criada (`release_reservation`, idempotente).
+- **Safety-net:** job `release_orphan_reservations` a cada 6h (`tasks/release_orphan_reservations_job.py`)
+  rodando o backfill idempotente — cobre casos de borda (relink pós-entrega etc.).
+- **Verificação:** `pytest -m "not integration"` 94 passed / 2 pré-existentes; `py_compile` OK.
+
+---
+
 ## 2026-07-07 — fix(orders): pedido duplicado (aparecia 3× na tela de Pedidos) — race na sincronização
 
 A venda 2000017298867566 aparecia 3× porque havia **3 registros `Order` idênticos** (mesmo

@@ -672,8 +672,19 @@ async def process_ml_order(
     # Reserva o estoque dos produtos vinculados ao pedido
     if order.status != "cancelled":
         try:
-            from services.stock_reservation_service import reserve_stock
+            from services.stock_reservation_service import (
+                _order_was_dispatched,
+                release_reservation,
+                reserve_stock,
+            )
             await reserve_stock(db, order)
+            # Pedido importado/sincronizado JÁ despachado/entregue (fora do fluxo de Separação):
+            # a reserva recém-criada não deve persistir — senão vira reserva ÓRFÃ e o disponível
+            # do anúncio fica subestimado (available = estoque − reservado). Libera apenas o
+            # reserved_quantity (o estoque físico é event-sourced: a entrega já é a saída canônica).
+            # release_reservation é idempotente (early-return se já houver 'unreserve').
+            if order.shipping_mode != "full" and _order_was_dispatched(order):
+                await release_reservation(db, order)
         except Exception as exc:
             logger.warning("reserve_stock order=%s: %s", order.id, exc)
 
