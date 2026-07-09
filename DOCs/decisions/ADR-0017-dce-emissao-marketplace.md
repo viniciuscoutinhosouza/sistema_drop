@@ -37,10 +37,38 @@ MIG** (perfil Marketplace, `tpEmit=1`), reaproveitando a infra de NF-e (`service
 - **Ambiente:** `tpAmb=2` (homologação) enquanto `production_released`/`NFE_ENV_PROD` não estiverem
   ligados; produção com `tpAmb=1` após validação.
 
+## Notificação ao Mercado Livre (libera a etiqueta) — adendo 2026-07-09
+
+A emissão na SVRS autoriza a DC-e, mas o **ML não libera a etiqueta** enquanto o shipment está em
+`substatus=invoice_pending` — ele precisa **receber o documento fiscal**. Isso valia para NF-e
+(reportada via `invoice_data`) e ficou de fora do escopo original da DC-e (o `ml_service.emit_dce`
+era um stub 501). Fechado agora:
+
+- **Report ao ML:** após a autorização (cStat 100), envia-se o `procDCe` via
+  `POST /shipments/{id}/invoice_data?siteId=MLB`, `Content-Type: application/xml`, com o **XML CRU**
+  (bytes UTF-8, **sem reserializar** — preserva a assinatura XMLDSig). Mesmo endpoint que recebe a
+  NF-e modelo 55; aqui envia-se a Declaração de Conteúdo (modelo 99). Função
+  `ml_service.report_dce_invoice`.
+- **Gate de ambiente:** só DC-e de **produção** é reportada (o ML recusa homologação), decidido pela
+  coluna `OrderDce.environment` da própria linha emitida — não pelo toggle global no momento do envio.
+- **Idempotência:** coluna `order_dce.ml_reported_at` (migration 124) evita reenvio a cada reclique
+  na etiqueta.
+- **Wiring:** `orders._report_dce_to_ml` é chamado (a) best-effort no fim de `emit-dce`
+  (`ml_notified`/`ml_warning` no retorno, sem desfazer a emissão se o ML falhar) e (b) no fluxo da
+  etiqueta (`_cpf_label_invoice_pending`), que reporta a DC-e já autorizada e orienta o usuário a
+  reclicar. Se o ML recusar o documento, a mensagem do ML propaga.
+- **Toggle de produção corrigido:** `NFE_ENV_PROD` era lido em `dce_service.py` mas **não existia**
+  no `Settings` (sempre `False` → produção inalcançável). Agora declarado (`config.py`), mantendo o
+  gate composto `NFE_ENV_PROD` (global) **E** `production_released` (por CMIG).
+- **Pendente:** smoke em **produção** — o report só dispara com `environment="production"`; a
+  aceitação do **modelo 99** pelo `invoice_data` do ML precisa ser confirmada na 1ª emissão real
+  (a doc antiga do ML falava só em modelo 55).
+
 ## Consequências
 
 - **Positivas:** DC-e emitida por API, sem sessão logada no ML; DACE próprio com QR; reaproveita
-  assinatura/mTLS da NF-e; gated por vendedor (`dce_authorized`) → rollout seguro.
+  assinatura/mTLS da NF-e; gated por vendedor (`dce_authorized`) → rollout seguro. Fluxo agora
+  **fecha o loop** e libera a etiqueta ML fim-a-fim (report via `invoice_data`).
 - **Negativas / pendências:**
   - Endereço do Galpão precisa estar completo (cidade/UF/CEP) — pré-requisito de cadastro.
   - CPF do comprador não vem do ML → `idOutros` (poderia buscar via `billing_info` no futuro).

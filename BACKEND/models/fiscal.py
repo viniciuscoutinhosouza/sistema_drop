@@ -148,6 +148,7 @@ class OrderDce(Base):
     emit_cpf = Column(String(14))       # CPF do remetente (vendedor)
     xml = Column(Text)                  # CLOB — XML autorizado (procDCe)
     dace_path = Column(String(1000))    # PDF do DACE
+    ml_reported_at = Column(TIMESTAMP(timezone=True))  # quando o XML foi enviado ao ML (invoice_data)
     emitted_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(

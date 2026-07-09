@@ -1451,12 +1451,34 @@ async def emit_order_dce(
             .values(dce_status="emitted")
         )
     await db.commit()
+
+    # Notifica o ML (POST invoice_data) para liberar a etiqueta. Best-effort: a DC-e já está
+    # autorizada; se o ML recusar (homolog, modelo 99 não aceito, rede/token), reporta no
+    # retorno SEM desfazer a emissão. Só envia DC-e de produção (guard em _report_dce_to_ml).
+    ml_notified, ml_warning = False, None
+    try:
+        account = await _get_account_for_order(db, order)
+        rep = await _report_dce_to_ml(db, order, account)
+        ml_notified = bool(rep.get("reported"))
+        if not ml_notified:
+            ml_warning = (
+                "DC-e emitida em homologação — não enviei ao Mercado Livre (não libera etiqueta real)."
+                if rep.get("reason") == "homolog"
+                else "DC-e emitida, mas sem XML autorizado para enviar ao Mercado Livre."
+            )
+    except HTTPException as e:
+        ml_warning = f"DC-e emitida, mas o Mercado Livre recusou o documento: {e.detail}"
+    except Exception as e:
+        ml_warning = f"DC-e emitida, mas falhou ao notificar o Mercado Livre: {e}"
+
     return {
         "ok": True,
         "dce_status": order.dce_status,
         "chave": ret.chave,
         "protocolo": ret.protocolo,
         "cstat": ret.cstat,
+        "ml_notified": ml_notified,
+        "ml_warning": ml_warning,
     }
 
 
@@ -2934,6 +2956,62 @@ async def _emit_nfe_for_label(order: Order, account, db) -> None:
         print(f"[orders] failed to mark nfe pending order={order.id}: {e}")
 
 
+async def _report_dce_to_ml(db, order: Order, account) -> dict:
+    """Reporta ao ML a DC-e autorizada do pedido (POST invoice_data) para liberar a etiqueta.
+
+    Retorna {"reported": bool, "reason": str}. Regras:
+      - Só envia DC-e de PRODUÇÃO (o ML recusa homologação) — decidido pela coluna
+        `OrderDce.environment` da própria linha emitida, não por toggle global.
+      - Idempotente por shipment: se `ml_reported_at` já está setado, não reenvia.
+    Levanta HTTPException se o ML recusar o documento (mensagem propagada ao chamador).
+    """
+    from datetime import UTC, datetime
+
+    from models.fiscal import OrderDce
+    from services.ml_auth import get_valid_token
+
+    q = select(OrderDce).where(OrderDce.status == "authorized")
+    q = q.where(OrderDce.shipment_id == order.shipment_id) if order.shipment_id \
+        else q.where(OrderDce.order_id == order.id)
+    dce = (await db.execute(q.order_by(OrderDce.id.desc()))).scalars().first()
+    if not dce or not dce.xml:
+        return {"reported": False, "reason": "no_dce"}
+    if dce.environment != "production":
+        return {"reported": False, "reason": "homolog"}
+    if dce.ml_reported_at:
+        return {"reported": True, "reason": "already"}
+
+    token = await get_valid_token(account, db)
+    await _ml.report_dce_invoice(token, order.shipment_id or dce.shipment_id, dce.xml)
+    dce.ml_reported_at = datetime.now(UTC)
+    try:
+        await db.commit()
+    except Exception as e:
+        print(f"[orders] failed to mark ml_reported_at dce={dce.id}: {e}")
+    return {"reported": True, "reason": "ok"}
+
+
+async def _cpf_label_invoice_pending(db, order: Order, account) -> None:
+    """CPF + invoice_pending: envia a DC-e ao ML (se produção/autorizada) e orienta o usuário.
+
+    Sempre levanta HTTPException 400 (a etiqueta não sai neste request; o usuário reclica
+    após o ML processar). Se o ML recusar o documento, a exceção de `report_dce_invoice`
+    propaga com o motivo do ML.
+    """
+    rep = await _report_dce_to_ml(db, order, account)
+    if rep.get("reported"):
+        raise HTTPException(
+            status_code=400,
+            detail="DC-e enviada ao Mercado Livre — aguarde alguns instantes e clique novamente para gerar a etiqueta.",
+        )
+    if rep.get("reason") == "homolog":
+        raise HTTPException(
+            status_code=400,
+            detail="DC-e emitida em homologação não libera a etiqueta real — configure a emissão em produção.",
+        )
+    raise HTTPException(status_code=400, detail=_DCE_PENDING_MSG)
+
+
 @router.get("/{order_id}/label")
 async def get_order_shipping_label(
     order_id: int,
@@ -3040,7 +3118,7 @@ async def get_order_shipping_label(
                     detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
                 )
             if issuer == "cpf":
-                raise HTTPException(status_code=400, detail=_DCE_PENDING_MSG)
+                await _cpf_label_invoice_pending(db, order, account)
             raise HTTPException(status_code=400, detail=_UNKNOWN_ISSUER_MSG)
 
     # Rede de segurança: se o pré-fetch falhou, o erro bruto do ML ainda revela
@@ -3070,7 +3148,7 @@ async def get_order_shipping_label(
                     detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
                 )
             if issuer == "cpf":
-                raise HTTPException(status_code=400, detail=_DCE_PENDING_MSG)
+                await _cpf_label_invoice_pending(db, order, account)
             raise HTTPException(status_code=400, detail=_UNKNOWN_ISSUER_MSG)
         raise
 

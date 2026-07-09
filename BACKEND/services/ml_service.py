@@ -261,29 +261,38 @@ async def emit_nfe(access_token: str, seller_id: str, order_ids: list) -> dict:
     return resp.json()
 
 
-async def emit_dce(access_token: str, seller_id: str, shipment_id: str, order_ids: list) -> dict:
-    """Emite a DC-e (Declaração de Conteúdo) de um envio sem NF-e (conta pessoa física).
+async def report_dce_invoice(access_token: str, shipment_id: str, xml: str | bytes) -> dict:
+    """Reporta a DC-e (XML procDCe autorizado) ao ML para liberar a etiqueta.
 
-    ⚠️ TODO — chamada ML ainda NÃO confirmada. O Mercado Livre não documenta
-    publicamente (403 no devsite) e não há endpoint conhecido de DC-e como há para
-    NF-e (Faturador). A DC-e é gerada pelo ML e já vem embutida na etiqueta ME2,
-    mas exige uma ação de "emitir" que tira o shipment de `invoice_pending`.
+    Mesmo endpoint que recebe a NF-e modelo 55: `POST /shipments/{id}/invoice_data?siteId=MLB`
+    com `Content-Type: application/xml` e o XML CRU no corpo (não JSON — não reserializar,
+    para não quebrar a assinatura XMLDSig). Envia a Declaração de Conteúdo (modelo 99).
 
-    Quando confirmarmos a requisição exata (capturando do painel do ML ou sondando
-    uma venda CPF em invoice_pending), plugar aqui o POST correto. Candidatos a
-    investigar: /shipments/{id}/invoice_data (POST), faturador "sem nota", ou um
-    endpoint de declaração de conteúdo por pack/shipment.
-
-    Por enquanto sinaliza que a emissão automática ainda não está conectada.
+    Levanta HTTPException com a mensagem do ML se recusar (ex.: modelo não aceito), para
+    o chamador distinguir "ML recusou o documento" de erro de rede/token.
     """
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Emissão automática de DC-e ainda não conectada à API do Mercado Livre. "
-            "Emita a Declaração de Conteúdo no painel do ML por enquanto; a etiqueta "
-            "já inclui a DC-e. (Integração em configuração.)"
-        ),
-    )
+    body = xml.encode("utf-8") if isinstance(xml, str) else xml
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{ML_API_BASE}/shipments/{shipment_id}/invoice_data",
+            params={"siteId": "MLB"},
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/xml"},
+            content=body,
+        )
+    if resp.status_code not in (200, 201, 204):
+        try:
+            data = resp.json()
+            msg = data.get("message") or data.get("error") or str(data)[:400]
+        except Exception:
+            msg = resp.text[:400]
+        raise HTTPException(
+            status_code=resp.status_code if resp.status_code >= 400 else 400,
+            detail=f"Mercado Livre recusou o documento fiscal (DC-e): {msg}",
+        )
+    try:
+        return resp.json()
+    except Exception:
+        return {"ok": True}
 
 
 async def get_shipment_invoice_data(access_token: str, shipment_id: str) -> dict:

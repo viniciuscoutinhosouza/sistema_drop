@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-07-09 — fix(dce): reporta a DC-e ao Mercado Livre para liberar a etiqueta (conta CPF)
+
+Bug (venda 2000017318796590): a DC-e era emitida na SVRS mas o sistema **nunca avisava o ML** →
+shipment ficava `invoice_pending` → etiqueta bloqueada. Verificado ao vivo (shipment 47478739656:
+`invoice_pending`, `GET /invoice_data`→404). O `ml_service.emit_dce` era um **stub 501**. Também: o
+toggle `NFE_ENV_PROD` era lido em `dce_service.py` mas **não existia** no `Settings` → produção
+inalcançável (a DC-e daquela venda saiu em homologação).
+
+- **`report_dce_invoice`** (ml_service): `POST /shipments/{id}/invoice_data?siteId=MLB`,
+  `application/xml`, XML `procDCe` **cru** (preserva a assinatura). Recusa do ML → HTTPException com o
+  motivo.
+- **`_report_dce_to_ml`** (orders): carrega a `OrderDce` autorizada; envia só se
+  `environment='production'` (o ML recusa homolog); idempotente por `order_dce.ml_reported_at`
+  (migration 124); token via `get_valid_token`.
+- **Wiring:** best-effort no fim de `emit-dce` (`ml_notified`/`ml_warning`, sem desfazer a emissão) +
+  `_cpf_label_invoice_pending` no fluxo da etiqueta (reporta a DC-e e orienta reclicar; recusa do ML
+  propaga).
+- **`config.py`:** declara `NFE_ENV_PROD: bool = False` (corrige o toggle morto; gate composto com
+  `production_released` por CMIG).
+- Migration 124 (`order_dce.ml_reported_at`). ADR-0017 atualizada (passo de report ao ML).
+- Auditado (consistency-auditor prévia + quality-guardian + adr-consistency-checker): sem
+  CRITICAL/HIGH. 7 testes novos (`test_dce_ml_report.py`); ruff limpo; app importa. **Pendente:** smoke
+  em produção (confirmar aceite do modelo 99 no `invoice_data` na 1ª emissão real).
+
+---
+
 ## 2026-07-07 — fix(estoque): reserva órfã de pedidos entregues zerava o disponível do anúncio
 
 Anúncio MLB4794270619 (produto PG 156, "Halter 24kg") mostrava estoque=2 mas 0 disponível:

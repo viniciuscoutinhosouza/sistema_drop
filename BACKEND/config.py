@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     NFE_ICP_CABUNDLE: str = ""
     # Verificação TLS do servidor da SEFAZ. False só em dev local.
     NFE_VERIFY_SSL: bool = False
+    # Ambiente da emissão fiscal PRÓPRIA: True = produção (tpAmb=1), False = homologação (tpAmb=2).
+    # A DC-e usa este toggle junto com CMIGFiscalConfig.production_released (gate por CMIG).
+    NFE_ENV_PROD: bool = False
     # Distribuição de DFe — Ambiente Nacional (pull das NF-e recebidas pelo CNPJ).
     NFE_DFE_AN_HOMOLOG: str = "https://hom1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
     NFE_DFE_AN_PROD: str = "https://www1.nfe.fazenda.gov.br/NFeDistribuicaoDFe/NFeDistribuicaoDFe.asmx"
