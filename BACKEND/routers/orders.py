@@ -183,6 +183,21 @@ _UNKNOWN_ISSUER_MSG = (
 )
 
 
+def _ml_dce_emitter_url(order: Order) -> str:
+    """Link do emissor de DC-e do PRÓPRIO Mercado Livre (o ML emite a DC-e e libera a etiqueta).
+
+    Decisão 2026-07-09: substitui a emissão própria via SEFAZ (ADR-0017, superseded) — evita
+    SEFAZ/ICP-Brasil/certificado. Reconstruído por venda a partir do `platform_order_id`.
+    """
+    from urllib.parse import quote
+
+    cb = quote("https://www.mercadolivre.com.br/vendas/omni/lista", safe="")
+    return (
+        "https://www.mercadolivre.com.br/emissor/omni/emitir/dce/sale/SALE_ML_DCE/"
+        f"{order.platform_order_id or ''}?source=ml&callbackWording=Vendas&callbackUrl={cb}"
+    )
+
+
 def _serialize_order_list(
     o: Order,
     images_by_catalog: dict,
@@ -1395,11 +1410,12 @@ async def emit_order_dce(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Emite a DC-e (Declaração de Conteúdo, modelo 68) de um pedido de conta pessoa física.
+    """Devolve o link do EMISSOR DE DC-e DO PRÓPRIO MERCADO LIVRE para o pedido (conta CPF).
 
-    A MIG assina com o A1 do CNPJ dela (perfil Marketplace, por conta e ordem) e transmite à
-    SVRS. Dedup por envio: pedidos de carrinho dividem o mesmo shipment/pack, então a DC-e é
-    uma só — marcamos todos os pedidos do mesmo shipment. Ver ADR (DC-e).
+    Decisão 2026-07-09 (supersede ADR-0017): a emissão própria de DC-e via SEFAZ está DORMENTE.
+    A DC-e passou a ser emitida pelo emissor omni do próprio ML — o ML emite e libera a etiqueta,
+    sem SEFAZ/ICP-Brasil/certificado do nosso lado. Este endpoint apenas reconstrói e devolve o
+    link; o front o abre em nova aba. (O código de auto-emissão permanece no repo, desativado.)
     """
     order = await _get_order_checked(db, order_id, current_user)
     if order.platform != "mercadolivre":
@@ -1416,70 +1432,7 @@ async def emit_order_dce(
     if issuer != "cpf":
         raise HTTPException(status_code=400, detail=_UNKNOWN_ISSUER_MSG)
 
-    # Idempotência: se a DC-e já foi emitida, não reemitir.
-    if order.dce_status in ("emitted", "pending"):
-        return {"ok": True, "already_existed": True, "dce_status": order.dce_status}
-
-    # Feature gate (rollout faseado): só emite de verdade quando o vendedor está autorizado
-    # ('por conta e ordem') E o certificado central do marketplace está configurado. Enquanto
-    # não estiver habilitado, mantém o comportamento atual (instrui emitir no painel do ML).
-    if not await _dce_feature_ready(db, order):
-        raise HTTPException(status_code=501, detail=_DCE_PENDING_MSG)
-
-    from services.fiscal.dce.dce_service import emitir_dce_para_pedido
-    from services.fiscal.dce.exceptions import DceError
-
-    try:
-        ret = await emitir_dce_para_pedido(db, order)
-    except DceError as e:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
-
-    if not ret.autorizado:
-        await db.commit()  # persiste a linha OrderDce 'rejected' para auditoria
-        raise HTTPException(
-            status_code=400,
-            detail=f"DC-e não autorizada (cStat {ret.cstat}): {ret.xmotivo or 'sem motivo'}",
-        )
-
-    # Dedup por envio: marca todos os pedidos do mesmo shipment como emitidos.
-    order.dce_status = "emitted"
-    if order.shipment_id:
-        await db.execute(
-            sa_update(Order)
-            .where(Order.shipment_id == order.shipment_id)
-            .values(dce_status="emitted")
-        )
-    await db.commit()
-
-    # Notifica o ML (POST invoice_data) para liberar a etiqueta. Best-effort: a DC-e já está
-    # autorizada; se o ML recusar (homolog, modelo 99 não aceito, rede/token), reporta no
-    # retorno SEM desfazer a emissão. Só envia DC-e de produção (guard em _report_dce_to_ml).
-    ml_notified, ml_warning = False, None
-    try:
-        account = await _get_account_for_order(db, order)
-        rep = await _report_dce_to_ml(db, order, account)
-        ml_notified = bool(rep.get("reported"))
-        if not ml_notified:
-            ml_warning = (
-                "DC-e emitida em homologação — não enviei ao Mercado Livre (não libera etiqueta real)."
-                if rep.get("reason") == "homolog"
-                else "DC-e emitida, mas sem XML autorizado para enviar ao Mercado Livre."
-            )
-    except HTTPException as e:
-        ml_warning = f"DC-e emitida, mas o Mercado Livre recusou o documento: {e.detail}"
-    except Exception as e:
-        ml_warning = f"DC-e emitida, mas falhou ao notificar o Mercado Livre: {e}"
-
-    return {
-        "ok": True,
-        "dce_status": order.dce_status,
-        "chave": ret.chave,
-        "protocolo": ret.protocolo,
-        "cstat": ret.cstat,
-        "ml_notified": ml_notified,
-        "ml_warning": ml_warning,
-    }
+    return {"ok": True, "ml_emitter": True, "emitter_url": _ml_dce_emitter_url(order)}
 
 
 @router.get("/{order_id}/dace.pdf")
@@ -3118,7 +3071,7 @@ async def get_order_shipping_label(
                     detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
                 )
             if issuer == "cpf":
-                await _cpf_label_invoice_pending(db, order, account)
+                raise HTTPException(status_code=400, detail=_DCE_PENDING_MSG)
             raise HTTPException(status_code=400, detail=_UNKNOWN_ISSUER_MSG)
 
     # Rede de segurança: se o pré-fetch falhou, o erro bruto do ML ainda revela
@@ -3148,7 +3101,7 @@ async def get_order_shipping_label(
                     detail="NF-e enviada para emissão automaticamente — assim que for autorizada (alguns instantes) clique novamente para gerar a etiqueta.",
                 )
             if issuer == "cpf":
-                await _cpf_label_invoice_pending(db, order, account)
+                raise HTTPException(status_code=400, detail=_DCE_PENDING_MSG)
             raise HTTPException(status_code=400, detail=_UNKNOWN_ISSUER_MSG)
         raise
 

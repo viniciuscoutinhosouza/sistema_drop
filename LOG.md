@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-07-09 — refactor(dce): DC-e passa a ser emitida pelo emissor do próprio ML (link) — supersede ADR-0017
+
+Ao ligar a emissão própria de DC-e em **produção**, o handshake TLS com a SEFAZ-PR falhou
+(`unable to get local issuer certificate` contra `dce.fazenda.pr.gov.br`): o Ubuntu não confia na
+raiz **ICP-Brasil v10** e o `NFE_ICP_CABUNDLE` era config morta (nunca carregado no
+`_build_ssl_context`). Em vez de resolver credenciamento + ICP-Brasil, adotou-se o **emissor de DC-e
+do próprio Mercado Livre**.
+
+- **Frontend** (`OrderListView.vue`): o botão "Emitir DC-e" vira um **link** (`dceEmitterUrl`) que
+  abre `mercadolivre.com.br/emissor/omni/emitir/dce/sale/SALE_ML_DCE/{platform_order_id}?...` — rota
+  real do ML, reconstruível por venda. O ML emite a DC-e e **libera a etiqueta**.
+- **Backend** (`emit_order_dce`): **neutralizado** — devolve `{ml_emitter, emitter_url}` (helper
+  `_ml_dce_emitter_url`), sem tocar na SEFAZ. Etiqueta CPF volta a instruir via `_DCE_PENDING_MSG`.
+- **Dormente (não removido, reversível):** `services/fiscal/dce/*`, `report_dce_invoice`,
+  `_report_dce_to_ml`, `_cpf_label_invoice_pending`, tabelas/migrations 120/121/124.
+- **Produção revertida:** `NFE_ENV_PROD=false` + `production_released=0` (CMIG 101) — some o erro 500.
+- ADR-0017 marcada **SUPERSEDED**. `report_dce_invoice`/`_report_dce_to_ml` seguem testados (dormentes).
+
+---
+
 ## 2026-07-09 — fix(dce): reporta a DC-e ao Mercado Livre para liberar a etiqueta (conta CPF)
 
 Bug (venda 2000017318796590): a DC-e era emitida na SVRS mas o sistema **nunca avisava o ML** →

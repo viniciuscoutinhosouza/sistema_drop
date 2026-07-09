@@ -1,7 +1,12 @@
 # ADR-0017 — Emissão de DC-e (modelo 99) no perfil Marketplace, direto na SVRS
 
 **Data:** 2026-07-04
-**Status:** Aceito (implementado — validado em homologação SVRS/SEFAZ-PR, cStat 100)
+**Status:** ⛔ **SUPERSEDED (2026-07-09)** — a emissão própria via SEFAZ foi **desativada** (código
+dormente) em favor do **emissor de DC-e do próprio Mercado Livre** (link `emissor/omni/emitir/dce`).
+Motivo: a emissão própria em produção exige credenciamento SEFAZ-PR + cadeia **ICP-Brasil** (o
+handshake TLS de produção falhou: `unable to get local issuer certificate` contra
+`dce.fazenda.pr.gov.br`) + `NFE_ICP_CABUNDLE` não estava wired. O ML emite a DC-e e libera a etiqueta
+sem nada disso do nosso lado. Ver o adendo "Virada para o emissor do ML" abaixo.
 **Decisores:** Vinicius (proprietário) + contador
 
 ## Contexto
@@ -37,7 +42,32 @@ MIG** (perfil Marketplace, `tpEmit=1`), reaproveitando a infra de NF-e (`service
 - **Ambiente:** `tpAmb=2` (homologação) enquanto `production_released`/`NFE_ENV_PROD` não estiverem
   ligados; produção com `tpAmb=1` após validação.
 
-## Notificação ao Mercado Livre (libera a etiqueta) — adendo 2026-07-09
+## Virada para o emissor de DC-e do Mercado Livre — adendo 2026-07-09 (SUPERSEDE esta ADR)
+
+Ao ligar a emissão própria em **produção**, o handshake TLS com a SEFAZ-PR falhou
+(`SefazError: TLS handshake falhou contra dce.fazenda.pr.gov.br: unable to get local issuer
+certificate`): o Ubuntu não confia na raiz **ICP-Brasil "Autoridade Certificadora Raiz Brasileira
+v10"** (a folha da SEFAZ encadeia por `AC SOLUTI SSL EV G4` → AC-Raiz v10) e o `NFE_ICP_CABUNDLE`
+era **config morta** (declarado mas nunca carregado no `_build_ssl_context`).
+
+Em vez de resolver credenciamento + ICP-Brasil, adotou-se o **emissor de DC-e do próprio ML**: o
+botão "Emitir DC-e" abre
+`https://www.mercadolivre.com.br/emissor/omni/emitir/dce/sale/SALE_ML_DCE/{platform_order_id}?source=ml&callbackWording=Vendas&callbackUrl=<lista de vendas>`
+(rota real do ML, reconstruível por venda). O **ML emite a DC-e e libera a etiqueta** — sem SEFAZ,
+ICP-Brasil ou certificado do nosso lado.
+
+- **Frontend** (`OrderListView.vue`): o botão vira um link (`dceEmitterUrl`) que abre o emissor do ML.
+- **Backend** (`emit_order_dce`): **neutralizado** — devolve `{ml_emitter, emitter_url}` (helper
+  `_ml_dce_emitter_url`), sem tocar na SEFAZ. O fluxo da etiqueta CPF volta a instruir via
+  `_DCE_PENDING_MSG`.
+- **Dormente (não removido):** `services/fiscal/dce/*`, `report_dce_invoice`, `_report_dce_to_ml`,
+  `_cpf_label_invoice_pending`, e as tabelas/migrations (120/121/124 já rodaram). Reversível.
+- **Produção revertida:** `NFE_ENV_PROD=false` + `production_released=0` (CMIG 101).
+
+Se um dia a emissão própria for retomada, além de reverter o acima, **corrigir** o `NFE_ICP_CABUNDLE`
+(carregá-lo em `_build_ssl_context` via `load_verify_locations`) e instalar a cadeia ICP-Brasil.
+
+## Notificação ao Mercado Livre (libera a etiqueta) — adendo 2026-07-09 (histórico; superseded)
 
 A emissão na SVRS autoriza a DC-e, mas o **ML não libera a etiqueta** enquanto o shipment está em
 `substatus=invoice_pending` — ele precisa **receber o documento fiscal**. Isso valia para NF-e

@@ -444,18 +444,19 @@
                 >
                   <i class="fas fa-spinner fa-spin mr-1"></i>Processando DC-e…
                 </button>
-                <!-- Emitir DC-e -->
-                <button
+                <!-- Emitir DC-e — abre o emissor do próprio Mercado Livre (o ML emite e libera a etiqueta) -->
+                <a
                   v-else-if="order.platform === 'mercadolivre' && order.fiscal_issuer_type === 'cpf'"
+                  :href="dceEmitterUrl(order)"
+                  target="_blank"
+                  rel="noopener"
                   class="btn btn-sm btn-outline-warning flex-grow-1"
                   style="font-size:.78rem"
-                  :disabled="dceEmitting[order.id]"
-                  @click="emitDce(order)"
-                  title="Emitir a Declaração de Conteúdo (DC-e) — conta pessoa física não emite NF-e"
+                  title="Emitir a Declaração de Conteúdo (DC-e) no Mercado Livre — conta pessoa física não emite NF-e. O ML emite a DC-e e libera a etiqueta."
                 >
-                  <i class="fas fa-file-signature mr-1"></i>
-                  {{ dceEmitting[order.id] ? 'Emitindo…' : 'Emitir DC-e' }}
-                </button>
+                  <i class="fas fa-file-signature mr-1"></i>Emitir DC-e
+                  <i class="fas fa-external-link-alt ml-1" style="font-size:.7em"></i>
+                </a>
                 <!-- ML sem NF-e (CNPJ ou indefinido): emitir -->
                 <button
                   v-else-if="order.platform === 'mercadolivre'"
@@ -678,7 +679,6 @@ const syncingRange = ref(false)
 const syncRangeResult = ref(null)
 const syncRange = ref({ date_from: '', date_to: '', platform: 'all' })
 const nfeEmitting = ref({})
-const dceEmitting = ref({})
 const showInvoicesModal = ref(false)
 const invoicesOrder = ref(null)
 const showShipmentModal = ref(false)
@@ -1223,28 +1223,12 @@ async function emitNfe(order) {
   }
 }
 
-// Conta pessoa física (CPF): a MIG emite a DC-e na SEFAZ por conta e ordem do vendedor.
-async function emitDce(order) {
-  dceEmitting.value[order.id] = true
-  try {
-    const { data } = await api.post(`/orders/${order.id}/emit-dce`)
-    order.dce_status = data.dce_status
-    if (data.already_existed) {
-      toast.info('DC-e já estava emitida.')
-    } else {
-      toast.success(`DC-e autorizada! Protocolo ${data.protocolo || ''}. Baixe o DACE no botão.`)
-    }
-  } catch (err) {
-    const detail = err.response?.data?.detail || 'Erro ao emitir DC-e'
-    // 501 = emissão ainda não habilitada para este vendedor (autorização/certificado).
-    if (err.response?.status === 501) {
-      toast.warning('Emissão de DC-e ainda não habilitada para este vendedor (autorização/certificado).')
-    } else {
-      toast.error(detail)
-    }
-  } finally {
-    dceEmitting.value[order.id] = false
-  }
+// Conta pessoa física (CPF): a DC-e é emitida pelo emissor do PRÓPRIO Mercado Livre.
+// O botão abre este link (o ML emite a DC-e e libera a etiqueta) — sem SEFAZ do nosso lado.
+function dceEmitterUrl(order) {
+  const cb = encodeURIComponent('https://www.mercadolivre.com.br/vendas/omni/lista')
+  return `https://www.mercadolivre.com.br/emissor/omni/emitir/dce/sale/SALE_ML_DCE/${order.platform_order_id}` +
+    `?source=ml&callbackWording=Vendas&callbackUrl=${cb}`
 }
 
 // Baixa o DACE (PDF) da DC-e autorizada.
