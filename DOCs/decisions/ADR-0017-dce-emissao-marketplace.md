@@ -60,9 +60,20 @@ ICP-Brasil ou certificado do nosso lado.
 - **Backend** (`emit_order_dce`): **neutralizado** — devolve `{ml_emitter, emitter_url}` (helper
   `_ml_dce_emitter_url`), sem tocar na SEFAZ. O fluxo da etiqueta CPF volta a instruir via
   `_DCE_PENDING_MSG`.
-- **Dormente (não removido):** `services/fiscal/dce/*`, `report_dce_invoice`, `_report_dce_to_ml`,
-  `_cpf_label_invoice_pending`, e as tabelas/migrations (120/121/124 já rodaram). Reversível.
-- **Produção revertida:** `NFE_ENV_PROD=false` + `production_released=0` (CMIG 101).
+- **Código de auto-emissão REMOVIDO (2026-07-09):** apagados `dce_service`, `xml_builder_dce`,
+  `dce_signer`, `chave_dce`, `ibge` (+ testes `test_dce_xml`/`test_dce_ibge`/`test_dce_ml_report`),
+  `report_dce_invoice`, `_report_dce_to_ml`, `_cpf_label_invoice_pending`, `_dce_feature_ready`,
+  `NFE_ENV_PROD` e `OrderDce.ml_reported_at`. **Mantidos** (ainda ativos): `dce_client`,
+  `signer_cert`, `dace`, `exceptions` (teste de certificado central + DACE de legado), `OrderDce`
+  (resolução de doc em `order_docs`), `emit_order_dce` (neutralizado → link) e `get_order_dace`.
+  As tabelas/migrations 120/121/124 permanecem (já rodaram; a tabela `order_dce` guarda legado).
+- **Produção revertida:** `production_released=0` (CMIG 101). `NFE_ENV_PROD` deixou de existir.
+
+**Motivo comprovado de que a auto-emissão NÃO liberaria a etiqueta** (teste ao vivo 2026-07-09): mesmo
+com uma DC-e de produção autorizada (emitida pelo ML), o `GET /shipments/{id}/invoice_data` continua
+**404** — ou seja, o `invoice_data` do ML **não guarda/aceita DC-e (modelo 99)**, só NF-e modelo 55.
+A DC-e é 100% interna ao emissor do ML (assina com o certificado do próprio ML/Marketplace). Logo não
+há como um terceiro reportar a DC-e via API — o link do emissor do ML é o único caminho.
 
 Se um dia a emissão própria for retomada, além de reverter o acima, **corrigir** o `NFE_ICP_CABUNDLE`
 (carregá-lo em `_build_ssl_context` via `load_verify_locations`) e instalar a cadeia ICP-Brasil.

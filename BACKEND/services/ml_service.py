@@ -261,40 +261,6 @@ async def emit_nfe(access_token: str, seller_id: str, order_ids: list) -> dict:
     return resp.json()
 
 
-async def report_dce_invoice(access_token: str, shipment_id: str, xml: str | bytes) -> dict:
-    """Reporta a DC-e (XML procDCe autorizado) ao ML para liberar a etiqueta.
-
-    Mesmo endpoint que recebe a NF-e modelo 55: `POST /shipments/{id}/invoice_data?siteId=MLB`
-    com `Content-Type: application/xml` e o XML CRU no corpo (não JSON — não reserializar,
-    para não quebrar a assinatura XMLDSig). Envia a Declaração de Conteúdo (modelo 99).
-
-    Levanta HTTPException com a mensagem do ML se recusar (ex.: modelo não aceito), para
-    o chamador distinguir "ML recusou o documento" de erro de rede/token.
-    """
-    body = xml.encode("utf-8") if isinstance(xml, str) else xml
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{ML_API_BASE}/shipments/{shipment_id}/invoice_data",
-            params={"siteId": "MLB"},
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/xml"},
-            content=body,
-        )
-    if resp.status_code not in (200, 201, 204):
-        try:
-            data = resp.json()
-            msg = data.get("message") or data.get("error") or str(data)[:400]
-        except Exception:
-            msg = resp.text[:400]
-        raise HTTPException(
-            status_code=resp.status_code if resp.status_code >= 400 else 400,
-            detail=f"Mercado Livre recusou o documento fiscal (DC-e): {msg}",
-        )
-    try:
-        return resp.json()
-    except Exception:
-        return {"ok": True}
-
-
 async def get_shipment_invoice_data(access_token: str, shipment_id: str) -> dict:
     """Return invoice data from GET /shipments/{id}/invoice_data?siteId=MLB (or {} on error)."""
     try:

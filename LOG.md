@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-07-09 — chore(dce): remove o código dormente da auto-emissão SEFAZ (DC-e vem do emissor do ML)
+
+Teste ao vivo provou que a auto-emissão nunca liberaria a etiqueta: mesmo com uma DC-e de produção
+autorizada (emitida pelo ML), o `GET /shipments/{id}/invoice_data` fica **404** — o `invoice_data` do
+ML **não aceita DC-e (modelo 99)**, só NF-e 55; a DC-e é interna ao emissor do ML (assinada com o
+certificado do próprio ML). Confirmado que a opção B (auto-emitir + reportar) é inviável → removido o
+código morto.
+
+- **Removidos:** `services/fiscal/dce/{dce_service,xml_builder_dce,dce_signer,chave_dce,ibge}.py`,
+  testes `test_dce_{xml,ibge,ml_report}.py`, `ml_service.report_dce_invoice`,
+  `orders.{_report_dce_to_ml,_cpf_label_invoice_pending,_dce_feature_ready}`, `config.NFE_ENV_PROD`,
+  `OrderDce.ml_reported_at` (atributo do model; coluna fica no banco).
+- **Mantidos (ativos):** `dce_client`/`signer_cert`/`dace`/`exceptions` (teste de certificado central
+  em `marketplace_settings` + DACE de legado via `get_order_dace`), `OrderDce` (usado por
+  `order_docs`), `emit_order_dce` (neutralizado → devolve o link do emissor do ML) e o botão do
+  frontend (opção A). Migrations 120/121/124 e a tabela `order_dce` permanecem.
+- ADR-0017 atualizada. Verificação: ruff limpo; `import main` OK; `pytest -m "not integration"`
+  **86 passed / 2 pré-existentes**; grep confirma **zero** referências remanescentes aos símbolos
+  removidos (backend + frontend).
+
+---
+
 ## 2026-07-09 — refactor(dce): DC-e passa a ser emitida pelo emissor do próprio ML (link) — supersede ADR-0017
 
 Ao ligar a emissão própria de DC-e em **produção**, o handshake TLS com a SEFAZ-PR falhou
