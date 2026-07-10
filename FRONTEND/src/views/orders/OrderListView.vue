@@ -622,6 +622,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import api from '@/composables/useApi'
 import { formatCurrency, formatDateTime, formatDate } from '@/utils/formatters'
+import { saveBlobResponse, openAndSaveBlobResponse } from '@/utils/download'
 import { ORDER_STATUSES, PLATFORMS, SHIPPING_MODE_STYLE, shippingModeStyle, platformLogo } from '@/utils/constants'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
@@ -804,11 +805,8 @@ async function downloadManualLabel(order) {
   if (manualLabelLoading.value[order.id]) return
   manualLabelLoading.value[order.id] = true
   try {
-    const { data } = await api.get(`/manual-orders/${order.id}/label.pdf`, { responseType: 'blob' })
-    const blob = new Blob([data], { type: 'application/pdf' })
-    const url = URL.createObjectURL(blob)
-    window.open(url, '_blank')
-    setTimeout(() => URL.revokeObjectURL(url), 10000)
+    const resp = await api.get(`/manual-orders/${order.id}/label.pdf`, { responseType: 'blob' })
+    openAndSaveBlobResponse(resp, `Etiqueta-pedido-${order.id}.pdf`, 'application/pdf')
   } catch (e) {
     toast.error(e?.response?.data?.detail || 'Falha ao gerar etiqueta')
   } finally {
@@ -922,10 +920,8 @@ async function printShippingLabel(order) {
   }
   labelLoading.value[order.id] = true
   try {
-    const { data } = await api.get(`/orders/${order.id}/label`, { responseType: 'blob' })
-    const blobUrl = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }))
-    window.open(blobUrl, '_blank')
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000)
+    const resp = await api.get(`/orders/${order.id}/label`, { responseType: 'blob' })
+    openAndSaveBlobResponse(resp, `Etiqueta-${order.platform_order_id || order.id}.pdf`, 'application/pdf')
     // Marca cache na lista local para o ícone ficar verde sem reload
     if (!order.label_cached_at) order.label_cached_at = new Date().toISOString()
   } catch (err) {
@@ -1234,10 +1230,8 @@ function dceEmitterUrl(order) {
 // Baixa o DACE (PDF) da DC-e autorizada.
 async function downloadDace(order) {
   try {
-    const { data } = await api.get(`/orders/${order.id}/dace.pdf`, { responseType: 'blob' })
-    const url = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }))
-    window.open(url, '_blank')
-    setTimeout(() => URL.revokeObjectURL(url), 60000)
+    const resp = await api.get(`/orders/${order.id}/dace.pdf`, { responseType: 'blob' })
+    openAndSaveBlobResponse(resp, `DACE-${order.platform_order_id || order.id}.pdf`, 'application/pdf')
   } catch (err) {
     let msg = 'Erro ao baixar o DACE'
     try { msg = JSON.parse(await err.response.data.text()).detail || msg } catch { /* ignore */ }
@@ -1270,20 +1264,15 @@ async function _getOrderInvoices(orderId) {
 }
 
 async function _downloadBlob(url, filename, type) {
-  const { data } = await api.get(url, { responseType: 'blob' })
-  const blobUrl = URL.createObjectURL(new Blob([data], { type }))
-  const a = document.createElement('a')
-  a.href = blobUrl
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(blobUrl)
+  // nome do arquivo vem do Content-Disposition do backend (Tipo_venda_cliente); `filename` é fallback
+  const resp = await api.get(url, { responseType: 'blob' })
+  saveBlobResponse(resp, filename, type)
 }
 
-async function _openBlobPdf(url) {
-  const { data } = await api.get(url, { responseType: 'blob' })
-  const blobUrl = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }))
-  window.open(blobUrl, '_blank')
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 60000)
+async function _openBlobPdf(url, fallbackName = 'DANFE.pdf') {
+  // abre para imprimir E baixa cópia nomeada (nome vem do Content-Disposition do backend)
+  const resp = await api.get(url, { responseType: 'blob' })
+  openAndSaveBlobResponse(resp, fallbackName, 'application/pdf')
 }
 
 async function bulkDownloadXml() {

@@ -1,8 +1,8 @@
+import asyncio
 import io as _io
 import json as _json
 import logging
 import re as _re
-import uuid as _uuid
 import zipfile as _zipfile
 from datetime import date, datetime
 from decimal import Decimal
@@ -16,8 +16,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-import asyncio
-
 from database import get_db, task_db
 from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
@@ -28,11 +26,12 @@ from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
 from services import ml_service as _ml
+from services.file_naming import TIPO_DANFE, TIPO_NFE, order_download_filename
 from services.fiscal import dfe_service, sefaz_service
-from services.fiscal.sefaz.exceptions import FiscalError as _SefazFiscalError
-from services.fiscal.sefaz.exceptions import SefazError as _SefazNetError
 from services.fiscal.icms_table import compute_difal, get_icms_rate
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
+from services.fiscal.sefaz.exceptions import FiscalError as _SefazFiscalError
+from services.fiscal.sefaz.exceptions import SefazError as _SefazNetError
 from services.fiscal.tax_calculator import calculate_item_taxes, suggest_cfop
 
 logger = logging.getLogger(__name__)
@@ -752,7 +751,7 @@ async def export_outbound_invoices(
     used_names: set[str] = set()
     buf = _io.BytesIO()
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True):
         with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
             for r in rows:
                 label = f"NFe {r['nfe_number'] or r['access_key'] or r['id']}"
@@ -1763,6 +1762,15 @@ def _read_authorized_xml(inv: Invoice) -> str:
     return p.read_text(encoding="utf-8")
 
 
+def _invoice_download_name(inv, tipo: str, ext: str) -> str:
+    """Nome do arquivo da NF-e: usa o pedido vinculado (venda + cliente) quando existe;
+    senão (NF-e de entrada, sem pedido) cai para a chave/número da nota."""
+    if getattr(inv, "order", None) is not None:
+        return order_download_filename(tipo, ext, order=inv.order)
+    venda = inv.access_key or f"nfe-{inv.id}"
+    return order_download_filename(tipo, ext, venda=venda, cliente=None)
+
+
 @router.get("/{invoice_id}/xml")
 async def download_xml(
     invoice_id: int,
@@ -1770,12 +1778,16 @@ async def download_xml(
     current_user: User = Depends(get_current_user),
 ):
     """Baixa o XML autorizado (procNFe) da NF-e própria."""
-    inv = (await db.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one_or_none()
+    inv = (
+        await db.execute(
+            select(Invoice).where(Invoice.id == invoice_id).options(selectinload(Invoice.order))
+        )
+    ).scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, current_user, db)
     xml = _read_authorized_xml(inv)
-    fname = f"NFe-{inv.access_key or inv.id}.xml"
+    fname = _invoice_download_name(inv, TIPO_NFE, "xml")
     return Response(
         content=xml.encode("utf-8"), media_type="application/xml",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
@@ -1791,7 +1803,11 @@ async def download_danfe(
     """Gera e baixa o DANFE PDF da NF-e própria (a partir do XML autorizado)."""
     from services.fiscal.sefaz.danfe import DanfeError, gerar_danfe
 
-    inv = (await db.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one_or_none()
+    inv = (
+        await db.execute(
+            select(Invoice).where(Invoice.id == invoice_id).options(selectinload(Invoice.order))
+        )
+    ).scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, current_user, db)
@@ -1800,7 +1816,7 @@ async def download_danfe(
         pdf = await asyncio.to_thread(gerar_danfe, xml)
     except DanfeError as e:
         raise HTTPException(status_code=422, detail=f"Falha ao gerar DANFE: {e}")
-    fname = f"DANFE-{inv.access_key or inv.id}.pdf"
+    fname = _invoice_download_name(inv, TIPO_DANFE, "pdf")
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{fname}"'},

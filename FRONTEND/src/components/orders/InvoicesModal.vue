@@ -117,6 +117,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { formatDateTime as fmtBrDateTime } from '@/utils/formatters'
+import { saveBlobResponse, openAndSaveBlobResponse } from '@/utils/download'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 
@@ -165,16 +166,11 @@ async function downloadXml(inv) {
   const key = inv.id + '_xml'
   downloading.value[key] = true
   try {
-    const { data } = await api.get(
+    const resp = await api.get(
       `/orders/${props.order.id}/invoices/${inv.id}/xml`,
       { responseType: 'blob' },
     )
-    const url = URL.createObjectURL(new Blob([data], { type: 'application/xml' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `NFe_${inv.invoice_number || inv.id}.xml`
-    a.click()
-    URL.revokeObjectURL(url)
+    saveBlobResponse(resp, `NFe_${inv.invoice_number || inv.id}.xml`, 'application/xml')
   } catch (err) {
     toast.error(err.response?.data?.detail || 'Erro ao baixar XML')
   } finally {
@@ -186,14 +182,11 @@ async function openDanfe(inv) {
   const key = inv.id + '_danfe'
   downloading.value[key] = true
   try {
-    const { data } = await api.get(
+    const resp = await api.get(
       `/orders/${props.order.id}/invoices/${inv.id}/danfe`,
       { responseType: 'blob' },
     )
-    const url = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }))
-    window.open(url, '_blank')
-    // revoke after delay so the new tab can load
-    setTimeout(() => URL.revokeObjectURL(url), 60000)
+    openAndSaveBlobResponse(resp, `DANFE_${inv.invoice_number || inv.id}.pdf`, 'application/pdf')
   } catch (err) {
     toast.error(err.response?.data?.detail || 'Erro ao abrir DANFE')
   } finally {

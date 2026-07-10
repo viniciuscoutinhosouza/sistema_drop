@@ -371,6 +371,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useFiscalStore } from '@/stores/fiscal'
 import { useToast } from '@/composables/useToast'
+import { saveBlobResponse } from '@/utils/download'
 import api from '@/composables/useApi'
 import { fmt } from '@/views/fiscal/_helpers'
 import ManifestationModal from '@/components/fiscal/ManifestationModal.vue'
@@ -401,17 +402,11 @@ async function baixar(kind) {
   if (!invoice.value) return
   downloading.value = true
   try {
-    const { data } = await api.get(`/invoices/${invoice.value.id}/${kind}`, { responseType: 'blob' })
+    const resp = await api.get(`/invoices/${invoice.value.id}/${kind}`, { responseType: 'blob' })
     const ext = kind === 'danfe' ? 'pdf' : 'xml'
     const chave = invoice.value.access_key || invoice.value.id
-    const url = URL.createObjectURL(new Blob([data]))
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `${kind === 'danfe' ? 'DANFE' : 'NFe'}-${chave}.${ext}`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
+    // nome vem do Content-Disposition do backend (Tipo_venda_cliente); fallback abaixo
+    saveBlobResponse(resp, `${kind === 'danfe' ? 'DANFE' : 'NFe'}-${chave}.${ext}`)
   } catch (e) {
     toast.error(e.response?.data?.detail || `Erro ao baixar ${kind.toUpperCase()}`)
   } finally {

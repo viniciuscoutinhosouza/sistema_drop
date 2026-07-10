@@ -17,7 +17,6 @@ import logging
 import re as _re
 import zipfile as _zipfile
 from datetime import UTC, datetime
-from pathlib import Path as _Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -38,14 +37,15 @@ from models.picking import PickingCart, PickingCartItem, PickingCartOrder
 from models.product import CatalogProduct, CatalogProductComponent
 from models.user import User
 from models.warehouse import Warehouse
-from services import ml_service as _ml
-from services import picking_service as ps
-from services.label_service import LABEL_LAYOUT_LABELS, render_shipping_labels
-from services.order_item_resolver import resolve_order_item_link
-from services.picking_list_service import render_picking_list
 
 # Reuso da lógica de NF-e da Gestão de Pedidos
 from routers.orders import _extract_nfe_fields, _ml_nfe_url  # noqa: E402
+from services import ml_service as _ml
+from services import picking_service as ps
+from services.file_naming import TIPO_DANFE, order_download_filename, slugify_name
+from services.label_service import LABEL_LAYOUT_LABELS, render_shipping_labels
+from services.order_item_resolver import resolve_order_item_link
+from services.picking_list_service import render_picking_list
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1161,7 +1161,10 @@ async def order_danfe(
     content, _ctype = await _ml.fetch_invoice_file(acc.access_token, path)
     return Response(
         content=content, media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="DANFE_{order.id}.pdf"'},
+        headers={
+            "Content-Disposition":
+                f'inline; filename="{order_download_filename(TIPO_DANFE, "pdf", order=order)}"'
+        },
     )
 
 
@@ -1365,7 +1368,15 @@ async def cart_bundle(
 
     # 4) Monta o ZIP
     base = cart.cart_number
-    docs = [(str(o.platform_order_id or o.id), chave, danfe, xml) for _p, o, chave, danfe, xml in included]
+    # ref interno do ZIP = <venda>_<cliente> (a pasta NF-e/ + extensão já indicam o tipo)
+    docs = [
+        (
+            f"{slugify_name(str(o.platform_order_id or o.id), 30, 'sem-venda')}"
+            f"_{slugify_name(o.buyer_name)}",
+            chave, danfe, xml,
+        )
+        for _p, o, chave, danfe, xml in included
+    ]
     zip_bytes = _assemble_bundle_zip(base, docs, label_files, avisos)
 
     # 5) Carimba impresso (NF-e sempre; etiqueta quando gerada) → libera 'Concluir'

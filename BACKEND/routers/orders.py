@@ -29,6 +29,13 @@ from models.user import User
 from models.webhook import WebhookEvent
 from services import ml_service as _ml
 from services.datetime_br import BR_TZ
+from services.file_naming import (
+    TIPO_DACE,
+    TIPO_DANFE,
+    TIPO_ETIQUETA,
+    TIPO_NFE,
+    order_download_filename,
+)
 from services.financial_service import debit_balance
 from services.shipping_mode import classify_logistic_type, label_for_mode
 
@@ -1432,7 +1439,10 @@ async def get_order_dace(
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="DACE_{row.chave}.pdf"'},
+        headers={
+            "Content-Disposition":
+                f'inline; filename="{order_download_filename(TIPO_DACE, "pdf", order=order)}"'
+        },
     )
 
 
@@ -2855,7 +2865,10 @@ async def download_invoice_xml(
     return Response(
         content=content,
         media_type="application/xml",
-        headers={"Content-Disposition": f'attachment; filename="NFe_{invoice_id}.xml"'},
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{order_download_filename(TIPO_NFE, "xml", order=order)}"'
+        },
     )
 
 
@@ -2918,7 +2931,7 @@ async def get_order_shipping_label(
 
     ext = "zpl" if fmt == "zpl2" else "pdf"
     media_type = "text/plain" if fmt == "zpl2" else "application/pdf"
-    filename = f"etiqueta_{order.platform_order_id}_{order.shipment_id}.{ext}"
+    filename = order_download_filename(TIPO_ETIQUETA, ext, order=order)
     cache_path = _LABELS_DIR / f"{order.shipment_id}.{ext}"
 
     # Try cache first (unless forced refresh)
@@ -3058,5 +3071,8 @@ async def download_invoice_danfe(
         content=content,
         media_type="application/pdf",
         # inline: browser abre diretamente (para imprimir); use attachment para forçar download
-        headers={"Content-Disposition": f'inline; filename="DANFE_{invoice_id}.pdf"'},
+        headers={
+            "Content-Disposition":
+                f'inline; filename="{order_download_filename(TIPO_DANFE, "pdf", order=order)}"'
+        },
     )

@@ -264,6 +264,7 @@
 <script setup>
 import { ref, computed, onMounted, nextTick, reactive } from 'vue'
 import { formatDate as fmtBrDate, formatDateTime as fmtBrDateTime } from '@/utils/formatters'
+import { openAndSaveBlobResponse } from '@/utils/download'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { platformLogo, shippingModeStyle, PLATFORMS } from '@/utils/constants'
@@ -554,9 +555,8 @@ async function openPdf(url, method, body, params) {
   try {
     const cfg = { responseType: 'blob', params }
     const resp = method === 'post' ? await api.post(url, body, cfg) : await api.get(url, cfg)
-    const blobUrl = URL.createObjectURL(new Blob([resp.data], { type: 'application/pdf' }))
-    window.open(blobUrl, '_blank')
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000)
+    // abre para imprimir E baixa cópia nomeada (nome vem do Content-Disposition do backend)
+    openAndSaveBlobResponse(resp, 'documento.pdf', 'application/pdf')
   } catch (e) {
     // erro pode vir como blob JSON
     let msg = 'Erro ao gerar PDF'

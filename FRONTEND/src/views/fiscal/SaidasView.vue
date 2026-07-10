@@ -228,6 +228,7 @@ import { useCmigStore } from '@/stores/cmig'
 import { useToast } from '@/composables/useToast'
 import { fmt } from '@/views/fiscal/_helpers'
 import { brToday } from '@/utils/formatters'
+import { saveBlobResponse, openAndSaveBlobResponse } from '@/utils/download'
 import api from '@/composables/useApi'
 import XmlImportModal from '@/components/fiscal/XmlImportModal.vue'
 
@@ -377,10 +378,8 @@ async function viewDanfe(inv) {
     const path = inv.source === 'fiscal'
       ? `/invoices/${inv.id}/danfe`
       : `/orders/${inv.order_id}/invoices/${inv.ml_invoice_id}/danfe`
-    const { data } = await api.get(path, { responseType: 'blob' })
-    const url = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }))
-    window.open(url, '_blank')
-    setTimeout(() => URL.revokeObjectURL(url), 60000)
+    const resp = await api.get(path, { responseType: 'blob' })
+    openAndSaveBlobResponse(resp, `DANFE-${inv.access_key || inv.ml_invoice_id || inv.id}.pdf`, 'application/pdf')
   } catch (e) {
     toast.error(await parseBlobError(e, 'Erro ao abrir DANFE'))
   } finally {
@@ -396,13 +395,8 @@ async function downloadXml(inv) {
     const path = inv.source === 'fiscal'
       ? `/invoices/${inv.id}/xml`
       : `/orders/${inv.order_id}/invoices/${inv.ml_invoice_id}/xml`
-    const { data } = await api.get(path, { responseType: 'blob' })
-    const url = URL.createObjectURL(new Blob([data], { type: 'application/xml' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `NFe_${inv.access_key || inv.ml_invoice_id}.xml`
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 60000)
+    const resp = await api.get(path, { responseType: 'blob' })
+    saveBlobResponse(resp, `NFe_${inv.access_key || inv.ml_invoice_id}.xml`, 'application/xml')
   } catch (e) {
     toast.error(await parseBlobError(e, 'Erro ao baixar XML'))
   } finally {

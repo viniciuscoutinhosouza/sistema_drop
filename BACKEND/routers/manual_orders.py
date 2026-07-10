@@ -13,6 +13,7 @@ from models.order import Order, OrderItem
 from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
+from services.file_naming import TIPO_ETIQUETA, order_download_filename
 from services.shipping_mode import MODE_COMBINADO
 
 router = APIRouter()
@@ -195,7 +196,8 @@ async def create_manual_order(
     )
     is_fully_cmig = pg_cost_total == 0 and shipping_cost == 0
 
-    from datetime import UTC as _UTC, datetime as _datetime
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
     order = Order(
         dropshipper_id=current_user.id,
         cmig_id=cmig_id,
@@ -331,5 +333,8 @@ async def manual_order_label(
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="etiqueta-pedido-{order.id}.pdf"'},
+        headers={
+            "Content-Disposition":
+                f'inline; filename="{order_download_filename(TIPO_ETIQUETA, "pdf", order=order)}"'
+        },
     )
