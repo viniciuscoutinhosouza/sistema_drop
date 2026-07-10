@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-07-10 — feat(downloads): nome de arquivo padronizado Tipo_venda_cliente (etiqueta/NF-e/DANFE/DACE)
+
+Todo arquivo de pedido baixado passa a sair nomeado com **tipo + número da venda + nome do cliente**
+(ex.: `Etiqueta_2000017318796590_Elaine-C.pdf`, `NF-e_..._Elaine-C.xml`). Etiqueta/DANFE/DACE (que
+abrem em nova aba para imprimir) agora **abrem E baixam** uma cópia já nomeada (escolha do usuário).
+
+- **Backend:** novo `services/file_naming.py` — `slugify_name` (ASCII estrito via NFKD + ascii-ignore,
+  protege o `Content-Disposition` contra header injection do nome do comprador) + `order_download_filename`
+  (`Tipo_venda_cliente[_extra].ext`) + constantes `TIPO_ETIQUETA/NFE/DANFE/DACE`. Aplicado no
+  `Content-Disposition` de `orders` (etiqueta, NF-e XML, DANFE, DACE), `manual_orders` (etiqueta),
+  `separation` (DANFE + nomes internos do ZIP) e `invoices` (Saídas XML/DANFE — com
+  `selectinload(Invoice.order)` + fallback p/ NF-e de entrada sem pedido).
+- **Frontend:** novo `utils/download.js` — como o blob URL perde o header, o front lê o
+  `Content-Disposition` e usa como `a.download` (backend = fonte única do nome). `saveBlobResponse` +
+  `openAndSaveBlobResponse` aplicados em OrderList, Saídas, Detalhe NF-e, modal NF-e e Separação.
+- Auditoria: consistency-auditor (prévia, CRITICAL de header-injection incorporado) + quality-guardian
+  (sem CRITICAL/HIGH). Verificação: ruff limpo; `import main` OK; `pytest test_file_naming/test_separation`
+  OK; `npm run build` OK. **Sem migration.** Deploy `c7ed84c` em produção (docs 200, cmigs 401, sem
+  ImportError, PM2 estável).
+
+---
+
 ## 2026-07-09 — chore(dce): remove o código dormente da auto-emissão SEFAZ (DC-e vem do emissor do ML)
 
 Teste ao vivo provou que a auto-emissão nunca liberaria a etiqueta: mesmo com uma DC-e de produção
