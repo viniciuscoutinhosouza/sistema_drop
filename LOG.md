@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-11 — feat(cmig): converter identidade fiscal CPF ⇆ CNPJ (ADR-0018)
+
+Passou a ser possível **alterar o tipo fiscal** de uma CMIG existente (ex.: uma conta cadastrada como
+CPF que virou empresa → CNPJ). Antes era impossível: o `update_cmig` usava `exclude_none=True` (não
+dava para limpar o CPF) e o formulário só *adicionava* CNPJ mantendo o CPF (deixaria os dois).
+
+- **Backend:** `CMIGUpdate` ganhou normalizador (`''`/espaços → `None`, mas mantém o campo em
+  `fields_set`) + campos `ie`/`ibge_code`; `CMIGOut` expõe `ibge_code`. `update_cmig` trata o
+  documento **fora** do `exclude_none`: valida estado final (exatamente um de CPF/CNPJ), unicidade,
+  Razão Social p/ PJ, e **seta ambos explicitamente** (permite zerar o antigo). Alterar o **tipo**
+  exige `ac`/`admin`. Converter **CPF→CNPJ** exige **IE** (upsert no `fiscal_config`) e **IBGE**.
+- **Frontend (`CmigFormView`):** toggle PJ/PF também na edição; **aviso** de impacto (pedidos
+  pendentes mudam de DC-e→NF-e, recadastro eShip, conta ML não muda); campos IE/IBGE na conversão
+  (IE pré-preenchida do fiscal-config).
+- **Política (escolha do dono):** efeitos colaterais são **avisados, não bloqueados**; documentos já
+  emitidos ficam intactos (snapshot). **Sem migration** (colunas já nullable/unique — migration 49).
+- Auditado (consistency-auditor prévio: C1 eShip / C2 regime live → tratados como aviso + IE/IBGE
+  obrigatórios). Verificação: ruff limpo; `pytest test_cmig_conversion` 5 passed; normalizador testado.
+
+---
+
 ## 2026-07-10 — feat(downloads): nome de arquivo padronizado Tipo_venda_cliente (etiqueta/NF-e/DANFE/DACE)
 
 Todo arquivo de pedido baixado passa a sair nomeado com **tipo + número da venda + nome do cliente**

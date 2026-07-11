@@ -335,6 +335,7 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0015](DOCs/decisions/ADR-0015-emissao-propria-nfe-sefaz.md) — Emissão própria de NF-e direto à SEFAZ (mTLS + XMLDSig), substituindo o Focus; série manual configurável separada do marketplace; transmissão síncrona (indSinc=1) recuperável por N-6; certificado A1 local + senha cifrada (Fernet master key) e XML autorizado fora de `static/`
 - [ADR-0016](DOCs/decisions/ADR-0016-distribuicao-dfe-propria.md) — Distribuição de DFe própria (Ambiente Nacional) com controle de NSU por CMIG; manifestação própria; rate-limit cStat 656; parser endurecido + teto anti zip-bomb no docZip de terceiros
 - [ADR-0017](DOCs/decisions/ADR-0017-dce-emissao-marketplace.md) — Emissão de DC-e (modelo 99) das contas CPF direto na SVRS no perfil **Marketplace** (a MIG assina com o A1 do CNPJ dela, por conta e ordem); chave inclui `tpEmit`; assinatura sem prefixo `ds:`; remetente = endereço do Galpão (IBGE por cidade+UF); destinatário `idOutros` sem CPF; DACE (PDF+QR); gate `dce_authorized` por CMIG
+- [ADR-0018](DOCs/decisions/ADR-0018-cmig-identidade-fiscal-mutavel.md) — Identidade fiscal da CMIG é **mutável por substituição** (converter CPF ⇆ CNPJ zera o documento anterior, mantém "exatamente um"); alterar o tipo exige `ac`/`admin`; CPF→CNPJ exige IE+IBGE; efeitos colaterais (regime `live` de pedidos pendentes, recadastro eShip) são **avisados, não bloqueados**; documentos emitidos ficam como snapshot
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 

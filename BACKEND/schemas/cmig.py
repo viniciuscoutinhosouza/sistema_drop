@@ -56,7 +56,20 @@ class CMIGUpdate(BaseModel):
     neighborhood: str | None = None
     city: str | None = None
     state: str | None = None
+    ibge_code: str | None = None
+    # Conveniência p/ a conversão CPF→CNPJ: IE mora em CMIGFiscalConfig, mas pode ser
+    # informada aqui para o backend fazer o upsert na hora de virar PJ (exige IE + IBGE).
+    ie: str | None = None
     is_active: bool | None = None
+
+    @field_validator("cnpj", "cpf", "ibge_code", "ie", "company_name", mode="before")
+    @classmethod
+    def _blank_to_none(cls, v):
+        # '' / espaços → None, para permitir LIMPAR o documento antigo na conversão de tipo.
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
 
 class CMIGOut(BaseModel):
@@ -76,6 +89,7 @@ class CMIGOut(BaseModel):
     neighborhood: str | None
     city: str | None
     state: str | None
+    ibge_code: str | None = None
     is_active: bool
     created_at: datetime
 

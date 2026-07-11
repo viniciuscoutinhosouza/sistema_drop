@@ -22,6 +22,7 @@ from models.cmig import (
     CMIGProductImage,
     CMIGProductVariant,
 )
+from models.fiscal import CMIGFiscalConfig
 from models.nfe_config import NFeConfig
 from models.order import OrderItem
 from models.product import (
@@ -294,18 +295,91 @@ async def update_cmig(
     await _check_cmig_access(cmig, current_user, db)
 
     updates = body.model_dump(exclude_none=True)
+    sent = body.model_fields_set
 
-    if "cnpj" in updates and updates["cnpj"] != cmig.cnpj:
-        dup = await db.execute(select(CMIG).where(CMIG.cnpj == updates["cnpj"], CMIG.id != cmig_id))
-        if dup.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="CNPJ já cadastrado em outra CMIG")
-    if "cpf" in updates and updates["cpf"] != cmig.cpf:
-        dup = await db.execute(select(CMIG).where(CMIG.cpf == updates["cpf"], CMIG.id != cmig_id))
-        if dup.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="CPF já cadastrado em outra CMIG")
+    # ── Documento fiscal (CPF/CNPJ) ──────────────────────────────────────────────
+    # Tratado FORA do exclude_none para permitir LIMPAR o documento antigo (ex.: converter
+    # uma conta PF em PJ zera o CPF e grava o CNPJ). Só mexe se o cliente enviou cnpj/cpf.
+    if {"cnpj", "cpf"} & sent:
+        old_is_pf = bool((cmig.cpf or "").strip()) and not (cmig.cnpj or "").strip()
+        new_cnpj = (cmig.cnpj if "cnpj" not in sent else updates.get("cnpj")) or None
+        new_cpf = (cmig.cpf if "cpf" not in sent else updates.get("cpf")) or None
 
+        # Estado final: exatamente um documento (paridade com a regra de criação).
+        if new_cnpj and new_cpf:
+            raise HTTPException(status_code=422, detail="Informe apenas CNPJ ou CPF, não ambos")
+        if not new_cnpj and not new_cpf:
+            raise HTTPException(
+                status_code=422, detail="Informe o CNPJ (Pessoa Jurídica) ou CPF (Pessoa Física)"
+            )
+
+        type_changed = bool(new_cnpj) != bool((cmig.cnpj or "").strip()) or bool(new_cpf) != bool(
+            (cmig.cpf or "").strip()
+        )
+        # Alterar o TIPO fiscal é tão sensível quanto criar → exige AC/admin.
+        if type_changed and current_user.role not in ("ac", "admin"):
+            raise HTTPException(
+                status_code=403,
+                detail="Apenas AC ou admin podem alterar o tipo fiscal (CPF/CNPJ) da CMIG",
+            )
+
+        # Unicidade
+        if new_cnpj and new_cnpj != cmig.cnpj:
+            dup = await db.execute(select(CMIG).where(CMIG.cnpj == new_cnpj, CMIG.id != cmig_id))
+            if dup.scalar_one_or_none():
+                raise HTTPException(status_code=409, detail="CNPJ já cadastrado em outra CMIG")
+        if new_cpf and new_cpf != cmig.cpf:
+            dup = await db.execute(select(CMIG).where(CMIG.cpf == new_cpf, CMIG.id != cmig_id))
+            if dup.scalar_one_or_none():
+                raise HTTPException(status_code=409, detail="CPF já cadastrado em outra CMIG")
+
+        # Razão Social obrigatória para PJ.
+        eff_company = updates.get("company_name", cmig.company_name)
+        if new_cnpj and not (eff_company or "").strip():
+            raise HTTPException(status_code=422, detail="Informe a Razão Social ao definir o CNPJ")
+
+        # Conversão CPF→CNPJ exige IE + código IBGE (a PJ nasce apta ao próximo passo fiscal).
+        if old_is_pf and new_cnpj:
+            eff_ibge = (
+                updates.get("ibge_code") if "ibge_code" in sent else cmig.ibge_code
+            ) or ""
+            eff_ibge = eff_ibge.strip()
+            cfg = (
+                await db.execute(
+                    select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == cmig_id)
+                )
+            ).scalar_one_or_none()
+            eff_ie = (updates.get("ie") if "ie" in sent else (cfg.ie if cfg else None)) or ""
+            eff_ie = eff_ie.strip()
+            missing = []
+            if not eff_ie:
+                missing.append("Inscrição Estadual (IE)")
+            if not eff_ibge:
+                missing.append("Código IBGE do município")
+            if missing:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Para converter para CNPJ, informe: " + ", ".join(missing),
+                )
+            cmig.ibge_code = eff_ibge
+            # IE mora no CMIGFiscalConfig — upsert só quando veio no payload da conversão.
+            if "ie" in sent and eff_ie:
+                if not cfg:
+                    cfg = CMIGFiscalConfig(cmig_id=cmig_id)
+                    db.add(cfg)
+                    await db.flush()
+                cfg.ie = eff_ie
+
+        # Aplica o documento explicitamente (permite limpar o antigo).
+        cmig.cnpj = new_cnpj
+        cmig.cpf = new_cpf
+
+    # `ie` não é atributo do CMIG e cnpj/cpf já foram tratados acima.
+    for key in ("cnpj", "cpf", "ie"):
+        updates.pop(key, None)
     for field, value in updates.items():
-        setattr(cmig, field, value)
+        if hasattr(cmig, field):
+            setattr(cmig, field, value)
 
     await db.commit()
     await db.refresh(cmig)

@@ -29,8 +29,8 @@
 
                   <h6 class="text-muted text-uppercase mb-3"><small>Identificação</small></h6>
 
-                  <!-- Toggle PJ / PF (só na criação; na edição inferido pelo dado existente) -->
-                  <div v-if="!isEdit" class="form-group mb-3">
+                  <!-- Toggle PJ / PF — disponível também na edição (permite converter o tipo fiscal) -->
+                  <div class="form-group mb-3">
                     <div class="btn-group btn-group-sm" role="group">
                       <button type="button" class="btn" :class="personType === 'pj' ? 'btn-primary' : 'btn-outline-secondary'" @click="setPersonType('pj')">
                         <i class="fas fa-building mr-1"></i> Pessoa Jurídica (CNPJ)
@@ -39,18 +39,33 @@
                         <i class="fas fa-user mr-1"></i> Pessoa Física (CPF)
                       </button>
                     </div>
+                    <small v-if="isEdit" class="d-block text-muted mt-1">
+                      Trocar o tipo converte a identidade fiscal da conta (CPF ⇆ CNPJ).
+                    </small>
+                  </div>
+
+                  <!-- Aviso de impacto ao CONVERTER o tipo fiscal na edição -->
+                  <div v-if="isConverting" class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle mr-1"></i>
+                    <strong>Você está convertendo o tipo fiscal desta conta ({{ originalType === 'pf' ? 'CPF → CNPJ' : 'CNPJ → CPF' }}).</strong>
+                    <ul class="mb-0 mt-1 pl-3">
+                      <li>Pedidos <em>ainda pendentes</em> de documento fiscal passarão a exigir
+                        {{ personType === 'pj' ? 'NF-e (PJ)' : 'DC-e (PF)' }} — não o documento anterior.</li>
+                      <li>Se houver integração <strong>eShip</strong> ativa, recadastre os produtos no WMS com a nova identidade (o cadastro é filtrado por CPF/CNPJ).</li>
+                      <li>O tipo de pessoa da conta no <strong>marketplace</strong> não muda por aqui — uma conta ML de CPF continua exigindo DC-e no ML.</li>
+                    </ul>
                   </div>
 
                   <div class="row">
                     <!-- PJ: CNPJ -->
                     <div v-if="personType === 'pj'" class="col-md-4 form-group">
                       <label>CNPJ <span class="text-danger">*</span></label>
-                      <input v-model="form.cnpj" class="form-control" :required="personType === 'pj'" :disabled="isEdit && !!form.cnpj" placeholder="00.000.000/0000-00" />
+                      <input v-model="form.cnpj" class="form-control" :required="personType === 'pj'" :disabled="isEdit && originalType === 'pj' && !!originalCnpj" placeholder="00.000.000/0000-00" />
                     </div>
                     <!-- PF: CPF -->
                     <div v-if="personType === 'pf'" class="col-md-4 form-group">
                       <label>CPF <span class="text-danger">*</span></label>
-                      <input v-model="form.cpf" class="form-control" :required="personType === 'pf'" :disabled="isEdit && !!form.cpf" placeholder="000.000.000-00" />
+                      <input v-model="form.cpf" class="form-control" :required="personType === 'pf'" :disabled="isEdit && originalType === 'pf' && !!originalCpf" placeholder="000.000.000-00" />
                     </div>
 
                     <div class="col-md-4 form-group">
@@ -63,15 +78,15 @@
                     </div>
                   </div>
 
-                  <!-- Upgrade: adicionar CNPJ a uma conta PF já existente -->
-                  <div v-if="isEdit && !form.cnpj && form.cpf" class="row">
+                  <!-- Ao converter CPF→CNPJ: IE + IBGE obrigatórios (a PJ nasce apta ao fiscal) -->
+                  <div v-if="isConverting && personType === 'pj'" class="row">
                     <div class="col-md-4 form-group">
-                      <label>CNPJ <small class="text-muted">(opcional — adicionar depois)</small></label>
-                      <input v-model="form.cnpj" class="form-control" placeholder="00.000.000/0000-00" />
+                      <label>Inscrição Estadual (IE) <span class="text-danger">*</span></label>
+                      <input v-model="form.ie" class="form-control" :required="isConverting && personType === 'pj'" placeholder="Somente números ou ISENTO" />
                     </div>
                     <div class="col-md-4 form-group">
-                      <label>Razão Social <small class="text-muted">(ao adicionar CNPJ)</small></label>
-                      <input v-model="form.company_name" class="form-control" />
+                      <label>Código IBGE do município <span class="text-danger">*</span></label>
+                      <input v-model="form.ibge_code" class="form-control" :required="isConverting && personType === 'pj'" maxlength="7" placeholder="ex.: 3304557" />
                     </div>
                   </div>
 
@@ -176,6 +191,10 @@ const saving = ref(false)
 const error = ref('')
 const warehouseLabel = ref('')
 const personType = ref('pj') // 'pj' | 'pf'
+// Estado fiscal ORIGINAL (para detectar conversão de tipo na edição).
+const originalType = ref(null) // 'pj' | 'pf' | null (criação)
+const originalCnpj = ref('')
+const originalCpf = ref('')
 
 const form = ref({
   cnpj: '',
@@ -192,8 +211,13 @@ const form = ref({
   neighborhood: '',
   city: '',
   state: '',
+  ibge_code: '',
+  ie: '',
   is_active: true,
 })
+
+// Só é "conversão" quando o tipo escolhido difere do tipo original de uma conta existente.
+const isConverting = computed(() => isEdit.value && originalType.value && personType.value !== originalType.value)
 
 function setPersonType(type) {
   personType.value = type
@@ -215,6 +239,14 @@ onMounted(async () => {
     Object.assign(form.value, data)
     // Inferir tipo a partir dos dados existentes
     personType.value = data.cpf && !data.cnpj ? 'pf' : 'pj'
+    originalType.value = personType.value
+    originalCnpj.value = data.cnpj || ''
+    originalCpf.value = data.cpf || ''
+    // Prefill da IE (mora no fiscal-config) para não exigir redigitar na conversão.
+    try {
+      const { data: fc } = await api.get(`/cmigs/${route.params.id}/fiscal-config`)
+      if (fc?.ie) form.value.ie = fc.ie
+    } catch { }
   }
 })
 
