@@ -80,6 +80,10 @@ DOCs/*.zip
 
 # Configurações locais de máquina (caminhos específicos por desktop)
 .claude/settings.local.json
+# Notas locais com credenciais (eShip: usuário/senha/apikey em texto puro) — NUNCA commitar
+.claude/eSHIP.md
+# Script de inicialização do coletor específico da máquina local
+tools/collector/iniciar_coletor_completo_m2.bat
 
 # Sandbox e experimentos locais
 sandbox/
