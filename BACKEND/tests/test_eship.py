@@ -447,3 +447,35 @@ async def test_cancel_order_cancela_antes_se_o_delete_for_recusado(monkeypatch):
     ]
     assert o.eship_order_id is None
     assert service.order_was_pushed(o) is False
+
+
+@pytest.mark.asyncio
+async def test_touch_order_carimba_a_data_de_atualizacao(monkeypatch):
+    """Sem o PUT, a grade do eShip mostra "Sem data de atualizacao registrada". O WMS exige a chave
+    `id` (nao aceita `ordem`/`numeroOrigem`) e carimba a hora DELE."""
+    from models.order import Order
+    from integrations.eship.config import EShipCreds
+    from integrations.eship.client import EShipError
+
+    creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="1")
+    chamadas = []
+
+    async def fake_call(_creds, funcao, payload):
+        chamadas.append((funcao, payload))
+        return {"ok": True}
+
+    monkeypatch.setattr(service.client, "call", fake_call)
+
+    o = Order(id=1, platform_order_id="ML-1", eship_order_id="3098270")
+    assert await service.touch_order(creds, o) is True
+    assert chamadas == [(service.FUNC_PUT_ORDEM, {"id": 3098270})]   # int, chave "id"
+
+    # Sem ordem no WMS nao ha o que carimbar.
+    assert await service.touch_order(creds, Order(id=2)) is False
+
+    # Falha no carimbo NAO derruba o envio (e complementar).
+    async def fake_erro(*_a, **_kw):
+        raise EShipError("indisponivel")
+
+    monkeypatch.setattr(service.client, "call", fake_erro)
+    assert await service.touch_order(creds, o) is False

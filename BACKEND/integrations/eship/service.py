@@ -42,6 +42,10 @@ FUNC_POST_ORDEM_XML = "webServicePostOrdemPorXml"
 FUNC_POST_ARQUIVO = "webServicePostArquivoOrdem"
 FUNC_GET_ORDEM = "webServiceGetOrdem"
 FUNC_GET_ANEXOS = "webServiceGetAnexosOrdem"   # arquivos anexados à ordem (conferência)
+# Atualiza a ordem. Exige a chave `id` (o id do WMS — NÃO aceita `ordem`/`numeroOrigem`). Um PUT
+# só com o `id` carimba o `dataHoraAtualizacao` ("Data da última atualização", coluna da grade do
+# eShip) sem tocar em produtos/infos/anexos/status — verificado em produção.
+FUNC_PUT_ORDEM = "webServicePutOrdem"
 FUNC_GET_FALHAS = "webServiceGetFalhasOrdem"
 # Nome real no spec: "webServiceCancelaOrdem" (SEM o "r" — webServiceCancelarOrdem não existe).
 FUNC_CANCELAR_ORDEM = "webServiceCancelaOrdem"
@@ -867,6 +871,28 @@ def _render_danfe(order: Order, xml_bytes: bytes) -> bytes | None:
         return None
 
 
+async def touch_order(creds: EShipCreds, order: Order) -> bool:
+    """Carimba a "Data da última atualização" da ordem no eShip (`webServicePutOrdem`).
+
+    Sem isso, a coluna da grade do eShip mostra "Sem data de atualização registrada" — o galpão
+    não enxerga que a ordem foi mexida (anexo de NF-e, etiqueta, reenvio).
+
+    O WMS grava a hora DELE e ignora qualquer valor que a gente mande no `dataHoraAtualizacao`;
+    o que importa é o PUT acontecer. O PUT só com o `id` não altera produtos/infos/anexos/status.
+    """
+    if not order.eship_order_id:
+        return False
+    try:
+        await client.call(creds, FUNC_PUT_ORDEM, {"id": int(order.eship_order_id)})
+        return True
+    except (EShipError, ValueError) as exc:
+        # Carimbo é complementar: nunca derruba um envio que deu certo.
+        logger.warning(
+            "[eShip] pedido=%s: não foi possível carimbar a data de atualização: %s", order.id, exc
+        )
+        return False
+
+
 async def get_anexos(db: AsyncSession, order: Order) -> list[dict]:
     """Lista os arquivos ANEXADOS na ordem, direto do eShip (`webServiceGetAnexosOrdem`).
 
@@ -1142,6 +1168,14 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
                         "etapa": "etiqueta",
                         "erro": "Etiqueta ainda não liberada pelo Mercado Livre.",
                     })
+
+        # 4) Carimba a "Data da última atualização" na ordem. Sem isso a grade do eShip mostra
+        # "Sem data de atualização registrada" e o galpão não vê que a ordem foi mexida — vale
+        # tanto para a criação quanto para o "Atualizar" (anexo de NF-e/etiqueta que faltavam).
+        if order.eship_order_id:
+            creds, _cmig = await _creds_for_order(db, order)
+            if creds:
+                result["atualizada_em_eship"] = await touch_order(creds, order)
     except Exception as e:  # noqa: BLE001 — registra e não deixa o pedido preso em "sending"
         result["erros"].append({"etapa": "interno", "erro": str(e)})
         logger.exception("[eShip] send_order_full pedido=%s falhou", order.id)
