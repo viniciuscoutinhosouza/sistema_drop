@@ -76,3 +76,139 @@ async def test_push_order_idempotent_when_already_sent():
     # db não é tocado porque já há eship_order_id (retorno antecipado)
     res = await service.push_order(db=None, order=o)
     assert res == {"already_sent": True, "eship_order_id": "ESHIP-9"}
+
+
+def test_extract_order_id_envelope_real():
+    # Envelope REAL do eShip (corpo.body.dados[]): era ignorado, e o id caia no fallback mentiroso.
+    resp = {"corpo": {"body": {"dados": [{"id": 987654, "numeroOrigem": "ML-1"}]}}}
+    assert service.extract_order_id(resp) == "987654"
+    # Resposta sem id extraivel: NAO inventar id (antes gravava o numero do pedido do ML).
+    assert service.extract_order_id({"corpo": {"body": {"dados": []}}}) is None
+
+
+def test_order_was_pushed_guard():
+    from models.order import Order
+
+    # Ordem aceita pelo WMS sem id extraivel: ainda assim conta como enviada (nao pode duplicar).
+    assert service.order_was_pushed(Order(eship_dispatch_status="sent")) is True
+    assert service.order_was_pushed(Order(eship_dispatch_status="partial")) is True
+    assert service.order_was_pushed(Order(eship_order_id="9")) is True
+    # Falhou ou foi cancelada: liberado para novo envio.
+    assert service.order_was_pushed(Order(eship_dispatch_status="failed")) is False
+    assert service.order_was_pushed(Order(eship_dispatch_status="cancelled")) is False
+    assert service.order_was_pushed(Order()) is False
+
+
+@pytest.mark.asyncio
+async def test_send_order_full_nao_deixa_pedido_preso_em_sending(monkeypatch):
+    """O bug do dono: a Ordem falhava, o `return` pulava o `except`, e o pedido ficava eternamente
+    em 'sending' - todo clique seguinte era recusado com "envio ja em andamento"."""
+    from models.order import Order
+    from integrations.eship.client import EShipError
+
+    class FakeResult:
+        rowcount = 1
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            return FakeResult()
+
+        async def commit(self):
+            return None
+
+    async def falha_na_ordem(db, order):
+        raise EShipError("eShip recusou a ordem")
+
+    monkeypatch.setattr(service, "push_order", falha_na_ordem)
+
+    o = Order(id=1, platform_order_id="ML-3", shipping_mode="flex")
+    res = await service.send_order_full(FakeDB(), o)
+
+    assert o.eship_dispatch_status == "failed"       # antes ficava "sending" (travado p/ sempre)
+    assert "eShip recusou a ordem" in o.eship_dispatch_error
+    assert res["erros"][0]["etapa"] == "ordem"
+    # E como nao esta "sent"/"partial" nem tem id, o botao volta a permitir o envio:
+    assert service.order_was_pushed(o) is False
+
+
+def _creds_teste():
+    from integrations.eship.config import EShipCreds
+    return EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="123")
+
+
+def test_payload_leva_cpf_ou_cnpj_do_destinatario():
+    """O eShip EXIGE cpfDestinatario ou cnpjDestinatario. O tipo vem do ML (billing_info)."""
+    from models.order import Order
+
+    pf = Order(platform_order_id="ML-1", buyer_name="Raquel",
+               buyer_document="25598286858", buyer_document_type="CPF")
+    pf.items = []
+    dest = service.build_ordem_payload(pf, _creds_teste())["cadastroDestinatario"]
+    assert dest["cpfDestinatario"] == "25598286858"
+    assert "cnpjDestinatario" not in dest
+
+    pj = Order(platform_order_id="ML-2", buyer_name="Ezequiel ME",
+               buyer_document="67763215000135", buyer_document_type="CNPJ")
+    pj.items = []
+    dest = service.build_ordem_payload(pj, _creds_teste())["cadastroDestinatario"]
+    assert dest["cnpjDestinatario"] == "67763215000135"
+    assert "cpfDestinatario" not in dest
+
+    # Sem tipo (cadastro manual/legado): decide pelo comprimento.
+    sem_tipo = Order(platform_order_id="ML-3", buyer_name="X", buyer_document="005.912.651-50")
+    sem_tipo.items = []
+    dest = service.build_ordem_payload(sem_tipo, _creds_teste())["cadastroDestinatario"]
+    assert dest["cpfDestinatario"] == "00591265150"   # zero a esquerda preservado
+
+
+@pytest.mark.asyncio
+async def test_ensure_buyer_document_busca_no_billing_info(monkeypatch):
+    """O ML tirou `buyer.identification` do GET /orders/{id} - o documento so vem do billing_info."""
+    from models.order import Order
+
+    class FakeAcc:
+        id = 1
+        access_token = "t"
+
+    class FakeScalar:
+        def scalar_one_or_none(self):
+            return FakeAcc()
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            return FakeScalar()
+
+        async def commit(self):
+            return None
+
+    # Resposta REAL do endpoint (x-version: 2), como capturada em producao.
+    async def fake_billing(token, order_id):
+        return {
+            "site_id": "MLB",
+            "buyer": {
+                "cust_id": "143574469",
+                "billing_info": {
+                    "name": "Raquel Pereira",
+                    "identification": {"type": "CPF", "number": "25598286858"},
+                },
+            },
+        }
+
+    async def fake_token(acc, db, **_kw):
+        return "t"
+
+    monkeypatch.setattr(service._ml, "get_order_billing_info", fake_billing)
+    monkeypatch.setattr(service, "get_valid_token", fake_token)
+
+    o = Order(id=1, platform="mercadolivre", platform_order_id="ML-9", account_id=1)
+    doc = await service.ensure_buyer_document(FakeDB(), o)
+    assert doc == "25598286858"
+    assert o.buyer_document == "25598286858"
+    assert o.buyer_document_type == "CPF"
+
+    # Ja tem documento: nao chama o ML de novo (1 chamada por pedido, nao por envio).
+    async def nunca(*_a, **_kw):
+        raise AssertionError("nao deveria chamar o ML de novo")
+
+    monkeypatch.setattr(service._ml, "get_order_billing_info", nunca)
+    assert await service.ensure_buyer_document(FakeDB(), o) == "25598286858"

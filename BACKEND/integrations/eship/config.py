@@ -23,6 +23,9 @@ class EShipCreds:
     api_key: str | None
     warehouse_code: str | None = None
     cnpj: str | None = None
+    # Cadastro da empresa no eShip (migration 125) — opcionais no payload da ordem.
+    id_tipo: int | None = None       # idTipo
+    tipo_ordem: str | None = None    # tipoOrdem
 
     @property
     def usable(self) -> bool:
@@ -38,6 +41,8 @@ def creds_from_cmig(cmig: CMIG) -> EShipCreds | None:
         api_key=cmig.eship_api_key,
         warehouse_code=cmig.eship_warehouse_code,
         cnpj=cmig.cnpj,
+        id_tipo=getattr(cmig, "eship_id_tipo", None),
+        tipo_ordem=getattr(cmig, "eship_tipo_ordem", None),
     )
     return creds if creds.usable else None
 

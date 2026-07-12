@@ -286,6 +286,48 @@ async def _load_order(db: AsyncSession, order_id: int, user: User) -> Order:
     return order
 
 
+@router.get("/orders/{order_id}/preview-ordem")
+async def preview_ordem_endpoint(
+    order_id: int,
+    current_user: User = Depends(require_role("admin", "ugo")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Prévia (debug) do webServicePostOrdem que o envio faria — payload + curl, sem executar."""
+    order = await _load_order(db, order_id, current_user)
+    try:
+        return await service.preview_ordem(db, order)
+    except EShipError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get("/orders/{order_id}/eship-ordem")
+async def get_eship_ordem(
+    order_id: int,
+    current_user: User = Depends(require_role("admin", "ugo")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Detalhe da ordem GRAVADA no eShip — alimenta o modal de conferência do pedido.
+
+    Devolve o código da ordem (o que o usuário confere no painel do WMS), o `numeroOrigem`
+    (por onde TODAS as operações endereçam a ordem), o estado do despacho, o motivo do último
+    erro e a resposta CRUA do WMS. A resposta crua é pesada, por isso fica neste endpoint e
+    não na serialização da lista de pedidos.
+    """
+    order = await _load_order(db, order_id, current_user)
+    return {
+        "order_id": order.id,
+        "enviada": service.order_was_pushed(order),
+        "eship_order_id": order.eship_order_id,
+        "numero_origem": order.platform_order_id or str(order.id),
+        "dispatch_status": order.eship_dispatch_status,
+        "dispatch_error": order.eship_dispatch_error,
+        "dispatch_attempts": order.eship_dispatch_attempts or 0,
+        "nfe_attached": bool(order.eship_nfe_attached),
+        "label_attached": bool(order.eship_label_attached),
+        "last_response": order.eship_last_response,
+    }
+
+
 @router.post("/orders/{order_id}/send")
 async def send_order_endpoint(
     order_id: int,

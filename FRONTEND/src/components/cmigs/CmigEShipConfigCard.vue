@@ -27,8 +27,8 @@
             <div class="col-md-3 form-group">
               <label class="small mb-1">Código do armazém <span class="text-danger">*</span></label>
               <input v-model="form.eship_warehouse_code" class="form-control" :disabled="!canEdit"
-                     placeholder="ESTOQUE_PADRAO">
-              <small class="form-text text-muted">codigoArmazemOrigem</small>
+                     placeholder="2">
+              <small class="form-text text-muted">codigoArmazemOrigem (também usado nos anexos)</small>
             </div>
             <div class="col-md-3 form-group">
               <label class="small mb-1">Integração ativa</label>
@@ -39,6 +39,22 @@
                   {{ form.eship_active ? 'Ativa' : 'Inativa' }}
                 </label>
               </div>
+            </div>
+          </div>
+
+          <!-- Cadastro da empresa DENTRO do eShip — vão no webServicePostOrdem -->
+          <div class="row">
+            <div class="col-md-3 form-group">
+              <label class="small mb-1">idTipo</label>
+              <input v-model="form.eship_id_tipo" type="number" class="form-control" :disabled="!canEdit"
+                     placeholder="104">
+              <small class="form-text text-muted">idTipo da ordem no eShip</small>
+            </div>
+            <div class="col-md-6 form-group">
+              <label class="small mb-1">Tipo da ordem</label>
+              <input v-model="form.eship_tipo_ordem" class="form-control" :disabled="!canEdit"
+                     placeholder="MIG IMPORTACOES">
+              <small class="form-text text-muted">tipoOrdem — nome do tipo cadastrado no eShip</small>
             </div>
           </div>
 
@@ -82,6 +98,8 @@ const config = ref({})
 const form = reactive({
   eship_base_url: '',
   eship_warehouse_code: '',
+  eship_id_tipo: '',
+  eship_tipo_ordem: '',
   eship_api_key: '',
   eship_active: false,
 })
@@ -99,6 +117,8 @@ async function load() {
     config.value = data
     form.eship_base_url = data.eship_base_url || ''
     form.eship_warehouse_code = data.eship_warehouse_code || ''
+    form.eship_id_tipo = data.eship_id_tipo ?? ''
+    form.eship_tipo_ordem = data.eship_tipo_ordem || ''
     form.eship_active = !!data.eship_active
     form.eship_api_key = ''
   } catch (e) {
@@ -114,6 +134,8 @@ async function save() {
     const payload = {
       eship_base_url: form.eship_base_url,
       eship_warehouse_code: form.eship_warehouse_code,
+      eship_id_tipo: form.eship_id_tipo === '' ? null : form.eship_id_tipo,
+      eship_tipo_ordem: form.eship_tipo_ordem,
       eship_active: form.eship_active,
     }
     if (form.eship_api_key) payload.eship_api_key = form.eship_api_key

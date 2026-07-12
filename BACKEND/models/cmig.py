@@ -31,6 +31,10 @@ class CMIG(Base):
     eship_base_url = Column(String(500))        # ex: https://armazenaki.eship.com.br/v3
     eship_api_key = Column(String(500))         # header api: <apikey>
     eship_warehouse_code = Column(String(50))   # codigoArmazemOrigem (obrigatório na ordem)
+    # Cadastro da empresa DENTRO do eShip — variam por CMIG (migration 125). Opcionais:
+    # só entram no payload do webServicePostOrdem quando preenchidos. Ex. MIG: 104 / "MIG IMPORTACOES".
+    eship_id_tipo = Column(Integer)             # idTipo
+    eship_tipo_ordem = Column(String(100))      # tipoOrdem
     eship_active = Column(Integer, default=0)
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(

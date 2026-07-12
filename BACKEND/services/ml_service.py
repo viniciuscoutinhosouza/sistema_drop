@@ -238,6 +238,35 @@ async def get_order(access_token: str, order_id: str) -> dict:
     return resp.json()
 
 
+async def get_order_billing_info(access_token: str, order_id: str) -> dict:
+    """CPF/CNPJ e dados fiscais do comprador — `GET /orders/{id}/billing_info` (x-version: 2).
+
+    O ML **removeu** `buyer.identification` da resposta de `/orders/{id}` (privacidade): de lá só vem
+    um ponteiro (`buyer.billing_info.id`). O documento fiscal só existe neste endpoint, que exige
+    token do PRÓPRIO vendedor do pedido. Sem ele o WMS (eShip) recusa a ordem — `cpfDestinatario`
+    ou `cnpjDestinatario` é obrigatório.
+
+    Retorna `{}` quando indisponível (ex.: pedido ainda não pago) — nunca levanta.
+    Formato (v2): `buyer.billing_info.identification.{type,number}` + `.name` / `.address`.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{ML_API_BASE}/orders/{order_id}/billing_info",
+                headers={"Authorization": f"Bearer {access_token}", "x-version": "2"},
+            )
+        if resp.status_code != 200:
+            logger.warning(
+                "[ML] billing_info pedido=%s: HTTP %s %.200s",
+                order_id, resp.status_code, resp.text,
+            )
+            return {}
+        return resp.json() or {}
+    except Exception as exc:  # noqa: BLE001 — indisponibilidade não pode derrubar o fluxo chamador
+        logger.warning("[ML] billing_info pedido=%s falhou: %s", order_id, exc)
+        return {}
+
+
 async def emit_nfe(access_token: str, seller_id: str, order_ids: list) -> dict:
     """Emit NF-e via ML Faturador. POST /users/{seller_id}/invoices/orders."""
     async with httpx.AsyncClient(timeout=30) as client:

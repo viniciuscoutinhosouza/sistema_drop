@@ -417,6 +417,9 @@ def _serialize_eship(cmig: CMIG) -> dict:
         "eship_active": bool(getattr(cmig, "eship_active", 0)),
         "eship_base_url": cmig.eship_base_url or "",
         "eship_warehouse_code": cmig.eship_warehouse_code or "",
+        # Cadastro da empresa no eShip (migration 125) — vão no webServicePostOrdem.
+        "eship_id_tipo": getattr(cmig, "eship_id_tipo", None),
+        "eship_tipo_ordem": getattr(cmig, "eship_tipo_ordem", None) or "",
         "eship_api_key_set": bool(cmig.eship_api_key),
         "cnpj": cmig.cnpj,
     }
@@ -451,6 +454,14 @@ async def update_eship_config(
         cmig.eship_base_url = (body.get("eship_base_url") or "").strip() or None
     if "eship_warehouse_code" in body:
         cmig.eship_warehouse_code = (body.get("eship_warehouse_code") or "").strip() or None
+    if "eship_id_tipo" in body:
+        raw = body.get("eship_id_tipo")
+        try:
+            cmig.eship_id_tipo = int(raw) if str(raw).strip() not in ("", "None") else None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="idTipo do eShip deve ser um número.")
+    if "eship_tipo_ordem" in body:
+        cmig.eship_tipo_ordem = (body.get("eship_tipo_ordem") or "").strip() or None
     # apikey: só atualiza se vier preenchida (campo password não reenvia o valor existente)
     api_key = body.get("eship_api_key")
     if api_key:

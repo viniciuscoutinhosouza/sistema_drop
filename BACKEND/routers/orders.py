@@ -413,6 +413,11 @@ def _serialize_order_list(
         "eship_nfe_attached": bool(o.eship_nfe_attached),
         "eship_label_attached": bool(o.eship_label_attached),
         "eship_dispatch_status": o.eship_dispatch_status,
+        # A UI precisa do MOTIVO do erro (antes era invisível) e de um sinal confiável de
+        # "já enviada" — o eShip pode aceitar a ordem sem devolver id extraível.
+        "eship_dispatch_error": o.eship_dispatch_error,
+        "eship_enviada": bool(o.eship_order_id)
+        or (o.eship_dispatch_status in ("sent", "partial")),
         "estimated_delivery_date": o.estimated_delivery_date.isoformat()
         if o.estimated_delivery_date
         else None,

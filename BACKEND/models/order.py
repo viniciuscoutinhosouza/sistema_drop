@@ -1,4 +1,15 @@
-from sqlalchemy import TIMESTAMP, Boolean, Column, Date, ForeignKey, Integer, Numeric, String, text
+from sqlalchemy import (
+    TIMESTAMP,
+    Boolean,
+    Column,
+    Date,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -20,6 +31,9 @@ class Order(Base):
     buyer_name = Column(String(255))
     buyer_email = Column(String(255))
     buyer_document = Column(String(20))
+    # 'CPF' | 'CNPJ' — vem de GET /orders/{id}/billing_info (o ML tirou o documento do /orders).
+    # Migration 127. Escolhe cpfDestinatario x cnpjDestinatario pela FONTE, não pelo tamanho.
+    buyer_document_type = Column(String(10))
     shipping_address = Column(String)  # JSON CLOB
     shipping_method = Column(String(100))
     shipping_mode = Column(String(20))  # full|flex|agencia|correios|coletado|combinado|desconhecido
@@ -31,9 +45,12 @@ class Order(Base):
     # Selos de anexo no eShip — guardas de idempotência do envio completo (Ordem+NF-e+Etiqueta)
     eship_nfe_attached = Column(Integer, default=0)     # 0|1 — XML da NF-e anexado à Ordem
     eship_label_attached = Column(Integer, default=0)   # 0|1 — etiqueta anexada à Ordem
-    eship_dispatch_status = Column(String(20))          # None|sent|partial|failed|cancelled (obs.)
+    eship_dispatch_status = Column(String(20))          # None|sending|sent|partial|failed|cancelled
     eship_dispatch_error = Column(String(500))          # última pendência/erro do envio
-    eship_dispatch_attempts = Column(Integer, default=0)  # tentativas da rotina automática (Fase 2)
+    eship_dispatch_attempts = Column(Integer, default=0)  # nº de tentativas de envio
+    # Migration 126:
+    eship_last_response = Column(Text)                  # resposta CRUA do PostOrdem (conferência)
+    eship_dispatch_at = Column(TIMESTAMP(timezone=True))  # instante do claim (TTL do lock 'sending')
     label_url = Column(String(1000))
     label_cached_at = Column(TIMESTAMP(timezone=True))  # quando a etiqueta foi salva no disco
     nfe_url = Column(String(1000))

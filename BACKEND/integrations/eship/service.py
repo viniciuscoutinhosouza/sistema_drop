@@ -13,9 +13,9 @@ import json
 import logging
 import re
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -25,6 +25,7 @@ from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
 from services import ml_service as _ml
 from services.fiscal.order_docs import resolve_nfe_xml
+from services.ml_auth import get_valid_token
 
 from . import client
 from .client import EShipError
@@ -48,6 +49,10 @@ FUNC_GET_SALDO = "webServiceGetSaldoEstoque"
 # O anexo NÃO usa `idTipoAnexo` (campo inexistente no spec real): o tipo é inferido pelas
 # flags inserirFiscal/atualizarTransporte + a extensão do arquivo (xml/pdf/zpl).
 _XML_PROLOG_RE = re.compile(rb"^\s*<\?xml[^>]*\?>\s*")
+
+# TTL do lock de envio ("sending"): passado esse tempo, um lock órfão (processo morto no meio)
+# pode ser retomado. Sem isso, um crash travava o pedido para sempre.
+_LOCK_TTL = timedelta(minutes=10)
 
 # Cadastro em lote: nº máx. de chamadas simultâneas ao WMS (equilíbrio tempo × rajada)
 _PUSH_CONCURRENCY = 5
@@ -356,6 +361,12 @@ def _parse_address(order: Order) -> dict:
                 return v
         return None
 
+    # O ML mascara o telefone do comprador ("XXXXXXX"). Mandar essa máscara ao WMS é pior que
+    # mandar vazio (o exemplo oficial do eShip manda ""), então só vai telefone que tenha dígitos.
+    telefone = g("phone", "telefone", "receiver_phone")
+    if not any(ch.isdigit() for ch in telefone):
+        telefone = ""
+
     return {
         "logradouro": g("street", "logradouro", "address_line"),
         "numero": g("number", "numero", "street_number"),
@@ -364,14 +375,59 @@ def _parse_address(order: Order) -> dict:
         "municipio": g("city", "municipio", "cidade"),
         "estado": _uf_sigla(gv("state", "estado", "uf", "state_id")),
         "cep": g("zip_code", "cep", "zip", "zip_code_str"),
-        "telefone": g("phone", "telefone", "receiver_phone"),
+        "telefone": telefone,
     }
+
+
+async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
+    """Garante o CPF/CNPJ do comprador — o eShip exige `cpfDestinatario` OU `cnpjDestinatario`.
+
+    O ML **não devolve mais** o documento em `GET /orders/{id}` (privacidade): `buyer.identification`
+    sumiu, e por isso `order.buyer_document` nascia nulo em todos os pedidos. O documento vive em
+    `GET /orders/{id}/billing_info` (x-version: 2) e é buscado aqui **uma vez** e persistido — não a
+    cada envio ao WMS.
+
+    Retorna o documento em dígitos ('' se indisponível).
+    """
+    doc = _digits(order.buyer_document)
+    if len(doc) in (11, 14):
+        return doc
+    if order.platform != "mercadolivre" or not order.platform_order_id:
+        return ""
+
+    acc = (
+        await db.execute(
+            select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
+        )
+    ).scalar_one_or_none()
+    if not acc or not acc.access_token:
+        return ""
+
+    # `get_valid_token` renova sob lock quando o token está vencido — o billing_info responde 401
+    # com token velho, e aí o pedido iria ao WMS sem documento.
+    try:
+        token = await get_valid_token(acc, db)
+    except Exception as exc:  # noqa: BLE001 — conta desconectada/refresh falhou
+        logger.warning("[eShip] pedido=%s: token ML indisponível: %s", order.id, exc)
+        return ""
+
+    info = await _ml.get_order_billing_info(token, order.platform_order_id)
+    ident = ((info.get("buyer") or {}).get("billing_info") or {}).get("identification") or {}
+    doc = _digits(ident.get("number"))
+    tipo = (ident.get("type") or "").upper()
+    if len(doc) not in (11, 14):
+        return ""
+
+    order.buyer_document = doc
+    order.buyer_document_type = tipo if tipo in ("CPF", "CNPJ") else None
+    await db.commit()
+    return doc
 
 
 def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
     """Monta o payload de Inserir Ordem conforme a spec §4.
 
-    Obrigatórios: numeroOrigem, codigoArmazemOrigem, cadastroDestinatario.
+    Obrigatórios: numeroOrigem, codigoArmazemOrigem, cadastroDestinatario (com CPF **ou** CNPJ).
     """
     endereco = _parse_address(order)
     doc = _digits(order.buyer_document)
@@ -386,9 +442,12 @@ def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
         ],
         "endereco": endereco,
     }
-    if len(doc) == 14:
+    # O tipo vem do ML (billing_info). Só caímos no comprimento quando o tipo não foi informado —
+    # um CPF que tenha perdido o zero à esquerda em algum cadastro manual não vira "CNPJ" por engano.
+    tipo = (order.buyer_document_type or "").upper()
+    if tipo == "CNPJ" or (not tipo and len(doc) == 14):
         dest["cnpjDestinatario"] = doc
-    elif len(doc) == 11:
+    elif tipo == "CPF" or (not tipo and len(doc) == 11):
         dest["cpfDestinatario"] = doc
 
     produtos = []
@@ -417,13 +476,21 @@ def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
         }
     ]
 
-    return {
+    payload = {
         "numeroOrigem": numero_origem,
         "codigoArmazemOrigem": creds.warehouse_code or "",
-        "cadastroDestinatario": dest,
-        "infosOrdem": infos_ordem,
-        "produtos": produtos,
     }
+    # `idTipo` e `tipoOrdem` vêm do cadastro da empresa DENTRO do eShip (variam por CMIG —
+    # ex. MIG: 104 / "MIG IMPORTACOES"). Só entram quando configurados; ver .claude/eSHIP.md.
+    if creds.id_tipo is not None:
+        payload["idTipo"] = creds.id_tipo
+    if creds.tipo_ordem:
+        payload["tipoOrdem"] = creds.tipo_ordem
+
+    payload["cadastroDestinatario"] = dest
+    payload["infosOrdem"] = infos_ordem
+    payload["produtos"] = produtos
+    return payload
 
 
 def _coax_id(v) -> str | None:
@@ -431,6 +498,58 @@ def _coax_id(v) -> str | None:
     if isinstance(v, dict):
         v = v.get("id")
     return str(v) if v not in (None, "") else None
+
+
+_APIKEY_PLACEHOLDER = "SUA_APIKEY_ESHIP"
+
+
+async def preview_ordem(db: AsyncSession, order: Order) -> dict:
+    """Monta a PRÉVIA do `webServicePostOrdem` (payload + curl) SEM executar nada.
+
+    Para depurar o envio: mostra exatamente o corpo que o `push_order` mandaria. A apikey
+    NUNCA é exposta (princípio do módulo — a apikey não sai do backend); o curl traz um
+    placeholder. Para testar de fato, cole a Função + Body no Console de API do eShip
+    (que injeta a apikey no header) ou substitua o placeholder no curl.
+    """
+    creds, cmig = await _creds_for_order(db, order)
+    if not creds:
+        raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
+    # Busca/persiste o CPF/CNPJ para que a prévia mostre o MESMO corpo que o envio real mandaria
+    # (sem isso a prévia sairia sem o documento, escondendo o problema).
+    await ensure_buyer_document(db, order)
+    body = build_ordem_payload(order, creds)
+
+    # A prévia PRECISA denunciar o que falta — antes ela apenas omitia o campo em silêncio, e o
+    # erro só aparecia lá no WMS. Cada bloqueio vira um aviso explícito na tela.
+    dest = body.get("cadastroDestinatario") or {}
+    bloqueios: list[str] = []
+    if not (dest.get("cpfDestinatario") or dest.get("cnpjDestinatario")):
+        bloqueios.append(
+            "Falta o CPF/CNPJ do destinatário (obrigatório no eShip). O documento vem do Mercado "
+            "Livre (billing_info) e só existe após o pagamento aprovado — se o pedido já está pago, "
+            "verifique se a conta ML está conectada (Integrações)."
+        )
+    if not creds.warehouse_code:
+        bloqueios.append("Falta o código do armazém (codigoArmazemOrigem) na configuração da CMIG.")
+    if not body.get("produtos"):
+        bloqueios.append("O pedido não tem itens para enviar.")
+
+    url = f"{(creds.base_url or '').rstrip('/')}/?api&funcao={FUNC_POST_ORDEM}"
+    body_json = json.dumps(body, ensure_ascii=False)
+    curl = (
+        f"curl -s '{url}' \\\n"
+        f"  -H 'api: {_APIKEY_PLACEHOLDER}' -H 'Content-Type: application/json' \\\n"
+        f"  -d '{body_json}'"
+    )
+    return {
+        "funcao": FUNC_POST_ORDEM,
+        "url": url,
+        "cmig_id": getattr(cmig, "id", None),
+        "warehouse_code": creds.warehouse_code,
+        "bloqueios": bloqueios,
+        "body": body,
+        "curl": curl,
+    }
 
 
 def extract_order_id(resp: dict) -> str | None:
@@ -442,11 +561,29 @@ def extract_order_id(resp: dict) -> str | None:
     """
     if not isinstance(resp, dict):
         return None
-    for key in ("idOrdem", "ordem", "id", "orderId", "codigo", "codigoOrdem"):
+    _CHAVES = ("idOrdem", "ordem", "id", "orderId", "codigo", "codigoOrdem")
+
+    for key in _CHAVES:
         if key in resp:
             got = _coax_id(resp[key])
             if got:
                 return got
+
+    # Envelope REAL do eShip: {"corpo": {"body": {"dados": [ {...} ]}}} — é o formato que todas as
+    # demais respostas usam (extract_status, saldo, produtos). Sem olhar aqui, a extração falhava e
+    # caía no fallback que gravava o número do pedido do ML como se fosse o id do WMS.
+    corpo = resp.get("corpo")
+    if isinstance(corpo, dict):
+        body = corpo.get("body")
+        if isinstance(body, dict):
+            dados = body.get("dados")
+            if isinstance(dados, list) and dados and isinstance(dados[0], dict):
+                for key in _CHAVES:
+                    if key in dados[0]:
+                        got = _coax_id(dados[0][key])
+                        if got:
+                            return got
+
     data = resp.get("data") or resp.get("retorno") or {}
     if isinstance(data, dict):
         for key in ("idOrdem", "ordem", "id", "codigoOrdem"):
@@ -502,11 +639,18 @@ def _is_full_order(order: Order) -> bool:
     ).lower()
 
 
+def order_was_pushed(order: Order) -> bool:
+    """A ordem já existe no WMS? Não basta olhar o `eship_order_id`: o eShip pode aceitar a ordem
+    sem devolver um id extraível. Nesse caso o despacho fica 'sent'/'partial' com id nulo — e
+    recriar a ordem duplicaria no WMS."""
+    return bool(order.eship_order_id) or (order.eship_dispatch_status in ("sent", "partial"))
+
+
 async def push_order(db: AsyncSession, order: Order) -> dict:
-    """Envia o pedido ao eShip da empresa (CMIG). Idempotente por eship_order_id."""
+    """Envia o pedido ao eShip da empresa (CMIG). Idempotente (ver `order_was_pushed`)."""
     if _is_full_order(order):
         raise EShipError("Pedido FULL é gerido pelo Mercado Livre — não vai ao WMS (eShip).")
-    if order.eship_order_id:
+    if order_was_pushed(order):
         return {"already_sent": True, "eship_order_id": order.eship_order_id}
 
     creds, _cmig = await _creds_for_order(db, order)
@@ -515,13 +659,35 @@ async def push_order(db: AsyncSession, order: Order) -> dict:
     if not creds.warehouse_code:
         raise EShipError("Configure o código do armazém (codigoArmazemOrigem) na CMIG antes de enviar.")
 
+    # CPF/CNPJ do destinatário é OBRIGATÓRIO no eShip. Falha aqui, com motivo claro, em vez de
+    # deixar o WMS recusar uma ordem incompleta.
+    if not await ensure_buyer_document(db, order):
+        raise EShipError(
+            "CPF/CNPJ do comprador indisponível — o eShip exige o documento do destinatário. "
+            "O Mercado Livre só o fornece após o pagamento aprovado (billing_info)."
+        )
+
     for item in order.items or []:
         ean = await _resolve_item_ean(db, item)
         await upsert_produto(creds, item, gtin=ean)
 
     resp = await client.call(creds, FUNC_POST_ORDEM, build_ordem_payload(order, creds))
-    eship_id = extract_order_id(resp) or (order.platform_order_id or str(order.id))
+
+    # O código da ordem é o que o dono usa para CONFERIR o envio no painel do eShip. Antes havia
+    # um fallback (`or platform_order_id`) que, quando a extração falhava, gravava o número do
+    # pedido do ML como se fosse o id do WMS — um id FALSO, impossível de localizar no eShip.
+    # Agora: se não der para extrair, o id fica NULO e a resposta CRUA é guardada para conferência.
+    eship_id = extract_order_id(resp)
     order.eship_order_id = eship_id
+    try:
+        order.eship_last_response = json.dumps(resp, ensure_ascii=False)[:32000]
+    except (TypeError, ValueError):
+        order.eship_last_response = str(resp)[:32000]
+    if not eship_id:
+        logger.warning(
+            "[eShip] pedido=%s: ordem aceita mas sem id extraível na resposta: %.300s",
+            order.id, order.eship_last_response,
+        )
     await db.commit()
     return {"already_sent": False, "eship_order_id": eship_id, "response": resp}
 
@@ -569,7 +735,14 @@ async def attach_file(db: AsyncSession, order: Order, *, content: bytes, extensa
     if extensao == "xml":
         # O WMS recusa o prolog `<?xml?>` embutido (mesma armadilha do SAAJ na DC-e).
         content = _XML_PROLOG_RE.sub(b"", content)
+    if not creds.warehouse_code:
+        raise EShipError(
+            "Configure o código do armazém (codigoArmazem) na CMIG antes de anexar arquivos ao eShip."
+        )
     payload = {
+        # O anexo é endereçado pelo ARMAZÉM + numeroOrigem. Sem `codigoArmazem` o eShip não
+        # localiza a ordem (era a causa da falha no envio — ver .claude/eSHIP.md).
+        "codigoArmazem": creds.warehouse_code,
         "numeroOrigem": order.platform_order_id or str(order.id),
         "arquivoBase": base64.b64encode(content).decode(),
         "extensao": extensao,
@@ -640,8 +813,10 @@ async def cancel_order(db: AsyncSession, order: Order) -> dict:
     order.eship_order_id = None
     order.eship_nfe_attached = 0
     order.eship_label_attached = 0
+    # 'cancelled' NÃO conta como "já enviada" (ver order_was_pushed) → libera novo envio.
     order.eship_dispatch_status = "cancelled"
     order.eship_dispatch_error = None
+    order.eship_dispatch_at = None
     await db.commit()
     return resp
 
@@ -664,6 +839,12 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
 
     # Single-flight: claim atômico de "sending" para não anexar em duplicidade sob duplo-clique
     # ou reenvio concorrente do mesmo pedido (asyncio + AsyncSyncSession não serializam sozinhos).
+    #
+    # O claim aceita RETOMAR um lock órfão (processo morto no meio do envio): se o pedido está em
+    # "sending" há mais de _LOCK_TTL, o lock é considerado expirado. Sem isso, um crash deixava o
+    # pedido travado para sempre (era o sintoma: "envio já em andamento" em todo clique).
+    agora = datetime.now(UTC)
+    expirado = agora - _LOCK_TTL
     claim = await db.execute(
         sa_update(Order)
         .where(
@@ -671,18 +852,25 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
             or_(
                 Order.eship_dispatch_status.is_(None),
                 Order.eship_dispatch_status != "sending",
+                Order.eship_dispatch_at.is_(None),
+                Order.eship_dispatch_at < expirado,
             ),
         )
-        .values(eship_dispatch_status="sending")
+        .values(
+            eship_dispatch_status="sending",
+            eship_dispatch_at=agora,
+            eship_dispatch_attempts=func.coalesce(Order.eship_dispatch_attempts, 0) + 1,
+        )
     )
     await db.commit()
     if not getattr(claim, "rowcount", 0):
         result["erros"].append({
             "etapa": "lock",
-            "erro": "Envio ao eShip já em andamento para este pedido — aguarde.",
+            "erro": "Envio ao eShip já em andamento para este pedido — aguarde alguns instantes.",
         })
         return result
     order.eship_dispatch_status = "sending"
+    order.eship_dispatch_at = agora
 
     try:
         # 1) Garante a Ordem (push_order é idempotente por eship_order_id).
@@ -769,12 +957,20 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
                         "etapa": "etiqueta",
                         "erro": "Etiqueta ainda não liberada pelo Mercado Livre.",
                     })
-        order.eship_dispatch_status = "sent" if not result["erros"] else "partial"
     except Exception as e:  # noqa: BLE001 — registra e não deixa o pedido preso em "sending"
         result["erros"].append({"etapa": "interno", "erro": str(e)})
-        order.eship_dispatch_status = "failed"
         logger.exception("[eShip] send_order_full pedido=%s falhou", order.id)
     finally:
+        # O desfecho é resolvido AQUI, sempre. O `finally` roda inclusive quando a etapa da Ordem
+        # falha e sai por `return` — era exatamente esse caminho que deixava o pedido preso em
+        # "sending" (o `except` não roda num `return`), bloqueando todo clique posterior.
+        if order.eship_dispatch_status == "sending":
+            if not result["erros"]:
+                order.eship_dispatch_status = "sent"
+            elif order.eship_order_id:
+                order.eship_dispatch_status = "partial"   # ordem criada, mas algo faltou
+            else:
+                order.eship_dispatch_status = "failed"    # nem a ordem foi criada
         order.eship_dispatch_error = ("; ".join(x["erro"] for x in result["erros"]) or None)
         if order.eship_dispatch_error:
             order.eship_dispatch_error = order.eship_dispatch_error[:500]
