@@ -78,6 +78,7 @@ app.add_middleware(
 from routers import (
     admin_api_console,
     ai_config,
+    ai_content,
     anuncios,
     auth,
     campaign_ads,
@@ -176,6 +177,7 @@ app.include_router(
 )
 app.include_router(messages.router)
 app.include_router(ai_config.router)
+app.include_router(ai_content.router)
 app.include_router(marketplace_settings.router)
 app.include_router(media.router)
 app.include_router(

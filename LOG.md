@@ -4,6 +4,96 @@
 
 ---
 
+## 2026-07-11 — feat(relatorio): Vendas por período + gráfico diário; fix das colunas % Lucro / % LL
+
+**Fix (% Lucro e % LL).** As colunas calculavam **participação no total do período** (lucro do produto
+÷ lucro total). O correto é a **margem do próprio produto**: `% Lucro = Lucro Bruto / Venda` e
+`% LL = (Lucro Bruto − Taxa − Frete) / Venda`. A linha TOTAL mostrava `100%` fixo (fazia sentido na
+semântica antiga) → agora mostra a **margem consolidada** (não soma 100%, como esperado p/ margem).
+
+**Filtro por período.** O seletor de mês virou **De / Até** (datas locais BR, ambas inclusivas) com
+atalhos *Este mês / Mês anterior / 30 dias*. `build_monthly_sales(year, month)` →
+**`build_sales_report(date_from, date_to)`**, limites BR→UTC (ADR-0013). Os 3 endpoints (gerar /
+Atualizar / exportar) e o nome do arquivo exportado passaram a usar o período. Validação: início ≤ fim
+e teto de 366 dias.
+
+**Gráfico de variação diária.** Área (ApexCharts) com **Vendas** e **LL Parcial** por dia, cobrindo
+todos os dias do período (dias sem venda = 0, a linha não "pula"). O **LL diário** usa a taxa/frete
+**dos pedidos do dia** (não o rateio por produto) — como `platform_fee`/`seller_shipping_cost` já são
+por pedido, o dia é a atribuição exata: **Σ dias == total do período** (garantido por teste).
+
+**Verificação:** teste cobre margens, período e série diária; `pytest -m "not integration"` 98 passed /
+2 pré-existentes; `npm run build` OK.
+
+---
+
+## 2026-07-11 — feat(produtos): descrição por IA + ficha dos componentes do KIT (4 telas)
+
+**#1 Descrição por IA** — botão "Gerar por IA" no campo Descrição das **4 telas** (CMIG simples/KIT,
+PG simples/KIT). Abre modal com: **prompt** (10 linhas, largura total), **resposta da IA editável**
+(10 linhas), **checkbox** que reenvia a resposta anterior como **contexto** do próximo prompt,
+**Voltar** (não altera a descrição) e **Pronto** (substitui). Campo Descrição das 4 telas
+padronizado em 10 linhas/largura total.
+- Backend: **novo** `routers/ai_content.py` → `POST /api/v1/ai/product-description`.
+  **Nada de LLM novo** — reusa `ai_service.complete()`, `AIConfig` (singleton ativo, chave base64) e
+  `product_brief.build_product_brief()` (ficha técnica do produto, já sanitizada contra
+  prompt-injection) como contexto automático quando o produto já existe (edição).
+  Trata `httpx.TimeoutException` → **504** (o `ai_service` não tratava e vazava como 500).
+  Sem `AIConfig` ativa → **400** com mensagem clara (nunca falha em silêncio).
+
+**#2/#3 Componentes do KIT** — cada componente mostra **dimensões · peso · NCM · CEST** abaixo do
+título e um **ícone que copia a descrição**; o modal de IA (nos KITs) lista os componentes com
+ícone de copiar a descrição de cada um (p/ colar no prompt).
+- **Gap fechado no backend:** os blocos `components[]` dos serializadores **descartavam**
+  `description`/dimensões/peso/NCM/CEST — sem isso os campos sumiam ao reabrir o KIT em edição.
+  Completados: `_serialize_cmig_product` + `/pg-products` (`cmigs.py`, via novo helper
+  `_product_specs`) e `_serialize_product` (`supplier_products.py`, + `cost_price` que também faltava).
+  Frontend: `addComponent()` e `onMounted()` das 2 telas de KIT agora propagam os campos.
+
+**Novos (reutilizáveis):** `composables/useClipboard.js` (o padrão estava reimplementado inline em 8
+telas), `components/products/AiDescriptionModal.vue`, `components/products/ProductDescriptionField.vue`
+(um componente para as 4 telas, em vez de 4 cópias).
+
+**Atenção:** `CMIGProduct.description` é `VARCHAR(4000)` (o PG é CLOB) → o modal mostra contador e
+**bloqueia o "Pronto"** se exceder, evitando truncamento no save.
+
+**Verificação:** chamada **real** à IA ponta a ponta (config → ficha técnica → prompt → LLM → texto):
+descrição coerente gerada usando a ficha do produto. Rota `/api/v1/ai/product-description` registrada.
+`pytest -m "not integration"` 98 passed / 2 pré-existentes; `npm run build` OK. Sem migrations, sem
+novas dependências.
+
+---
+
+## 2026-07-11 — fix(kit): card "Componentes do Kit" não localizava produtos PG (403 silencioso)
+
+No cadastro de KIT da CMIG (`CmigCompositeFormView`, rota `role:'ac'`), a aba **"Catálogo PG"**
+não retornava nada. **Dois defeitos empilhados + um que os escondeu:**
+1. **403:** a aba chamava `GET /api/v1/pg`, que exige a menu-key **`pg`** — e o perfil **`gc` (AC)**,
+   único que cria KIT de CMIG, **não a possui** (seed 83). Todo AC tomava 403.
+2. **A busca não existia:** `GET /pg` **não declarava `search`** (FastAPI descarta o param). Mesmo
+   como admin, digitar um SKU devolvia o **catálogo inteiro** sem filtrar — a busca de PG nunca
+   funcionou (idem no KIT de PG, `PgCompositeFormView`).
+3. **Silêncio:** `doSearch()` tinha `try/finally` **sem `catch`** → o 403 era engolido, sem toast.
+
+**Correções**
+- `routers/cmigs.py`: **novo** `GET /cmigs/{cmig_id}/pg-products?search=&limit=` — lookup de PG no
+  escopo da CMIG, autorizado por `_check_cmig_access` (o mesmo da aba CMIG, que já funcionava),
+  **sem afrouxar o CRUD de PG**. Escopo: PG **ativo**, do **galpão da CMIG** e **não-composto**
+  (evita kit-dentro-de-kit no servidor). Busca `ilike` em título+SKU. Fallback: CMIG sem galpão →
+  não filtra por galpão (senão o picker viria vazio).
+- `routers/supplier_products.py`: `GET /pg` ganha `search`/`simple_only`/`limit` (opcionais —
+  comportamento antigo preservado). Conserta a busca do KIT de PG.
+- `CmigCompositeFormView.vue` / `PgCompositeFormView.vue`: aba PG → novo endpoint; **`catch` com
+  toast** (o silêncio foi o que escondeu o bug) e **estado vazio** ("Nenhum produto encontrado
+  para X") em vez da tabela sumir.
+- **Descartado de propósito:** conceder a menu-key `pg` ao perfil `gc` (abriria o CRUD de PG ao AC).
+
+**Verificação:** query do novo endpoint exercitada contra o banco (CMIG 1/galpão 1): busca por
+título "Anel" → 2; por SKU "5212" → 1; termo inexistente → 0. `pytest -m "not integration"`
+98 passed / 2 pré-existentes; `npm run build` OK. Sem migrations, sem novas dependências.
+
+---
+
 ## 2026-07-11 — feat(cmig): converter identidade fiscal CPF ⇆ CNPJ (ADR-0018)
 
 Passou a ser possível **alterar o tipo fiscal** de uma CMIG existente (ex.: uma conta cadastrada como

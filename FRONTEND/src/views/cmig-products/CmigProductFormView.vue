@@ -106,10 +106,11 @@
                     </div>
                   </div>
 
-                  <div class="form-group">
-                    <label>Descrição</label>
-                    <textarea v-model="form.description" class="form-control" rows="4"></textarea>
-                  </div>
+                  <ProductDescriptionField
+                    v-model="form.description"
+                    product-type="cmig"
+                    :product-id="isEdit ? Number(route.params.id) : null"
+                  />
 
                   <ProductDimensionsFields :form="form" />
 
@@ -148,6 +149,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import ProductPhotosCard from '@/components/products/ProductPhotosCard.vue'
+import ProductDescriptionField from '@/components/products/ProductDescriptionField.vue'
 import ProductDimensionsFields from '@/components/products/ProductDimensionsFields.vue'
 import ProductFiscalFields from '@/components/products/ProductFiscalFields.vue'
 import MarketplaceCategoriesCard from '@/components/products/MarketplaceCategoriesCard.vue'

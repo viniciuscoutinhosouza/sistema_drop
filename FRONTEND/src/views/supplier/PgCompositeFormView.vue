@@ -87,10 +87,12 @@
                   </div>
                 </div>
 
-                <div class="form-group">
-                  <label>Descrição</label>
-                  <textarea v-model="form.description" class="form-control" rows="3"></textarea>
-                </div>
+                <ProductDescriptionField
+                  v-model="form.description"
+                  product-type="pg"
+                  :product-id="isEdit ? Number(route.params.id) : null"
+                  :components="components"
+                />
 
                 <ProductDimensionsFields :form="form" />
                 <ProductFiscalFields :form="form" />
@@ -129,6 +131,11 @@
                 </div>
 
                 <!-- Resultados -->
+                <div v-if="!searchLoading && searchedTerm && !searchResults.length" class="alert alert-light border text-muted py-2 mb-3">
+                  <i class="fas fa-info-circle mr-1"></i>
+                  Nenhum produto PG encontrado para <strong>"{{ searchedTerm }}"</strong>.
+                </div>
+
                 <div v-if="searchResults.length" class="mb-3">
                   <table class="table table-sm table-bordered mb-0">
                     <thead class="thead-light">
@@ -174,7 +181,22 @@
                     <tbody>
                       <tr v-for="(comp, idx) in components" :key="idx">
                         <td><code>{{ comp.sku }}</code></td>
-                        <td>{{ comp.title }}</td>
+                        <td>
+                          <div class="d-flex align-items-start">
+                            <div class="flex-grow-1">
+                              <div>{{ comp.title }}</div>
+                              <small class="text-muted">{{ specsLine(comp) }}</small>
+                            </div>
+                            <button
+                              type="button"
+                              class="btn btn-sm btn-outline-secondary ml-2"
+                              title="Copiar a descrição deste produto"
+                              @click="copy(comp.description, `Descrição de ${comp.sku} copiada!`)"
+                            >
+                              <i class="fas fa-copy"></i>
+                            </button>
+                          </div>
+                        </td>
                         <td class="text-center">{{ comp.stock_quantity }}</td>
                         <td class="text-center">
                           <input
@@ -241,13 +263,16 @@ import { useRoute, useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import ProductPhotosCard from '@/components/products/ProductPhotosCard.vue'
+import ProductDescriptionField from '@/components/products/ProductDescriptionField.vue'
 import ProductDimensionsFields from '@/components/products/ProductDimensionsFields.vue'
+import { useClipboard } from '@/composables/useClipboard'
 import ProductFiscalFields from '@/components/products/ProductFiscalFields.vue'
 import CategoryPickerWithModal from '@/components/products/CategoryPickerWithModal.vue'
 
 const route  = useRoute()
 const router = useRouter()
 const toast  = useToast()
+const { copy } = useClipboard()
 
 const isEdit = computed(() => !!route.params.id)
 const saving = ref(false)
@@ -267,6 +292,7 @@ const components = ref([])  // { component_id, sku, title, stock_quantity, quant
 const searchQuery   = ref('')
 const searchResults = ref([])
 const searchLoading = ref(false)
+const searchedTerm  = ref('')   // termo da última busca — p/ o estado "nada encontrado"
 
 let searchTimer = null
 function debouncedSearch() {
@@ -276,12 +302,18 @@ function debouncedSearch() {
 
 async function doSearch() {
   const q = searchQuery.value.trim()
+  searchedTerm.value = q
   if (!q) { searchResults.value = []; return }
   searchLoading.value = true
   try {
-    const { data } = await api.get('/pg', { params: { search: q } })
+    // `search`/`simple_only` agora existem no backend — antes eram ignorados e vinha o
+    // catálogo INTEIRO (a busca por texto nunca filtrou de fato).
+    const { data } = await api.get('/pg', { params: { search: q, simple_only: true, limit: 30 } })
     const selfId = isEdit.value ? Number(route.params.id) : null
-    searchResults.value = (Array.isArray(data) ? data : []).filter(p => !p.is_composite && p.id !== selfId)
+    searchResults.value = (Array.isArray(data) ? data : []).filter(p => p.id !== selfId)
+  } catch (e) {
+    searchResults.value = []
+    toast.error(e.response?.data?.detail || 'Erro ao buscar produtos')
   } finally {
     searchLoading.value = false
   }
@@ -289,6 +321,33 @@ async function doSearch() {
 
 function isAlreadyAdded(id) {
   return components.value.some(c => c.component_id === id)
+}
+
+// Ficha exibida abaixo do título de cada componente (dimensões · peso · NCM · CEST).
+function specsLine(c) {
+  const dim = [c.height_cm, c.width_cm, c.length_cm].every(v => v != null && v !== '')
+    ? `${c.height_cm}×${c.width_cm}×${c.length_cm} cm`
+    : null
+  const parts = [
+    dim,
+    c.weight_kg != null && c.weight_kg !== '' ? `${c.weight_kg} kg` : null,
+    c.ncm ? `NCM ${c.ncm}` : null,
+    c.cest ? `CEST ${c.cest}` : null,
+  ].filter(Boolean)
+  return parts.length ? parts.join(' · ') : 'Sem dimensões/peso/NCM/CEST cadastrados'
+}
+
+// Campos da ficha propagados do resultado da busca / da edição (o backend agora os devolve).
+function _specs(o) {
+  return {
+    description: o.description || '',
+    weight_kg: o.weight_kg ?? null,
+    height_cm: o.height_cm ?? null,
+    width_cm: o.width_cm ?? null,
+    length_cm: o.length_cm ?? null,
+    ncm: o.ncm || '',
+    cest: o.cest || '',
+  }
 }
 
 function addComponent(r) {
@@ -300,6 +359,7 @@ function addComponent(r) {
     stock_quantity: r.stock_quantity,
     quantity: qty,
     contribution: Math.floor(r.stock_quantity / qty),
+    ..._specs(r),
   })
 }
 
@@ -334,6 +394,7 @@ onMounted(async () => {
         stock_quantity: c.stock_quantity,
         quantity: c.quantity,
         contribution: c.contribution,
+        ..._specs(c),
       }))
     }
   }

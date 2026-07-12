@@ -6,7 +6,7 @@ from datetime import datetime as _datetime
 from datetime import time as _time
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy import delete as _sa_delete
 from sqlalchemy import update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -93,16 +93,27 @@ def _serialize_product(p: CatalogProduct, include_components: bool = False) -> d
     if include_components and p.is_composite:
         for comp in p.components:
             if comp.component:
+                src = comp.component
                 qty = max(comp.quantity, 1)
                 result["components"].append(
                     {
                         "id": comp.id,
                         "product_id": comp.component_id,
-                        "title": comp.component.title,
-                        "sku": comp.component.sku,
-                        "stock_quantity": comp.component.stock_quantity,
+                        "title": src.title,
+                        "sku": src.sku,
+                        "stock_quantity": src.stock_quantity,
+                        "cost_price": float(src.cost_price) if src.cost_price is not None else 0.0,
                         "quantity": comp.quantity,
-                        "contribution": comp.component.stock_quantity // qty,
+                        "contribution": src.stock_quantity // qty,
+                        # Ficha p/ exibir abaixo do título + copiar a descrição (sem isto, ao
+                        # reabrir o KIT em edição os campos sumiam).
+                        "description": src.description or "",
+                        "weight_kg": float(src.weight_kg) if src.weight_kg is not None else None,
+                        "height_cm": float(src.height_cm) if src.height_cm is not None else None,
+                        "width_cm": float(src.width_cm) if src.width_cm is not None else None,
+                        "length_cm": float(src.length_cm) if src.length_cm is not None else None,
+                        "ncm": src.ncm or "",
+                        "cest": src.cest or "",
                     }
                 )
     return result
@@ -126,9 +137,17 @@ def _serialize_variant(v: CatalogProductVariant) -> dict:
 
 @router.get("")
 async def list_supplier_products(
+    search: str | None = None,
+    simple_only: bool = False,
+    limit: int | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("pg")),
 ):
+    """Lista produtos do PG (Catálogo Geral).
+
+    `search` (título/SKU), `simple_only` (exclui compostos — para pickers de componentes de KIT)
+    e `limit` são OPCIONAIS: sem eles o comportamento é o de antes (catálogo inteiro).
+    """
     if current_user.role == "ugo" and current_user.warehouse_id:
         stmt = (
             select(CatalogProduct)
@@ -154,6 +173,14 @@ async def list_supplier_products(
             .options(selectinload(CatalogProduct.images))
             .order_by(CatalogProduct.created_at.desc())
         )
+
+    if simple_only:
+        stmt = stmt.where(CatalogProduct.is_composite == False)  # noqa: E712
+    if search:
+        like = f"%{search.strip()}%"
+        stmt = stmt.where(or_(CatalogProduct.title.ilike(like), CatalogProduct.sku.ilike(like)))
+    if limit:
+        stmt = stmt.limit(limit)
 
     result = await db.execute(stmt)
     return [_serialize_product(p) for p in result.scalars().all()]

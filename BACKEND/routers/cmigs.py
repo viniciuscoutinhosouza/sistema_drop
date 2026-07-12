@@ -108,6 +108,24 @@ def _calculate_cmig_composite_stock(components) -> int:
     return min(stocks) if stocks else 0
 
 
+def _product_specs(src) -> dict:
+    """Ficha do produto exibida em cada componente do KIT (dimensões/peso/NCM/CEST) + a
+    descrição (usada pelo botão de copiar). CMIGProduct e CatalogProduct têm os MESMOS
+    nomes de coluna, então serve para os dois."""
+    def _n(v):
+        return float(v) if v is not None else None
+
+    return {
+        "description": src.description or "",
+        "weight_kg": _n(src.weight_kg),
+        "height_cm": _n(src.height_cm),
+        "width_cm": _n(src.width_cm),
+        "length_cm": _n(src.length_cm),
+        "ncm": src.ncm or "",
+        "cest": src.cest or "",
+    }
+
+
 def _serialize_cmig_product(p: CMIGProduct) -> dict:
     thumbnail = p.images[0].url if p.images else None
     stock = _calculate_cmig_composite_stock(p.components) if p.is_composite else p.stock_quantity
@@ -128,6 +146,9 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
                         "cost_price": float(source.cost_price) if source.cost_price is not None else 0.0,
                         "quantity": comp.quantity,
                         "contribution": source.stock_quantity // qty,
+                        # Ficha p/ exibir abaixo do título + copiar a descrição (sem isto, ao
+                        # reabrir o KIT em edição os campos sumiam).
+                        **_product_specs(source),
                     }
                 )
     return {
@@ -698,6 +719,57 @@ async def list_cmig_products(
 
     result = await db.execute(stmt)
     return [_serialize_cmig_product(p) for p in result.scalars().all()]
+
+
+@router.get("/{cmig_id}/pg-products")
+async def list_pg_products_for_cmig(
+    cmig_id: int,
+    search: str | None = None,
+    limit: int = Query(30, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Busca produtos do Catálogo PG para montar KIT (produto composto) de uma CMIG.
+
+    Endpoint de LOOKUP no escopo da CMIG: a autorização é a mesma da aba "Produtos CMIG"
+    (`_check_cmig_access`), e não a menu-key `pg` — o AC monta o KIT mas não administra o PG,
+    então `GET /pg` (que exige a menu-key `pg`) devolvia 403 para ele.
+
+    Escopo: PG ATIVO do galpão DA CMIG (é quem separa/expede o kit) e NÃO-composto
+    (evita kit-dentro-de-kit).
+    """
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+
+    stmt = (
+        select(CatalogProduct)
+        .where(
+            CatalogProduct.is_active == True,  # noqa: E712
+            CatalogProduct.is_composite == False,  # noqa: E712
+        )
+        .order_by(CatalogProduct.title)
+        .limit(limit)
+    )
+    # CMIG sem galpão definido → não filtra por galpão (senão o picker viria vazio).
+    if cmig.warehouse_id:
+        stmt = stmt.where(CatalogProduct.warehouse_id == cmig.warehouse_id)
+    if search:
+        like = f"%{search.strip()}%"
+        stmt = stmt.where(or_(CatalogProduct.title.ilike(like), CatalogProduct.sku.ilike(like)))
+
+    result = await db.execute(stmt)
+    return [
+        {
+            "id": p.id,
+            "sku": p.sku,
+            "title": p.title,
+            "stock_quantity": p.stock_quantity,
+            "cost_price": float(p.cost_price) if p.cost_price is not None else 0.0,
+            "is_composite": False,
+            **_product_specs(p),
+        }
+        for p in result.scalars().all()
+    ]
 
 
 @router.get("/{cmig_id}/products/{product_id}")
