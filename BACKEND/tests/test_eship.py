@@ -342,3 +342,57 @@ async def test_cancel_order_devolve_o_status_ao_que_o_ml_diz(monkeypatch):
     assert o.eship_dispatch_status == "cancelled"
     assert o.eship_label_attached == 0
     assert service.order_was_pushed(o) is False      # liberado para novo envio
+
+
+@pytest.mark.asyncio
+async def test_mor8003_com_ordem_cancelada_nao_finge_sucesso(monkeypatch):
+    """O eShip NAO libera o numeroOrigem apos o cancelamento: o reenvio bate em MOR8003 e nada e
+    criado. Reaproveitar o id da ordem cancelada faria o sistema mostrar sucesso apontando para uma
+    ordem morta - foi o que aconteceu com o pedido 2000017373745064 (ordem 3098258, status 10)."""
+    from models.order import Order
+    from integrations.eship.client import EShipError
+    from integrations.eship.config import EShipCreds
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            raise AssertionError("nao deveria tocar o banco")
+
+        async def commit(self):
+            return None
+
+    creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="1")
+
+    async def fake_creds(db, order):
+        return creds, None
+
+    async def fake_ensure_doc(db, order):
+        return "03577745665"
+
+    async def fake_call(_creds, funcao, _payload):
+        if funcao == service.FUNC_POST_ORDEM:
+            raise EShipError("MOR8003: N Ordem : '2000017373745064' ja cadastrada")
+        if funcao == service.FUNC_GET_ORDEM:
+            # status 10 = Cancelada
+            return {"corpo": {"body": {"dados": [{"id": 3098258, "status": {"id": 10}}]}}}
+        raise AssertionError(funcao)
+
+    monkeypatch.setattr(service, "_creds_for_order", fake_creds)
+    monkeypatch.setattr(service, "ensure_buyer_document", fake_ensure_doc)
+    monkeypatch.setattr(service.client, "call", fake_call)
+
+    o = Order(id=1, platform_order_id="2000017373745064", shipping_mode="flex",
+              buyer_document="03577745665")
+    o.items = []
+
+    with pytest.raises(EShipError) as exc:
+        await service.push_order(FakeDB(), o)
+
+    assert "cancelada" in str(exc.value).lower()
+    assert o.eship_order_id is None          # nao grava o id da ordem morta
+    assert service.order_was_pushed(o) is False
+
+
+def test_eship_cancelada_reconhece_status_10():
+    assert service._eship_cancelada(10) is True
+    assert service._eship_cancelada(1) is False    # Lancado
+    assert service._eship_cancelada(None) is False

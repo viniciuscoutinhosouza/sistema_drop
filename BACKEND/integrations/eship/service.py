@@ -668,8 +668,14 @@ def _ja_cadastrada(err: Exception) -> bool:
     return "mor8003" in msg or "já cadastrada" in msg or "ja cadastrada" in msg
 
 
-async def _fetch_eship_order_id(creds: EShipCreds, order: Order) -> str | None:
-    """Consulta o eShip e devolve o id da ordem já existente (None se não der para descobrir)."""
+def _eship_cancelada(status_id) -> bool:
+    """A ordem no eShip está cancelada? (status 10 = Cancelada — ver status_map)."""
+    ship_status, _ = map_status(status_id)
+    return ship_status == "cancelled"
+
+
+async def _fetch_eship_order(creds: EShipCreds, order: Order) -> tuple[str | None, object]:
+    """Consulta a ordem já existente no eShip → (id, status_id). (None, None) se não descobrir."""
     try:
         resp = await client.call(
             creds,
@@ -680,10 +686,11 @@ async def _fetch_eship_order_id(creds: EShipCreds, order: Order) -> str | None:
                 "pagina": 1,
             },
         )
-        return extract_order_id(resp)
+        status_id, _tracking, _url = extract_status(resp)
+        return extract_order_id(resp), status_id
     except EShipError as exc:
-        logger.warning("[eShip] pedido=%s: falha ao recuperar o id da ordem: %s", order.id, exc)
-        return None
+        logger.warning("[eShip] pedido=%s: falha ao consultar a ordem existente: %s", order.id, exc)
+        return None, None
 
 
 async def push_order(db: AsyncSession, order: Order) -> dict:
@@ -719,13 +726,25 @@ async def push_order(db: AsyncSession, order: Order) -> dict:
         # antes isso abortava o envio e a NF-e emitida depois nunca era anexada.
         if not _ja_cadastrada(e):
             raise
-        eship_id = await _fetch_eship_order_id(creds, order)
+        eship_id, status_id = await _fetch_eship_order(creds, order)
+
+        # A ordem existente pode estar CANCELADA. O eShip não libera o `numeroOrigem` depois do
+        # cancelamento — ele fica ocupado para sempre —, então o reenvio bate em MOR8003 e NADA é
+        # criado. Reaproveitar esse id seria mentir: o sistema mostraria sucesso apontando para uma
+        # ordem morta (foi o que aconteceu com o pedido 2000017373745064 / ordem 3098258).
+        if _eship_cancelada(status_id):
+            raise EShipError(
+                f"O eShip já tem uma ordem CANCELADA com este número ({eship_id or 's/ id'}) e não "
+                f"libera o mesmo numeroOrigem para uma nova ordem. Nada foi criado no WMS. Peça a "
+                f"exclusão definitiva da ordem no eShip para reenviar este pedido."
+            )
+
         order.eship_order_id = eship_id
         order.eship_last_response = f"MOR8003 (ordem já existia no WMS): {e}"[:32000]
         await db.commit()
         logger.info(
-            "[eShip] pedido=%s: ordem já existia no WMS (MOR8003) — id recuperado=%s",
-            order.id, eship_id,
+            "[eShip] pedido=%s: ordem já existia no WMS (MOR8003) — id recuperado=%s status=%s",
+            order.id, eship_id, status_id,
         )
         return {"already_sent": True, "eship_order_id": eship_id}
 
@@ -829,7 +848,10 @@ async def attach_label(db: AsyncSession, order: Order, content: bytes,
 
 
 async def _resolve_labels(db: AsyncSession, order: Order) -> list[tuple[bytes, str, str]]:
-    """Baixa a etiqueta do ML em ZPL2 e PDF. Retorna `[(bytes, extensao, mime), ...]`.
+    """Baixa a etiqueta do ML em PDF. Retorna `[(bytes, extensao, mime), ...]`.
+
+    Só PDF: o eShip **recusa** o ZPL no anexo ("MIT5002 - Tipo de arquivo não aceito, zpl"), então
+    mandar os dois formatos só gerava um erro garantido a cada envio.
 
     Reusa `ml_service.get_shipment_label` (não reimplementa a chamada ML). Uma etiqueta que
     ainda não estiver liberada (ML 400) é apenas omitida da lista.
@@ -844,7 +866,7 @@ async def _resolve_labels(db: AsyncSession, order: Order) -> list[tuple[bytes, s
     if not acc or not acc.access_token:
         return []
     out: list[tuple[bytes, str, str]] = []
-    for fmt, ext, mime in (("zpl2", "zpl", "text/plain"), ("pdf", "pdf", "application/pdf")):
+    for fmt, ext, mime in (("pdf", "pdf", "application/pdf"),):
         try:
             content, _ctype = await _ml.get_shipment_label(acc.access_token, order.shipment_id, fmt)
             out.append((content, ext, mime))
