@@ -212,3 +212,77 @@ async def test_ensure_buyer_document_busca_no_billing_info(monkeypatch):
 
     monkeypatch.setattr(service._ml, "get_order_billing_info", nunca)
     assert await service.ensure_buyer_document(FakeDB(), o) == "25598286858"
+
+
+def test_extract_order_id_postordem_dados_objeto():
+    """O PostOrdem devolve `dados` como OBJETO (as consultas devolvem LISTA). Tratar so a lista
+    fazia o id se perder: o WMS criava a ordem, gravavamos id nulo, e o clique seguinte tentava
+    criar de novo -> "MOR8003: N Ordem ja cadastrada". Resposta real de producao."""
+    resp = {
+        "erros": None,
+        "corpo": {"body": {"dados": {"ordem": {
+            "id": 3098257,
+            "destinatario": {"id": 3068704, "nome": "ALVARO CORDEIRO DE ASSUMPCAO"},
+        }}}},
+    }
+    assert service.extract_order_id(resp) == "3098257"
+
+    # Consultas continuam devolvendo lista - os dois formatos precisam funcionar.
+    assert service.extract_order_id(
+        {"corpo": {"body": {"dados": [{"ordem": {"id": 42}}]}}}
+    ) == "42"
+
+
+def test_ja_cadastrada_reconhece_mor8003():
+    from integrations.eship.client import EShipError
+
+    e = EShipError("eShip webServicePostOrdem retornou erro MOR8003: N Ordem : '200001' ja cadastrada")
+    assert service._ja_cadastrada(e) is True
+    assert service._ja_cadastrada(EShipError("timeout")) is False
+
+
+@pytest.mark.asyncio
+async def test_push_order_recupera_ordem_existente_no_mor8003(monkeypatch):
+    """Ordem ja existe no WMS: nao e falha. Recupera o id e segue para os anexos - antes isso
+    abortava o envio, e a NF-e emitida depois nunca era anexada."""
+    from models.order import Order
+    from integrations.eship.client import EShipError
+    from integrations.eship.config import EShipCreds
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            raise AssertionError("nao deveria consultar o banco aqui")
+
+        async def commit(self):
+            return None
+
+    creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="1")
+
+    async def fake_creds(db, order):
+        return creds, None
+
+    async def fake_ensure_doc(db, order):
+        return "25598286858"
+
+    async def fake_upsert(*_a, **_kw):
+        return None
+
+    async def fake_call(_creds, funcao, _payload):
+        if funcao == service.FUNC_POST_ORDEM:
+            raise EShipError("eShip webServicePostOrdem retornou erro MOR8003: ja cadastrada")
+        if funcao == service.FUNC_GET_ORDEM:
+            return {"corpo": {"body": {"dados": [{"ordem": {"id": 3098258}}]}}}
+        raise AssertionError(funcao)
+
+    monkeypatch.setattr(service, "_creds_for_order", fake_creds)
+    monkeypatch.setattr(service, "ensure_buyer_document", fake_ensure_doc)
+    monkeypatch.setattr(service, "upsert_produto", fake_upsert)
+    monkeypatch.setattr(service.client, "call", fake_call)
+
+    o = Order(id=1, platform_order_id="ML-9", shipping_mode="flex", buyer_document="25598286858")
+    o.items = []
+    res = await service.push_order(FakeDB(), o)
+
+    assert res["already_sent"] is True
+    assert res["eship_order_id"] == "3098258"
+    assert o.eship_order_id == "3098258"   # id recuperado -> o botao Excluir/Atualizar aparece

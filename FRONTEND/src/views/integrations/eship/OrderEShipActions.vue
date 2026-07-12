@@ -1,8 +1,13 @@
 <template>
   <span class="d-inline-flex align-items-center" style="gap:.25rem">
     <template v-if="enviada">
-      <span class="badge badge-info" title="Pedido já enviado ao eShip — clique para ver a ordem">
+      <!-- O número da ordem no WMS fica À VISTA no pedido — é por ele que o usuário confere o
+           envio no painel do eShip, sem precisar abrir nada. -->
+      <span class="badge badge-info" :title="order.eship_order_id
+              ? `Ordem ${order.eship_order_id} no eShip — clique para ver/atualizar/excluir`
+              : 'Pedido já enviado ao eShip — clique para ver a ordem'">
         <i class="fas fa-dolly-flatbed mr-1"></i>eShip
+        <template v-if="order.eship_order_id"> #{{ order.eship_order_id }}</template>
       </span>
       <span class="badge" :class="order.eship_nfe_attached ? 'badge-success' : 'badge-light'"
             :title="order.eship_nfe_attached ? 'NF-e anexada à Ordem' : 'NF-e ainda não anexada'">NF-e</span>
@@ -145,6 +150,18 @@
               </ul>
             </div>
 
+            <!-- Avisos: o envio é possível, mas a ordem iria incompleta ao WMS. Exige confirmação. -->
+            <div v-if="avisos.length" class="alert alert-warning py-2">
+              <strong><i class="fas fa-exclamation-circle mr-1"></i>Atenção — falta documento para este envio:</strong>
+              <ul class="mb-0 mt-1 pl-4 small">
+                <li v-for="(a, i) in avisos" :key="i">{{ a }}</li>
+              </ul>
+              <small class="d-block mt-1">
+                Você pode enviar assim mesmo e completar depois (o botão <strong>Atualizar</strong> anexa o
+                que faltou, sem recriar a ordem) — ou aguardar a NF-e/etiqueta e enviar tudo de uma vez.
+              </small>
+            </div>
+
             <div v-if="preview" class="small mb-2">
               <span class="badge badge-light mr-2">Função: <span class="text-monospace">{{ preview.funcao }}</span></span>
               <span class="badge badge-light mr-2">CMIG: {{ preview.cmig_id }}</span>
@@ -174,11 +191,12 @@
           </div>
           <div class="card-footer d-flex" style="gap:.5rem">
             <button class="btn btn-sm btn-outline-secondary" @click="closePreview">Fechar</button>
-            <button class="btn btn-sm btn-warning ml-auto" :disabled="busy || !preview || bloqueios.length"
+            <button class="btn btn-sm ml-auto" :class="avisos.length ? 'btn-danger' : 'btn-warning'"
+                    :disabled="busy || !preview || bloqueios.length"
                     :title="bloqueios.length ? 'Corrija as pendências acima antes de enviar' : ''"
                     @click="confirmSend">
               <i class="fas mr-1" :class="busy ? 'fa-spinner fa-spin' : 'fa-paper-plane'"></i>
-              Confirmar envio ao eShip
+              {{ avisos.length ? 'Enviar mesmo assim (incompleto)' : 'Confirmar envio ao eShip' }}
             </button>
           </div>
         </div>
@@ -270,6 +288,7 @@ async function excluir() {
 const showPreview = ref(false)
 const preview = ref(null)
 const bloqueios = computed(() => preview.value?.bloqueios || [])
+const avisos = computed(() => preview.value?.avisos || [])
 const bodyPretty = computed(() => {
   if (!preview.value?.body) return ''
   try { return JSON.stringify(preview.value.body, null, 2) } catch { return String(preview.value.body) }
@@ -302,6 +321,18 @@ async function copy(text, label) {
 }
 
 async function confirmSend() {
+  // Enviar sem NF-e/etiqueta cria a ordem incompleta no WMS. É permitido (dá para completar depois
+  // com "Atualizar"), mas nunca em silêncio — o usuário confirma sabendo o que falta.
+  if (avisos.value.length) {
+    const faltando = avisos.value.map((a) => `• ${a}`).join('\n')
+    const ok = window.confirm(
+      `Este pedido será enviado ao eShip INCOMPLETO:\n\n${faltando}\n\n`
+      + 'A ordem será criada no WMS assim mesmo. Depois de emitir a NF-e / liberar a etiqueta, '
+      + 'clique no pedido e use "Atualizar" para anexar o que faltou (a ordem não é recriada).\n\n'
+      + 'Deseja enviar mesmo assim?'
+    )
+    if (!ok) return
+  }
   closePreview()
   await doSend()
 }

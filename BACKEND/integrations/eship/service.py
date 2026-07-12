@@ -539,6 +539,15 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
     if not body.get("produtos"):
         bloqueios.append("O pedido não tem itens para enviar.")
 
+    # AVISOS (não impedem, mas exigem confirmação): a Ordem pode ser criada sem NF-e/etiqueta, e
+    # foi o que aconteceu — pedidos foram parar no WMS sem documento nem etiqueta. Usa as MESMAS
+    # funções do envio real, então o que a prévia diz é o que o envio faria, não um palpite.
+    avisos: list[str] = []
+    if not order.eship_nfe_attached and not await resolve_nfe_xml(db, order):
+        avisos.append("NF-e ainda não autorizada — a ordem irá ao WMS SEM o XML da nota.")
+    if not order.eship_label_attached and not await _resolve_labels(db, order):
+        avisos.append("Etiqueta ainda não liberada pelo Mercado Livre — a ordem irá SEM etiqueta.")
+
     url = f"{(creds.base_url or '').rstrip('/')}/?api&funcao={FUNC_POST_ORDEM}"
     body_json = json.dumps(body, ensure_ascii=False)
     curl = (
@@ -552,6 +561,7 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
         "cmig_id": getattr(cmig, "id", None),
         "warehouse_code": creds.warehouse_code,
         "bloqueios": bloqueios,
+        "avisos": avisos,
         "body": body,
         "curl": curl,
     }
@@ -574,20 +584,21 @@ def extract_order_id(resp: dict) -> str | None:
             if got:
                 return got
 
-    # Envelope REAL do eShip: {"corpo": {"body": {"dados": [ {...} ]}}} — é o formato que todas as
-    # demais respostas usam (extract_status, saldo, produtos). Sem olhar aqui, a extração falhava e
-    # caía no fallback que gravava o número do pedido do ML como se fosse o id do WMS.
+    # Envelope REAL do eShip: `corpo.body.dados`. ATENÇÃO: no PostOrdem o `dados` vem como
+    # **objeto** (`{"ordem": {"id": 3098257, ...}}`), enquanto nas consultas vem como **lista**.
+    # Tratar só a lista fazia o id da ordem se perder: o WMS criava a ordem, o sistema gravava
+    # id nulo, e o clique seguinte tentava criar de novo → "MOR8003: Nº Ordem já cadastrada".
     corpo = resp.get("corpo")
-    if isinstance(corpo, dict):
-        body = corpo.get("body")
-        if isinstance(body, dict):
-            dados = body.get("dados")
-            if isinstance(dados, list) and dados and isinstance(dados[0], dict):
-                for key in _CHAVES:
-                    if key in dados[0]:
-                        got = _coax_id(dados[0][key])
-                        if got:
-                            return got
+    body = corpo.get("body") if isinstance(corpo, dict) else None
+    dados = body.get("dados") if isinstance(body, dict) else None
+    if isinstance(dados, list) and dados:
+        dados = dados[0]
+    if isinstance(dados, dict):
+        for key in _CHAVES:
+            if key in dados:
+                got = _coax_id(dados[key])
+                if got:
+                    return got
 
     data = resp.get("data") or resp.get("retorno") or {}
     if isinstance(data, dict):
@@ -651,6 +662,30 @@ def order_was_pushed(order: Order) -> bool:
     return bool(order.eship_order_id) or (order.eship_dispatch_status in ("sent", "partial"))
 
 
+def _ja_cadastrada(err: Exception) -> bool:
+    """O eShip recusou porque a ordem JÁ EXISTE lá (código MOR8003)."""
+    msg = str(err).lower()
+    return "mor8003" in msg or "já cadastrada" in msg or "ja cadastrada" in msg
+
+
+async def _fetch_eship_order_id(creds: EShipCreds, order: Order) -> str | None:
+    """Consulta o eShip e devolve o id da ordem já existente (None se não der para descobrir)."""
+    try:
+        resp = await client.call(
+            creds,
+            FUNC_GET_ORDEM,
+            {
+                "numeroOrigem": order.platform_order_id or str(order.id),
+                "incluirInfo": True,
+                "pagina": 1,
+            },
+        )
+        return extract_order_id(resp)
+    except EShipError as exc:
+        logger.warning("[eShip] pedido=%s: falha ao recuperar o id da ordem: %s", order.id, exc)
+        return None
+
+
 async def push_order(db: AsyncSession, order: Order) -> dict:
     """Envia o pedido ao eShip da empresa (CMIG). Idempotente (ver `order_was_pushed`)."""
     if _is_full_order(order):
@@ -676,7 +711,23 @@ async def push_order(db: AsyncSession, order: Order) -> dict:
         ean = await _resolve_item_ean(db, item)
         await upsert_produto(creds, item, gtin=ean)
 
-    resp = await client.call(creds, FUNC_POST_ORDEM, build_ordem_payload(order, creds))
+    try:
+        resp = await client.call(creds, FUNC_POST_ORDEM, build_ordem_payload(order, creds))
+    except EShipError as e:
+        # "MOR8003: Nº Ordem já cadastrada" NÃO é falha: a ordem existe no WMS (foi criada num
+        # envio anterior cujo id se perdeu). Recupera o id pela consulta e segue para os anexos —
+        # antes isso abortava o envio e a NF-e emitida depois nunca era anexada.
+        if not _ja_cadastrada(e):
+            raise
+        eship_id = await _fetch_eship_order_id(creds, order)
+        order.eship_order_id = eship_id
+        order.eship_last_response = f"MOR8003 (ordem já existia no WMS): {e}"[:32000]
+        await db.commit()
+        logger.info(
+            "[eShip] pedido=%s: ordem já existia no WMS (MOR8003) — id recuperado=%s",
+            order.id, eship_id,
+        )
+        return {"already_sent": True, "eship_order_id": eship_id}
 
     # O código da ordem é o que o dono usa para CONFERIR o envio no painel do eShip. Antes havia
     # um fallback (`or platform_order_id`) que, quando a extração falhava, gravava o número do
