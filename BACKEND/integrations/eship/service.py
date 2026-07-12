@@ -431,17 +431,12 @@ def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
     """
     endereco = _parse_address(order)
     doc = _digits(order.buyer_document)
-    dest: dict = {
-        "nomeDestinatario": order.buyer_name or "",
-        "contato": [
-            {
-                "nome": order.buyer_name or "",
-                "email": order.buyer_email or "",
-                "telefone": endereco["telefone"],
-            }
-        ],
-        "endereco": endereco,
-    }
+    dest: dict = {}
+
+    # O documento vai PRIMEIRO, como no exemplo oficial (.claude/eSHIP.md). Em JSON a ordem das
+    # chaves é irrelevante para o servidor, mas quem confere a prévia lê de cima para baixo — com o
+    # CPF no fim do bloco, "cadê o cpfDestinatario?" vira uma dúvida recorrente.
+    #
     # O tipo vem do ML (billing_info). Só caímos no comprimento quando o tipo não foi informado —
     # um CPF que tenha perdido o zero à esquerda em algum cadastro manual não vira "CNPJ" por engano.
     tipo = (order.buyer_document_type or "").upper()
@@ -449,6 +444,16 @@ def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
         dest["cnpjDestinatario"] = doc
     elif tipo == "CPF" or (not tipo and len(doc) == 11):
         dest["cpfDestinatario"] = doc
+
+    dest["nomeDestinatario"] = order.buyer_name or ""
+    dest["contato"] = [
+        {
+            "nome": order.buyer_name or "",
+            "email": order.buyer_email or "",
+            "telefone": endereco["telefone"],
+        }
+    ]
+    dest["endereco"] = endereco
 
     produtos = []
     for idx, it in enumerate(order.items or [], start=1):
