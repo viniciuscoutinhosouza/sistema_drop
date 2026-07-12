@@ -44,6 +44,10 @@ FUNC_GET_ORDEM = "webServiceGetOrdem"
 FUNC_GET_FALHAS = "webServiceGetFalhasOrdem"
 # Nome real no spec: "webServiceCancelaOrdem" (SEM o "r" — webServiceCancelarOrdem não existe).
 FUNC_CANCELAR_ORDEM = "webServiceCancelaOrdem"
+# CANCELAR **não basta**: o eShip mantém o `numeroOrigem` ocupado pela ordem cancelada, e o reenvio
+# bate em "MOR8003: Nº Ordem já cadastrada". Só o DELETE remove a ordem e libera o número (validado
+# em produção: após o delete, o GetOrdem devolve 0 registros).
+FUNC_DELETAR_ORDEM = "webServiceDeleteOrdem"
 FUNC_GET_SALDO = "webServiceGetSaldoEstoque"
 
 # O anexo NÃO usa `idTipoAnexo` (campo inexistente no spec real): o tipo é inferido pelas
@@ -876,18 +880,29 @@ async def _resolve_labels(db: AsyncSession, order: Order) -> list[tuple[bytes, s
 
 
 async def cancel_order(db: AsyncSession, order: Order) -> dict:
-    """Cancela a ordem no eShip (spec §7).
+    """Exclui a ordem no eShip — DELETE, não apenas cancelamento.
 
-    Cancelou no WMS → zera o vínculo e os selos de anexo, para um novo envio poder
-    recriar a Ordem e reanexar (sem isso o pedido ficaria preso em `already_sent`).
+    Cancelar deixa a ordem morta ocupando o `numeroOrigem`: o reenvio do mesmo pedido bate em
+    "MOR8003: Nº Ordem já cadastrada" e nada é criado. Só o `webServiceDeleteOrdem` remove a ordem
+    e devolve o número, permitindo reenviar o pedido com o MESMO número da venda.
+
+    Tenta o DELETE direto (funciona inclusive em ordem já cancelada). Se o WMS exigir o
+    cancelamento antes, cancela e repete o DELETE.
     """
     creds, _cmig = await _creds_for_order(db, order)
     if not creds:
         raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
-    resp = await client.call(
-        creds, FUNC_CANCELAR_ORDEM,
-        {"numeroOrigem": order.platform_order_id or str(order.id)},
-    )
+    numero_origem = order.platform_order_id or str(order.id)
+    try:
+        resp = await client.call(creds, FUNC_DELETAR_ORDEM, {"numeroOrigem": numero_origem})
+    except EShipError as exc:
+        logger.info(
+            "[eShip] pedido=%s: delete direto recusado (%s) — cancelando antes e repetindo",
+            order.id, exc,
+        )
+        await client.call(creds, FUNC_CANCELAR_ORDEM, {"numeroOrigem": numero_origem})
+        resp = await client.call(creds, FUNC_DELETAR_ORDEM, {"numeroOrigem": numero_origem})
+
     order.eship_order_id = None
     order.eship_nfe_attached = 0
     order.eship_label_attached = 0

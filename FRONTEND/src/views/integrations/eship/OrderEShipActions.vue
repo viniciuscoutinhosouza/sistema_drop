@@ -270,13 +270,14 @@ async function atualizar() {
 
 async function excluir() {
   if (!window.confirm(
-    'Cancelar esta ordem no eShip?\n\nA ordem é cancelada no WMS e o pedido volta a ficar disponível para um novo envio.'
+    'Excluir esta ordem no eShip?\n\nA ordem é REMOVIDA do WMS (não apenas cancelada) — só assim o eShip '
+    + 'libera o número do pedido e permite reenviá-lo com o mesmo número da venda.'
   )) return
   busy.value = true
   try {
     await api.post(`/integrations/eship/orders/${props.order.id}/cancel`)
     closeOrdem()
-    toast.success('Ordem cancelada no eShip — o pedido está liberado para novo envio')
+    toast.success('Ordem excluída do eShip — o pedido está liberado para novo envio')
     emit('updated')
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao cancelar a ordem no eShip')

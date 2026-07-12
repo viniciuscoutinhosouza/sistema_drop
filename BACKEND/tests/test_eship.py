@@ -316,8 +316,11 @@ async def test_cancel_order_devolve_o_status_ao_que_o_ml_diz(monkeypatch):
     async def fake_creds(db, order):
         return creds, None
 
+    chamadas = []
+
     async def fake_call(_creds, funcao, _payload):
-        assert funcao == service.FUNC_CANCELAR_ORDEM
+        chamadas.append(funcao)
+        assert funcao == service.FUNC_DELETAR_ORDEM   # DELETE, nao apenas cancelar
         return {"ok": True}
 
     async def fake_token(acc, db, **_kw):
@@ -337,6 +340,7 @@ async def test_cancel_order_devolve_o_status_ao_que_o_ml_diz(monkeypatch):
               eship_nfe_attached=0, eship_label_attached=1)
     await service.cancel_order(FakeDB(), o)
 
+    assert chamadas == [service.FUNC_DELETAR_ORDEM]  # cancelar so nao libera o numeroOrigem
     assert o.shipment_status == "ready_to_ship"      # <- voltou a "Pronto p/ Envio"
     assert o.eship_order_id is None
     assert o.eship_dispatch_status == "cancelled"
@@ -396,3 +400,50 @@ def test_eship_cancelada_reconhece_status_10():
     assert service._eship_cancelada(10) is True
     assert service._eship_cancelada(1) is False    # Lancado
     assert service._eship_cancelada(None) is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_cancela_antes_se_o_delete_for_recusado(monkeypatch):
+    """Se o WMS recusar o DELETE direto, cancela e repete o DELETE - o numeroOrigem PRECISA ser
+    liberado, senao o reenvio bate em MOR8003 para sempre."""
+    from models.order import Order
+    from integrations.eship.client import EShipError
+    from integrations.eship.config import EShipCreds
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            class R:
+                def scalar_one_or_none(self):
+                    return None
+            return R()
+
+        async def commit(self):
+            return None
+
+    creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="1")
+
+    async def fake_creds(db, order):
+        return creds, None
+
+    chamadas = []
+
+    async def fake_call(_creds, funcao, _payload):
+        chamadas.append(funcao)
+        if funcao == service.FUNC_DELETAR_ORDEM and len(chamadas) == 1:
+            raise EShipError("ordem ativa nao pode ser deletada")
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "_creds_for_order", fake_creds)
+    monkeypatch.setattr(service.client, "call", fake_call)
+
+    o = Order(id=1, platform="mercadolivre", platform_order_id="ML-1",
+              eship_order_id="99", eship_dispatch_status="sent")
+    await service.cancel_order(FakeDB(), o)
+
+    assert chamadas == [
+        service.FUNC_DELETAR_ORDEM,     # tentou deletar
+        service.FUNC_CANCELAR_ORDEM,    # recusado -> cancela
+        service.FUNC_DELETAR_ORDEM,     # e deleta de novo
+    ]
+    assert o.eship_order_id is None
+    assert service.order_was_pushed(o) is False
