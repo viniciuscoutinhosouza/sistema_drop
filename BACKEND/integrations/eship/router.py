@@ -328,6 +328,24 @@ async def get_eship_ordem(
     }
 
 
+@router.get("/orders/{order_id}/eship-anexos")
+async def get_eship_anexos(
+    order_id: int,
+    current_user: User = Depends(require_role("admin", "ugo")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Arquivos ANEXADOS na ordem, consultados no eShip (webServiceGetAnexosOrdem).
+
+    É a conferência que fecha o ciclo: mostra o que o WMS realmente recebeu (XML da NF-e, DANFE,
+    etiqueta), em vez de confiar no selo local.
+    """
+    order = await _load_order(db, order_id, current_user)
+    try:
+        return {"anexos": await service.get_anexos(db, order)}
+    except EShipError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @router.post("/orders/{order_id}/send")
 async def send_order_endpoint(
     order_id: int,

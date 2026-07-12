@@ -41,6 +41,7 @@ FUNC_POST_ORDEM = "webServicePostOrdem"
 FUNC_POST_ORDEM_XML = "webServicePostOrdemPorXml"
 FUNC_POST_ARQUIVO = "webServicePostArquivoOrdem"
 FUNC_GET_ORDEM = "webServiceGetOrdem"
+FUNC_GET_ANEXOS = "webServiceGetAnexosOrdem"   # arquivos anexados à ordem (conferência)
 FUNC_GET_FALHAS = "webServiceGetFalhasOrdem"
 # Nome real no spec: "webServiceCancelaOrdem" (SEM o "r" — webServiceCancelarOrdem não existe).
 FUNC_CANCELAR_ORDEM = "webServiceCancelaOrdem"
@@ -851,6 +852,51 @@ async def attach_label(db: AsyncSession, order: Order, content: bytes,
     )
 
 
+def _render_danfe(order: Order, xml_bytes: bytes) -> bytes | None:
+    """Gera o DANFE (PDF) a partir do XML autorizado. `None` se não der para renderizar.
+
+    Reusa o gerador da emissão própria (`services/fiscal/sefaz/danfe.gerar_danfe`) — não
+    reimplementa layout. O XML do Faturador ML já vem como `nfeProc` (com protocolo).
+    """
+    try:
+        from services.fiscal.sefaz.danfe import gerar_danfe
+
+        return gerar_danfe(xml_bytes.decode("utf-8", errors="replace"))
+    except Exception as exc:  # noqa: BLE001 — DANFE é complementar; o XML é o que vale fiscalmente
+        logger.warning("[eShip] pedido=%s: não foi possível gerar o DANFE: %s", order.id, exc)
+        return None
+
+
+async def get_anexos(db: AsyncSession, order: Order) -> list[dict]:
+    """Lista os arquivos ANEXADOS na ordem, direto do eShip (`webServiceGetAnexosOrdem`).
+
+    Devolve `[{categoria, quantidade, tamanho_kb}]` — o conteúdo vem em base64 e é pesado
+    (centenas de KB por arquivo), então nunca é repassado ao frontend: o que o usuário precisa
+    é a CONFERÊNCIA de que o arquivo está lá.
+    """
+    creds, _cmig = await _creds_for_order(db, order)
+    if not creds:
+        raise EShipError("A empresa (CMIG) do pedido não tem integração eShip ativa/configurada.")
+    resp = await client.call(
+        creds, FUNC_GET_ANEXOS, {"numeroOrigem": order.platform_order_id or str(order.id)}
+    )
+    dados = (((resp or {}).get("corpo") or {}).get("body") or {}).get("dados") or []
+    out: list[dict] = []
+    for node in dados if isinstance(dados, list) else [dados]:
+        anexos = (node or {}).get("anexos") or {}
+        for categoria, arquivos in anexos.items():
+            if not isinstance(arquivos, list):
+                arquivos = [arquivos] if arquivos else []
+            total = sum(len(a) for a in arquivos if isinstance(a, str))
+            out.append({
+                "categoria": categoria,
+                "quantidade": len(arquivos),
+                # base64 → ~3/4 do tamanho em bytes
+                "tamanho_kb": round(total * 3 / 4 / 1024, 1) if total else 0,
+            })
+    return out
+
+
 async def _resolve_labels(db: AsyncSession, order: Order) -> list[tuple[bytes, str, str]]:
     """Baixa a etiqueta do ML em PDF. Retorna `[(bytes, extensao, mime), ...]`.
 
@@ -1037,6 +1083,17 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
                         await attach_nfe_xml(db, order, xml_bytes)
                         order.eship_nfe_attached = 1
                         result["nfe"] = {"status": "attached", "chave": chave, "kind": kind}
+                        # DANFE (PDF) junto do XML — é o que o galpão imprime/confere. Vai sob o
+                        # mesmo selo: falhar aqui não desfaz o XML (que o WMS já aceitou), só
+                        # registra a pendência.
+                        danfe = _render_danfe(order, xml_bytes)
+                        if danfe:
+                            try:
+                                await attach_label(db, order, danfe, extensao="pdf",
+                                                   mime_type="application/pdf")
+                                result["nfe"]["danfe"] = "attached"
+                            except EShipError as e:
+                                result["erros"].append({"etapa": "danfe", "erro": str(e)})
                     except EShipError as e:
                         # falhou o anexo → devolve o selo p/ permitir reenvio
                         await db.execute(

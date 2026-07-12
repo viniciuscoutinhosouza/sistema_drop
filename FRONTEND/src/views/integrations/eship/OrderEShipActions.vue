@@ -101,6 +101,31 @@
                 </tbody>
               </table>
 
+              <!-- Arquivos que o WMS realmente tem — conferência de verdade, consultada no eShip,
+                   e não o nosso selo local. -->
+              <div class="mb-2">
+                <strong class="small d-block mb-1">
+                  <i class="fas fa-paperclip mr-1"></i>Arquivos anexados na ordem (consultados no eShip)
+                </strong>
+                <div v-if="anexosLoading" class="text-muted small">
+                  <i class="fas fa-spinner fa-spin mr-1"></i>consultando o eShip...
+                </div>
+                <div v-else-if="anexosErro" class="small text-danger">{{ anexosErro }}</div>
+                <table v-else-if="anexos.length" class="table table-sm table-bordered mb-0">
+                  <thead>
+                    <tr><th class="small">Categoria</th><th class="small">Arquivos</th><th class="small">Tamanho</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="a in anexos" :key="a.categoria">
+                      <td class="small text-monospace">{{ a.categoria }}</td>
+                      <td class="small">{{ a.quantidade }}</td>
+                      <td class="small">{{ a.tamanho_kb }} KB</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-else class="small text-muted">Nenhum arquivo anexado nesta ordem.</div>
+              </div>
+
               <div v-if="ordem.last_response">
                 <button class="btn btn-xs btn-outline-secondary" @click="showRaw = !showRaw">
                   <i class="fas mr-1" :class="showRaw ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
@@ -242,6 +267,10 @@ const rawPretty = computed(() => {
   try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return String(raw) }
 })
 
+const anexos = ref([])
+const anexosLoading = ref(false)
+const anexosErro = ref('')
+
 async function openOrdem() {
   if (busy.value) return
   ordem.value = null
@@ -253,6 +282,23 @@ async function openOrdem() {
   } catch (e) {
     showOrdem.value = false
     toast.error(e.response?.data?.detail || 'Erro ao carregar a ordem do eShip')
+    return
+  }
+  loadAnexos()
+}
+
+// Consulta separada: bate no eShip (webServiceGetAnexosOrdem) e pode demorar — não segura o modal.
+async function loadAnexos() {
+  anexos.value = []
+  anexosErro.value = ''
+  anexosLoading.value = true
+  try {
+    const { data } = await api.get(`/integrations/eship/orders/${props.order.id}/eship-anexos`)
+    anexos.value = data.anexos || []
+  } catch (e) {
+    anexosErro.value = e.response?.data?.detail || 'Não foi possível consultar os anexos no eShip'
+  } finally {
+    anexosLoading.value = false
   }
 }
 
