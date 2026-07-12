@@ -9,10 +9,12 @@ etiqueta → monitorar status (GetOrdem/GetFalhasOrdem). Estoque via GetSaldoEst
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import re
 import time
+import zipfile
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, or_, select
@@ -46,6 +48,14 @@ FUNC_GET_ANEXOS = "webServiceGetAnexosOrdem"   # arquivos anexados à ordem (con
 # só com o `id` carimba o `dataHoraAtualizacao` ("Data da última atualização", coluna da grade do
 # eShip) sem tocar em produtos/infos/anexos/status — verificado em produção.
 FUNC_PUT_ORDEM = "webServicePutOrdem"
+
+# `idTipoAnexo` do webServicePostArquivoOrdem — INTEIRO. Descoberto testando contra a API real:
+#   2 → PDF  (etiqueta e DANFE) → cai na categoria `documentosItPop`
+#   7 → ZPL  (etiqueta térmica)  → cai na categoria `etiqueta`
+# Sem o `idTipoAnexo`, o ZPL é RECUSADO ("MIT5002 - Tipo de arquivo não aceito, zpl").
+# O XML da NF-e não usa idTipoAnexo: vai por `inserirFiscal` e cai em `xmldanfe`.
+_ANEXO_PDF = 2
+_ANEXO_ZPL = 7
 FUNC_GET_FALHAS = "webServiceGetFalhasOrdem"
 # Nome real no spec: "webServiceCancelaOrdem" (SEM o "r" — webServiceCancelarOrdem não existe).
 FUNC_CANCELAR_ORDEM = "webServiceCancelaOrdem"
@@ -554,7 +564,7 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
     avisos: list[str] = []
     if not order.eship_nfe_attached and not await resolve_nfe_xml(db, order):
         avisos.append("NF-e ainda não autorizada — a ordem irá ao WMS SEM o XML da nota.")
-    if not order.eship_label_attached and not await _resolve_labels(db, order):
+    if not order.eship_label_attached and not (await _resolve_labels(db, order))[0]:
         avisos.append("Etiqueta ainda não liberada pelo Mercado Livre — a ordem irá SEM etiqueta.")
 
     url = f"{(creds.base_url or '').rstrip('/')}/?api&funcao={FUNC_POST_ORDEM}"
@@ -804,12 +814,16 @@ async def push_order_by_xml(db: AsyncSession, order: Order, xml_content: str,
 
 async def attach_file(db: AsyncSession, order: Order, *, content: bytes, extensao: str,
                       mime_type: str, inserir_fiscal: bool = False,
-                      atualizar_transporte: bool = False) -> dict:
+                      atualizar_transporte: bool = False,
+                      id_tipo_anexo: int | None = None) -> dict:
     """Anexa um arquivo (NF-e XML, DANFE PDF, etiqueta) a uma ordem existente (spec §6).
 
-    O tipo do anexo vem das FLAGS + extensão (não existe `idTipoAnexo` no spec):
-      - NF-e (XML): `inserir_fiscal=True` + `atualizar_transporte=True` + `extensao="xml"`.
-      - Etiqueta: sem `inserir_fiscal`, `extensao="pdf"|"zpl"`.
+    O tipo do anexo vem das FLAGS + extensão + `idTipoAnexo` (testado contra a API real):
+      - NF-e (XML): `inserir_fiscal=True` + `atualizar_transporte=True` + `extensao="xml"`
+        → categoria `xmldanfe` no WMS.
+      - PDF (etiqueta e DANFE): `id_tipo_anexo=2` → categoria `documentosItPop`.
+      - ZPL: `id_tipo_anexo=7` → categoria `etiqueta`. **Sem o idTipoAnexo o WMS recusa o ZPL**
+        ("MIT5002 - Tipo de arquivo não aceito, zpl").
     """
     creds, _cmig = await _creds_for_order(db, order)
     if not creds:
@@ -832,6 +846,8 @@ async def attach_file(db: AsyncSession, order: Order, *, content: bytes, extensa
         "extensao": extensao,
         "mimeType": mime_type,
     }
+    if id_tipo_anexo is not None:
+        payload["idTipoAnexo"] = int(id_tipo_anexo)   # INTEIRO — o WMS recusa a string
     if inserir_fiscal:
         payload["inserirFiscal"] = "1"
     if atualizar_transporte:
@@ -849,10 +865,12 @@ async def attach_nfe_xml(db: AsyncSession, order: Order, xml_content: bytes) -> 
 
 
 async def attach_label(db: AsyncSession, order: Order, content: bytes,
-                       extensao: str = "pdf", mime_type: str = "application/pdf") -> dict:
-    """Anexa a etiqueta de entrega (pdf/zpl, sem flag fiscal)."""
+                       extensao: str = "pdf", mime_type: str = "application/pdf",
+                       id_tipo_anexo: int | None = None) -> dict:
+    """Anexa etiqueta/DANFE (pdf ou zpl, sem flag fiscal)."""
     return await attach_file(
         db, order, content=content, extensao=extensao, mime_type=mime_type,
+        id_tipo_anexo=id_tipo_anexo,
     )
 
 
@@ -893,6 +911,11 @@ async def touch_order(creds: EShipCreds, order: Order) -> bool:
         return False
 
 
+async def _categorias_anexadas(db: AsyncSession, order: Order) -> dict[str, int]:
+    """`{categoria: nº de arquivos}` do que o eShip JÁ TEM na ordem — o antiduplicidade."""
+    return {a["categoria"]: a["quantidade"] for a in await get_anexos(db, order)}
+
+
 async def get_anexos(db: AsyncSession, order: Order) -> list[dict]:
     """Lista os arquivos ANEXADOS na ordem, direto do eShip (`webServiceGetAnexosOrdem`).
 
@@ -913,7 +936,10 @@ async def get_anexos(db: AsyncSession, order: Order) -> list[dict]:
         for categoria, arquivos in anexos.items():
             if not isinstance(arquivos, list):
                 arquivos = [arquivos] if arquivos else []
-            total = sum(len(a) for a in arquivos if isinstance(a, str))
+            # A lista vem com SLOTS VAZIOS ("") entre os arquivos — contar o tamanho da lista
+            # inflava o número (a categoria `etiqueta` aparecia com "6 arquivos" tendo 1).
+            arquivos = [a for a in arquivos if isinstance(a, str) and a]
+            total = sum(len(a) for a in arquivos)
             out.append({
                 "categoria": categoria,
                 "quantidade": len(arquivos),
@@ -923,32 +949,51 @@ async def get_anexos(db: AsyncSession, order: Order) -> list[dict]:
     return out
 
 
-async def _resolve_labels(db: AsyncSession, order: Order) -> list[tuple[bytes, str, str]]:
-    """Baixa a etiqueta do ML em PDF. Retorna `[(bytes, extensao, mime), ...]`.
+def _zpl_do_zip(raw: bytes) -> bytes | None:
+    """O ML entrega o "zpl2" como um ZIP (`Etiqueta de envio.txt` + `Controle.pdf`), não como ZPL.
 
-    Só PDF: o eShip **recusa** o ZPL no anexo ("MIT5002 - Tipo de arquivo não aceito, zpl"), então
-    mandar os dois formatos só gerava um erro garantido a cada envio.
+    Anexar o ZIP cru marcado como .zpl mandava lixo ao WMS. Aqui abrimos o pacote e devolvemos o
+    ZPL de verdade (o `.txt`, que começa com `^XA`).
+    """
+    if raw[:2] != b"PK":
+        return raw  # já veio ZPL puro
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            for nome in z.namelist():
+                if nome.lower().endswith(".txt"):
+                    return z.read(nome)
+    except (zipfile.BadZipFile, KeyError) as exc:
+        logger.warning("[eShip] etiqueta ZPL: zip ilegível: %s", exc)
+    return None
 
-    Reusa `ml_service.get_shipment_label` (não reimplementa a chamada ML). Uma etiqueta que
-    ainda não estiver liberada (ML 400) é apenas omitida da lista.
+
+async def _resolve_labels(db: AsyncSession, order: Order) -> tuple[bytes | None, bytes | None]:
+    """Baixa a etiqueta do ML. Retorna `(pdf, zpl)` — cada um `None` se indisponível.
+
+    Reusa `ml_service.get_shipment_label` (não reimplementa a chamada ML). Etiqueta ainda não
+    liberada (ML 400) volta como `None`.
     """
     if not order.shipment_id:
-        return []
+        return None, None
     acc = (
         await db.execute(
             select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
         )
     ).scalar_one_or_none()
     if not acc or not acc.access_token:
-        return []
-    out: list[tuple[bytes, str, str]] = []
-    for fmt, ext, mime in (("pdf", "pdf", "application/pdf"),):
+        return None, None
+
+    async def baixar(fmt: str) -> bytes | None:
         try:
             content, _ctype = await _ml.get_shipment_label(acc.access_token, order.shipment_id, fmt)
-            out.append((content, ext, mime))
+            return content
         except Exception as exc:  # noqa: BLE001 — etiqueta indisponível nesse formato agora
             logger.warning("[eShip] etiqueta %s pedido=%s: %s", fmt, order.id, exc)
-    return out
+            return None
+
+    pdf = await baixar("pdf")
+    bruto = await baixar("zpl2")
+    return pdf, (_zpl_do_zip(bruto) if bruto else None)
 
 
 async def cancel_order(db: AsyncSession, order: Order) -> dict:
@@ -1084,8 +1129,27 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
             result["erros"].append({"etapa": "ordem", "erro": str(e)})
             return result  # sem Ordem não há onde anexar
 
-        # 2) Anexa a NF-e (XML) — claim atômico do selo (reenvio/concorrência não reanexa).
-        if order.eship_nfe_attached:
+        # 2/3) Anexos — o WMS é a FONTE DA VERDADE, não o selo local.
+        #
+        # O selo mentia: quando o eShip recusava o processamento fiscal (ex. MNF0917/CFOP), ele
+        # devolvia erro MAS guardava o arquivo. Nós zerávamos o selo e, no "Atualizar", anexávamos
+        # de novo → o XML da NF-e ficava DUPLICADO na ordem. Agora, antes de cada anexo,
+        # perguntamos ao eShip o que ele já tem (webServiceGetAnexosOrdem).
+        #
+        # Categorias (descobertas testando contra a API real):
+        #   xmldanfe        ← XML da NF-e (inserirFiscal)
+        #   documentosItPop ← PDFs (etiqueta e DANFE, idTipoAnexo=2)
+        #   etiqueta        ← ZPL (idTipoAnexo=7)
+        try:
+            no_wms = await _categorias_anexadas(db, order)
+        except EShipError as e:
+            no_wms = {}
+            logger.warning("[eShip] pedido=%s: não deu p/ conferir os anexos no WMS: %s", order.id, e)
+
+        xml_bytes = None
+        # --- NF-e (XML) ---
+        if no_wms.get("xmldanfe", 0) > 0:
+            order.eship_nfe_attached = 1
             result["nfe"] = {"status": "already"}
         else:
             doc = await resolve_nfe_xml(db, order)
@@ -1096,78 +1160,56 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
                 })
             else:
                 xml_bytes, chave, kind = doc
-                won = await db.execute(
-                    sa_update(Order)
-                    .where(Order.id == order.id, Order.eship_nfe_attached == 0)
-                    .values(eship_nfe_attached=1)
-                )
-                await db.commit()
-                if not getattr(won, "rowcount", 0):
-                    result["nfe"] = {"status": "already"}
-                else:
-                    try:
-                        await attach_nfe_xml(db, order, xml_bytes)
-                        order.eship_nfe_attached = 1
-                        result["nfe"] = {"status": "attached", "chave": chave, "kind": kind}
-                        # DANFE (PDF) junto do XML — é o que o galpão imprime/confere. Vai sob o
-                        # mesmo selo: falhar aqui não desfaz o XML (que o WMS já aceitou), só
-                        # registra a pendência.
-                        danfe = _render_danfe(order, xml_bytes)
-                        if danfe:
-                            try:
-                                await attach_label(db, order, danfe, extensao="pdf",
-                                                   mime_type="application/pdf")
-                                result["nfe"]["danfe"] = "attached"
-                            except EShipError as e:
-                                result["erros"].append({"etapa": "danfe", "erro": str(e)})
-                    except EShipError as e:
-                        # falhou o anexo → devolve o selo p/ permitir reenvio
-                        await db.execute(
-                            sa_update(Order)
-                            .where(Order.id == order.id)
-                            .values(eship_nfe_attached=0)
-                        )
-                        await db.commit()
-                        order.eship_nfe_attached = 0
-                        result["erros"].append({"etapa": "nfe", "erro": str(e)})
+                try:
+                    await attach_nfe_xml(db, order, xml_bytes)
+                    order.eship_nfe_attached = 1
+                    result["nfe"] = {"status": "attached", "chave": chave, "kind": kind}
+                except EShipError as e:
+                    order.eship_nfe_attached = 0
+                    result["erros"].append({"etapa": "nfe", "erro": str(e)})
 
-        # 3) Anexa a etiqueta (ZPL + PDF) — claim atômico do selo.
-        if order.eship_label_attached:
+        # --- PDFs: etiqueta + DANFE (mesma categoria no WMS, `documentosItPop`) ---
+        pdfs_no_wms = no_wms.get("documentosItPop", 0)
+        etiqueta_pdf, zpl = await _resolve_labels(db, order)
+
+        if pdfs_no_wms >= 2:
             result["etiquetas"] = [{"status": "already"}]
         else:
-            won = await db.execute(
-                sa_update(Order)
-                .where(Order.id == order.id, Order.eship_label_attached == 0)
-                .values(eship_label_attached=1)
-            )
-            await db.commit()
-            if not getattr(won, "rowcount", 0):
-                result["etiquetas"] = [{"status": "already"}]
-            else:
-                labels = await _resolve_labels(db, order)
-                anexadas = 0
-                for content, ext, mime in labels:
-                    try:
-                        await attach_label(db, order, content, extensao=ext, mime_type=mime)
-                        result["etiquetas"].append({"status": "attached", "formato": ext})
-                        anexadas += 1
-                    except EShipError as e:
-                        result["erros"].append({"etapa": f"etiqueta:{ext}", "erro": str(e)})
-                if anexadas:
-                    order.eship_label_attached = 1
-                else:
-                    # nada anexou (etiqueta não liberada / falhou) → devolve o selo
-                    await db.execute(
-                        sa_update(Order)
-                        .where(Order.id == order.id)
-                        .values(eship_label_attached=0)
-                    )
-                    await db.commit()
-                    order.eship_label_attached = 0
-                    result["erros"].append({
-                        "etapa": "etiqueta",
-                        "erro": "Etiqueta ainda não liberada pelo Mercado Livre.",
-                    })
+            # O DANFE precisa do XML — que pode não ter sido carregado acima (quando o WMS já
+            # tinha o xmldanfe). Busca só agora, e só se for mesmo anexar.
+            if xml_bytes is None and pdfs_no_wms + (1 if etiqueta_pdf else 0) < 2:
+                doc = await resolve_nfe_xml(db, order)
+                xml_bytes = doc[0] if doc else None
+            danfe = _render_danfe(order, xml_bytes) if xml_bytes else None
+
+            anexados = pdfs_no_wms
+            for conteudo, etapa in ((etiqueta_pdf, "etiqueta:pdf"), (danfe, "danfe")):
+                if not conteudo or anexados >= 2:
+                    continue
+                try:
+                    await attach_label(db, order, conteudo, extensao="pdf",
+                                       mime_type="application/pdf", id_tipo_anexo=_ANEXO_PDF)
+                    result["etiquetas"].append({"status": "attached", "formato": etapa})
+                    anexados += 1
+                except EShipError as e:
+                    result["erros"].append({"etapa": etapa, "erro": str(e)})
+            order.eship_label_attached = 1 if anexados else 0
+            if not etiqueta_pdf:
+                result["erros"].append({
+                    "etapa": "etiqueta",
+                    "erro": "Etiqueta ainda não liberada pelo Mercado Livre.",
+                })
+
+        # --- ZPL da etiqueta (categoria própria no WMS) ---
+        if no_wms.get("etiqueta", 0) > 0:
+            result["zpl"] = {"status": "already"}
+        elif zpl:
+            try:
+                await attach_label(db, order, zpl, extensao="zpl", mime_type="text/plain",
+                                   id_tipo_anexo=_ANEXO_ZPL)
+                result["zpl"] = {"status": "attached"}
+            except EShipError as e:
+                result["erros"].append({"etapa": "etiqueta:zpl", "erro": str(e)})
 
         # 4) Carimba a "Data da última atualização" na ordem. Sem isso a grade do eShip mostra
         # "Sem data de atualização registrada" e o galpão não vê que a ordem foi mexida — vale

@@ -479,3 +479,105 @@ async def test_touch_order_carimba_a_data_de_atualizacao(monkeypatch):
 
     monkeypatch.setattr(service.client, "call", fake_erro)
     assert await service.touch_order(creds, o) is False
+
+
+def test_zpl_do_zip_extrai_a_etiqueta_de_verdade():
+    """O ML entrega o "zpl2" como ZIP (Etiqueta de envio.txt + Controle.pdf), nao como ZPL. Anexar
+    o ZIP cru mandava lixo ao WMS."""
+    import io, zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("Etiqueta de envio.txt", "^XA\n^CI28\n^XZ")
+        z.writestr("Controle.pdf", b"%PDF-1.4 fake")
+    zpl = service._zpl_do_zip(buf.getvalue())
+    assert zpl.startswith(b"^XA")
+
+    assert service._zpl_do_zip(b"^XA direto") == b"^XA direto"   # ja veio ZPL puro
+    assert service._zpl_do_zip(b"PKlixo") is None                # zip ilegivel
+
+
+@pytest.mark.asyncio
+async def test_attach_manda_idtipoanexo_inteiro(monkeypatch):
+    """Sem idTipoAnexo o WMS RECUSA o ZPL (MIT5002). 7=ZPL, 2=PDF - e precisa ser INTEIRO."""
+    from models.order import Order
+    from integrations.eship.config import EShipCreds
+
+    creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="1")
+    enviados = []
+
+    async def fake_creds(db, order):
+        return creds, None
+
+    async def fake_call(_creds, funcao, payload):
+        enviados.append(payload)
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "_creds_for_order", fake_creds)
+    monkeypatch.setattr(service.client, "call", fake_call)
+
+    o = Order(id=1, platform_order_id="ML-1")
+    await service.attach_label(None, o, b"^XA", extensao="zpl", mime_type="text/plain",
+                               id_tipo_anexo=service._ANEXO_ZPL)
+    await service.attach_label(None, o, b"%PDF", extensao="pdf",
+                               id_tipo_anexo=service._ANEXO_PDF)
+
+    assert enviados[0]["idTipoAnexo"] == 7 and isinstance(enviados[0]["idTipoAnexo"], int)
+    assert enviados[0]["extensao"] == "zpl"
+    assert enviados[1]["idTipoAnexo"] == 2
+    # base64 sempre (requisito do WMS)
+    import base64
+    assert base64.b64decode(enviados[0]["arquivoBase"]) == b"^XA"
+
+
+@pytest.mark.asyncio
+async def test_nao_reanexa_o_que_o_wms_ja_tem(monkeypatch):
+    """A duplicidade do XML: o eShip guardava o arquivo mesmo devolvendo erro fiscal, nos zeravamos
+    o selo local e o "Atualizar" anexava de novo. Agora o WMS e a fonte da verdade."""
+    from models.order import Order
+
+    class FakeResult:
+        rowcount = 1
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            return FakeResult()
+
+        async def commit(self):
+            return None
+
+    anexados = []
+
+    async def fake_push(db, order):
+        order.eship_order_id = "3098270"
+        return {"already_sent": True, "eship_order_id": "3098270"}
+
+    # O WMS ja tem TUDO: XML, os 2 PDFs e o ZPL.
+    async def fake_cats(db, order):
+        return {"xmldanfe": 1, "documentosItPop": 2, "etiqueta": 1}
+
+    async def fake_attach(*_a, **_kw):
+        anexados.append(_kw)
+        raise AssertionError("nao deveria reanexar nada")
+
+    async def fake_labels(db, order):
+        return b"%PDF", b"^XA"
+
+    async def fake_creds(db, order):
+        return None, None
+
+    monkeypatch.setattr(service, "push_order", fake_push)
+    monkeypatch.setattr(service, "_categorias_anexadas", fake_cats)
+    monkeypatch.setattr(service, "_resolve_labels", fake_labels)
+    monkeypatch.setattr(service, "attach_label", fake_attach)
+    monkeypatch.setattr(service, "attach_nfe_xml", fake_attach)
+    monkeypatch.setattr(service, "_creds_for_order", fake_creds)
+
+    o = Order(id=1, platform_order_id="ML-1", shipping_mode="flex")
+    res = await service.send_order_full(FakeDB(), o)
+
+    assert anexados == []                       # nada foi reanexado
+    assert res["nfe"]["status"] == "already"
+    assert res["zpl"]["status"] == "already"
+    assert not res["erros"]
+    assert o.eship_dispatch_status == "sent"
