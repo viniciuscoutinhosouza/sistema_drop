@@ -302,6 +302,31 @@ Comandos de verificação típicos:
 
 Ao declarar conclusão, **explicitar quais checks foram executados**. Falhou? Corrige antes de declarar.
 
+#### Verificar no ambiente do dono — não no repositório local
+
+`pytest` verde + `npm run build` OK **não é entrega**. O dono usa o sistema em **produção**
+(`ecommerce.madeingroup.com.br`), e o ambiente DEV local **não consegue falar com o Mercado Livre**
+(o refresh token do ML é de uso único: a produção o consome, e a cópia do banco DEV fica inválida
+com `invalid_grant`). Ou seja: qualquer correção que dependa da API do ML **não pode ser validada
+no DEV** — passa nos testes locais e continua quebrada para o dono.
+
+Quando a correção nasce de um **bug que o dono viu na tela**, "entregue" exige:
+
+1. **Deploy** — a correção tem de estar no servidor. Confirmar o commit em produção
+   (`git log --oneline -1` no servidor), nunca presumir.
+2. **Exercitar o caminho que ele clica** — chamar o endpoint/tela real em produção e mostrar a
+   saída (ex.: a prévia do envio contendo o campo que faltava). Dado pessoal vai **mascarado**.
+3. **Reportar o ambiente** de cada check: dizer "verificado" sem dizer *onde* é o erro que fez a
+   mesma solicitação voltar 3×.
+
+Regra prática: **se o dono não consegue ver a correção funcionando, ela não foi entregue.**
+
+#### Falhar alto, nunca em silêncio
+
+Campo obrigatório ausente, credencial vencida, integração desconectada: **nunca omitir em silêncio**.
+Uma prévia que esconde o que falta transforma um erro de 1 linha em três rodadas de retrabalho. O
+caminho é bloquear a ação e dizer o que falta (ver `preview_ordem` → `bloqueios[]`).
+
 ### Agentes Disponíveis
 
 | Agente | Quando invocar |
