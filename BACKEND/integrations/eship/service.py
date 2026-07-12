@@ -873,8 +873,43 @@ async def cancel_order(db: AsyncSession, order: Order) -> dict:
     order.eship_dispatch_status = "cancelled"
     order.eship_dispatch_error = None
     order.eship_dispatch_at = None
+    await _restore_shipment_status_from_ml(db, order)
     await db.commit()
     return resp
+
+
+async def _restore_shipment_status_from_ml(db: AsyncSession, order: Order) -> None:
+    """Devolve o status de envio ao que o MARKETPLACE diz — a ordem no WMS não existe mais.
+
+    Enquanto a ordem viveu no eShip, o sync sobrescreveu o `shipment_status` com o estado do WMS
+    ("Em Preparação"). Cancelada a ordem, esse estado passa a ser mentira: o pedido volta a ser o
+    que o Mercado Livre diz que ele é (tipicamente "Pronto p/ Envio"). Reperguntamos ao ML em vez
+    de chutar um valor fixo — chutar erraria em pedido já despachado/entregue.
+    """
+    if order.platform != "mercadolivre" or not order.shipment_id:
+        return
+    acc = (
+        await db.execute(
+            select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
+        )
+    ).scalar_one_or_none()
+    if not acc:
+        return
+    try:
+        token = await get_valid_token(acc, db)
+        ship = await _ml.get_shipment(token, order.shipment_id, caller_id=acc.platform_user_id)
+        novo = (ship or {}).get("status")
+        if novo and novo != order.shipment_status:
+            logger.info(
+                "[eShip] pedido=%s: ordem cancelada — shipment_status %s → %s (fonte: ML)",
+                order.id, order.shipment_status, novo,
+            )
+            order.shipment_status = novo
+    except Exception as exc:  # noqa: BLE001 — o cancelamento no WMS já ocorreu; não desfazer por isso
+        logger.warning(
+            "[eShip] pedido=%s: não foi possível restaurar o shipment_status pelo ML: %s",
+            order.id, exc,
+        )
 
 
 async def send_order_full(db: AsyncSession, order: Order) -> dict:

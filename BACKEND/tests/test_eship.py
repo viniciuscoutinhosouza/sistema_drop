@@ -286,3 +286,59 @@ async def test_push_order_recupera_ordem_existente_no_mor8003(monkeypatch):
     assert res["already_sent"] is True
     assert res["eship_order_id"] == "3098258"
     assert o.eship_order_id == "3098258"   # id recuperado -> o botao Excluir/Atualizar aparece
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_devolve_o_status_ao_que_o_ml_diz(monkeypatch):
+    """Cancelou a ordem no WMS -> o "Em Preparacao" (que veio do eShip) vira mentira. O status volta
+    a ser o do marketplace ("Pronto p/ Envio"), perguntado ao ML, nao um valor chutado."""
+    from models.order import Order
+    from integrations.eship.config import EShipCreds
+
+    class FakeAcc:
+        id = 1
+        platform_user_id = "123"
+        access_token = "t"
+
+    class FakeScalar:
+        def scalar_one_or_none(self):
+            return FakeAcc()
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            return FakeScalar()
+
+        async def commit(self):
+            return None
+
+    creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="1")
+
+    async def fake_creds(db, order):
+        return creds, None
+
+    async def fake_call(_creds, funcao, _payload):
+        assert funcao == service.FUNC_CANCELAR_ORDEM
+        return {"ok": True}
+
+    async def fake_token(acc, db, **_kw):
+        return "t"
+
+    async def fake_shipment(token, shipment_id, caller_id=None):
+        return {"status": "ready_to_ship"}
+
+    monkeypatch.setattr(service, "_creds_for_order", fake_creds)
+    monkeypatch.setattr(service.client, "call", fake_call)
+    monkeypatch.setattr(service, "get_valid_token", fake_token)
+    monkeypatch.setattr(service._ml, "get_shipment", fake_shipment)
+
+    o = Order(id=1, platform="mercadolivre", platform_order_id="ML-1", account_id=1,
+              shipment_id="47504188589", shipment_status="handling",   # "Em Preparacao" (veio do eShip)
+              eship_order_id="3098258", eship_dispatch_status="partial",
+              eship_nfe_attached=0, eship_label_attached=1)
+    await service.cancel_order(FakeDB(), o)
+
+    assert o.shipment_status == "ready_to_ship"      # <- voltou a "Pronto p/ Envio"
+    assert o.eship_order_id is None
+    assert o.eship_dispatch_status == "cancelled"
+    assert o.eship_label_attached == 0
+    assert service.order_was_pushed(o) is False      # liberado para novo envio
