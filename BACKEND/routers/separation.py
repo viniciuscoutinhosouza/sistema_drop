@@ -43,7 +43,11 @@ from routers.orders import _extract_nfe_fields, _ml_nfe_url  # noqa: E402
 from services import ml_service as _ml
 from services import picking_service as ps
 from services.file_naming import TIPO_DANFE, order_download_filename, slugify_name
-from services.label_service import LABEL_LAYOUT_LABELS, render_shipping_labels
+from services.label_service import (
+    LABEL_LAYOUT_LABELS,
+    render_shipping_labels,
+    render_shipping_labels_zpl,
+)
 from services.order_item_resolver import resolve_order_item_link
 from services.picking_list_service import render_picking_list
 
@@ -921,6 +925,7 @@ async def cart_labels(
     order_id: int | None = Query(None),
     manual: bool = Query(False),
     layout: str = Query("10x15"),
+    fmt: str = Query("pdf", regex="^(pdf|zpl2)$"),
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -929,7 +934,12 @@ async def cart_labels(
     - Pedido ML: etiqueta OFICIAL do ML (combina shipment_ids por conta).
     - Pedido manual/sem shipment: etiqueta interna (render_shipping_labels).
     Seletores: order_id (1 pedido) | account_id (conta ML) | manual=true (bloco manual).
+
+    `fmt`: pdf (padrão) ou zpl2 (Zebra térmica). O ZPL é o formato COMPANHEIRO: usa a MESMA
+    seleção do PDF, mas NÃO marca impresso (o front pede o zpl2 antes do pdf → conjuntos
+    idênticos, marcação única). O ZPL é sempre 10x15 por-volume (ignora `layout`).
     """
+    is_zpl = fmt == "zpl2"
     if order_id is None and account_id is None and not manual:
         raise HTTPException(status_code=422, detail="Informe order_id, account_id ou manual=true")
 
@@ -975,28 +985,41 @@ async def cart_labels(
         if not acc or not acc.access_token:
             raise HTTPException(status_code=400, detail="Conta de marketplace sem token para gerar etiqueta")
         shipment_ids = ",".join(str(o.shipment_id) for _, o in ml)
-        pdf, _ctype = await _ml.get_shipment_label(acc.access_token, shipment_ids, "pdf")
+        content, _ctype = await _ml.get_shipment_label(
+            acc.access_token, shipment_ids, "zpl2" if is_zpl else "pdf"
+        )
     else:
         orders_meta = await _order_labels_meta(db, [o for _, o in manual_t])
-        pdf = render_shipping_labels(orders_meta, layout=layout)
+        content = (
+            render_shipping_labels_zpl(orders_meta)
+            if is_zpl
+            else render_shipping_labels(orders_meta, layout=layout)
+        )
 
-    now = datetime.now(UTC)
-    for pco, order in targets:
-        pco.label_printed_at = now
-        pco.label_printed_by = current_user.id
-        # Imprimir a etiqueta marca o pedido como SEPARADO (por pedido).
-        if pco.item_status != "separated":
-            pco.item_status = "separated"
-            pco.separated_by = current_user.id
-            pco.separated_at = now
-            order.status = "separated"
-            order.separated_at = now
-            order.separated_by = current_user.id
-    await db.commit()
+    # ZPL é o formato companheiro (render-only) → NÃO marca impresso; só o PDF marca.
+    if not is_zpl:
+        now = datetime.now(UTC)
+        for pco, order in targets:
+            pco.label_printed_at = now
+            pco.label_printed_by = current_user.id
+            # Imprimir a etiqueta marca o pedido como SEPARADO (por pedido).
+            if pco.item_status != "separated":
+                pco.item_status = "separated"
+                pco.separated_by = current_user.id
+                pco.separated_at = now
+                order.status = "separated"
+                order.separated_at = now
+                order.separated_by = current_user.id
+        await db.commit()
 
+    ext = "zpl" if is_zpl else "pdf"
+    media_type = "text/plain; charset=utf-8" if is_zpl else "application/pdf"
+    disp = "attachment" if is_zpl else "inline"
     return Response(
-        content=pdf, media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="etiquetas-{cart.cart_number}.pdf"'},
+        content=content, media_type=media_type,
+        headers={
+            "Content-Disposition": f'{disp}; filename="etiquetas-{cart.cart_number}.{ext}"'
+        },
     )
 
 
@@ -1351,17 +1374,24 @@ async def cart_bundle(
             avisos.append(f"Conta {acc_id}: sem token — etiquetas ML não geradas.")
             continue
         shipment_ids = ",".join(str(o.shipment_id) for o in orders)
+        base_name = f"Etiquetas/ml_{_safe(_account_label(acc))}"
         try:
             pdf, _ = await _ml.get_shipment_label(acc.access_token, shipment_ids, "pdf")
-            label_files.append((f"Etiquetas/ml_{_safe(_account_label(acc))}.pdf", pdf))
+            label_files.append((f"{base_name}.pdf", pdf))
             label_ok.update(o.id for o in orders)
         except Exception as exc:  # noqa: BLE001
             avisos.append(f"Conta {_account_label(acc)}: falha ao gerar etiquetas ML ({str(exc)[:120]}).")
+        # ZPL companheiro (Zebra) — best-effort; não bloqueia o PDF.
+        try:
+            zpl, _ = await _ml.get_shipment_label(acc.access_token, shipment_ids, "zpl2")
+            label_files.append((f"{base_name}.zpl", zpl))
+        except Exception as exc:  # noqa: BLE001
+            avisos.append(f"Conta {_account_label(acc)}: falha ao gerar etiquetas ZPL ({str(exc)[:120]}).")
     if manual_orders:
         try:
             meta = await _order_labels_meta(db, manual_orders)
-            pdf = render_shipping_labels(meta, layout=layout)
-            label_files.append(("Etiquetas/manual.pdf", pdf))
+            label_files.append(("Etiquetas/manual.pdf", render_shipping_labels(meta, layout=layout)))
+            label_files.append(("Etiquetas/manual.zpl", render_shipping_labels_zpl(meta)))
             label_ok.update(o.id for o in manual_orders)
         except Exception as exc:  # noqa: BLE001
             avisos.append(f"Etiquetas manuais: falha ({str(exc)[:120]}).")

@@ -19,7 +19,7 @@ import io
 import json
 from typing import Any
 
-from barcode import Code128, EAN13
+from barcode import EAN13, Code128
 from barcode.writer import ImageWriter
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -226,7 +226,7 @@ def render_manual_order_label(*, order, items, cmig, items_meta: list[dict]) -> 
     c = canvas.Canvas(buf, pagesize=A4)
 
     total_volumes = len(items)
-    for idx, (item, meta) in enumerate(zip(items, items_meta)):
+    for idx, (item, meta) in enumerate(zip(items, items_meta, strict=False)):
         slot = idx % 4
         if idx > 0 and slot == 0:
             c.showPage()
@@ -264,7 +264,7 @@ def _flatten_volumes(orders_meta: list[dict]):
         metas = om.get("items_meta") or [{} for _ in items]
         cmig = om.get("cmig")
         total = len(items)
-        for vidx, (item, meta) in enumerate(zip(items, metas), start=1):
+        for vidx, (item, meta) in enumerate(zip(items, metas, strict=False), start=1):
             yield order, item, meta, cmig, vidx, total
 
 
@@ -398,3 +398,119 @@ def render_shipping_labels(orders_meta: list[dict], layout: str = "10x15") -> by
     """Renderiza etiquetas de N pedidos no layout escolhido. Retorna bytes do PDF."""
     fn = LABEL_LAYOUTS.get(layout) or LABEL_LAYOUTS["10x15"]
     return fn(orders_meta)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Etiqueta ZPL nativa (impressora térmica Zebra) — 10x15 @ 203 dpi
+# ─────────────────────────────────────────────────────────────────────────────
+# 100x150mm = 800x1200 dots (8 dots/mm). Um rótulo (^XA..^XZ) por volume.
+# ZPL é sempre por-volume/térmico — o layout A4/4-up (papel) não tem análogo aqui.
+ZPL_W, ZPL_H = 800, 1200
+
+
+def _zpl_escape(s: Any) -> str:
+    """Neutraliza os caracteres de controle do ZPL (^ ~ \\) e quebras de linha."""
+    if not s:
+        return ""
+    out = str(s).replace("\\", " ").replace("^", " ").replace("~", " ")
+    return out.replace("\r", " ").replace("\n", " ").strip()
+
+
+def _zpl_text(x: int, y: int, h: int, s: Any, w: int | None = None) -> str:
+    txt = _zpl_escape(s)
+    if not txt:
+        return ""
+    return f"^FO{x},{y}^A0N,{h},{w or h}^FD{txt}^FS"
+
+
+def _zpl_barcode128(x: int, y: int, h: int, data: Any) -> str:
+    # Imprimíveis ASCII, MAS removendo ^ ~ \ (metacaracteres do ZPL): um SKU como
+    # "X^XZ^XA..." encerraria a etiqueta e injetaria comandos na impressora se entrasse cru.
+    clean = "".join(c for c in str(data or "") if 32 <= ord(c) < 127 and c not in "^~\\")
+    if not clean:
+        return ""
+    return f"^FO{x},{y}^BY2^BCN,{h},N,N,N^FD{clean}^FS"
+
+
+def _zpl_barcode_ean(x: int, y: int, h: int, data: Any) -> str | None:
+    """EAN-13; retorna None quando não há 12/13 dígitos (o chamador cai no Code128)."""
+    digits = "".join(c for c in str(data or "") if c.isdigit())
+    if len(digits) not in (12, 13):
+        return None
+    return f"^FO{x},{y}^BY2^BEN,{h},N,N^FD{digits[:12]}^FS"
+
+
+def _zpl_one_label(*, order, item, item_meta: dict, cmig, volume_idx: int, total_volumes: int) -> str:
+    """Monta 1 etiqueta ZPL (10x15) de um volume."""
+    p: list[str] = ["^XA", "^CI28", f"^PW{ZPL_W}", f"^LL{ZPL_H}", "^LH0,0"]
+    empresa = (cmig.company_name if cmig else "") or ""
+    cnpj = (cmig.cnpj if cmig else "") or ""
+
+    # Cabeçalho
+    p.append(_zpl_text(20, 20, 30, "VENDA DIRETA - sem marketplace"))
+    p.append(_zpl_text(560, 22, 26, f"Vol {volume_idx}/{total_volumes}"))
+    if empresa:
+        p.append(_zpl_text(20, 58, 24, empresa[:48]))
+    if cnpj:
+        p.append(_zpl_text(20, 88, 22, f"CNPJ: {cnpj}"))
+    p.append("^FO20,118^GB760,2,2^FS")
+
+    # Pedido + código de barras
+    p.append(_zpl_text(20, 132, 22, "PEDIDO"))
+    p.append(_zpl_text(20, 158, 64, f"#{order.id}"))
+    p.append(_zpl_barcode128(20, 232, 90, str(order.id)))
+
+    # Destinatário
+    p.append(_zpl_text(20, 340, 22, "DESTINATARIO"))
+    p.append(_zpl_text(20, 368, 30, (order.buyer_name or "(cliente sem nome)").strip()[:40]))
+    y = 405
+    for line in _format_address(order.shipping_address)[:5]:
+        p.append(_zpl_text(20, y, 24, line[:52]))
+        y += 30
+    y += 6
+    p.append(f"^FO20,{y}^GB760,2,2^FS")
+    y += 16
+
+    # Produto
+    p.append(_zpl_text(20, y, 22, "PRODUTO"))
+    y += 28
+    title = (item.title or item_meta.get("title") or "")[:46]
+    p.append(_zpl_text(20, y, 26, title))
+    y += 32
+    p.append(_zpl_text(20, y, 24, f"Qtd: {item.quantity}"))
+    y += 42
+
+    sku = (item.sku or "").strip()
+    ean = (item_meta.get("ean") or "").strip()
+    p.append(_zpl_text(20, y, 22, f"SKU: {sku or '-'}"))
+    if sku:
+        p.append(_zpl_barcode128(20, y + 26, 70, sku))
+    p.append(_zpl_text(420, y, 22, f"EAN: {ean or '-'}"))
+    if ean:
+        bc = _zpl_barcode_ean(420, y + 26, 70, ean) or _zpl_barcode128(420, y + 26, 70, ean)
+        if bc:
+            p.append(bc)
+
+    p.append("^XZ")
+    return "".join(part for part in p if part)
+
+
+def render_shipping_labels_zpl(orders_meta: list[dict]) -> bytes:
+    """Etiquetas térmicas em ZPL (uma por volume) de N pedidos. Sempre 10x15 (ignora layout)."""
+    labels = [
+        _zpl_one_label(
+            order=order, item=item, item_meta=meta, cmig=cmig,
+            volume_idx=vidx, total_volumes=total,
+        )
+        for order, item, meta, cmig, vidx, total in _flatten_volumes(orders_meta)
+    ]
+    if not labels:
+        labels.append("^XA^CI28^FO40,40^A0N,30,30^FDNenhum volume.^FS^XZ")
+    return "\n".join(labels).encode("utf-8")
+
+
+def render_manual_order_label_zpl(*, order, items, cmig, items_meta: list[dict]) -> bytes:
+    """ZPL das etiquetas de um pedido manual/direto (uma por item/volume)."""
+    return render_shipping_labels_zpl(
+        [{"order": order, "items": items, "cmig": cmig, "items_meta": items_meta}]
+    )

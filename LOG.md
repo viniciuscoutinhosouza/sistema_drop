@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-07-11 — feat(etiqueta): baixar etiqueta em PDF **e** ZPL em todos os locais
+
+Toda ação de etiqueta passa a baixar os **dois formatos de uma vez** (PDF + ZPL Zebra). Revisados
+todos os pontos onde o sistema busca etiqueta: pedido único (ML), pedido manual/venda-direta,
+separação em lote (gaiola) e ZIP de documentos.
+
+- **Fix latente (crítico):** `ml_service.get_shipment_label(fmt="zpl2")` agora **desembrulha o ZIP**
+  que o ML retorna (o conteúdo real é o `.txt` `^XA…`). Antes o endpoint de pedido único servia o
+  ZIP cru como `.zpl` (lixo p/ impressora). Unwrap centralizado (`_unwrap_zpl_zip`) — orders,
+  separação e eShip (idempotente) recebem ZPL limpo.
+- **Gerador ZPL nativo** (`label_service.py`): `render_shipping_labels_zpl` / `render_manual_order_label_zpl`
+  — etiqueta térmica 10x15 @203dpi (uma por volume; `^CI28` p/ acentos, Code128 `^BCN`, EAN13 `^BEN`
+  com fallback p/ Code128, escape de `^ ~ \`). Reusa `_flatten_volumes` do PDF (conjuntos idênticos).
+- **manual_orders**: novo `GET /{id}/label.zpl` espelhando `.pdf` (carga comum extraída).
+- **separation `cart_labels`**: `fmt=pdf|zpl2`. O ZPL é o formato **companheiro** — mesma seleção do
+  PDF, mas **não marca impresso** (o front pede zpl2 **antes** do pdf → conjuntos iguais, marcação
+  única). ZPL é sempre 10x15 (ignora `layout` — A4/4-up é conceito de papel).
+- **separation ZIP bundle**: inclui `.zpl` ao lado de cada `.pdf` (ML + manual).
+- **Frontend**: `utils/download.js` ganhou `saveLabelBoth(pdfResp, zplResp)` (abre PDF p/ imprimir +
+  baixa PDF + baixa ZPL). Aplicado em OrderList (ML + manual), OrderDetail (manual) e Separação
+  (pedido + lote). O `bundle.zip` já baixa tudo.
+- Auditado (consistency-auditor prévio: fix do ZIP-do-ML + "não marca no zpl2" incorporados).
+  Verificação: ruff limpo; `test_label_zpl` 9 + separação/eship OK (31 passed); import 3.11 OK;
+  `npm run build` OK. **Sem migration.** ZPL não pôde ser testado em impressora térmica real (validada
+  a estrutura ^XA/^XZ/^CI28/barcodes).
+
+---
+
 ## 2026-07-11 — feat(relatorio): Vendas por período + gráfico diário; fix das colunas % Lucro / % LL
 
 **Fix (% Lucro e % LL).** As colunas calculavam **participação no total do período** (lucro do produto

@@ -5,7 +5,9 @@ OAuth flow: Authorization Code (https://auth.mercadolivre.com.br/authorization)
 Token endpoint: https://api.mercadolibre.com/oauth/token
 """
 
+import io
 import logging
+import zipfile
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
@@ -409,6 +411,25 @@ async def get_shipment_carrier(
     return resp.json()
 
 
+def _unwrap_zpl_zip(raw: bytes) -> bytes:
+    """ML devolve o ZPL2 dentro de um ZIP (começa com 'PK'); o conteúdo real é o `.txt`
+    (que começa com ^XA). Anexar/baixar o ZIP cru como .zpl manda lixo à impressora/WMS.
+    Retorna o ZPL puro; se não for ZIP, devolve `raw` inalterado (idempotente)."""
+    if not raw or raw[:2] != b"PK":
+        return raw
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            txts = [n for n in z.namelist() if n.lower().endswith(".txt")]
+            if txts:
+                return z.read(txts[0])
+            # fallback: primeiro arquivo do pacote
+            if z.namelist():
+                return z.read(z.namelist()[0])
+    except (zipfile.BadZipFile, KeyError) as exc:
+        logger.warning("[ML] etiqueta ZPL: zip ilegível: %s", exc)
+    return raw
+
+
 async def get_shipment_label(
     access_token: str, shipment_id: str, fmt: str = "pdf"
 ) -> tuple[bytes, str]:
@@ -416,6 +437,7 @@ async def get_shipment_label(
 
     Returns (content_bytes, content_type). Raises HTTPException on error.
     The PDF includes: shipping label + content declaration + product identification.
+    For fmt="zpl2" the ML response is a ZIP; we unwrap it to raw ZPL (^XA...).
 
     NOTE: Label is only available when shipment is at least in 'ready_to_ship' status.
     Earlier states (pending/handling) usually return 400.
@@ -449,7 +471,8 @@ async def get_shipment_label(
             status_code=400,
             detail="Mercado Livre retornou conteúdo inválido — etiqueta pode não estar pronta ainda",
         )
-    return resp.content, media_types.get(fmt, "application/octet-stream")
+    content = _unwrap_zpl_zip(resp.content) if fmt == "zpl2" else resp.content
+    return content, media_types.get(fmt, "application/octet-stream")
 
 
 async def get_shipment_costs(access_token: str, shipment_id: str) -> dict:

@@ -622,7 +622,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import api from '@/composables/useApi'
 import { formatCurrency, formatDateTime, formatDate } from '@/utils/formatters'
-import { saveBlobResponse, openAndSaveBlobResponse } from '@/utils/download'
+import { saveBlobResponse, openAndSaveBlobResponse, saveLabelBoth } from '@/utils/download'
 import { ORDER_STATUSES, PLATFORMS, SHIPPING_MODE_STYLE, shippingModeStyle, platformLogo } from '@/utils/constants'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
@@ -805,8 +805,12 @@ async function downloadManualLabel(order) {
   if (manualLabelLoading.value[order.id]) return
   manualLabelLoading.value[order.id] = true
   try {
-    const resp = await api.get(`/manual-orders/${order.id}/label.pdf`, { responseType: 'blob' })
-    openAndSaveBlobResponse(resp, `Etiqueta-pedido-${order.id}.pdf`, 'application/pdf')
+    // Baixa PDF + ZPL de uma vez (abre o PDF para imprimir).
+    const [pdfResp, zplResp] = await Promise.all([
+      api.get(`/manual-orders/${order.id}/label.pdf`, { responseType: 'blob' }),
+      api.get(`/manual-orders/${order.id}/label.zpl`, { responseType: 'blob' }).catch(() => null),
+    ])
+    saveLabelBoth(pdfResp, zplResp)
   } catch (e) {
     toast.error(e?.response?.data?.detail || 'Falha ao gerar etiqueta')
   } finally {
@@ -920,8 +924,13 @@ async function printShippingLabel(order) {
   }
   labelLoading.value[order.id] = true
   try {
-    const resp = await api.get(`/orders/${order.id}/label`, { responseType: 'blob' })
-    openAndSaveBlobResponse(resp, `Etiqueta-${order.platform_order_id || order.id}.pdf`, 'application/pdf')
+    // Baixa PDF + ZPL de uma vez (abre o PDF para imprimir). O ZPL do ML pode não estar
+    // disponível em alguns envios — best-effort, não bloqueia o PDF.
+    const [pdfResp, zplResp] = await Promise.all([
+      api.get(`/orders/${order.id}/label`, { responseType: 'blob' }),
+      api.get(`/orders/${order.id}/label`, { params: { fmt: 'zpl2' }, responseType: 'blob' }).catch(() => null),
+    ])
+    saveLabelBoth(pdfResp, zplResp)
     // Marca cache na lista local para o ícone ficar verde sem reload
     if (!order.label_cached_at) order.label_cached_at = new Date().toISOString()
   } catch (err) {

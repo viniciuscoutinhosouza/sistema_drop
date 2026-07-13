@@ -264,7 +264,7 @@
 <script setup>
 import { ref, computed, onMounted, nextTick, reactive } from 'vue'
 import { formatDate as fmtBrDate, formatDateTime as fmtBrDateTime } from '@/utils/formatters'
-import { openAndSaveBlobResponse } from '@/utils/download'
+import { openAndSaveBlobResponse, saveLabelBoth } from '@/utils/download'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { platformLogo, shippingModeStyle, PLATFORMS } from '@/utils/constants'
@@ -468,9 +468,23 @@ async function cancelCart() {
 }
 
 // ── Etiquetas ──
+// Baixa PDF + ZPL de uma vez. O ZPL vem PRIMEIRO (é render-only, não marca impresso) e o
+// PDF depois (marca) — assim os dois arquivos cobrem exatamente o mesmo conjunto de pedidos.
+async function printCartLabelsBoth(params) {
+  const url = `/separation/carts/${activeCart.value.id}/labels.pdf`
+  const zplResp = await api.get(url, { params: { ...params, fmt: 'zpl2' }, responseType: 'blob' }).catch(() => null)
+  const pdfResp = await api.get(url, { params, responseType: 'blob' })
+  saveLabelBoth(pdfResp, zplResp)
+}
 async function printOrderLabel(o) {
-  await openPdf(`/separation/carts/${activeCart.value.id}/labels.pdf`, 'get', null, { order_id: o.id, layout: layout.value })
-  await refreshCart()
+  try {
+    await printCartLabelsBoth({ order_id: o.id, layout: layout.value })
+    await refreshCart()
+  } catch (e) {
+    let msg = 'Erro ao gerar etiqueta'
+    try { msg = JSON.parse(await e.response.data.text()).detail || msg } catch { /* ignore */ }
+    toast.error(msg)
+  }
 }
 async function printAllLabels() {
   try {
@@ -479,7 +493,7 @@ async function printAllLabels() {
     if (!jobs.length) return toast.warning('Nenhuma etiqueta pronta para imprimir (bipe os pedidos no modo bipagem).')
     for (const job of jobs) {
       const params = job.kind === 'manual' ? { manual: true, layout: layout.value } : { account_id: job.account_id }
-      await openPdf(`/separation/carts/${activeCart.value.id}/labels.pdf`, 'get', null, params)
+      await printCartLabelsBoth(params)
     }
     if (data.blocked_scan) toast.info(`${data.blocked_scan} pedido(s) aguardando bipagem (etiqueta não liberada).`)
     await refreshCart()

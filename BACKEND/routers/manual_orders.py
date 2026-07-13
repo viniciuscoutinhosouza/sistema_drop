@@ -254,19 +254,11 @@ async def create_manual_order(
     return {"id": order.id, "status": order.status}
 
 
-@router.get("/{order_id}/label.pdf")
-async def manual_order_label(
-    order_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Gera etiqueta PDF (100x150mm) para pedido direto/manual.
+async def _load_manual_label_data(order_id: int, current_user: User, db: AsyncSession):
+    """Carrega (order, items, cmig, items_meta) de um pedido manual, validando acesso.
 
-    Acessivel para o dropshipper dono do pedido ou colaborador da CMIG dele.
-    Uma pagina por OrderItem (volume).
+    Fonte única para as etiquetas PDF e ZPL — evita divergência entre os dois formatos.
     """
-    from services.label_service import render_manual_order_label
-
     order = (
         await db.execute(select(Order).where(Order.id == order_id))
     ).scalar_one_or_none()
@@ -329,6 +321,23 @@ async def manual_order_label(
                 title = title or pg.title
         items_meta.append({"ean": ean, "title": title})
 
+    return order, items, cmig, items_meta
+
+
+@router.get("/{order_id}/label.pdf")
+async def manual_order_label(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gera etiqueta PDF (100x150mm) para pedido direto/manual.
+
+    Acessivel para o dropshipper dono do pedido ou colaborador da CMIG dele.
+    Uma pagina por OrderItem (volume).
+    """
+    from services.label_service import render_manual_order_label
+
+    order, items, cmig, items_meta = await _load_manual_label_data(order_id, current_user, db)
     pdf = render_manual_order_label(order=order, items=items, cmig=cmig, items_meta=items_meta)
     return Response(
         content=pdf,
@@ -336,5 +345,29 @@ async def manual_order_label(
         headers={
             "Content-Disposition":
                 f'inline; filename="{order_download_filename(TIPO_ETIQUETA, "pdf", order=order)}"'
+        },
+    )
+
+
+@router.get("/{order_id}/label.zpl")
+async def manual_order_label_zpl(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gera a etiqueta em ZPL (impressora térmica Zebra 10x15) do pedido direto/manual.
+
+    Espelha `/label.pdf` — mesma carga de dados, saída ZPL (uma etiqueta por volume).
+    """
+    from services.label_service import render_manual_order_label_zpl
+
+    order, items, cmig, items_meta = await _load_manual_label_data(order_id, current_user, db)
+    zpl = render_manual_order_label_zpl(order=order, items=items, cmig=cmig, items_meta=items_meta)
+    return Response(
+        content=zpl,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{order_download_filename(TIPO_ETIQUETA, "zpl", order=order)}"'
         },
     )

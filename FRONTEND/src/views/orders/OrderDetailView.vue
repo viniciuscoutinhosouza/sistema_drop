@@ -216,6 +216,7 @@ import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { formatCurrency, formatDateTime } from '@/utils/formatters'
 import { ORDER_STATUSES } from '@/utils/constants'
+import { saveLabelBoth } from '@/utils/download'
 
 const route = useRoute()
 const router = useRouter()
@@ -264,11 +265,12 @@ async function downloadManualLabel() {
   if (!order.value || downloadingLabel.value) return
   downloadingLabel.value = true
   try {
-    const { data } = await api.get(`/manual-orders/${order.value.id}/label.pdf`, { responseType: 'blob' })
-    const blob = new Blob([data], { type: 'application/pdf' })
-    const url = URL.createObjectURL(blob)
-    window.open(url, '_blank')
-    setTimeout(() => URL.revokeObjectURL(url), 10000)
+    // Baixa PDF + ZPL de uma vez (abre o PDF para imprimir).
+    const [pdfResp, zplResp] = await Promise.all([
+      api.get(`/manual-orders/${order.value.id}/label.pdf`, { responseType: 'blob' }),
+      api.get(`/manual-orders/${order.value.id}/label.zpl`, { responseType: 'blob' }).catch(() => null),
+    ])
+    saveLabelBoth(pdfResp, zplResp)
   } catch (e) {
     toast.error(e?.response?.data?.detail || 'Falha ao gerar etiqueta')
   } finally {

@@ -40,3 +40,14 @@ export function openAndSaveBlobResponse(resp, fallbackName, type) {
   setTimeout(() => URL.revokeObjectURL(url), 60000)
   return name
 }
+
+// Etiqueta em PDF + ZPL "de uma vez": abre o PDF para imprimir (quando open=true) e baixa
+// AMBOS os arquivos já nomeados (o nome vem do Content-Disposition de cada resposta).
+// Passe as respostas axios (responseType:'blob') dos dois formatos; qualquer uma pode faltar.
+export function saveLabelBoth(pdfResp, zplResp, { open = true } = {}) {
+  if (pdfResp) {
+    if (open) openAndSaveBlobResponse(pdfResp, 'Etiqueta.pdf', 'application/pdf')
+    else saveBlobResponse(pdfResp, 'Etiqueta.pdf', 'application/pdf')
+  }
+  if (zplResp) saveBlobResponse(zplResp, 'Etiqueta.zpl', 'text/plain')
+}
