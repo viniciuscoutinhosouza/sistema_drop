@@ -1,5 +1,7 @@
+import io
 import json
 import time as time_module
+import zipfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -39,7 +41,11 @@ from services.file_naming import (
 from services.financial_service import debit_balance
 from services.label_meta import build_orders_label_meta
 from services.label_service import ML_CONF_HEADER as _ML_CONF_HEADER
-from services.label_service import render_shipping_labels_zpl
+from services.label_service import (
+    render_manual_order_label,
+    render_manual_order_label_zpl,
+    render_shipping_labels_zpl,
+)
 from services.shipping_mode import classify_logistic_type, label_for_mode
 
 settings = get_settings()
@@ -2880,7 +2886,9 @@ async def download_invoice_xml(
     )
 
 
-_LABELS_DIR = Path(__file__).resolve().parent.parent / "static" / "labels"
+# Cache de etiquetas FORA de static/ — o PDF do ML tem nome+endereço do comprador (LGPD);
+# servido só pelos endpoints autenticados (nunca por URL pública). Ver ADR-0015 (mesmo padrão do XML).
+_LABELS_DIR = Path(__file__).resolve().parent.parent / "private_labels"
 
 
 async def _emit_nfe_for_label(order: Order, account, db) -> None:
@@ -2903,32 +2911,18 @@ async def _emit_nfe_for_label(order: Order, account, db) -> None:
         print(f"[orders] failed to mark nfe pending order={order.id}: {e}")
 
 
-@router.get("/{order_id}/label")
-async def get_order_shipping_label(
-    order_id: int,
-    fmt: str = Query("pdf", regex="^(pdf|zpl2)$"),
-    refresh: bool = Query(False, description="Força re-download do ML mesmo se já houver cache"),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Generate and return the official ML shipping label.
+async def _ml_label_fmt_bytes(
+    db: AsyncSession, order: Order, current_user: User, fmt: str, refresh: bool = False
+) -> bytes:
+    """Bytes da etiqueta OFICIAL do ML de um pedido no formato pedido (pdf|zpl2).
 
-    Strategy:
-    - First request: fetch from ML, save to disk, mark label_cached_at, return.
-    - Subsequent requests: serve from disk (always available, even when ML rate-limits or token expires).
-    - Pass ?refresh=true to force re-download.
-
-    PDF includes: shipping label + content declaration + product identification.
+    - Serve do cache em disco ({shipment_id}.{ext}) quando disponível.
+    - No zpl2 anexa a etiqueta de CONFERÊNCIA (SKU/nome/qtd) — o cache guarda só o ML puro.
+    - Levanta HTTPException nos estados inválidos (sem envio, Full, envio pendente,
+      invoice_pending, cancelado). O `_emit_nfe_for_label` é idempotente (não reemite).
     """
-    order = await _get_order_checked(db, order_id, current_user)
-    if order.platform != "mercadolivre":
-        raise HTTPException(
-            status_code=400, detail="Etiqueta disponível apenas para pedidos do Mercado Livre"
-        )
     if not order.shipment_id:
-        raise HTTPException(
-            status_code=400, detail="Pedido sem envio — não é possível gerar etiqueta"
-        )
+        raise HTTPException(status_code=400, detail="Pedido sem envio — não é possível gerar etiqueta")
     if order.shipping_method and "fulfillment" in order.shipping_method:
         raise HTTPException(
             status_code=400,
@@ -2938,32 +2932,24 @@ async def get_order_shipping_label(
         raise HTTPException(status_code=400, detail="Envio cancelado — etiqueta indisponível")
 
     ext = "zpl" if fmt == "zpl2" else "pdf"
-    media_type = "text/plain" if fmt == "zpl2" else "application/pdf"
-    filename = order_download_filename(TIPO_ETIQUETA, ext, order=order)
     cache_path = _LABELS_DIR / f"{order.shipment_id}.{ext}"
 
-    async def _finalize(pure_content: bytes) -> Response:
-        """Serve a etiqueta. No ZPL, anexa a etiqueta de CONFERÊNCIA (SKU/nome/qtd) montada
-        do banco — o ZPL do ML é só o rótulo de envio. A conferência NÃO é cacheada (o
-        cache guarda só o ML puro), então reflete sempre o estado atual do pedido."""
-        body = pure_content
-        if fmt == "zpl2":
-            try:
-                meta = await build_orders_label_meta(db, [order])
-                conf = render_shipping_labels_zpl(meta, header_label=_ML_CONF_HEADER)
-                if conf:
-                    body = pure_content + b"\n" + conf
-            except Exception as e:  # noqa: BLE001 — conferência é opcional, não perde o rótulo
-                print(f"[orders] falha ao anexar conferência ZPL order={order.id}: {e}")
-        return Response(
-            content=body,
-            media_type=media_type,
-            headers={"Content-Disposition": f'inline; filename="{filename}"'},
-        )
+    async def _with_conf(pure_content: bytes) -> bytes:
+        """No ZPL anexa a conferência de produto (montada do banco, nunca cacheada)."""
+        if fmt != "zpl2":
+            return pure_content
+        try:
+            meta = await build_orders_label_meta(db, [order])
+            conf = render_shipping_labels_zpl(meta, header_label=_ML_CONF_HEADER)
+            if conf:
+                return pure_content + b"\n" + conf
+        except Exception as e:  # noqa: BLE001 — conferência é opcional, não perde o rótulo
+            print(f"[orders] falha ao anexar conferência ZPL order={order.id}: {e}")
+        return pure_content
 
     # Try cache first (unless forced refresh)
     if not refresh and cache_path.exists() and order.label_cached_at:
-        return await _finalize(cache_path.read_bytes())
+        return await _with_conf(cache_path.read_bytes())
 
     # Cache miss or forced refresh — fetch from ML
     if order.shipment_status in ("pending", None, ""):
@@ -3066,7 +3052,149 @@ async def get_order_shipping_label(
     except Exception as e:
         print(f"[orders] failed to cache label shipment={order.shipment_id}: {e}")
 
-    return await _finalize(content)
+    return await _with_conf(content)
+
+
+@router.get("/{order_id}/label")
+async def get_order_shipping_label(
+    order_id: int,
+    fmt: str = Query("pdf", regex="^(pdf|zpl2)$"),
+    refresh: bool = Query(False, description="Força re-download do ML mesmo se já houver cache"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Etiqueta OFICIAL do ML (PDF ou ZPL2). Servida `inline`.
+
+    PDF: shipping label + declaração de conteúdo + identificação do produto.
+    ZPL: rótulo de envio do ML + etiqueta de conferência (SKU/nome/qtd) anexada.
+    """
+    order = await _get_order_checked(db, order_id, current_user)
+    if order.platform != "mercadolivre":
+        raise HTTPException(
+            status_code=400, detail="Etiqueta disponível apenas para pedidos do Mercado Livre"
+        )
+    content = await _ml_label_fmt_bytes(db, order, current_user, fmt, refresh)
+    ext = "zpl" if fmt == "zpl2" else "pdf"
+    media_type = "text/plain" if fmt == "zpl2" else "application/pdf"
+    filename = order_download_filename(TIPO_ETIQUETA, ext, order=order)
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+# Teto de segurança do ZIP de etiquetas em lote (cada pedido = até 2 chamadas ML no pior caso).
+_LABELS_ZIP_MAX = 25
+
+
+async def _order_label_pair(
+    db: AsyncSession, order: Order, current_user: User, refresh: bool = False
+) -> tuple[bytes | None, bytes | None]:
+    """(pdf, zpl) da etiqueta do pedido — ML ou manual. Levanta HTTPException se indisponível.
+
+    - Manual: usa a checagem de acesso CANÔNICA do manual (`_load_manual_label_data`), não o
+      filtro genérico de pedidos, e renderiza PDF+ZPL internos.
+    - ML: reusa `_ml_label_fmt_bytes` para cada formato (cache por extensão; sem reemitir NF-e).
+    """
+    if order.platform == "manual":
+        # Import tardio: evita acoplamento de import entre os routers.
+        from routers.manual_orders import _load_manual_label_data
+
+        _o, items, cmig, items_meta = await _load_manual_label_data(order.id, current_user, db)
+        pdf = render_manual_order_label(order=_o, items=items, cmig=cmig, items_meta=items_meta)
+        zpl = render_manual_order_label_zpl(order=_o, items=items, cmig=cmig, items_meta=items_meta)
+        return pdf, zpl
+    if order.platform != "mercadolivre":
+        raise HTTPException(status_code=400, detail="Etiqueta indisponível para esta origem de pedido")
+    pdf = await _ml_label_fmt_bytes(db, order, current_user, "pdf", refresh)
+    zpl = await _ml_label_fmt_bytes(db, order, current_user, "zpl2", refresh)
+    return pdf, zpl
+
+
+def _zip_label_files(files: list[tuple[str, bytes]], warnings: list[str]) -> bytes:
+    """Empacota (nome, bytes) num ZIP; anexa _avisos.txt quando há falhas parciais."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files:
+            z.writestr(name, data)
+        if warnings:
+            z.writestr("_avisos.txt", "\n".join(warnings))
+    return buf.getvalue()
+
+
+@router.get("/{order_id}/label.zip")
+async def get_order_label_zip(
+    order_id: int,
+    refresh: bool = Query(False),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """ZIP com a etiqueta em PDF **e** ZPL de UM pedido (ML ou manual). Download direto."""
+    order = await _get_order_checked(db, order_id, current_user)
+    pdf, zpl = await _order_label_pair(db, order, current_user, refresh)
+    files: list[tuple[str, bytes]] = []
+    if pdf:
+        files.append((order_download_filename(TIPO_ETIQUETA, "pdf", order=order), pdf))
+    if zpl:
+        files.append((order_download_filename(TIPO_ETIQUETA, "zpl", order=order), zpl))
+    zip_name = order_download_filename(TIPO_ETIQUETA, "zip", order=order)
+    return Response(
+        content=_zip_label_files(files, []),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+    )
+
+
+@router.post("/labels.zip")
+async def get_orders_labels_zip(
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """ZIP com as etiquetas (PDF+ZPL) de VÁRIOS pedidos marcados. Body: {order_ids: [...]}.
+
+    Falha por pedido não derruba o lote — vira uma linha em `_avisos.txt`.
+    """
+    ids = body.get("order_ids") or []
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(status_code=422, detail="Informe order_ids (lista de IDs de pedido)")
+    ids = list(dict.fromkeys(ids))  # dedup preservando ordem
+    if len(ids) > _LABELS_ZIP_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Máximo de {_LABELS_ZIP_MAX} pedidos por ZIP — selecione menos pedidos.",
+        )
+
+    files: list[tuple[str, bytes]] = []
+    warnings: list[str] = []
+    for oid in ids:
+        try:
+            order = await _get_order_checked(db, int(oid), current_user)
+        except HTTPException:
+            warnings.append(f"Pedido {oid}: sem acesso ou inexistente.")
+            continue
+        try:
+            pdf, zpl = await _order_label_pair(db, order, current_user)
+        except HTTPException as e:
+            warnings.append(f"Pedido {order.id} ({order.buyer_name or 's/ nome'}): {e.detail}")
+            continue
+        if pdf:
+            files.append((order_download_filename(TIPO_ETIQUETA, "pdf", order=order), pdf))
+        if zpl:
+            files.append((order_download_filename(TIPO_ETIQUETA, "zpl", order=order), zpl))
+
+    if not files:
+        raise HTTPException(
+            status_code=404,
+            detail=("Nenhuma etiqueta disponível para os pedidos selecionados. "
+                    + " | ".join(warnings))[:400],
+        )
+    return Response(
+        content=_zip_label_files(files, warnings),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="etiquetas.zip"'},
+    )
 
 
 @router.get("/{order_id}/invoices/{invoice_id}/danfe")

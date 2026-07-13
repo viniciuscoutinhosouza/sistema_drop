@@ -132,3 +132,26 @@ def test_unwrap_zpl_zip_extracts_txt():
 def test_unwrap_zpl_zip_passthrough_when_not_zip():
     raw = b"^XA^FDpuro^XZ"
     assert _unwrap_zpl_zip(raw) == raw  # já é ZPL → inalterado (idempotente)
+
+
+def test_zip_label_files_packs_and_adds_warnings():
+    from routers.orders import _zip_label_files
+
+    data = _zip_label_files(
+        [("Etiqueta_1_Cliente.pdf", b"%PDF-1"), ("Etiqueta_1_Cliente.zpl", b"^XA^XZ")],
+        ["Pedido 2: NF-e pendente."],
+    )
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        names = set(z.namelist())
+        assert "Etiqueta_1_Cliente.pdf" in names
+        assert "Etiqueta_1_Cliente.zpl" in names
+        assert "_avisos.txt" in names  # falha parcial vira aviso, não derruba o zip
+        assert z.read("Etiqueta_1_Cliente.zpl") == b"^XA^XZ"
+
+
+def test_zip_label_files_no_warnings_no_avisos():
+    from routers.orders import _zip_label_files
+
+    data = _zip_label_files([("a.pdf", b"x")], [])
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        assert "_avisos.txt" not in z.namelist()

@@ -107,6 +107,8 @@
           <div class="dropdown-menu">
             <a class="dropdown-item" href="#" @click.prevent="printSelected"><i class="fas fa-print mr-2"></i>Imprimir Etiquetas</a>
             <a class="dropdown-item" href="#" @click.prevent="viewSelectedLabels"><i class="fas fa-eye mr-2"></i>Visualizar Etiquetas</a>
+            <div class="dropdown-divider"></div>
+            <a class="dropdown-item" href="#" @click.prevent="bulkDownloadLabels"><i class="fas fa-file-archive mr-2"></i>Baixar etiquetas (ZIP)</a>
           </div>
         </div>
         <div class="dropdown">
@@ -622,7 +624,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import api from '@/composables/useApi'
 import { formatCurrency, formatDateTime, formatDate } from '@/utils/formatters'
-import { saveBlobResponse, openAndSaveBlobResponse, saveLabelBoth } from '@/utils/download'
+import { saveBlobResponse, openAndSaveBlobResponse } from '@/utils/download'
 import { ORDER_STATUSES, PLATFORMS, SHIPPING_MODE_STYLE, shippingModeStyle, platformLogo } from '@/utils/constants'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
@@ -798,26 +800,6 @@ function deliveryBtnClass(order) {
   return statusBtnClass(order.status)
 }
 
-// ─── Etiqueta de Pedido Manual ──────────────────────────────────────────────
-const manualLabelLoading = ref({})
-
-async function downloadManualLabel(order) {
-  if (manualLabelLoading.value[order.id]) return
-  manualLabelLoading.value[order.id] = true
-  try {
-    // Baixa PDF + ZPL de uma vez (abre o PDF para imprimir).
-    const [pdfResp, zplResp] = await Promise.all([
-      api.get(`/manual-orders/${order.id}/label.pdf`, { responseType: 'blob' }),
-      api.get(`/manual-orders/${order.id}/label.zpl`, { responseType: 'blob' }).catch(() => null),
-    ])
-    saveLabelBoth(pdfResp, zplResp)
-  } catch (e) {
-    toast.error(e?.response?.data?.detail || 'Falha ao gerar etiqueta')
-  } finally {
-    manualLabelLoading.value[order.id] = false
-  }
-}
-
 // ─── Handlers do stepper: etiqueta e NF-e ───────────────────────────────────
 function canPrintLabel(order) {
   if (order.platform === 'manual') return true
@@ -830,12 +812,8 @@ function hasNfe(order) {
 }
 
 async function handleLabelClick(order) {
-  // 1) Imprime/baixa a etiqueta conforme o tipo do pedido
-  if (order.platform === 'manual') {
-    await downloadManualLabel(order)
-  } else {
-    await printShippingLabel(order)
-  }
+  // 1) Baixa a etiqueta em ZIP (PDF + ZPL) — não abre o PDF
+  await downloadLabelZip(order)
   // 2) Marca como impressa (sem aguardar a UI confirmar — silencioso em caso de falha)
   if (canUpdateStatus.value && ['paid', 'label_generated'].includes(order.status)) {
     try {
@@ -913,34 +891,26 @@ function labelCircleTooltip(order) {
   if (order.label_cached_at) return 'Etiqueta salva — clique para imprimir'
   return 'Imprimir Etiqueta de Envio'
 }
-async function printShippingLabel(order) {
-  if (!order.shipment_id) {
-    toast.warning('Pedido sem envio')
-    return
+async function downloadLabelZip(order) {
+  // Guarda p/ ML: precisa de envio pronto. Manual não tem shipment.
+  if (order.platform === 'mercadolivre') {
+    if (!order.shipment_id) { toast.warning('Pedido sem envio'); return }
+    if (!labelAvailable(order)) { toast.warning(labelCircleTooltip(order)); return }
   }
-  if (!labelAvailable(order)) {
-    toast.warning(labelCircleTooltip(order))
-    return
-  }
+  if (labelLoading.value[order.id]) return
   labelLoading.value[order.id] = true
   try {
-    // Baixa PDF + ZPL de uma vez (abre o PDF para imprimir). O ZPL do ML pode não estar
-    // disponível em alguns envios — best-effort, não bloqueia o PDF.
-    const [pdfResp, zplResp] = await Promise.all([
-      api.get(`/orders/${order.id}/label`, { responseType: 'blob' }),
-      api.get(`/orders/${order.id}/label`, { params: { fmt: 'zpl2' }, responseType: 'blob' }).catch(() => null),
-    ])
-    saveLabelBoth(pdfResp, zplResp)
+    // Backend monta um ZIP com o PDF e o ZPL e o front baixa (sem abrir o PDF).
+    const resp = await api.get(`/orders/${order.id}/label.zip`, { responseType: 'blob' })
+    saveBlobResponse(resp, `Etiqueta-${order.platform_order_id || order.id}.zip`, 'application/zip')
     // Marca cache na lista local para o ícone ficar verde sem reload
     if (!order.label_cached_at) order.label_cached_at = new Date().toISOString()
   } catch (err) {
     let msg = 'Erro ao gerar etiqueta'
-    // axios with responseType:blob returns the error as a Blob — need to parse
+    // axios com responseType:blob devolve o erro como Blob — precisa parsear
     if (err.response?.data instanceof Blob) {
       try {
-        const txt = await err.response.data.text()
-        const json = JSON.parse(txt)
-        msg = json.detail || msg
+        msg = JSON.parse(await err.response.data.text()).detail || msg
       } catch { /* keep default */ }
     } else if (err.response?.data?.detail) {
       msg = err.response.data.detail
@@ -1134,6 +1104,26 @@ function printSelected() {
 }
 
 function viewSelectedLabels() { printSelected() }
+
+// Baixa um ZIP com as etiquetas (PDF + ZPL) de todos os pedidos marcados.
+async function bulkDownloadLabels() {
+  if (!selectedOrders.value.length) { toast.warning('Selecione ao menos um pedido'); return }
+  const ids = selectedOrders.value.slice()
+  toast.info(`Gerando ZIP de etiquetas de ${ids.length} pedido(s)…`)
+  try {
+    const resp = await api.post('/orders/labels.zip', { order_ids: ids }, { responseType: 'blob' })
+    saveBlobResponse(resp, 'etiquetas.zip', 'application/zip')
+    toast.success('ZIP de etiquetas gerado. Confira o _avisos.txt se algum pedido ficou de fora.')
+  } catch (err) {
+    let msg = 'Erro ao gerar as etiquetas'
+    if (err.response?.data instanceof Blob) {
+      try { msg = JSON.parse(await err.response.data.text()).detail || msg } catch { /* keep */ }
+    } else if (err.response?.data?.detail) {
+      msg = err.response.data.detail
+    }
+    toast.error(msg)
+  }
+}
 
 async function bulkStatus(status) {
   if (!selectedOrders.value.length) { toast.warning('Selecione ao menos um pedido'); return }

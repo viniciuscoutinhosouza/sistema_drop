@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-07-13 — feat(etiqueta): botão baixa ZIP (PDF+ZPL) e ação em lote na tela Pedidos
+
+Na tela **Pedidos**, o botão de etiqueta passou a **baixar um ZIP com o PDF e o ZPL** (sem abrir o
+PDF), e o menu "Imprimir Selecionadas" ganhou **"Baixar etiquetas (ZIP)"** dos pedidos marcados.
+
+- **Backend (orders.py):** extraí `_ml_label_fmt_bytes` do endpoint `/label` (validação + cache +
+  fetch ML + conferência no zpl2); `_order_label_pair(order)` devolve `(pdf, zpl)` tratando ML
+  (reusa `_ml_label_fmt_bytes`; `_emit_nfe_for_label` é idempotente → não reemite ao buscar os 2
+  formatos) e **manual** (usa `_load_manual_label_data` — acesso CANÔNICO do manual, não o filtro
+  genérico, evitando alargar acesso). Novos endpoints: `GET /{id}/label.zip` (1 pedido) e
+  `POST /labels.zip` {order_ids} (lote, **cap 25**, falha por pedido vira linha em `_avisos.txt`).
+- **Frontend (OrderListView + OrderDetailView):** botão → `downloadLabelZip` (GET `/label.zip`,
+  baixa o zip, **não abre**); novo `bulkDownloadLabels` (POST `/labels.zip`). Removidos os handlers
+  antigos (`printShippingLabel`/`downloadManualLabel`/`saveLabelBoth`) que abriam o PDF.
+- **Segurança/LGPD:** o cache de etiquetas saiu de `BACKEND/static/labels/` (servido sem auth — o
+  PDF do ML tem nome+endereço do comprador) para `BACKEND/private_labels/`, servido só pelos
+  endpoints autenticados (mesmo padrão do ADR-0015 p/ XML). Deploy deve remover o `static/labels/`
+  legado no servidor.
+- Auditado (consistency-auditor prévio: CRITICAL de acesso manual [usar `_load_manual_label_data`] +
+  HIGH de assinatura/duplo-fetch [`_emit` idempotente, cap 25] incorporados) + quality-guardian
+  (HIGH pré-existente do cache em `static/` **corrigido**). Verificação: ruff limpo; `test_label_zpl`
+  13 passed (inclui `_zip_label_files`); separação/eship OK (36 passed); import 3.11 OK;
+  `npm run build` OK. **Sem migration.**
+
+---
+
 ## 2026-07-13 — fix(etiqueta): ZPL de pedido ML passa a trazer o produto (SKU/nome/qtd)
 
 O ZPL do pedido ML vinha nativo do Mercado Livre — só o rótulo de envio, **sem o SKU/nome/qtd**
