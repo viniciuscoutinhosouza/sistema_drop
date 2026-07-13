@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-07-13 — fix(etiqueta): ZPL de pedido ML passa a trazer o produto (SKU/nome/qtd)
+
+O ZPL do pedido ML vinha nativo do Mercado Livre — só o rótulo de envio, **sem o SKU/nome/qtd**
+do vendedor (o PDF do ML traz a declaração de conteúdo; o ZPL não). Como não dá para editar os
+bytes do ML, o sistema agora **anexa uma etiqueta ZPL de CONFERÊNCIA** (SKU + nome + qtd + código
+de barras) logo após o rótulo de envio, em todos os pontos que servem ZPL de ML.
+
+- **Reuso (não duplicou):** a conferência usa o `render_shipping_labels_zpl` já existente com um
+  **cabeçalho parametrizável** (`header_label`) — "CONFERENCIA DE PRODUTO (pedido ML)". O ZPL manual
+  segue com o cabeçalho "VENDA DIRETA".
+- **Novo `services/label_meta.py`:** `build_orders_label_meta` + `resolve_item_base` extraídos da
+  separação (evita import circular orders↔separation) e reusados nos dois. Resolve EAN/nome via
+  `resolve_order_item_link` — **essencial** p/ pedidos ML vinculados só pelo anúncio (sem isso o
+  produto sairia vazio). A separação passou a importar esses helpers (sem reescrever a lógica).
+- **orders.py `/{id}/label` (zpl2):** anexa a conferência **on-the-fly** (montada do banco) — o
+  cache em disco continua guardando só o ZPL **puro do ML**, então a conferência nunca fica velha.
+- **separation.py:** `cart_labels` (ramo ML, fmt=zpl2) e ZIP bundle (ramo ML) anexam a conferência
+  dos MESMOS pedidos do rótulo. O ZPL segue **sem marcar impresso** (companheiro).
+- **Limitação conhecida:** no ML saem **2 rótulos térmicos por pedido** (envio do ML + conferência);
+  no manual o produto continua no mesmo rótulo. Inevitável (não editamos o rótulo do ML).
+- Auditado (consistency-auditor prévio: reusar render_shipping_labels_zpl + reusar `_order_labels_meta`
+  via módulo compartilhado + não cachear a conferência — todos incorporados). Verificação: ruff limpo;
+  `test_label_zpl` 11 passed; separação/eship OK (35 passed; 2 falhas pré-existentes em test_orders,
+  `MockResult`); import 3.11 OK. Sem migration. Sem mudança no frontend.
+
+---
+
 ## 2026-07-11 — feat(etiqueta): baixar etiqueta em PDF **e** ZPL em todos os locais
 
 Toda ação de etiqueta passa a baixar os **dois formatos de uma vez** (PDF + ZPL Zebra). Revisados

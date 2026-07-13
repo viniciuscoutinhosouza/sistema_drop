@@ -37,6 +37,9 @@ from services.file_naming import (
     order_download_filename,
 )
 from services.financial_service import debit_balance
+from services.label_meta import build_orders_label_meta
+from services.label_service import ML_CONF_HEADER as _ML_CONF_HEADER
+from services.label_service import render_shipping_labels_zpl
 from services.shipping_mode import classify_logistic_type, label_for_mode
 
 settings = get_settings()
@@ -2939,14 +2942,28 @@ async def get_order_shipping_label(
     filename = order_download_filename(TIPO_ETIQUETA, ext, order=order)
     cache_path = _LABELS_DIR / f"{order.shipment_id}.{ext}"
 
-    # Try cache first (unless forced refresh)
-    if not refresh and cache_path.exists() and order.label_cached_at:
-        content = cache_path.read_bytes()
+    async def _finalize(pure_content: bytes) -> Response:
+        """Serve a etiqueta. No ZPL, anexa a etiqueta de CONFERÊNCIA (SKU/nome/qtd) montada
+        do banco — o ZPL do ML é só o rótulo de envio. A conferência NÃO é cacheada (o
+        cache guarda só o ML puro), então reflete sempre o estado atual do pedido."""
+        body = pure_content
+        if fmt == "zpl2":
+            try:
+                meta = await build_orders_label_meta(db, [order])
+                conf = render_shipping_labels_zpl(meta, header_label=_ML_CONF_HEADER)
+                if conf:
+                    body = pure_content + b"\n" + conf
+            except Exception as e:  # noqa: BLE001 — conferência é opcional, não perde o rótulo
+                print(f"[orders] falha ao anexar conferência ZPL order={order.id}: {e}")
         return Response(
-            content=content,
+            content=body,
             media_type=media_type,
             headers={"Content-Disposition": f'inline; filename="{filename}"'},
         )
+
+    # Try cache first (unless forced refresh)
+    if not refresh and cache_path.exists() and order.label_cached_at:
+        return await _finalize(cache_path.read_bytes())
 
     # Cache miss or forced refresh — fetch from ML
     if order.shipment_status in ("pending", None, ""):
@@ -3012,7 +3029,7 @@ async def get_order_shipping_label(
     # Rede de segurança: se o pré-fetch falhou, o erro bruto do ML ainda revela
     # pedidos Full / NF-e pendente.
     try:
-        content, ctype = await _ml.get_shipment_label(account.access_token, order.shipment_id, fmt)
+        content, _ctype = await _ml.get_shipment_label(account.access_token, order.shipment_id, fmt)
     except HTTPException as e:
         msg = str(e.detail or "")
         if "is FF" in msg or "fulfillment" in msg.lower():
@@ -3040,7 +3057,7 @@ async def get_order_shipping_label(
             raise HTTPException(status_code=400, detail=_UNKNOWN_ISSUER_MSG)
         raise
 
-    # Persist to disk + mark cached_at
+    # Persist to disk + mark cached_at (cacheia só o conteúdo PURO do ML)
     try:
         _LABELS_DIR.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(content)
@@ -3049,11 +3066,7 @@ async def get_order_shipping_label(
     except Exception as e:
         print(f"[orders] failed to cache label shipment={order.shipment_id}: {e}")
 
-    return Response(
-        content=content,
-        media_type=ctype,
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
-    )
+    return await _finalize(content)
 
 
 @router.get("/{order_id}/invoices/{invoice_id}/danfe")

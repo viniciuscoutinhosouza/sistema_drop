@@ -99,6 +99,23 @@ def test_zpl_invalid_ean_falls_back_to_code128():
     assert "^BCN" in zpl  # fallback do EAN inválido para Code128
 
 
+def test_zpl_header_label_is_parametrizable():
+    # Cabeçalho padrão (venda direta) vs. o de conferência (anexado ao rótulo do ML).
+    default_zpl = render_shipping_labels_zpl(
+        [{"order": _order(), "items": [_item()], "cmig": _cmig(), "items_meta": [{}]}]
+    ).decode("utf-8")
+    assert "VENDA DIRETA - sem marketplace" in default_zpl
+
+    conf_zpl = render_shipping_labels_zpl(
+        [{"order": _order(), "items": [_item(sku="ABC", title="Bola")], "cmig": _cmig(),
+          "items_meta": [{"title": "Bola"}]}],
+        header_label="CONFERENCIA DE PRODUTO (pedido ML)",
+    ).decode("utf-8")
+    assert "CONFERENCIA DE PRODUTO (pedido ML)" in conf_zpl
+    assert "VENDA DIRETA" not in conf_zpl
+    assert "SKU: ABC" in conf_zpl and "Bola" in conf_zpl  # produto na conferência
+
+
 def test_empty_orders_meta_yields_placeholder_label():
     zpl = render_shipping_labels_zpl([]).decode("utf-8")
     assert zpl.startswith("^XA") and "^XZ" in zpl

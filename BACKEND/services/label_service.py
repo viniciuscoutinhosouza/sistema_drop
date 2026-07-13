@@ -407,6 +407,9 @@ def render_shipping_labels(orders_meta: list[dict], layout: str = "10x15") -> by
 # ZPL é sempre por-volume/térmico — o layout A4/4-up (papel) não tem análogo aqui.
 ZPL_W, ZPL_H = 800, 1200
 
+# Cabeçalho da etiqueta ZPL de CONFERÊNCIA anexada ao rótulo de envio do ML (que não traz produto).
+ML_CONF_HEADER = "CONFERENCIA DE PRODUTO (pedido ML)"
+
 
 def _zpl_escape(s: Any) -> str:
     """Neutraliza os caracteres de controle do ZPL (^ ~ \\) e quebras de linha."""
@@ -440,14 +443,17 @@ def _zpl_barcode_ean(x: int, y: int, h: int, data: Any) -> str | None:
     return f"^FO{x},{y}^BY2^BEN,{h},N,N^FD{digits[:12]}^FS"
 
 
-def _zpl_one_label(*, order, item, item_meta: dict, cmig, volume_idx: int, total_volumes: int) -> str:
+def _zpl_one_label(
+    *, order, item, item_meta: dict, cmig, volume_idx: int, total_volumes: int,
+    header_label: str = "VENDA DIRETA - sem marketplace",
+) -> str:
     """Monta 1 etiqueta ZPL (10x15) de um volume."""
     p: list[str] = ["^XA", "^CI28", f"^PW{ZPL_W}", f"^LL{ZPL_H}", "^LH0,0"]
     empresa = (cmig.company_name if cmig else "") or ""
     cnpj = (cmig.cnpj if cmig else "") or ""
 
     # Cabeçalho
-    p.append(_zpl_text(20, 20, 30, "VENDA DIRETA - sem marketplace"))
+    p.append(_zpl_text(20, 20, 30, header_label))
     p.append(_zpl_text(560, 22, 26, f"Vol {volume_idx}/{total_volumes}"))
     if empresa:
         p.append(_zpl_text(20, 58, 24, empresa[:48]))
@@ -495,12 +501,18 @@ def _zpl_one_label(*, order, item, item_meta: dict, cmig, volume_idx: int, total
     return "".join(part for part in p if part)
 
 
-def render_shipping_labels_zpl(orders_meta: list[dict]) -> bytes:
-    """Etiquetas térmicas em ZPL (uma por volume) de N pedidos. Sempre 10x15 (ignora layout)."""
+def render_shipping_labels_zpl(
+    orders_meta: list[dict], header_label: str = "VENDA DIRETA - sem marketplace"
+) -> bytes:
+    """Etiquetas térmicas em ZPL (uma por volume) de N pedidos. Sempre 10x15 (ignora layout).
+
+    `header_label` troca o título do topo — usado para gerar a etiqueta de CONFERÊNCIA de
+    produto (SKU/nome/qtd) anexada à etiqueta de envio nativa do ML (que não traz o produto).
+    """
     labels = [
         _zpl_one_label(
             order=order, item=item, item_meta=meta, cmig=cmig,
-            volume_idx=vidx, total_volumes=total,
+            volume_idx=vidx, total_volumes=total, header_label=header_label,
         )
         for order, item, meta, cmig, vidx, total in _flatten_volumes(orders_meta)
     ]

@@ -43,12 +43,16 @@ from routers.orders import _extract_nfe_fields, _ml_nfe_url  # noqa: E402
 from services import ml_service as _ml
 from services import picking_service as ps
 from services.file_naming import TIPO_DANFE, order_download_filename, slugify_name
+from services.label_meta import build_orders_label_meta as _order_labels_meta
+from services.label_meta import resolve_item_base as _resolve_base
 from services.label_service import (
     LABEL_LAYOUT_LABELS,
     render_shipping_labels,
     render_shipping_labels_zpl,
 )
-from services.order_item_resolver import resolve_order_item_link
+from services.label_service import (
+    ML_CONF_HEADER as _ML_CONF_HEADER,
+)
 from services.picking_list_service import render_picking_list
 
 logger = logging.getLogger(__name__)
@@ -140,62 +144,6 @@ async def _get_cart_scoped(db: AsyncSession, cart_id: int, user: User) -> Pickin
 
 
 # ── Resolução de produto / kit ──────────────────────────────────────────────--
-def _base_from_cmig(cp: CMIGProduct, item: OrderItem) -> dict:
-    return {
-        "kind": "cmig", "product_id": cp.id, "sku": cp.sku_cmig or item.sku,
-        "ean": cp.ean or "", "title": cp.title or item.title,
-        "is_composite": bool(cp.is_composite),
-    }
-
-
-def _base_from_pg(pg: CatalogProduct, item: OrderItem) -> dict:
-    return {
-        "kind": "pg", "product_id": pg.id, "sku": pg.sku or item.sku,
-        "ean": pg.ean or "", "title": pg.title or item.title,
-        "is_composite": bool(pg.is_composite),
-    }
-
-
-async def _resolve_base(db: AsyncSession, item: OrderItem, order: Order | None = None) -> dict:
-    """Resolve o produto base de um OrderItem (PG ou CMIG).
-
-    1) Vínculo direto no item (cmig_product_id / catalog_product_id).
-    2) Fallback canônico via ProductListing/DP/SKU (resolve_order_item_link) usando
-       o contexto do pedido — cobre pedidos ML vinculados só pelo anúncio.
-    """
-    if item.cmig_product_id:
-        cp = (
-            await db.execute(select(CMIGProduct).where(CMIGProduct.id == item.cmig_product_id))
-        ).scalar_one_or_none()
-        if cp:
-            return _base_from_cmig(cp, item)
-    if item.catalog_product_id:
-        pg = (
-            await db.execute(select(CatalogProduct).where(CatalogProduct.id == item.catalog_product_id))
-        ).scalar_one_or_none()
-        if pg:
-            return _base_from_pg(pg, item)
-
-    if order is not None:
-        link = await resolve_order_item_link(
-            db,
-            account_id=order.account_id,
-            ml_item_id=getattr(item, "ml_item_id", None),
-            cmig_id=order.cmig_id,
-            sku=item.sku,
-            dropshipper_id=order.dropshipper_id,
-        )
-        if link.cmig_product:
-            return _base_from_cmig(link.cmig_product, item)
-        if link.catalog_product:
-            return _base_from_pg(link.catalog_product, item)
-
-    return {
-        "kind": None, "product_id": None, "sku": item.sku or "",
-        "ean": "", "title": item.title or "", "is_composite": False,
-    }
-
-
 async def _resolve_components(db: AsyncSession, base: dict) -> list[dict]:
     """Componentes de um produto composto (kit)."""
     out: list[dict] = []
@@ -264,28 +212,6 @@ async def _expand_order(db: AsyncSession, order: Order) -> list[dict]:
             u["order_item_id"] = it.id
             units.append(u)
     return units
-
-
-async def _order_labels_meta(db: AsyncSession, orders: list[Order]) -> list[dict]:
-    """Monta orders_meta p/ render_shipping_labels (1 volume por OrderItem)."""
-    out: list[dict] = []
-    for order in orders:
-        items = (
-            await db.execute(
-                select(OrderItem).where(OrderItem.order_id == order.id).order_by(OrderItem.id)
-            )
-        ).scalars().all()
-        cmig = None
-        if order.cmig_id:
-            cmig = (
-                await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))
-            ).scalar_one_or_none()
-        metas = []
-        for it in items:
-            base = await _resolve_base(db, it, order)
-            metas.append({"ean": base.get("ean") or "", "title": base.get("title") or it.title})
-        out.append({"order": order, "items": items, "cmig": cmig, "items_meta": metas})
-    return out
 
 
 # ── Serialização ──────────────────────────────────────────────────────────────
@@ -988,6 +914,13 @@ async def cart_labels(
         content, _ctype = await _ml.get_shipment_label(
             acc.access_token, shipment_ids, "zpl2" if is_zpl else "pdf"
         )
+        if is_zpl:
+            # O ZPL do ML é só o rótulo de envio — anexa etiqueta de CONFERÊNCIA (SKU/nome/qtd).
+            conf = render_shipping_labels_zpl(
+                await _order_labels_meta(db, [o for _, o in ml]), header_label=_ML_CONF_HEADER
+            )
+            if conf:
+                content = content + b"\n" + conf
     else:
         orders_meta = await _order_labels_meta(db, [o for _, o in manual_t])
         content = (
@@ -1381,9 +1314,18 @@ async def cart_bundle(
             label_ok.update(o.id for o in orders)
         except Exception as exc:  # noqa: BLE001
             avisos.append(f"Conta {_account_label(acc)}: falha ao gerar etiquetas ML ({str(exc)[:120]}).")
-        # ZPL companheiro (Zebra) — best-effort; não bloqueia o PDF.
+        # ZPL companheiro (Zebra) — best-effort; não bloqueia o PDF. Anexa a conferência de
+        # produto (SKU/nome/qtd), pois o ZPL do ML é só o rótulo de envio.
         try:
             zpl, _ = await _ml.get_shipment_label(acc.access_token, shipment_ids, "zpl2")
+            try:
+                conf = render_shipping_labels_zpl(
+                    await _order_labels_meta(db, orders), header_label=_ML_CONF_HEADER
+                )
+                if conf:
+                    zpl = zpl + b"\n" + conf
+            except Exception:  # noqa: BLE001 — conferência é opcional; não perde o rótulo
+                pass
             label_files.append((f"{base_name}.zpl", zpl))
         except Exception as exc:  # noqa: BLE001
             avisos.append(f"Conta {_account_label(acc)}: falha ao gerar etiquetas ZPL ({str(exc)[:120]}).")
