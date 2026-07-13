@@ -1,5 +1,6 @@
 # Importar todos os modelos para garantir registro no SQLAlchemy ORM
 from integrations.eship.config import EShipConfig  # noqa: F401 — módulo isolado eShip
+from models.audit import AuditEvent  # noqa: F401
 from models.cmig import (  # noqa: F401
     CMIG,
     CMIGAdministrator,

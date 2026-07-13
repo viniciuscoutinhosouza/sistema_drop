@@ -10,19 +10,20 @@ import shutil as _shutil
 import uuid as _uuid_mod
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
-from dependencies import get_current_user
+from dependencies import get_current_user, require_role
 from models.cmig import CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
 from models.integration import MarketplaceAccount
 from models.product import CatalogProduct, ProductListing, ProductMarketplaceCategory
 from models.user import User
-from services import ml_service
+from services import audit_service, ml_service
+from services.datetime_br import to_br
 
 
 def _is_valid_ean13(s: str | None) -> bool:
@@ -5696,14 +5697,72 @@ async def toggle_flex_anuncio(
     return result_dict
 
 
+def _audit_snapshot(listing) -> dict:
+    """O que foi apagado — o suficiente para reconstruir/reimportar sem adivinhação."""
+    return {
+        "listing_id": listing.id,
+        "account_id": listing.account_id,
+        "platform_item_id": listing.platform_item_id,
+        "title": listing.title_override,
+        "sku": listing.sku,
+        "status": listing.status,
+        "sale_price": float(listing.sale_price) if listing.sale_price is not None else None,
+        "cmig_product_id": listing.cmig_product_id,
+        "catalog_product_id": listing.catalog_product_id,
+        "permalink": listing.permalink,
+    }
+
+
+# Path de 2 segmentos de propósito: `/audit` sozinho seria capturado pelo `GET /{listing_id}`,
+# que é declarado antes neste router (o FastAPI casa na ordem de declaração).
+@router.get("/audit/deletions")
+async def listar_auditoria_anuncios(
+    limit: int = 200,
+    account_id: int | None = None,
+    current_user: User = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Quem apagou anúncios, quando e de onde (só admin).
+
+    Existe porque os anúncios importados sumiram 4 vezes e o sistema não guardava o autor —
+    a investigação teve de ser feita no log do servidor, chegando só até o IP.
+    """
+    from models.audit import AuditEvent
+
+    q = select(AuditEvent).where(AuditEvent.entity_type == "product_listing")
+    rows = (await db.execute(q.order_by(AuditEvent.id.desc()).limit(min(limit, 1000)))).scalars().all()
+
+    out = []
+    for e in rows:
+        det = _json.loads(e.details) if e.details else {}
+        if account_id and det.get("account_id") != account_id:
+            continue
+        out.append({
+            "id": e.id,
+            "quando": to_br(e.created_at) if e.created_at else None,
+            "acao": e.action,
+            "usuario": e.user_email or e.user_id,
+            "ip": e.ip,
+            "anuncio": det.get("platform_item_id"),
+            "titulo": det.get("title"),
+            "account_id": det.get("account_id"),
+        })
+    return {"eventos": out, "total": len(out)}
+
+
 @router.delete("/{listing_id}", status_code=204)
 async def delete_anuncio_sistema(
     listing_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Remove o anúncio apenas do sistema (não afeta o marketplace)."""
     listing = await _get_listing_or_404(listing_id, current_user, db)
+    await audit_service.record(
+        db, current_user, "anuncio.delete", "product_listing", listing.id,
+        details=_audit_snapshot(listing), request=request,
+    )
     db.delete(listing)
     await db.commit()
 
@@ -5812,11 +5871,16 @@ async def debug_oauth_anuncio(
 @router.delete("/{listing_id}/marketplace", status_code=204)
 async def delete_anuncio_marketplace(
     listing_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Fecha o anúncio no marketplace e depois remove do sistema."""
     listing = await _get_listing_or_404(listing_id, current_user, db)
+    await audit_service.record(
+        db, current_user, "anuncio.delete_marketplace", "product_listing", listing.id,
+        details=_audit_snapshot(listing), request=request,
+    )
     if listing.platform_item_id:
         access_token = await _get_valid_token(listing.account, db)
         await ml_service.close_item(access_token, listing.platform_item_id)
