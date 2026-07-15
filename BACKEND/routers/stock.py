@@ -1,6 +1,8 @@
+import asyncio
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,25 +15,34 @@ from models.integration import MarketplaceAccount
 from models.product import CatalogProduct
 from models.stock_movement import StockMovement
 from models.user import User
+from services.datetime_br import now_br
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Teto defensivo do export: evita PDF/planilha gigante (e worker preso) quando admin/ugo
+# exporta sem filtro. Acima disso, trunca e avisa no subtítulo.
+_MAX_EXPORT_ROWS = 5000
 
-@router.get("/summary")
-async def stock_summary(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    search: str = Query(None),
-    scope: str = Query(None, regex="^(pg|cmig)$"),
-    warehouse_id: int = Query(None),
-    cmig_id: int = Query(None),
-    show_zeroed: bool = Query(False),  # incluir produtos zerados (local e full)
-    sort_by: str = Query("name", regex="^(sku|name|physical|available)$"),
-    sort_dir: str = Query("asc", regex="^(asc|desc)$"),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
+
+async def _collect_stock_items(
+    db: AsyncSession,
+    current_user: User,
+    *,
+    search: str | None = None,
+    scope: str | None = None,
+    warehouse_id: int | None = None,
+    cmig_id: int | None = None,
+    show_zeroed: bool = False,
+    sort_by: str = "name",
+    sort_dir: str = "asc",
+) -> list[dict]:
+    """Lista COMPLETA (sem paginação) de itens de estoque no escopo do usuário.
+
+    Fonte única do Controle de Estoque: usada pela tela (paginada) e pelo export. Aplica o
+    MESMO controle de acesso (roles; AC escopado às suas CMIGs) e o MESMO escopo de FULL por
+    conta — não vazar FULL de outras contas/CMIGs.
+    """
     if current_user.role not in ("ugo", "admin", "ac", "go"):
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
@@ -46,7 +57,7 @@ async def stock_summary(
         )
         ac_cmig_ids = [r[0] for r in rows.all()]
         if not ac_cmig_ids:
-            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+            return []
         if cmig_id is not None and cmig_id not in ac_cmig_ids:
             raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
 
@@ -240,7 +251,27 @@ async def stock_summary(
         "available": lambda i: i["available"],
     }
     items.sort(key=sort_keys[sort_by], reverse=(sort_dir == "desc"))
+    return items
 
+
+@router.get("/summary")
+async def stock_summary(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    search: str = Query(None),
+    scope: str = Query(None, regex="^(pg|cmig)$"),
+    warehouse_id: int = Query(None),
+    cmig_id: int = Query(None),
+    show_zeroed: bool = Query(False),  # incluir produtos zerados (local e full)
+    sort_by: str = Query("name", regex="^(sku|name|physical|available)$"),
+    sort_dir: str = Query("asc", regex="^(asc|desc)$"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    items = await _collect_stock_items(
+        db, current_user, search=search, scope=scope, warehouse_id=warehouse_id,
+        cmig_id=cmig_id, show_zeroed=show_zeroed, sort_by=sort_by, sort_dir=sort_dir,
+    )
     total = len(items)
     start = (page - 1) * page_size
     return {
@@ -249,6 +280,69 @@ async def stock_summary(
         "page": page,
         "page_size": page_size,
     }
+
+
+def _tipo_label(item: dict) -> str:
+    if item.get("product_type") == "pg":
+        return "PG"
+    name = item.get("cmig_name")
+    return f"CMIG · {name}" if name else "CMIG"
+
+
+@router.get("/summary/export")
+async def stock_summary_export(
+    format: str = Query("xlsx", pattern="^(pdf|xlsx)$"),
+    search: str = Query(None),
+    scope: str = Query(None, regex="^(pg|cmig)$"),
+    warehouse_id: int = Query(None),
+    cmig_id: int = Query(None),
+    show_zeroed: bool = Query(False),
+    sort_by: str = Query("name", regex="^(sku|name|physical|available)$"),
+    sort_dir: str = Query("asc", regex="^(asc|desc)$"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Exporta o Controle de Estoque (os mesmos itens/filtros da tela) em PDF ou Excel."""
+    from services import stock_export
+
+    items = await _collect_stock_items(
+        db, current_user, search=search, scope=scope, warehouse_id=warehouse_id,
+        cmig_id=cmig_id, show_zeroed=show_zeroed, sort_by=sort_by, sort_dir=sort_dir,
+    )
+    total = len(items)
+    truncated = total > _MAX_EXPORT_ROWS
+    if truncated:
+        items = items[:_MAX_EXPORT_ROWS]
+    for it in items:
+        it["tipo_label"] = _tipo_label(it)
+
+    scope_label = {"pg": "Galpão (PG)", "cmig": "CMIG"}.get(scope, "Todos")
+    parts = [scope_label]
+    if search:
+        parts.append(f"busca: {search}")
+    if show_zeroed:
+        parts.append("incluindo zerados")
+    parts.append(
+        f"{len(items)} de {total} produto(s) — teto de {_MAX_EXPORT_ROWS}, refine os filtros"
+        if truncated else f"{total} produto(s)"
+    )
+    subtitle = " · ".join(parts)
+
+    stamp = now_br().strftime("%Y%m%d_%H%M")
+    # Render (reportlab/openpyxl) é CPU-bound e síncrono → fora do event loop.
+    if format == "pdf":
+        content = await asyncio.to_thread(stock_export.build_pdf, items, subtitle)
+        return Response(
+            content=content,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="controle-estoque_{stamp}.pdf"'},
+        )
+    content = await asyncio.to_thread(stock_export.build_xlsx, items, subtitle)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="controle-estoque_{stamp}.xlsx"'},
+    )
 
 
 @router.post("/cmig/{cmig_id}/sync-full")
@@ -271,10 +365,10 @@ async def sync_full_stock_for_cmig(
     """
     from datetime import datetime
 
-    from services.datetime_br import BR_TZ
-    from services import ml_service
     from models.integration import MarketplaceAccount
     from models.product import ProductListing
+    from services import ml_service
+    from services.datetime_br import BR_TZ
     from services.full_stock_service import resolve_full_cmig_product
 
     if current_user.role not in ("ugo", "admin", "ac", "go"):
@@ -623,6 +717,7 @@ async def stock_snapshots(
     'qual era meu estoque em 31/12?' para fechamento contábil.
     """
     from datetime import date as _date
+
     from models.stock_snapshot import StockSnapshot
 
     if current_user.role not in ("ugo", "admin", "ac", "go"):

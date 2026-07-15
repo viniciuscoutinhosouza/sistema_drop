@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-07-15 — feat(estoque): exportar Controle de Estoque em PDF e Excel
+
+A tela **Controle de Estoque** ganhou um botão **"Exportar"** (Excel `.xlsx` / PDF) que baixa os
+produtos listados **respeitando os filtros atuais** (escopo PG/CMIG, galpão, CMIG, busca, zerados,
+ordenação).
+
+- **Backend:** novo `services/stock_export.py` (`build_pdf` A4 paisagem + `build_xlsx`, colunas iguais
+  às da tela: SKU, Produto, EAN, Tipo, Físico, Reservado, Disponível, Ag.Retorno, Ag.Validação,
+  Inapto, FULL; guard anti formula-injection no Excel + escape `& <` no PDF). Em `routers/stock.py`
+  extraí `_collect_stock_items` (fonte ÚNICA: acesso por role + escopo AC + **escopo FULL por conta**
+  + sort, sem paginação) — `stock_summary` só pagina. Novo `GET /stock/summary/export?format=pdf|xlsx`
+  reusa o helper (mesmo acesso), com **teto de 5000 linhas** (trunca + avisa no subtítulo) e nome de
+  arquivo com data/hora BR (`datetime_br`, ADR-0013).
+- **Frontend (StockControlView):** dropdown "Exportar" (Excel/PDF) → GET do export com os mesmos
+  params do `load()` → `saveBlobResponse`.
+- **Dívida técnica registrada:** `stock_export.py` é a 3ª cópia do esqueleto reportlab/openpyxl
+  (com `eship/export.py` e `sales_report_export.py`) — vale extrair um `services/table_export.py`
+  genérico num commit futuro.
+- Auditado (consistency-auditor prévio: `format=pdf|xlsx`, FULL=`full_stock_total`, escopo FULL no
+  helper, cap, filename BR — incorporados) + quality-guardian. Verificação: ruff limpo;
+  `test_stock_export` 4 passed; import 3.11 OK; `npm run build` OK. **Sem migration.**
+
+---
+
 ## 2026-07-13 — feat(etiqueta): botão baixa ZIP (PDF+ZPL) e ação em lote na tela Pedidos
 
 Na tela **Pedidos**, o botão de etiqueta passou a **baixar um ZIP com o PDF e o ZPL** (sem abrir o

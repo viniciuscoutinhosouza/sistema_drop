@@ -78,6 +78,27 @@
             Mostrar zerados
           </button>
 
+          <!-- Exportar os dados (respeita os filtros atuais) -->
+          <div class="dropdown">
+            <button
+              class="btn btn-sm btn-outline-success dropdown-toggle"
+              data-bs-toggle="dropdown"
+              :disabled="exporting"
+              title="Exportar os produtos listados (com os filtros atuais)"
+            >
+              <i :class="exporting ? 'fas fa-spinner fa-spin' : 'fas fa-file-export'" class="mr-1"></i>
+              Exportar
+            </button>
+            <div class="dropdown-menu dropdown-menu-right">
+              <a class="dropdown-item" href="#" @click.prevent="exportStock('xlsx')">
+                <i class="fas fa-file-excel mr-2 text-success"></i>Excel (.xlsx)
+              </a>
+              <a class="dropdown-item" href="#" @click.prevent="exportStock('pdf')">
+                <i class="fas fa-file-pdf mr-2 text-danger"></i>PDF
+              </a>
+            </div>
+          </div>
+
           <!-- Atualiza FULL no ML para a CMIG selecionada (AC, UGO, admin) -->
           <button
             v-if="cmigId"
@@ -291,6 +312,7 @@ import api from '@/composables/useApi'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { formatDateTime } from '@/utils/formatters'
+import { saveBlobResponse } from '@/utils/download'
 import StockMovementsModal from '@/components/stock/StockMovementsModal.vue'
 
 const authStore = useAuthStore()
@@ -321,6 +343,42 @@ const movementsTotal = ref(0)
 const loadingMovements = ref(false)
 
 const syncingFull = ref(false)
+const exporting = ref(false)
+
+// Monta os MESMOS filtros do load() (sem paginação) para o export refletir a tela.
+function currentFilterParams() {
+  const params = { sort_by: sortBy.value, sort_dir: sortDir.value }
+  if (search.value) params.search = search.value
+  if (scope.value) params.scope = scope.value
+  if (warehouseId.value) params.warehouse_id = warehouseId.value
+  if (cmigId.value) params.cmig_id = cmigId.value
+  if (showZeroed.value) params.show_zeroed = true
+  return params
+}
+
+async function exportStock(format) {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const resp = await api.get('/stock/summary/export', {
+      params: { ...currentFilterParams(), format },
+      responseType: 'blob',
+    })
+    saveBlobResponse(resp, `controle-estoque.${format}`, format === 'pdf'
+      ? 'application/pdf'
+      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  } catch (err) {
+    let msg = 'Erro ao exportar o estoque'
+    if (err.response?.data instanceof Blob) {
+      try { msg = JSON.parse(await err.response.data.text()).detail || msg } catch { /* keep */ }
+    } else if (err.response?.data?.detail) {
+      msg = err.response.data.detail
+    }
+    toast.error(msg)
+  } finally {
+    exporting.value = false
+  }
+}
 
 const movementsModal = ref({ show: false, type: 'pg', id: null, sku: '', title: '', cmigId: null })
 
