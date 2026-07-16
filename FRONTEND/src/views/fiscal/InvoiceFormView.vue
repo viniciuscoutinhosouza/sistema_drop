@@ -187,6 +187,12 @@
 
         <!-- Botões finais -->
         <div v-if="!isNew && editable" class="text-right mb-4">
+          <button class="btn btn-outline-secondary mr-2" :disabled="printingPreview || !form.items?.length"
+                  title="PDF no layout DANFE com marca d'água SEM VALOR FISCAL — para conferir/imprimir antes de finalizar ou transmitir"
+                  @click="printPreview">
+            <i class="fas" :class="printingPreview ? 'fa-spinner fa-spin' : 'fa-print'"></i>
+            {{ printingPreview ? 'Gerando...' : 'Imprimir PDF (sem valor fiscal)' }}
+          </button>
           <button class="btn btn-outline-primary mr-2" :disabled="calculating || !form.items?.length" @click="calculateTaxes">
             <i class="fas" :class="calculating ? 'fa-spinner fa-spin' : 'fa-calculator'"></i>
             {{ calculating ? 'Calculando...' : 'Calcular Impostos' }}
@@ -612,6 +618,7 @@ const saving = ref(false)
 const savingItem = ref(false)
 const calculating = ref(false)
 const transmitting = ref(false)
+const printingPreview = ref(false)
 const finalizing = ref(false)
 const showPersonPicker = ref(false)
 const showCreatePerson = ref(false)
@@ -1115,6 +1122,25 @@ async function calculateTaxes() {
     toast.error(e.response?.data?.detail || 'Erro ao calcular impostos')
   } finally {
     calculating.value = false
+  }
+}
+
+async function printPreview() {
+  printingPreview.value = true
+  try {
+    await saveHeader({ silent: true })   // a prévia imprime o que está salvo — salva antes
+    const resp = await api.get(`/invoices/${invoiceId.value}/danfe`, { responseType: 'blob' })
+    const url = URL.createObjectURL(new Blob([resp.data], { type: 'application/pdf' }))
+    window.open(url, '_blank')
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+  } catch (e) {
+    let detail = e.response?.data?.detail
+    if (e.response?.data instanceof Blob) {
+      try { detail = JSON.parse(await e.response.data.text()).detail } catch { /* fallback */ }
+    }
+    toast.error(detail || 'Erro ao gerar a prévia em PDF')
+  } finally {
+    printingPreview.value = false
   }
 }
 

@@ -235,6 +235,37 @@ def _store_xml(cmig_id: int, chave: str, xml_proc: str) -> str:
     return str(path)
 
 
+def montar_xml_previa(
+    inv: Invoice, cmig: CMIG, cfg: CMIGFiscalConfig, person: Person, items: list,
+) -> str:
+    """XML NFe de PRÉVIA — para o DANFE "SEM VALOR FISCAL" de nota AINDA NÃO autorizada.
+
+    Diferenças deliberadas em relação à emissão real (`emitir`):
+    - **NÃO reserva número** (não queima a numeração fiscal): usa o número já gravado na nota,
+      se houver, senão 0 — e o DANFE sai com a marca d'água, então não há como confundir.
+    - **NÃO assina** e não fala com a SEFAZ.
+    As validações de cadastro (IBGE/IE/NCM/destinatário) são as MESMAS da emissão —
+    a prévia falha alto com a lista do que falta, em vez de imprimir um documento capenga.
+    """
+    from services.fiscal.sefaz.xml_builder import montar_xml_nfe
+
+    if person is None:
+        raise SefazServiceError("Selecione o destinatário antes de gerar o PDF da nota.")
+    if not items:
+        raise SefazServiceError("A nota não tem itens — adicione itens antes de gerar o PDF.")
+
+    environment = cfg.environment or "homolog"
+    ambiente = _AMB.get(environment, "homologacao")
+    serie = cfg.manual_nfe_serie or 1
+    # 999.999.999 = número-sentinela da prévia: a chave exige 1..999_999_999 (0 é rejeitado) e a
+    # numeração real jamais chega lá — impossível colidir ou parecer nota emitida.
+    nota = build_nota_emissao(
+        inv, cmig, cfg, person, items,
+        serie=serie, numero=inv.nfe_number or 999_999_999, ambiente=ambiente,
+    )
+    return montar_xml_nfe(nota)
+
+
 # ── Emissão ───────────────────────────────────────────────────────────────────
 
 

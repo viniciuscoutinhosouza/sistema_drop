@@ -192,6 +192,23 @@
                         :disabled="downloading" @click="baixar('danfe')">
                   <i class="fas fa-file-pdf mr-1"></i> Baixar DANFE
                 </button>
+                <!-- Nota SEM autorização (rascunho / finalizada sem SEFAZ): imprime a PRÉVIA,
+                     mesmo layout do DANFE com a marca d'água "SEM VALOR FISCAL". -->
+                <button v-if="['draft','finalized'].includes(invoice.status)"
+                        class="btn btn-outline-info mr-2 mb-2"
+                        :disabled="downloading"
+                        title="PDF no layout DANFE com marca d'água SEM VALOR FISCAL — a nota ainda não foi autorizada na SEFAZ"
+                        @click="baixar('danfe')">
+                  <i class="fas fa-print mr-1"></i> Imprimir PDF (sem valor fiscal)
+                </button>
+                <button v-if="['finalized','rejected'].includes(invoice.status)"
+                        class="btn btn-outline-primary mr-2 mb-2"
+                        :disabled="reopening"
+                        title="Volta a nota para rascunho para editar. Se finalizada, a movimentação de estoque é desfeita."
+                        @click="reopenInvoice">
+                  <i class="fas" :class="reopening ? 'fa-spinner fa-spin' : 'fa-lock-open'"></i>
+                  Reabrir para edição
+                </button>
                 <button v-if="invoice.status === 'authorized'" class="btn btn-info mr-2 mb-2" @click="showEmailModal = true">
                   <i class="fas fa-envelope mr-1"></i> Enviar por e-mail
                 </button>
@@ -397,6 +414,15 @@ const acting = ref(false)
 const refreshing = ref(false)
 const reapplyingStock = ref(false)
 const downloading = ref(false)
+const reopening = ref(false)
+
+// resposta de erro veio como Blob (responseType blob) — extrai o detail JSON de dentro
+async function blobErrorDetail(e) {
+  try {
+    if (e.response?.data instanceof Blob) return JSON.parse(await e.response.data.text()).detail
+  } catch { /* cai no fallback */ }
+  return e.response?.data?.detail
+}
 
 async function baixar(kind) {
   if (!invoice.value) return
@@ -408,9 +434,30 @@ async function baixar(kind) {
     // nome vem do Content-Disposition do backend (Tipo_venda_cliente); fallback abaixo
     saveBlobResponse(resp, `${kind === 'danfe' ? 'DANFE' : 'NFe'}-${chave}.${ext}`)
   } catch (e) {
-    toast.error(e.response?.data?.detail || `Erro ao baixar ${kind.toUpperCase()}`)
+    toast.error((await blobErrorDetail(e)) || `Erro ao baixar ${kind.toUpperCase()}`)
   } finally {
     downloading.value = false
+  }
+}
+
+async function reopenInvoice() {
+  if (!invoice.value) return
+  const finalized = invoice.value.status === 'finalized'
+  const msg = finalized
+    ? 'Reabrir esta nota para edição?\n\nA movimentação de estoque desta nota será DESFEITA. '
+      + 'Depois de editar, finalize sem SEFAZ ou transmita novamente.'
+    : 'Reabrir esta nota rejeitada para edição?\n\nOs dados da tentativa recusada (chave/status SEFAZ) '
+      + 'serão limpos; a retransmissão usará um número novo.'
+  if (!confirm(msg)) return
+  reopening.value = true
+  try {
+    await api.post(`/invoices/${invoice.value.id}/reopen`)
+    toast.success('Nota reaberta — agora é um rascunho editável')
+    router.push(`/fiscal/invoices/${invoice.value.id}/edit`)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao reabrir a nota')
+  } finally {
+    reopening.value = false
   }
 }
 

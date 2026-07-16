@@ -46,10 +46,24 @@ def empacotar_nfeproc(xml_signed: str, protocolo_xml: str | None) -> str:
 def gerar_danfe(xml_signed: str, *, protocolo_xml: str | None = None) -> bytes:
     """Gera os bytes do PDF DANFE a partir do XML autorizado."""
     xml_para_danfe = empacotar_nfeproc(xml_signed, protocolo_xml)
+    return _render(xml_para_danfe)
+
+
+def gerar_danfe_previa(xml_nfe: str) -> bytes:
+    """DANFE de PRÉVIA — nota AINDA NÃO autorizada (rascunho / finalizada sem SEFAZ).
+
+    Renderiza o `<NFe>` puro, SEM `<protNFe>`: a própria BrazilFiscalReport, ao não achar
+    protocolo, desenha a marca d'água **"SEM VALOR FISCAL"** em todas as vias (idem quando
+    tpAmb=2). Não passa por `empacotar_nfeproc` — protocolo sintético seria mentir no papel.
+    """
+    return _render(xml_nfe)
+
+
+def _render(xml: str) -> bytes:
     try:
         from brazilfiscalreport.danfe import Danfe
 
-        danfe = Danfe(xml=xml_para_danfe)
+        danfe = Danfe(xml=xml)
         buf = BytesIO()
         danfe.output(buf)
         return buf.getvalue()

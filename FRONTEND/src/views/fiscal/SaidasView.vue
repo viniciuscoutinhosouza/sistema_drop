@@ -171,9 +171,12 @@
                     <span class="badge" :class="statusClass(inv.status)">{{ statusLabel(inv.status) }}</span>
                   </td>
                   <td class="text-right text-nowrap">
-                    <button class="btn btn-sm btn-outline-danger mr-1"
-                            :disabled="!inv.danfe_available || docLoading[rowKey(inv)] === 'danfe'"
-                            :title="inv.danfe_available ? 'Visualizar DANFE' : 'DANFE indisponível'"
+                    <button class="btn btn-sm mr-1"
+                            :class="inv.danfe_available || !inv.danfe_preview ? 'btn-outline-danger' : 'btn-outline-warning'"
+                            :disabled="(!inv.danfe_available && !inv.danfe_preview) || docLoading[rowKey(inv)] === 'danfe'"
+                            :title="inv.danfe_available ? 'Visualizar DANFE'
+                                    : inv.danfe_preview ? 'Imprimir prévia (SEM VALOR FISCAL) — nota não autorizada'
+                                    : 'DANFE indisponível'"
                             @click="viewDanfe(inv)">
                       <i class="fas" :class="docLoading[rowKey(inv)] === 'danfe' ? 'fa-spinner fa-spin' : 'fa-file-pdf'"></i>
                     </button>
@@ -371,7 +374,9 @@ async function doExport(kind) {
 
 // Visualiza a DANFE de uma NF-e individual (abre em nova aba)
 async function viewDanfe(inv) {
-  if (!inv.danfe_available) { toast.warning('DANFE não disponível para esta NF-e'); return }
+  if (!inv.danfe_available && !inv.danfe_preview) {
+    toast.warning('DANFE não disponível para esta NF-e'); return
+  }
   docLoading.value[rowKey(inv)] = 'danfe'
   try {
     // NF-e própria (SEFAZ): gera/baixa do backend; ML: via pedido.

@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path as _Path
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +25,7 @@ from models.order import Order
 from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
+from services import audit_service
 from services import ml_service as _ml
 from services.file_naming import TIPO_DANFE, TIPO_NFE, order_download_filename
 from services.fiscal import dfe_service, sefaz_service
@@ -494,6 +495,10 @@ async def _collect_outbound_rows(
                     # /invoices/{id}/xml|danfe (não por URL). Disponível quando autorizada.
                     "xml_available": bool(inv.xml_url) or (inv.status == "authorized" and bool(inv.xml_local_path)),
                     "danfe_available": bool(inv.danfe_url) or (inv.status == "authorized" and bool(inv.xml_local_path)),
+                    # PRÉVIA (marca d'água "SEM VALOR FISCAL") p/ nota não autorizada. Flag
+                    # separado de danfe_available de propósito: o export ZIP contábil filtra
+                    # por danfe_available e NÃO pode misturar prévias com DANFEs reais.
+                    "danfe_preview": inv.status in ("draft", "finalized"),
                 }
             )
 
@@ -1547,8 +1552,14 @@ async def finalize_invoice_no_sefaz(
                 apply_nfe_saida_to_full,
                 is_full_cnpj,
             )
+            # Reconfere o status no BANCO: um /reopen que chegue entre o commit do finalize e
+            # este bloco veria o guard FULL ainda vazio — aplicar o crédito aqui deixaria um
+            # rascunho editável com FULL já movimentado (o pior estado possível).
+            _st = (
+                await db.execute(select(Invoice.status).where(Invoice.id == inv.id))
+            ).scalar_one_or_none()
             _person = (await db.execute(select(Person).where(Person.id == inv.person_id))).scalar_one_or_none()
-            if _person and _person.document and not _is_simbolica(inv.natureza_operacao):
+            if _st == "finalized" and _person and _person.document and not _is_simbolica(inv.natureza_operacao):
                 _full_cnpj = await is_full_cnpj(db, _person.document, inv.cmig_id)
                 if _full_cnpj:
                     if inv.direction == "out":
@@ -1568,6 +1579,118 @@ async def finalize_invoice_no_sefaz(
         **_serialize(inv, with_items=True),
         "stock_movement": stock,
     }
+
+
+@router.post("/{invoice_id}/reopen")
+async def reopen_invoice(
+    invoice_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reabre a nota para edição (volta a `draft`).
+
+    Permitido em:
+    - `finalized` (sem SEFAZ) — desfaz a movimentação de estoque: `stock_updated=False` volta a
+      nota para fora do replay (`stock_history` só conta authorized/finalized com o flag) e o
+      recompute recalcula os produtos afetados do zero.
+    - `rejected` (SEFAZ recusou) — nunca movimentou estoque; limpa os campos da tentativa
+      (chave/cStat/xMotivo) e libera a edição. A retransmissão reserva um número NOVO; o
+      número rejeitado pode ser inutilizado depois (POST /invoices/inutilize).
+
+    BLOQUEADO em `authorized` (só cancelamento/CC-e, por lei), e quando a nota:
+    - está vinculada a um pedido (editar divergiria dos itens do pedido);
+    - já creditou estoque FULL (subsistema incremental — reabrir duplicaria na re-finalização).
+    """
+    from models.stock_movement import StockMovement
+    from services.fiscal.stock_calculator import recompute_after_invoice_change
+
+    inv = (
+        await db.execute(
+            select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice_id)
+        )
+    ).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="NFe não encontrada")
+    await _check_cmig_access(inv.cmig_id, current_user, db)
+
+    if inv.status not in ("finalized", "rejected"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Não é possível reabrir nota com status '{inv.status}'. "
+                "Nota autorizada na SEFAZ só pode ser cancelada ou corrigida por CC-e."
+            ),
+        )
+    if inv.order_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Esta nota está vinculada a um pedido — reabri-la divergiria dos itens do "
+                   "pedido. Cancele/exclua e gere outra a partir do pedido.",
+        )
+    # Movimento FULL é incremental (não event-sourced): reabrir e re-finalizar duplicaria o
+    # crédito no FULL, e as quantidades editadas nunca chegariam lá (dedup por invoice_id).
+    full_mov = (
+        await db.execute(
+            select(StockMovement.id).where(StockMovement.invoice_id == inv.id).limit(1)
+        )
+    ).first()
+    if full_mov:
+        # O movimento FULL é incremental (não event-sourced): não há como desfazê-lo
+        # automaticamente, nem excluindo a nota (a FK stock_movements.invoice_id impede).
+        raise HTTPException(
+            status_code=400,
+            detail="Esta nota já creditou estoque FULL — não pode ser reaberta. "
+                   "Faça o acerto do FULL pelo módulo de estoque antes de mexer nesta nota.",
+        )
+
+    era = inv.status
+    await audit_service.record(
+        db, current_user, "invoice.reopen", "invoice", inv.id,
+        details={"de_status": era, "serie": inv.serie, "nfe_number": inv.nfe_number,
+                 "access_key": inv.access_key, "direction": inv.direction},
+        request=request,
+    )
+
+    inv.status = "draft"
+    inv.focus_status = None
+    inv.focus_message = None
+    if era == "rejected":
+        # A tentativa morta não pode "assombrar" o rascunho: a retransmissão reserva número
+        # NOVO, e manter o número rejeitado faria a prévia (e um eventual finalize) exibirem
+        # uma numeração que será inutilizada.
+        inv.access_key = None
+        inv.sefaz_cstat = None
+        inv.sefaz_xmotivo = None
+        inv.nfe_number = None
+        inv.serie = None
+
+    stock: dict = {}
+    if era == "finalized":
+        # Fora do replay ANTES do recompute (stock_history filtra stock_updated + status).
+        inv.stock_updated = False
+        await db.flush()
+        stock = await recompute_after_invoice_change(inv, db)
+
+    db.add(
+        InvoiceEvent(
+            invoice_id=inv.id,
+            event_type="reopened",
+            reason=f"Reaberta para edição (era '{era}')",
+            created_by_user_id=current_user.id,
+        )
+    )
+    await db.commit()
+
+    if stock:
+        try:
+            from services.stock_sync_service import schedule_push
+            schedule_push(stock.get("cmig_ids", set()), stock.get("pg_ids", set()))
+        except Exception:
+            pass
+
+    await db.refresh(inv, attribute_names=["items"])
+    return _serialize(inv, with_items=True)
 
 
 @router.post("/{invoice_id}/reapply-stock")
@@ -1800,23 +1923,63 @@ async def download_danfe(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Gera e baixa o DANFE PDF da NF-e própria (a partir do XML autorizado)."""
-    from services.fiscal.sefaz.danfe import DanfeError, gerar_danfe
+    """Gera e baixa o DANFE PDF da NF-e própria.
+
+    - `authorized` → DANFE oficial, a partir do XML autorizado (comportamento original).
+    - `draft` / `finalized` → **PRÉVIA**: monta o XML da nota SEM reservar número nem assinar,
+      e a BrazilFiscalReport desenha a marca d'água "SEM VALOR FISCAL" (não há protocolo).
+      Serve para conferir/imprimir a nota de saída com ou sem SEFAZ.
+    """
+    from services.fiscal.sefaz.danfe import DanfeError, gerar_danfe, gerar_danfe_previa
 
     inv = (
         await db.execute(
-            select(Invoice).where(Invoice.id == invoice_id).options(selectinload(Invoice.order))
+            select(Invoice)
+            .where(Invoice.id == invoice_id)
+            .options(selectinload(Invoice.order), selectinload(Invoice.items))
         )
     ).scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, current_user, db)
-    xml = _read_authorized_xml(inv)
-    try:
-        pdf = await asyncio.to_thread(gerar_danfe, xml)
-    except DanfeError as e:
-        raise HTTPException(status_code=422, detail=f"Falha ao gerar DANFE: {e}")
-    fname = _invoice_download_name(inv, TIPO_DANFE, "pdf")
+
+    if inv.status == "authorized":
+        xml = _read_authorized_xml(inv)
+        try:
+            pdf = await asyncio.to_thread(gerar_danfe, xml)
+        except DanfeError as e:
+            raise HTTPException(status_code=422, detail=f"Falha ao gerar DANFE: {e}")
+        fname = _invoice_download_name(inv, TIPO_DANFE, "pdf")
+    elif inv.status in ("draft", "finalized"):
+        if inv.direction != "out":
+            # A prévia monta o XML sempre com a CMIG como EMITENTE (tpNF=1/saída). Imprimir uma
+            # COMPRA nesse formato seria um papel fiscalmente invertido circulando no galpão.
+            raise HTTPException(
+                status_code=400,
+                detail="Prévia em PDF disponível apenas para notas de SAÍDA.",
+            )
+        cfg = await _get_fiscal_config(inv.cmig_id, db)
+        cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
+        person = None
+        if inv.person_id:
+            person = (
+                await db.execute(select(Person).where(Person.id == inv.person_id))
+            ).scalar_one_or_none()
+        try:
+            xml = sefaz_service.montar_xml_previa(inv, cmig, cfg, person, list(inv.items))
+            pdf = await asyncio.to_thread(gerar_danfe_previa, xml)
+        except sefaz_service.SefazServiceError as e:
+            # Falhar alto: a prévia usa as MESMAS validações da emissão (IBGE/IE/NCM/destinatário)
+            # e diz o que falta, em vez de imprimir um documento capenga.
+            raise HTTPException(status_code=400, detail=f"Prévia indisponível: {e}")
+        except DanfeError as e:
+            raise HTTPException(status_code=422, detail=f"Falha ao gerar a prévia do DANFE: {e}")
+        fname = f"nfe-previa-{inv.id}.pdf"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"DANFE indisponível para nota com status '{inv.status}'.",
+        )
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{fname}"'},
