@@ -626,11 +626,17 @@ async def recompute_all_stock_endpoint(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(require_menu_permission("estoque")),
 ):
-    """Recalcula stock_quantity de TODOS os produtos a partir dos eventos (NF-e + pedidos).
+    """Recalcula stock_quantity de TODOS os produtos a partir dos eventos (NF-e + pedidos),
+    reconstrói as reservas e reativa as flags de NF-e de entrada. Roda em background.
 
-    Executar após zerar o estoque (SQL 74) para reconstruir os valores canônicos.
-    Roda em background — retorna imediatamente.
+    Operação GLOBAL (todas as CMIGs/galpões) — restrita a admin e operador de galpão (UGO).
+    Também usada após zerar o estoque (SQL 74) para reconstruir os valores canônicos.
     """
+    if current_user.role not in ("admin", "ugo"):
+        raise HTTPException(
+            status_code=403,
+            detail="Apenas admin ou operador de galpão (UGO) podem recalcular o estoque de todos os produtos",
+        )
     async def _run():
         from services.fiscal.stock_calculator import recompute_all_stock
         from services.stock_reservation_service import recompute_reservations_from_movements

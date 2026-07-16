@@ -110,6 +110,18 @@
             <i :class="syncingFull ? 'fas fa-spinner fa-spin' : 'fas fa-cloud-download-alt'" class="mr-1"></i>
             {{ syncingFull ? 'Atualizando…' : 'Atualizar Estoque FULL' }}
           </button>
+
+          <!-- Recalcular estoque de TODOS os produtos (global) — admin e galpão (UGO) -->
+          <button
+            v-if="canRecalcAll"
+            class="btn btn-sm btn-outline-danger"
+            :disabled="recalculatingAll"
+            @click="recalcAllStock"
+            title="Recalcula o estoque (físico + reservas) de TODOS os produtos a partir dos eventos (NF-e + pedidos). Roda em segundo plano."
+          >
+            <i :class="recalculatingAll ? 'fas fa-spinner fa-spin' : 'fas fa-calculator'" class="mr-1"></i>
+            {{ recalculatingAll ? 'Iniciando…' : 'Recalcular Estoque (todos)' }}
+          </button>
         </div>
       </div>
       <div class="card-body p-0">
@@ -344,6 +356,27 @@ const loadingMovements = ref(false)
 
 const syncingFull = ref(false)
 const exporting = ref(false)
+const recalculatingAll = ref(false)
+// Recálculo GLOBAL de estoque — restrito a admin e operador de galpão (UGO).
+const canRecalcAll = computed(() => ['admin', 'ugo'].includes(role.value))
+
+async function recalcAllStock() {
+  if (recalculatingAll.value) return
+  if (!confirm(
+    'Recalcular o estoque (físico + reservas) de TODOS os produtos, de todas as CMIGs/galpões, ' +
+    'a partir dos eventos (NF-e + pedidos)?\n\nRoda em segundo plano e pode levar alguns minutos. ' +
+    'Atualize a lista depois para ver os valores.'
+  )) return
+  recalculatingAll.value = true
+  try {
+    await api.post('/stock/recompute-all')
+    toast.success('Recálculo iniciado em segundo plano. Atualize a lista em alguns instantes para ver os valores.')
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao iniciar o recálculo de estoque.')
+  } finally {
+    recalculatingAll.value = false
+  }
+}
 
 // Monta os MESMOS filtros do load() (sem paginação) para o export refletir a tela.
 function currentFilterParams() {

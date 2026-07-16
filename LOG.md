@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-15 — feat(estoque): botão "Recalcular Estoque (todos)" na tela de Controle de Estoque
+
+A tela **Controle de Estoque** ganhou um botão que recalcula o estoque de **todos os produtos**
+(loop do mesmo cálculo canônico do botão de 1 produto). Decisões do dono: **recálculo completo**
+(físico + reservas + reativação de flags de NF-e) e acesso **só admin/UGO**.
+
+- **Reuso, sem endpoint novo:** o botão chama o `POST /stock/recompute-all` que **já existia** —
+  ele roda `recompute_all_stock` (que literalmente faz o loop de `recompute_pg/cmig_product_stock`,
+  as MESMAS funções do botão de 1 produto) + `recompute_reservations_from_movements` + reativa
+  `Invoice.stock_updated`, tudo **em background** (retorna na hora → sem risco de timeout).
+- **Permissão:** o endpoint era `require_menu_permission("estoque")`; adicionei gate de papel
+  **admin/UGO** (operação global afeta todas as CMIGs/galpões; não faz sentido para AC, escopado).
+  O endpoint não tinha caller no frontend, então a restrição é segura.
+- **Frontend (StockControlView):** botão visível só p/ admin/ugo, com `confirm()`, spinner e toast
+  "recálculo iniciado em segundo plano — atualize a lista em instantes".
+- Auditado (consistency-auditor prévio: escolha síncrono-vs-background e semântica levada ao dono →
+  respondido "completo" + "admin/ugo") + quality-guardian. Verificação: ruff limpo; import 3.11 OK;
+  `npm run build` OK. **Sem migration.**
+
+---
+
 ## 2026-07-15 — feat(estoque): exportar Controle de Estoque em PDF e Excel
 
 A tela **Controle de Estoque** ganhou um botão **"Exportar"** (Excel `.xlsx` / PDF) que baixa os
