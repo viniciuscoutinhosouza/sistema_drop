@@ -9,14 +9,14 @@ Permissões:
 - criar/editar/finalizar: require_menu_permission("inventario_criar")
 """
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_current_user, require_menu_permission
+from dependencies import require_menu_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.inventory import Inventory, InventoryItem
 from models.product import CatalogProduct
@@ -39,9 +39,9 @@ async def _ac_cmig_ids(user: User, db: AsyncSession) -> list[int]:
 
 
 async def _check_view_scope(inv: Inventory, user: User, db: AsyncSession) -> None:
-    """AC só enxerga inventários das CMIGs que administra."""
+    """AC só enxerga inventários das CMIGs que administra (cmig e full)."""
     if user.role == "ac":
-        if inv.catalog_type != "cmig" or inv.cmig_id not in await _ac_cmig_ids(user, db):
+        if inv.catalog_type not in ("cmig", "full") or inv.cmig_id not in await _ac_cmig_ids(user, db):
             raise HTTPException(status_code=403, detail="Inventário fora do seu escopo")
 
 
@@ -54,6 +54,7 @@ def _ser_header(inv: Inventory, creator_name=None, finalizer_name=None,
         "catalog_type": inv.catalog_type,
         "cmig_id": inv.cmig_id,
         "cmig_name": cmig_name,
+        "account_id": inv.account_id,
         "warehouse_id": inv.warehouse_id,
         "status": inv.status,
         "notes": inv.notes,
@@ -81,7 +82,9 @@ async def list_inventories(
         cmig_ids = await _ac_cmig_ids(current_user, db)
         if not cmig_ids:
             return []
-        q = q.where(Inventory.catalog_type == "cmig", Inventory.cmig_id.in_(cmig_ids))
+        q = q.where(
+            Inventory.catalog_type.in_(("cmig", "full")), Inventory.cmig_id.in_(cmig_ids)
+        )
 
     rows = (await db.execute(q)).scalars().all()
 
@@ -200,6 +203,35 @@ async def create_inventory(
     return _ser_header(inv, creator_name=current_user.full_name)
 
 
+# ── PUT /inventories/{id} ─────────────────────────────────────────────────────
+@router.put("/{inventory_id}")
+async def update_inventory(
+    inventory_id: int,
+    body: dict,
+    current_user: User = Depends(require_menu_permission("inventario_criar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Troca o `mode` (baseline/adjustment) do inventário — SÓ enquanto em rascunho.
+
+    O modo é o que decide, na finalização, se a contagem vira baseline (reset com
+    piso de data) ou adjustment (delta somado). Editável até finalizar. body = {"mode": ...}
+    """
+    inv = (await db.execute(select(Inventory).where(Inventory.id == inventory_id))).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Inventário não encontrado")
+    if inv.status != "draft":
+        raise HTTPException(status_code=400, detail="Só é possível editar inventário em rascunho")
+    await _check_view_scope(inv, current_user, db)
+
+    mode = (body.get("mode") or "").strip()
+    if mode not in ("baseline", "adjustment"):
+        raise HTTPException(status_code=422, detail="mode deve ser 'baseline' ou 'adjustment'")
+
+    inv.mode = mode
+    await db.commit()
+    return {"ok": True, "inventory_id": inv.id, "mode": inv.mode}
+
+
 # ── GET /inventories/{id} ─────────────────────────────────────────────────────
 @router.get("/{inventory_id}")
 async def get_inventory(
@@ -218,9 +250,9 @@ async def get_inventory(
         )
     ).scalars().all()
 
-    # Enriquecer com título/SKU do produto
+    # Enriquecer com título/SKU do produto ('full' aponta p/ CMIGProduct, como 'cmig')
     pg_ids = [i.product_id for i in items if i.product_type == "pg"]
-    cmig_ids = [i.product_id for i in items if i.product_type == "cmig"]
+    cmig_ids = [i.product_id for i in items if i.product_type in ("cmig", "full")]
     pg_info: dict[int, dict] = {}
     cmig_info: dict[int, dict] = {}
     if pg_ids:
@@ -250,6 +282,7 @@ async def get_inventory(
 
     def _info(it):
         return (pg_info if it.product_type == "pg" else cmig_info).get(it.product_id, {})
+    # 'full' e 'cmig' resolvem no cmig_info (CMIGProduct).
 
     return {
         **_ser_header(inv, creator_name=creator, finalizer_name=finalizer,
@@ -298,7 +331,7 @@ async def update_inventory_items(
             )
         )
     ).scalars().all()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     count = 0
     for it in items:
         val = updates[it.id]
@@ -339,6 +372,44 @@ async def finalize_inventory(
     if not items:
         raise HTTPException(status_code=400, detail="Nenhum item contado — informe ao menos uma contagem")
 
+    # ── FULL (ADR-0019 Fase 2): system_qty vem do FullStock (produto CMIG × conta),
+    # não do stock_calculator LOCAL. O replay (recompute_full_stock) aplica a âncora.
+    if inv.catalog_type == "full":
+        from models.full_stock import FullStock
+        from services.full_stock_service import recompute_full_stock
+
+        # PRÉ: rascunho não conta (status='draft') → dá o saldo FULL pré-inventário.
+        await recompute_full_stock(db, cmig_id=inv.cmig_id)
+        for it in items:
+            row = (
+                await db.execute(
+                    select(FullStock.qty).where(
+                        FullStock.product_type == "cmig",
+                        FullStock.product_id == it.product_id,
+                        FullStock.marketplace_account_id == inv.account_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            it.system_qty = int(row or 0)
+            it.delta = int(it.counted_qty) - it.system_qty
+
+        inv.status = "finalized"
+        inv.finalized_by = current_user.id
+        inv.finalized_at = datetime.now(UTC)
+        await db.commit()
+
+        # PÓS: agora o inventário FULL está finalizado → o replay aplica a âncora.
+        await recompute_full_stock(db, cmig_id=inv.cmig_id)
+        await db.commit()
+
+        return {
+            "ok": True,
+            "inventory_id": inv.id,
+            "finalized_items": len(items),
+            "full_recomputed": True,
+            "account_id": inv.account_id,
+        }
+
     # Congela o delta: system_qty = saldo calculado PRÉ-inventário (este doc ainda
     # está em rascunho, então não entra no cálculo). delta = contado - sistema.
     cmig_ids: set[int] = set()
@@ -355,7 +426,7 @@ async def finalize_inventory(
 
     inv.status = "finalized"
     inv.finalized_by = current_user.id
-    inv.finalized_at = datetime.now(timezone.utc)
+    inv.finalized_at = datetime.now(UTC)
     await db.commit()
 
     # Recompute pós-finalização: agora o inventário entra no cálculo e o cache

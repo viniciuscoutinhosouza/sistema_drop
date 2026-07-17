@@ -30,8 +30,10 @@ class Inventory(Base):
     # mas o atributo Python/JSON continua number/mode.
     number = Column("inv_number", Integer, nullable=False)  # sequencial, gerado na criação
     mode = Column("inv_mode", String(12), nullable=False)  # 'baseline' | 'adjustment'
-    catalog_type = Column(String(10), nullable=False)  # 'pg' | 'cmig'
-    cmig_id = Column(Integer, ForeignKey("cmigs.id"), nullable=True)  # obrigatório se catalog_type='cmig'
+    catalog_type = Column(String(10), nullable=False)  # 'pg' | 'cmig' | 'full'
+    cmig_id = Column(Integer, ForeignKey("cmigs.id"), nullable=True)  # obrigatório se catalog_type in ('cmig','full')
+    # Conta ML do inventário FULL (o estoque FULL é por CMIGProduct × conta). NULL p/ pg/cmig.
+    account_id = Column(Integer, ForeignKey("marketplace_accounts.id"), nullable=True)
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
     status = Column(String(12), nullable=False, default="draft")  # draft|finalized|cancelled
     notes = Column(String(1000))
@@ -46,7 +48,7 @@ class Inventory(Base):
 
     __table_args__ = (
         CheckConstraint("inv_mode IN ('baseline','adjustment')", name="ck_inv_mode"),
-        CheckConstraint("catalog_type IN ('pg','cmig')", name="ck_inv_catalog"),
+        CheckConstraint("catalog_type IN ('pg','cmig','full')", name="ck_inv_catalog"),
         CheckConstraint(
             "status IN ('draft','finalized','cancelled')", name="ck_inv_status"
         ),
@@ -60,8 +62,8 @@ class InventoryItem(Base):
 
     id = Column(Integer, primary_key=True)
     inventory_id = Column(Integer, ForeignKey("inventories.id"), nullable=False)
-    product_type = Column(String(10), nullable=False)  # 'pg' | 'cmig'
-    product_id = Column(Integer, nullable=False)
+    product_type = Column(String(10), nullable=False)  # 'pg' | 'cmig' | 'full'
+    product_id = Column(Integer, nullable=False)  # FULL → CMIGProduct.id (conta vem do Inventory)
     system_qty = Column(Integer, nullable=False, default=0)  # snapshot do saldo calculado
     counted_qty = Column(Integer, nullable=True)  # NULL = ainda não contado
     delta = Column(Integer, nullable=True)  # counted - system, congelado na finalização
@@ -70,5 +72,5 @@ class InventoryItem(Base):
     inventory = relationship("Inventory", back_populates="items")
 
     __table_args__ = (
-        CheckConstraint("product_type IN ('pg','cmig')", name="ck_invitem_type"),
+        CheckConstraint("product_type IN ('pg','cmig','full')", name="ck_invitem_type"),
     )

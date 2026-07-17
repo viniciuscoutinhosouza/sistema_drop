@@ -1173,6 +1173,18 @@
               </li>
             </ul>
 
+            <!-- Inventário FULL de conferência criado na importação (ADR-0019 Fase 2) -->
+            <div v-if="importResult.full_inventory_draft_id" class="alert alert-light border small mt-3 mb-0"
+                 style="border-left:3px solid #6f42c1">
+              <i class="fas fa-warehouse mr-1" style="color:#6f42c1"></i>
+              <strong>{{ importResult.full_items }}</strong> anúncio(s) FULL — criado um
+              <strong>inventário de conferência</strong> com a contagem do ML.
+              <RouterLink :to="`/inventario/${importResult.full_inventory_draft_id}`"
+                          class="ml-1 font-weight-bold" @click="importResult = null">
+                Revisar e finalizar (Baseline/Ajuste) →
+              </RouterLink>
+            </div>
+
             <!-- Erros por item (amigável) -->
             <div v-if="importResult.item_errors && importResult.item_errors.length" class="mt-3">
               <div class="text-danger small font-weight-bold mb-1">

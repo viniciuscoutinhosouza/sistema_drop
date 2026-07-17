@@ -34,6 +34,7 @@
               <td class="font-weight-bold">{{ r.number }}</td>
               <td>
                 <span v-if="r.catalog_type === 'pg'" class="badge badge-secondary">PG</span>
+                <span v-else-if="r.catalog_type === 'full'" class="badge" style="background:#6f42c1;color:#fff">FULL{{ r.account_id ? ` · conta ${r.account_id}` : '' }}</span>
                 <span v-else class="badge badge-info">CMIG: {{ r.cmig_name || r.cmig_id }}</span>
               </td>
               <td>

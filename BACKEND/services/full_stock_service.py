@@ -620,6 +620,98 @@ def _accumulate_full_balances(
     return balances
 
 
+def _apply_full_anchor(
+    accumulate_normal: int,
+    dated_events: list[tuple[object, int]],
+    baseline: tuple[object, int] | None,
+    adjustments: list[tuple[object, int]],
+) -> int:
+    """Aplica a âncora de inventário FULL a UM (cmig_product, conta) — lógica PURA.
+
+    Espelha a semântica do inventário LOCAL (stock_calculator):
+    - `dated_events`: (date, signed_delta) de NF-e/venda (crédito remessa, débito
+      retorno/venda) — a SOMA sem âncora tem de bater com `accumulate_normal`.
+    - `baseline`: (finalized_at, counted) do baseline finalizado MAIS RECENTE, ou None.
+    - `adjustments`: [(finalized_at, delta), ...] de inventários 'adjustment' finalizados.
+
+    Regras (aditivo — ADR-0019 Fase 2):
+    - SEM baseline E SEM adjustment → devolve `accumulate_normal` (idêntico à Fase 1).
+    - COM baseline → saldo = counted + Σ(dated_events com date > floor)
+      + Σ(adjustment deltas com date > floor); floor = data do baseline.
+    - SÓ adjustments (sem baseline) → saldo = accumulate_normal + Σ(adjustment deltas).
+
+    Retorna a soma CRUA (pode ser negativa); o clamp `max(0, ·)` é do chamador."""
+    if baseline is None and not adjustments:
+        return accumulate_normal
+
+    if baseline is not None:
+        floor_date, counted = baseline
+        total = counted
+        for date, delta in dated_events:
+            if _after(date, floor_date):
+                total += delta
+        for date, delta in adjustments:
+            if _after(date, floor_date):
+                total += delta
+        return total
+
+    # Só adjustments (sem baseline): parte do acumulado normal e soma os deltas.
+    total = accumulate_normal
+    for _date, delta in adjustments:
+        total += delta
+    return total
+
+
+def _after(dt, floor) -> bool:
+    """dt > floor, tolerando None (evento sem data NÃO conta; floor None não filtra)."""
+    if floor is None:
+        return True
+    return dt is not None and dt > floor
+
+
+async def _fetch_full_inventory_events(
+    db: AsyncSession, cmig_product_id: int, account_id: int
+) -> dict:
+    """Âncoras de inventário FULL de UM (CMIGProduct × conta ML) — ADR-0019 Fase 2.
+
+    Lê Inventory(catalog_type='full', status='finalized', account_id=X) juntando
+    InventoryItem(product_type='full', product_id=cmig_product_id, counted_qty não nulo).
+
+    Retorna:
+      {"baseline": (finalized_at, counted_qty) | None,   # o baseline MAIS RECENTE
+       "adjustments": [(finalized_at, delta), ...]}       # todos os 'adjustment'
+    """
+    from models.inventory import Inventory, InventoryItem
+
+    rows = (
+        await db.execute(
+            select(InventoryItem.counted_qty, InventoryItem.delta, Inventory.mode,
+                   Inventory.finalized_at, Inventory.created_at)
+            .join(Inventory, Inventory.id == InventoryItem.inventory_id)
+            .where(
+                Inventory.catalog_type == "full",
+                Inventory.status == "finalized",
+                Inventory.account_id == account_id,
+                InventoryItem.product_type == "full",
+                InventoryItem.product_id == cmig_product_id,
+                InventoryItem.counted_qty.isnot(None),
+            )
+        )
+    ).all()
+
+    baseline: tuple[object, int] | None = None
+    adjustments: list[tuple[object, int]] = []
+    for counted_qty, delta, mode, finalized_at, created_at in rows:
+        m_date = finalized_at or created_at
+        if mode == "baseline":
+            if baseline is None or (m_date is not None and (baseline[0] is None or m_date > baseline[0])):
+                baseline = (m_date, int(counted_qty or 0))
+        else:  # adjustment
+            adjustments.append((m_date, int(delta if delta is not None else 0)))
+
+    return {"baseline": baseline, "adjustments": adjustments}
+
+
 async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) -> dict:
     """Recomputa o estoque FULL (FullStock.qty) por replay das 3 fontes — ADR-0019 Fase 1.
 
@@ -645,6 +737,9 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
 
     invoice_events: list[tuple[int, int, int]] = []
     order_events: list[tuple[int, int, int]] = []
+    # Estrutura PARALELA data-aware (não altera a assinatura de _accumulate_full_balances):
+    # por (cmig_product_id, account_id) → [(date, signed_delta), ...] p/ a âncora Fase 2.
+    dated_by_key: dict[tuple[int, int], list[tuple[object, int]]] = {}
 
     # Contas ML no escopo (para saber quais linhas FullStock zerar ao final).
     acct_q = select(MarketplaceAccount.id)
@@ -678,6 +773,9 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
         if not full:
             continue
         sign = 1 if inv.direction == "out" else -1
+        # Data do evento p/ a âncora (remessa=saída→exit_date; retorno→issue_date).
+        inv_date = inv.exit_date if inv.direction == "out" else inv.issue_date
+        inv_date = inv_date or inv.issue_date or inv.exit_date
         items = await _load_items(db, inv.id)
         for item in items:
             qty = int(item.quantity or 0)
@@ -695,6 +793,9 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
             if not cp:
                 continue
             invoice_events.append((cp.id, full.marketplace_account_id, sign * qty))
+            dated_by_key.setdefault((cp.id, full.marketplace_account_id), []).append(
+                (inv_date, sign * qty)
+            )
             scope_account_ids.add(full.marketplace_account_id)
 
     # ── ORDERS (débito de venda FULL) ───────────────────────────────────────────
@@ -713,15 +814,56 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
     for order in orders:
         if not order.account_id:
             continue
+        ord_date = order.shipped_at or order.created_at
         items = await _get_order_items(db, order.id)
         for item in items:
             ptype, pid = await resolve_full_product(db, order, item)
             if ptype != "cmig" or pid is None:
                 continue
-            order_events.append((pid, order.account_id, int(item.quantity or 0)))
+            qty = int(item.quantity or 0)
+            order_events.append((pid, order.account_id, qty))
+            # Venda é DÉBITO → delta negativo no fluxo data-aware.
+            dated_by_key.setdefault((pid, order.account_id), []).append((ord_date, -qty))
             scope_account_ids.add(order.account_id)
 
+    # Acumulado "normal" (Fase 1, sem âncora). É o resultado byte-a-byte da Fase 1.
     balances = _accumulate_full_balances(invoice_events, order_events)
+
+    # ── ÂNCORA DE INVENTÁRIO FULL (Fase 2, ADITIVO) ─────────────────────────────
+    # Para cada (cp, conta) COM baseline/adjustment finalizado, reprojeta o saldo.
+    # SEM âncora → mantém `balances` (== Fase 1). Inclui pares que têm SÓ inventário
+    # (ex.: baseline logo após importar, sem remessa/venda ainda) — senão o produto
+    # seria zerado pela varredura de stale em vez de virar `counted`.
+    from models.inventory import Inventory as _Inv
+    from models.inventory import InventoryItem as _InvItem
+
+    anchor_keys_q = (
+        select(_InvItem.product_id, _Inv.account_id)
+        .join(_Inv, _Inv.id == _InvItem.inventory_id)
+        .where(
+            _Inv.catalog_type == "full",
+            _Inv.status == "finalized",
+            _InvItem.product_type == "full",
+            _InvItem.counted_qty.isnot(None),
+        )
+    )
+    if cmig_id is not None:
+        anchor_keys_q = anchor_keys_q.where(_Inv.cmig_id == cmig_id)
+    anchor_keys = {
+        (pid, acct) for pid, acct in (await db.execute(anchor_keys_q)).all() if acct is not None
+    }
+
+    for (cp_id, acct_id) in set(balances.keys()) | anchor_keys:
+        anchor = await _fetch_full_inventory_events(db, cp_id, acct_id)
+        if anchor["baseline"] is None and not anchor["adjustments"]:
+            continue  # Fase 1 intacta p/ este par
+        balances[(cp_id, acct_id)] = _apply_full_anchor(
+            balances.get((cp_id, acct_id), 0),
+            dated_by_key.get((cp_id, acct_id), []),
+            anchor["baseline"],
+            anchor["adjustments"],
+        )
+        scope_account_ids.add(acct_id)
 
     # ── GRAVAR ──────────────────────────────────────────────────────────────────
     zeroed = 0

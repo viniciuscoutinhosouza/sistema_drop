@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-07-17 — feat(estoque): inventário FULL como âncora do replay (ADR-0019 Fase 2)
+
+Ao importar anúncio(s) FULL novo(s), o sistema cria um **inventário FULL em rascunho** (revisão em
+lote) com a contagem do ML; o usuário finaliza como **Baseline** (a contagem vira a verdade na data)
+ou **Ajuste** (soma a diferença), e a âncora entra no replay do FULL (Fase 1).
+
+- **Migration 130** (`Scripts SQL/130_full_inventory.sql`, idempotente, padrão da 129): `inventories`/
+  `inventory_items` aceitam `catalog_type/product_type='full'`; `inventories.account_id` (+FK). Model
+  atualizado.
+- **Replay data-aware ADITIVO** (`full_stock_service.py`): `_fetch_full_inventory_events` (baseline mais
+  recente + ajustes) + `_apply_full_anchor` (PURA). `recompute_full_stock` agora carrega a data dos
+  eventos e, por (CMIGProduct × conta) COM âncora, aplica baseline(piso `finalized_at`)/ajuste — **sem
+  âncora → resultado byte-a-byte da Fase 1** (teste de regressão). Correção na revisão: produto com SÓ
+  baseline (sem remessa/venda) é setado para `counted` (não zerado) via união de chaves.
+- **inventories.py:** `PUT /{id}` troca o modo no rascunho; `finalize_inventory` branch FULL (recompute
+  PRÉ → congela `system_qty`/`delta` → finaliza → recompute PÓS aplica a âncora); `_ser_header`+escopo
+  aceitam FULL. **anuncios.py:** hook `_upsert_full_inventory_draft` no import (idempotente: reusa
+  rascunho FULL aberto da conta; retorna `full_inventory_draft_id`).
+- **Frontend:** tela de inventário revisa/finaliza FULL (badge FULL+conta, seletor Baseline/Ajuste no
+  rascunho, nota); lista com badge FULL; resultado do import mostra link p/ revisar o rascunho.
+- Auditado: consistency-auditor (prévio, 8 pontos incorporados: migration 129-pattern, replay aditivo
+  sem regressão, modo via PUT, idempotência do hook, account no header, anchor próprio) + quality-guardian
+  (2 HIGH: piso `finalized_at` = **paridade com o inventário local** [não é bug — confirmado linha 653];
+  concorrência do finalize = mesma limitação Fase 1 — **documentados** no ADR) + adr-consistency-checker
+  (aprovado na Fase 1). ruff limpo; import 3.11 OK; `test_full_inventory`+`test_full_recompute` 19 passed;
+  `npm run build` OK. **Migration 130 pendente de aplicar no Oracle** (o dono aplica).
+
+---
+
 ## 2026-07-17 — feat(estoque): FULL recomputável por replay (ADR-0019, Fase 1)
 
 O estoque FULL (`FullStock.qty`) passou de **só incremental** para **recomputável por replay** — base

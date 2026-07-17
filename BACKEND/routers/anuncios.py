@@ -1338,6 +1338,9 @@ async def import_anuncios(
     imported = updated = auto_matched = unlinked = 0
     failed = 0
     saved_listings: list[ProductListing] = []
+    # ADR-0019 Fase 2: anúncios FULL NOVOS deste import → viram rascunho de inventário
+    # FULL (contagem = qty_full do ML) que o usuário finaliza como baseline/ajuste.
+    new_full_listings: list[ProductListing] = []
     item_errors: list[dict] = []  # erros não-fatais coletados durante o loop
 
     # Carrega produtos CMIG da CMIG vinculada à conta (para auto-match)
@@ -1722,6 +1725,8 @@ async def import_anuncios(
             )
             db.add(listing)
             imported += 1
+            if is_full:
+                new_full_listings.append(listing)
 
         # Auto-match por similaridade (só se ainda sem vínculo)
         if not listing.cmig_product_id and not listing.catalog_product_id and cmig_products:
@@ -1748,6 +1753,12 @@ async def import_anuncios(
 
     await _aio.gather(*[_cache_one(l) for l in saved_listings])
 
+    # ADR-0019 Fase 2: cria/atualiza o rascunho de inventário FULL da conta com a
+    # contagem do ML dos anúncios FULL novos (idempotente — reusa rascunho aberto).
+    full_draft = await _upsert_full_inventory_draft(
+        db, account, new_full_listings, current_user
+    )
+
     await db.commit()
     return {
         "imported": imported,
@@ -1758,7 +1769,121 @@ async def import_anuncios(
         "item_errors": item_errors[:50],  # cap pra não inflar response
         "total_seen_in_ml": len(items) + failed,
         "diagnostics": diagnostics,
+        "full_inventory_draft_id": full_draft.get("inventory_id"),
+        "full_items": full_draft.get("full_items", 0),
     }
+
+
+async def _upsert_full_inventory_draft(
+    db: AsyncSession, account, new_full_listings: list, current_user: User
+) -> dict:
+    """Cria/atualiza o rascunho de inventário FULL da conta a partir dos anúncios FULL
+    NOVOS deste import — ADR-0019 Fase 2.
+
+    - Idempotente: reusa o Inventory(catalog_type='full', account_id, status='draft')
+      ABERTO da conta; só cria um se não houver.
+    - Cada anúncio FULL resolve seu CMIGProduct (auto-cria espelho do PG) e vira um
+      InventoryItem(product_type='full', product_id=CMIGProduct.id, counted_qty=qty_full).
+    - Reimport atualiza system_qty/counted_qty do item existente (não duplica por cp).
+    - warehouse_id=NULL, mode default 'adjustment' (trocável via PUT enquanto draft).
+
+    Retorna {"inventory_id": id|None, "full_items": n}."""
+    if not new_full_listings:
+        return {"inventory_id": None, "full_items": 0}
+
+    from models.full_stock import FullStock
+    from models.inventory import Inventory, InventoryItem
+    from services.full_stock_service import resolve_full_cmig_product
+
+    cmig_id = account.cmig_id
+    if not cmig_id:
+        logger.warning("_upsert_full_inventory_draft: conta %s sem cmig_id — pula", account.id)
+        return {"inventory_id": None, "full_items": 0}
+
+    # Resolve o CMIGProduct de cada anúncio FULL e a contagem ML (qty_full).
+    # counted por cp (se dois anúncios mapearem no mesmo cp, o último vence — raro).
+    counted_by_cp: dict[int, int] = {}
+    for lst in new_full_listings:
+        cp = await resolve_full_cmig_product(
+            db,
+            cmig_id=cmig_id,
+            cmig_product_id=lst.cmig_product_id,
+            catalog_product_id=lst.catalog_product_id,
+            ml_item_id=lst.platform_item_id,
+            account_id=account.id,
+            create=True,
+        )
+        if not cp:
+            continue
+        counted_by_cp[cp.id] = int(lst.qty_full or 0)
+
+    if not counted_by_cp:
+        return {"inventory_id": None, "full_items": 0}
+
+    # Reusa rascunho FULL aberto da conta (idempotência do hook — H4).
+    inv = (
+        await db.execute(
+            select(Inventory).where(
+                Inventory.catalog_type == "full",
+                Inventory.account_id == account.id,
+                Inventory.status == "draft",
+            ).order_by(Inventory.id)
+        )
+    ).scalars().first()
+    if inv is None:
+        next_number = (
+            await db.execute(select(func.coalesce(func.max(Inventory.number), 0)))
+        ).scalar() + 1
+        inv = Inventory(
+            number=next_number,
+            mode="adjustment",  # default (H3) — trocável p/ baseline via PUT
+            catalog_type="full",
+            cmig_id=cmig_id,
+            account_id=account.id,
+            warehouse_id=None,
+            status="draft",
+            created_by=current_user.id,
+        )
+        db.add(inv)
+        await db.flush()
+
+    # Itens existentes do rascunho (upsert por cp — não duplica).
+    existing_items = (
+        await db.execute(
+            select(InventoryItem).where(
+                InventoryItem.inventory_id == inv.id,
+                InventoryItem.product_type == "full",
+            )
+        )
+    ).scalars().all()
+    by_pid = {it.product_id: it for it in existing_items}
+
+    for cp_id, counted in counted_by_cp.items():
+        sysq = (
+            await db.execute(
+                select(FullStock.qty).where(
+                    FullStock.product_type == "cmig",
+                    FullStock.product_id == cp_id,
+                    FullStock.marketplace_account_id == account.id,
+                )
+            )
+        ).scalar_one_or_none()
+        sysq = int(sysq or 0)
+        it = by_pid.get(cp_id)
+        if it is not None:
+            it.system_qty = sysq
+            it.counted_qty = counted
+        else:
+            db.add(InventoryItem(
+                inventory_id=inv.id,
+                product_type="full",
+                product_id=cp_id,
+                system_qty=sysq,
+                counted_qty=counted,
+            ))
+
+    await db.flush()
+    return {"inventory_id": inv.id, "full_items": len(counted_by_cp)}
 
 
 @router.post("/{listing_id}/refresh-costs", status_code=200)

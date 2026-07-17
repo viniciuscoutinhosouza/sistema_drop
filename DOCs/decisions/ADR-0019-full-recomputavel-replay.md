@@ -1,7 +1,7 @@
 # ADR-0019 — Estoque FULL recomputável (replay) + débito de venda dirigido pelo pedido + reconciliação por inventário
 
 **Data:** 2026-07-17
-**Status:** ✅ Aceito (em implementação faseada)
+**Status:** ✅ Aceito — Fase 1 e Fase 2 entregues; Fase 3 pendente
 **Decisores:** Vinicius (proprietário)
 
 ## Contexto
@@ -86,6 +86,16 @@ Princípios (endereçando os problemas acima):
   reconciliação dos movimentos posteriores.
 - **`purpose='devolucao'` é EXCLUÍDO** do replay do FULL (paridade com o recompute local + ADR-0009);
   o retorno legítimo do FULL é `purpose='retorno'` (`direction='in'`), que é contado.
+- **(Fase 2) Piso do baseline FULL = `finalized_at`** — PARIDADE EXATA com o inventário LOCAL
+  (`_fetch_inventory_events_for_product` usa `finalized_at or created_at` como data do evento baseline,
+  comparado contra eventos de data de negócio). Consequência compartilhada com o local: se a contagem
+  física é tirada num dia e o inventário só é finalizado noutro, os eventos do intervalo são absorvidos
+  na contagem. Follow-up (aplica a AMBOS, local e FULL): campo de "data efetiva da contagem" separado do
+  `finalized_at`.
+- **(Fase 2) Finalização FULL grava absoluto na CMIG inteira** — a mesma limitação de concorrência da
+  Fase 1 (gravação absoluta): entre o recompute PRÉ e o PÓS da finalização, um evento incremental
+  concorrente pode ser sobrescrito. É ação de usuário (janela curta) e auto-cura no próximo recompute.
+  Follow-up: escopar o recompute da finalização à conta do inventário.
 - **Gate do replay FULL = critério de relevância do FULL, não `stock_updated`.** O replay filtra NF-e
   por `status ∈ (finalized, authorized)` + **CNPJ FULL** (`is_full_cnpj`) + direção + `purpose ≠ devolucao`
   + não-simbólica — o MESMO critério do incremental do FULL (`apply_nfe_*`). Ele **não** usa o gate

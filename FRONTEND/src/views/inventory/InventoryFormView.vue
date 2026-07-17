@@ -69,11 +69,19 @@
               <div class="col-md-3">
                 <span class="text-muted">Catálogo:</span>
                 <span v-if="header.catalog_type === 'pg'" class="badge badge-secondary ml-1">PG</span>
+                <span v-else-if="header.catalog_type === 'full'" class="badge ml-1" style="background:#6f42c1;color:#fff">
+                  FULL{{ header.account_id ? ` · conta ${header.account_id}` : '' }}
+                </span>
                 <span v-else class="badge badge-info ml-1">CMIG: {{ header.cmig_name || header.cmig_id }}</span>
               </div>
-              <div class="col-md-2">
+              <div class="col-md-3">
                 <span class="text-muted">Modo:</span>
-                <span :class="header.mode === 'baseline' ? 'badge badge-primary ml-1' : 'badge badge-warning ml-1'">
+                <select v-if="isFull && editable" :value="header.mode" @change="changeMode($event.target.value)"
+                        class="form-control form-control-sm d-inline-block ml-1" style="width:auto">
+                  <option value="adjustment">Ajuste (soma a diferença)</option>
+                  <option value="baseline">Baseline (a contagem vira a verdade)</option>
+                </select>
+                <span v-else :class="header.mode === 'baseline' ? 'badge badge-primary ml-1' : 'badge badge-warning ml-1'">
                   {{ header.mode === 'baseline' ? 'Baseline' : 'Ajuste' }}
                 </span>
               </div>
@@ -91,6 +99,15 @@
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- Nota do inventário FULL -->
+        <div v-if="isFull" class="alert alert-light border small py-2 mb-2">
+          <i class="fas fa-warehouse mr-1" style="color:#6f42c1"></i>
+          Inventário do estoque <strong>FULL</strong> (Fulfillment do ML) desta conta. <strong>Sistema</strong> = FULL
+          calculado (remessas + vendas); <strong>Contagem</strong> = quantidade lida no ML na importação. Escolha
+          <strong>Baseline</strong> (a contagem do ML vira a verdade na data) ou <strong>Ajuste</strong> (soma a
+          diferença ao saldo), confira as contagens e <strong>Finalize</strong> — o FULL é recalculado com essa âncora.
         </div>
 
         <!-- Barra de ações -->
@@ -183,6 +200,18 @@ const loading = ref(false)
 const search = ref('')
 
 const editable = computed(() => header.value.status === 'draft' && canCreate.value)
+const isFull = computed(() => header.value.catalog_type === 'full')
+
+// Inventário FULL: o modo (Baseline/Ajuste) é escolhido na REVISÃO (PUT no rascunho).
+async function changeMode(mode) {
+  try {
+    await api.put(`/inventories/${route.params.id}`, { mode })
+    header.value.mode = mode
+    toast.success(`Modo: ${mode === 'baseline' ? 'Baseline' : 'Ajuste'}.`)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao trocar o modo.')
+  }
+}
 
 const filtered = computed(() => {
   if (!search.value) return items.value
