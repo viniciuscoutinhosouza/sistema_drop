@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-17 — fix(estoque): CHECK duplicada barrava inventário FULL (ORA-02290)
+
+**Sintoma (dono):** ao Sincronizar Estoque/Ler Anúncio de anúncios FULL (conta LPS, `MLB5860636624` e `MLB5566548428`), "nada" acontecia — o inventário FULL de conferência (Fase 3, ADR-0019) não era criado.
+
+**Causa-raiz:** a migration 130 adicionou `CK_INVITEM_TYPE` (`product_type IN ('pg','cmig','full')`), mas a tabela `inventory_items` já possuía outra CHECK — `CK_INVENTORY_ITEMS_TYPE` (`pg`/`cmig`) — com nome diferente do declarado no model (`ck_invitem_type`). Com as **duas** valendo, a antiga rejeitava `product_type='full'` → `ORA-02290` em `_upsert_full_inventory_draft` (anuncios.py `db.flush()`), derrubando a criação do rascunho.
+
+**Correção:** migration **131** (`131_drop_stale_invitem_check.sql`) dropa a antiga `CK_INVENTORY_ITEMS_TYPE` (idempotente); a `CK_INVITEM_TYPE` (superset) permanece como única. Aplicada e verificada direto no Oracle de produção (única CHECK restante = `product_type IN ('pg','cmig','full')`). Sem restart (mudança de schema). `INVENTORIES.CK_INV_CATALOG` já estava correta (por isso o INSERT do inventário-pai passava e só o item falhava).
+
+**Observação separada (dado, não bug):** os logs também mostravam `resolve_full_cmig_product: sem PG de origem (... sku=5253)` — anúncios cujo produto não tem PG de origem não geram espelho CMIG e são ignorados no FULL. Os 2 anúncios do dono (sku=5252) **têm** vínculo (CMIGProduct 281) e voltam a funcionar após a correção.
+
+---
+
+---
+
 ## 2026-07-17 — feat(estoque): Sincronizar/Ler anúncio FULL cria inventário de conferência (ADR-0019 Fase 3)
 
 Fecha o pedido original: "Sincronizar Estoque" e "Ler Anúncio" de anúncios **FULL** passam a **ler o
