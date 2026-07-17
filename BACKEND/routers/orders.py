@@ -515,6 +515,8 @@ async def list_orders(
     shipping_mode: str = None,
     tag: str = None,
     search: str = None,
+    date_from: str = None,
+    date_to: str = None,
     cmig_id: int = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -567,7 +569,34 @@ async def list_orders(
     if tag:
         query = query.where(Order.order_tags.ilike(f"%{tag}%"))
     if search:
-        query = query.where(Order.buyer_name.ilike(f"%{search}%"))
+        # Cliente, número da venda (platform_order_id), SKU e nome do produto.
+        term = f"%{search.strip()}%"
+        query = query.where(
+            or_(
+                Order.buyer_name.ilike(term),
+                Order.platform_order_id.ilike(term),
+                Order.items.any(
+                    or_(OrderItem.sku.ilike(term), OrderItem.title.ilike(term))
+                ),
+            )
+        )
+
+    # Período por data de criação — o dia é do calendário BR (ADR-0013), convertido para
+    # UTC (created_at é UTC-aware). Range half-open [início do dia, início do dia seguinte).
+    def _parse_day(value: str, field: str) -> datetime:
+        try:
+            return datetime.strptime(value.strip(), "%Y-%m-%d")
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=422, detail=f"{field} inválida (use AAAA-MM-DD)")
+
+    if date_from:
+        d = _parse_day(date_from, "Data inicial")
+        from_utc = datetime(d.year, d.month, d.day, tzinfo=BR_TZ).astimezone(UTC)
+        query = query.where(Order.created_at >= from_utc)
+    if date_to:
+        d = _parse_day(date_to, "Data final")
+        to_excl = (datetime(d.year, d.month, d.day, tzinfo=BR_TZ) + timedelta(days=1)).astimezone(UTC)
+        query = query.where(Order.created_at < to_excl)
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
 

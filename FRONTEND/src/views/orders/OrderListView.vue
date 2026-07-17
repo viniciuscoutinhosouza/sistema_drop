@@ -37,7 +37,13 @@
       <div class="card-body py-2">
         <div class="row align-items-center g-2">
           <div class="col-md-3">
-            <input v-model="filters.search" type="text" class="form-control form-control-sm" placeholder="Buscar por cliente..." @keyup.enter="resetAndLoad" />
+            <input v-model="filters.search" type="text" class="form-control form-control-sm" placeholder="Cliente, SKU, produto ou nº da venda..." @keyup.enter="resetAndLoad" />
+          </div>
+          <div class="col-md-2">
+            <input v-model="filters.created_from" type="date" class="form-control form-control-sm" title="Período — data inicial" @change="resetAndLoad" />
+          </div>
+          <div class="col-md-2">
+            <input v-model="filters.created_to" type="date" class="form-control form-control-sm" title="Período — data final" @change="resetAndLoad" />
           </div>
           <div class="col-md-2">
             <select v-model="filters.status" class="form-control form-control-sm" @change="resetAndLoad">
@@ -71,13 +77,14 @@
             </select>
           </div>
           <div class="col-md-2">
-            <select v-model="filters.tag" class="form-control form-control-sm" @change="resetAndLoad">
-              <option value="">Tags</option>
-              <option value="fraud_risk_detected">⚠️ Risco de Fraude</option>
-              <option value="not_paid">Não pago</option>
-              <option value="cart">Carrinho</option>
-              <option value="test_order">Teste</option>
-              <option value="not_delivered">Não entregue</option>
+            <select v-model="filters.shipping_mode" class="form-control form-control-sm" @change="resetAndLoad">
+              <option value="">Entrega</option>
+              <option value="full">Full</option>
+              <option value="flex">Flex</option>
+              <option value="agencia">Agência</option>
+              <option value="correios">Correios</option>
+              <option value="coletado">Coletado</option>
+              <option value="combinado">Combinado</option>
             </select>
           </div>
           <div v-if="availableCmigs.length > 1" class="col-md-3">
@@ -695,7 +702,9 @@ const filters = reactive({
   platform: route.query.platform || '',
   payment_status: route.query.payment_status || '',
   shipment_status: '',
-  tag: '',
+  shipping_mode: '',
+  created_from: '',   // filtro por período (data de criação) — enviado como date_from
+  created_to: '',     // enviado como date_to
   cmig_id: route.query.cmig_id || '',
 })
 
@@ -1000,7 +1009,9 @@ async function loadOrders() {
     if (filters.platform) params.platform = filters.platform
     if (filters.payment_status) params.payment_status = filters.payment_status
     if (filters.shipment_status) params.shipment_status = filters.shipment_status
-    if (filters.tag) params.tag = filters.tag
+    if (filters.shipping_mode) params.shipping_mode = filters.shipping_mode
+    if (filters.created_from) params.date_from = filters.created_from
+    if (filters.created_to) params.date_to = filters.created_to
     if (filters.cmig_id) params.cmig_id = filters.cmig_id
     const { data } = await api.get('/orders', { params })
     orders.value = data.items

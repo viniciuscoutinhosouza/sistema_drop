@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-17 — feat(pedidos): filtro por período + filtro de Entrega + busca ampliada
+
+Três melhorias nos filtros da tela de **Pedidos**:
+
+- **Período (data inicial/final):** novos params `date_from`/`date_to` no `GET /orders`. O dia é do
+  calendário BR (ADR-0013) convertido para UTC via `BR_TZ`; range **half-open** `[dia 00:00,
+  dia_seguinte 00:00)` → cobre o dia BR inteiro (`created_at` é UTC-aware). Data inválida → **422**.
+- **Filtro de Entrega** substitui o de **Tags** (que não tinha outro consumidor): usa o
+  `shipping_mode` já classificado — Full, Flex, Agência, Correios (+Coletado/Combinado), com "Todos"
+  como padrão. Os badges de tag na linha do pedido continuam (só o filtro saiu).
+- **Busca ampliada:** o campo antes só batia em `buyer_name`; agora `or_(buyer_name, platform_order_id
+  [nº da venda], items.any(sku/title))` — cliente, nº da venda, SKU e nome do produto. `any()` gera
+  EXISTS correlacionado (não duplica linhas; coexiste com o count e o selectinload).
+- Frontend (OrderListView): 2 inputs de data (De/Até, `filters.created_from/created_to` → enviados
+  como `date_from/date_to`), select "Entrega" (`shipping_mode`), placeholder novo da busca.
+- Auditado (consistency-auditor prévio: half-open, opção "Todos", 422, nomes de campo sem colisão com
+  o `syncRange` — incorporados). Verificação: ruff limpo; import 3.11 OK; `npm run build` OK; conversão
+  BR→UTC conferida. **Sem migration** (follow-up recomendado: índice em `orders.created_at`).
+
+---
+
 ## 2026-07-15 — feat(estoque): botão "Recalcular Estoque (todos)" na tela de Controle de Estoque
 
 A tela **Controle de Estoque** ganhou um botão que recalcula o estoque de **todos os produtos**
