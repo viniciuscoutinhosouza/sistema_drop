@@ -1965,6 +1965,8 @@ async def download_danfe(
             person = (
                 await db.execute(select(Person).where(Person.id == inv.person_id))
             ).scalar_one_or_none()
+        from services.fiscal.sefaz.exceptions import FiscalError
+
         try:
             xml = sefaz_service.montar_xml_previa(inv, cmig, cfg, person, list(inv.items))
             pdf = await asyncio.to_thread(gerar_danfe_previa, xml)
@@ -1974,6 +1976,10 @@ async def download_danfe(
             raise HTTPException(status_code=400, detail=f"Prévia indisponível: {e}")
         except DanfeError as e:
             raise HTTPException(status_code=422, detail=f"Falha ao gerar a prévia do DANFE: {e}")
+        except FiscalError as e:
+            # Erros de montagem do XML (campo de cadastro inválido) → 400 com o motivo,
+            # nunca 500 genérico.
+            raise HTTPException(status_code=400, detail=f"Prévia indisponível: {e}")
         fname = f"nfe-previa-{inv.id}.pdf"
     else:
         raise HTTPException(

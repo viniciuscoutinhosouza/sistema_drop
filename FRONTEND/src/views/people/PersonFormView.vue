@@ -129,6 +129,16 @@
                   <input v-model="form.state" class="form-control" maxlength="2">
                 </div>
               </div>
+              <div class="row mt-3">
+                <div class="col-md-4">
+                  <label class="small mb-1">Código IBGE do município</label>
+                  <input v-model="form.ibge_code" class="form-control" maxlength="7" placeholder="ex.: 3550308">
+                  <small class="form-text text-muted">
+                    Preenchido automaticamente pela busca do CEP. Obrigatório para <strong>emitir NF-e</strong>
+                    a este destinatário (a impressão sem SEFAZ não exige).
+                  </small>
+                </div>
+              </div>
             </div>
           </div>
 

@@ -235,6 +235,19 @@ def _store_xml(cmig_id: int, chave: str, xml_proc: str) -> str:
     return str(path)
 
 
+class _PersonComIbgeFallback:
+    """Proxy de leitura sobre `Person` que responde um `ibge_code` de fallback — SÓ na prévia."""
+
+    def __init__(self, person: Person, ibge_fallback: str):
+        self._person = person
+        self._ibge = ibge_fallback
+
+    def __getattr__(self, name):
+        if name == "ibge_code":
+            return self._ibge
+        return getattr(self._person, name)
+
+
 def montar_xml_previa(
     inv: Invoice, cmig: CMIG, cfg: CMIGFiscalConfig, person: Person, items: list,
 ) -> str:
@@ -253,6 +266,33 @@ def montar_xml_previa(
         raise SefazServiceError("Selecione o destinatário antes de gerar o PDF da nota.")
     if not items:
         raise SefazServiceError("A nota não tem itens — adicione itens antes de gerar o PDF.")
+
+    # Endereço mínimo para imprimir algo que preste: o XML valida UF/CEP, e o renderizador do
+    # DANFE quebra com logradouro/bairro vazios. Sem eles → mensagem clara com a LISTA completa,
+    # em vez do erro críptico do builder (uma falta por vez seria tortura).
+    faltando = []
+    if not (person.street or "").strip():
+        faltando.append("Logradouro")
+    if not (person.neighborhood or "").strip():
+        faltando.append("Bairro")
+    if not (person.city or "").strip():
+        faltando.append("Cidade")
+    if not (person.state or "").strip():
+        faltando.append("UF")
+    if len(_digits(person.zip_code)) != 8:
+        faltando.append("CEP")
+    if faltando:
+        raise SefazServiceError(
+            f"Destinatário '{person.name}' sem {', '.join(faltando)} no endereço — "
+            "atualize em Fiscal > Pessoas."
+        )
+
+    # Na PRÉVIA o código IBGE do destinatário é opcional: o DANFE imprime o NOME do município
+    # (xMun), não o código — o fallback é invisível no papel. A emissão real continua exigindo
+    # (`_cliente` valida), porque lá o cMun vai para a SEFAZ. Proxy em vez de mutar `person`:
+    # o objeto é ORM vivo, e um commit posterior do chamador persistiria o fallback.
+    if not person.ibge_code:
+        person = _PersonComIbgeFallback(person, cmig.ibge_code or "9999999")
 
     environment = cfg.environment or "homolog"
     ambiente = _AMB.get(environment, "homologacao")
