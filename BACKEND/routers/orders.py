@@ -37,6 +37,7 @@ from services.file_naming import (
     TIPO_ETIQUETA,
     TIPO_NFE,
     order_download_filename,
+    slugify_name,
 )
 from services.financial_service import debit_balance
 from services.label_meta import build_orders_label_meta
@@ -3171,6 +3172,7 @@ async def get_orders_labels_zip(
 
     files: list[tuple[str, bytes]] = []
     warnings: list[str] = []
+    pedidos_ok: list[Order] = []   # pedidos que renderam pelo menos uma etiqueta
     for oid in ids:
         try:
             order = await _get_order_checked(db, int(oid), current_user)
@@ -3187,6 +3189,8 @@ async def get_orders_labels_zip(
         if zpl:
             # ZPL gravado como .txt (conteúdo ZPL puro) — ver GET /{id}/label.
             files.append((order_download_filename(TIPO_ETIQUETA, "txt", order=order), zpl))
+        if pdf or zpl:
+            pedidos_ok.append(order)
 
     if not files:
         raise HTTPException(
@@ -3194,11 +3198,39 @@ async def get_orders_labels_zip(
             detail=("Nenhuma etiqueta disponível para os pedidos selecionados. "
                     + " | ".join(warnings))[:400],
         )
+    zip_name = await _batch_labels_zip_name(db, pedidos_ok)
     return Response(
         content=_zip_label_files(files, warnings),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="etiquetas.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
     )
+
+
+async def _batch_labels_zip_name(db: AsyncSession, pedidos: list[Order]) -> str:
+    """Nome do ZIP em lote: `Etiquetas_<CMIG>_<qtd>-pedidos_<data-hora>.zip`.
+
+    A CMIG vem dos pedidos incluídos (só as que renderam etiqueta). Vários CMIGs → "varias".
+    A data/hora é a da criação do ZIP, no fuso local (America/Sao_Paulo, ADR-0013).
+    """
+    from datetime import datetime
+
+    from models.cmig import CMIG
+
+    cmig_ids = list(dict.fromkeys(o.cmig_id for o in pedidos if o.cmig_id))
+    if len(cmig_ids) == 1:
+        nome = (
+            await db.execute(select(CMIG.trade_name, CMIG.company_name).where(CMIG.id == cmig_ids[0]))
+        ).first()
+        cmig_slug = slugify_name(
+            (nome[0] or nome[1]) if nome else None, maxlen=40, fallback="cmig"
+        )
+    elif len(cmig_ids) > 1:
+        cmig_slug = "varias"
+    else:
+        cmig_slug = "cmig"
+
+    data_hora = datetime.now(BR_TZ).strftime("%d-%m-%Y_%Hh%M")
+    return f"Etiquetas_{cmig_slug}_{len(pedidos)}-pedidos_{data_hora}.zip"
 
 
 @router.get("/{order_id}/invoices/{invoice_id}/danfe")
