@@ -1179,10 +1179,21 @@
               <i class="fas fa-warehouse mr-1" style="color:#6f42c1"></i>
               <strong>{{ importResult.full_items }}</strong> anúncio(s) FULL — criado um
               <strong>inventário de conferência</strong> com a contagem do ML.
-              <RouterLink :to="`/inventario/${importResult.full_inventory_draft_id}`"
-                          class="ml-1 font-weight-bold" @click="importResult = null">
-                Revisar e finalizar (Baseline/Ajuste) →
-              </RouterLink>
+              <div class="mt-2">
+                <span v-if="importResult.fullFinalized" class="badge badge-success">
+                  <i class="fas fa-check mr-1"></i>Inventário finalizado
+                </span>
+                <template v-else>
+                  <button v-if="canFinalizeFull" class="btn btn-success btn-sm mr-2"
+                          @click="openFinalizeFull(importResult.full_inventory_draft_id, () => { importResult.fullFinalized = true })">
+                    <i class="fas fa-check mr-1"></i>Finalizar aqui
+                  </button>
+                  <RouterLink :to="`/inventario/${importResult.full_inventory_draft_id}`"
+                              class="font-weight-bold">
+                    Revisar na tela de Inventário →
+                  </RouterLink>
+                </template>
+              </div>
             </div>
 
             <!-- Erros por item (amigável) -->
@@ -1738,10 +1749,21 @@
               <strong>{{ batchAction.fullItems }}</strong> anúncio(s) FULL — a contagem do ML foi para um
               <strong>inventário de conferência</strong>. O estoque FULL do sistema é atualizado quando você
               <strong>finaliza</strong> como Baseline (vira o número do ML) ou Ajuste.
-              <RouterLink :to="`/inventario/${batchAction.fullDraftId}`" class="ml-1 font-weight-bold"
-                          @click="batchAction.resultOpen = false">
-                Revisar e finalizar →
-              </RouterLink>
+              <div class="mt-2">
+                <span v-if="batchAction.fullFinalized" class="badge badge-success">
+                  <i class="fas fa-check mr-1"></i>Inventário finalizado
+                </span>
+                <template v-else>
+                  <button v-if="canFinalizeFull" class="btn btn-success btn-sm mr-2"
+                          @click="openFinalizeFull(batchAction.fullDraftId, () => { batchAction.fullFinalized = true })">
+                    <i class="fas fa-check mr-1"></i>Finalizar aqui
+                  </button>
+                  <RouterLink :to="`/inventario/${batchAction.fullDraftId}`" class="font-weight-bold"
+                              @click="batchAction.resultOpen = false">
+                    Revisar na tela de Inventário →
+                  </RouterLink>
+                </template>
+              </div>
             </div>
             <div v-if="batchAction.errors.length" class="mt-3">
               <h6 class="small text-muted">Detalhes dos erros:</h6>
@@ -1759,6 +1781,82 @@
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="batchAction.resultOpen = false">Fechar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Finalizar inventário FULL de conferência (ADR-0019) -->
+    <div v-if="finalizeFull.open" class="modal fade show d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header text-white" style="background:#6f42c1">
+            <h5 class="modal-title"><i class="fas fa-warehouse mr-2"></i>Finalizar inventário FULL de conferência</h5>
+            <button type="button" class="close text-white" :disabled="finalizeFull.saving" @click="finalizeFull.open = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body">
+            <div v-if="finalizeFull.loading" class="text-center py-4 text-muted">
+              <i class="fas fa-spinner fa-spin fa-2x"></i>
+              <div class="mt-2 small">Carregando contagem do ML...</div>
+            </div>
+            <template v-else>
+              <!-- Já finalizado/cancelado: sem botão de finalizar -->
+              <div v-if="!finalizeFullEditable" class="alert alert-info small mb-0">
+                <i class="fas fa-info-circle mr-1"></i>
+                Este inventário já está
+                <strong>{{ finalizeFull.header.status === 'cancelled' ? 'cancelado' : 'finalizado' }}</strong><template v-if="finalizeFull.header.finalized_at"> em {{ formatDateTime(finalizeFull.header.finalized_at) }}</template>.
+                <RouterLink :to="`/inventario/${finalizeFull.invId}`" class="ml-1 font-weight-bold">Abrir na tela de Inventário →</RouterLink>
+              </div>
+              <template v-else>
+                <!-- Itens: contagem do ML -->
+                <table class="table table-sm mb-2">
+                  <thead><tr><th>Produto</th><th class="text-right">Contado (ML)</th></tr></thead>
+                  <tbody>
+                    <tr v-for="it in finalizeFull.items" :key="it.id">
+                      <td><span class="small text-muted">{{ it.sku || '—' }}</span> {{ it.title || '' }}</td>
+                      <td class="text-right"><strong>{{ it.counted_qty ?? '—' }}</strong></td>
+                    </tr>
+                    <tr v-if="!finalizeFull.items.length"><td colspan="2" class="text-muted small">Sem itens.</td></tr>
+                  </tbody>
+                </table>
+                <p class="small text-muted">O estoque atual do sistema e a diferença são calculados <strong>no momento da finalização</strong>.</p>
+
+                <!-- Modo -->
+                <div class="form-group mb-2">
+                  <label class="small font-weight-bold mb-1 d-block">Como aplicar a contagem do ML?</label>
+                  <div class="custom-control custom-radio">
+                    <input type="radio" id="ff-mode-baseline" class="custom-control-input" value="baseline"
+                           :checked="finalizeFull.mode === 'baseline'" @change="changeFinalizeMode('baseline')">
+                    <label class="custom-control-label" for="ff-mode-baseline">
+                      <strong>Baseline</strong> — a contagem do ML vira a verdade: o saldo FULL é redefinido para o contado.
+                    </label>
+                  </div>
+                  <div class="custom-control custom-radio">
+                    <input type="radio" id="ff-mode-adjustment" class="custom-control-input" value="adjustment"
+                           :checked="finalizeFull.mode === 'adjustment'" @change="changeFinalizeMode('adjustment')">
+                    <label class="custom-control-label" for="ff-mode-adjustment">
+                      <strong>Ajuste</strong> — soma só a diferença (contado − sistema) ao saldo atual.
+                    </label>
+                  </div>
+                </div>
+                <div v-if="!finalizeFullCounted" class="alert alert-warning small mb-2">
+                  <i class="fas fa-exclamation-triangle mr-1"></i>
+                  Nenhum item tem contagem do ML — não é possível finalizar.
+                </div>
+                <div class="alert alert-warning small mb-0">
+                  <i class="fas fa-exclamation-triangle mr-1"></i>
+                  Ao finalizar, o sistema recalcula o estoque FULL (remessas + vendas FULL) e aplica a contagem como âncora. Não dá para desfazer.
+                </div>
+              </template>
+            </template>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" :disabled="finalizeFull.saving" @click="finalizeFull.open = false">Fechar</button>
+            <button v-if="!finalizeFull.loading && finalizeFullEditable" class="btn btn-success"
+                    :disabled="finalizeFull.saving || !finalizeFullCounted" @click="confirmFinalizeFull">
+              <span v-if="finalizeFull.saving"><i class="fas fa-spinner fa-spin mr-1"></i>Finalizando...</span>
+              <span v-else><i class="fas fa-check mr-1"></i>Finalizar ({{ finalizeFull.mode === 'baseline' ? 'Baseline' : 'Ajuste' }})</span>
+            </button>
           </div>
         </div>
       </div>
@@ -1868,6 +1966,8 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
+import { useAuthStore } from '@/stores/auth'
+import { formatDateTime } from '@/utils/formatters'
 import { shippingModeStyle as smStyle } from '@/utils/constants'
 import { isValidEan13, generateEan13 } from '@/utils/ean'
 import PublishCategoryPicker from '@/components/catalog/PublishCategoryPicker.vue'
@@ -1879,6 +1979,15 @@ import { validateImage } from '@/composables/useImageStandard'
 import { useMediaAi, CLIP_GENERATION_ENABLED } from '@/composables/useMediaAi'
 
 const toast = useToast()
+const authStore = useAuthStore()
+
+// Só quem tem 'inventario_criar' (ou admin) pode finalizar o inventário FULL de conferência
+// direto na tela de Anúncios — mesma regra do canCreate do InventoryFormView (paridade).
+const canFinalizeFull = computed(() => {
+  const u = authStore.user
+  if (u?.role === 'admin') return true
+  return Array.isArray(u?.menu_permissions) && u.menu_permissions.includes('inventario_criar')
+})
 
 const accounts = ref([])
 const selectedAccountId = ref('')
@@ -2728,6 +2837,71 @@ function confirmBatchAction(action) {
     resultOpen: false,
     fullDraftId: null,   // ADR-0019 Fase 3: inventário FULL de conferência criado no sync/ler
     fullItems: 0,
+    fullFinalized: false,
+  }
+}
+
+// ── Finalizar inventário FULL de conferência (ADR-0019) direto na tela ──────────
+// Reaproveita os endpoints de inventário: GET (carrega itens + contagem do ML), PUT
+// (troca modo Baseline/Ajuste) e POST /finalize. Não toca no backend.
+const finalizeFull = ref({
+  open: false, loading: false, saving: false,
+  invId: null, header: {}, items: [], mode: 'baseline',
+  onDone: null,   // callback p/ marcar o callout de origem como finalizado
+})
+
+// Itens com contagem do ML (finalize exige ao menos 1)
+const finalizeFullCounted = computed(() =>
+  (finalizeFull.value.items || []).filter(i => i.counted_qty !== null && i.counted_qty !== undefined).length
+)
+const finalizeFullEditable = computed(() => finalizeFull.value.header?.status === 'draft')
+
+async function openFinalizeFull(invId, onDone) {
+  const f = finalizeFull.value
+  f.open = true; f.loading = true; f.saving = false
+  f.invId = invId; f.header = {}; f.items = []; f.mode = 'baseline'; f.onDone = onDone || null
+  try {
+    const { data } = await api.get(`/inventories/${invId}`)
+    f.header = data
+    f.items = data.items || []
+    f.mode = data.mode || 'baseline'
+  } catch (e) {
+    const msg = e.response?.status === 403
+      ? 'Você não tem permissão para finalizar inventário — peça a um operador de estoque.'
+      : (e.response?.data?.detail || 'Erro ao carregar o inventário.')
+    toast.error(msg)
+    f.open = false
+  } finally {
+    f.loading = false
+  }
+}
+
+async function changeFinalizeMode(mode) {
+  const f = finalizeFull.value
+  if (f.mode === mode) return
+  const prev = f.mode
+  f.mode = mode
+  try {
+    await api.put(`/inventories/${f.invId}`, { mode })
+    f.header.mode = mode
+  } catch (e) {
+    f.mode = prev
+    toast.error(e.response?.data?.detail || 'Erro ao trocar o modo.')
+  }
+}
+
+async function confirmFinalizeFull() {
+  const f = finalizeFull.value
+  f.saving = true
+  try {
+    await api.post(`/inventories/${f.invId}/finalize`)
+    toast.success(`Inventário FULL finalizado como ${f.mode === 'baseline' ? 'Baseline' : 'Ajuste'}. Estoque FULL atualizado.`)
+    if (typeof f.onDone === 'function') f.onDone()
+    f.open = false
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao finalizar o inventário.')
+  } finally {
+    f.saving = false
   }
 }
 

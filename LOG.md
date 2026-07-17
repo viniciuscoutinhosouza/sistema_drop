@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-07-17 — feat(anúncios): modal de finalização do inventário FULL na tela de Anúncios
+
+**Pedido (dono):** finalizar o inventário FULL de conferência (ADR-0019 Fase 3) direto na tela de **Gestão de Anúncios**, sem navegar para a tela de Inventário.
+
+**Entrega (frontend-only, reusa endpoints):** botão **"Finalizar aqui"** nos dois callouts (resultado de importação e de ação em lote) abre um modal que carrega a contagem do ML (`GET /inventories/{id}`), permite escolher **Baseline**/**Ajuste** (`PUT /inventories/{id}` `{mode}`) e finaliza (`POST /inventories/{id}/finalize`). `AnunciosView.vue`.
+
+**Correções do consistency-auditor incorporadas:**
+- CRITICAL paridade de permissão — botão gated por `inventario_criar`/admin (`canFinalizeFull`); 403 tratado com mensagem clara; RouterLink para a tela de Inventário mantido como fallback.
+- HIGH revalida `status==='draft'` ao abrir (se já finalizado/cancelado, mostra info + esconde o botão); HIGH desabilita finalizar quando nenhum item tem contagem do ML.
+- Modo em inglês (`baseline`/`adjustment`); coluna "Contado (ML)" + aviso de que estoque atual/delta são calculados na finalização (rascunho tem `system_qty`/`delta` = 0/stale); flag `fullFinalized` evita re-finalização.
+
+`npm run build` OK.
+
+---
+
 ## 2026-07-17 — fix(estoque): CHECK duplicada barrava inventário FULL (ORA-02290)
 
 **Sintoma (dono):** ao Sincronizar Estoque/Ler Anúncio de anúncios FULL (conta LPS, `MLB5860636624` e `MLB5566548428`), "nada" acontecia — o inventário FULL de conferência (Fase 3, ADR-0019) não era criado.
