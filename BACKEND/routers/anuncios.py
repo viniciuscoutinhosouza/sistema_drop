@@ -1753,13 +1753,22 @@ async def import_anuncios(
 
     await _aio.gather(*[_cache_one(l) for l in saved_listings])
 
-    # ADR-0019 Fase 2: cria/atualiza o rascunho de inventário FULL da conta com a
-    # contagem do ML dos anúncios FULL novos (idempotente — reusa rascunho aberto).
-    full_draft = await _upsert_full_inventory_draft(
-        db, account, new_full_listings, current_user
-    )
-
+    # Commita a IMPORTAÇÃO primeiro (fonte primária) — o rascunho FULL abaixo é efeito
+    # secundário e roda em transação própria, para nunca derrubar/reverter a importação.
     await db.commit()
+
+    # ADR-0019 Fase 2: cria/atualiza o rascunho de inventário FULL da conta com a contagem
+    # do ML dos anúncios FULL novos (idempotente — reusa rascunho aberto). Em falha (ex.:
+    # migration 130 ainda não aplicada), loga e segue sem o rascunho.
+    full_draft = {"inventory_id": None, "full_items": 0}
+    try:
+        full_draft = await _upsert_full_inventory_draft(
+            db, account, new_full_listings, current_user
+        )
+        await db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("import_anuncios: falha ao criar rascunho de inventário FULL (segue sem)")
+        await db.rollback()
     return {
         "imported": imported,
         "updated": updated,
