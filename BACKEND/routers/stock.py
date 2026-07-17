@@ -666,6 +666,12 @@ async def recompute_all_stock_endpoint(
         async with task_db() as db2:
             res_result = await recompute_reservations_from_movements(db2)
             logger.info("recompute_reservations: %s", res_result)
+        # Recomputa o estoque FULL por replay (ADR-0019 Fase 1) — sessão própria.
+        from services.full_stock_service import recompute_full_stock
+        async with task_db() as db3:
+            full_result = await recompute_full_stock(db3)
+            await db3.commit()
+            logger.info("recompute_full_stock: %s", full_result)
 
     background_tasks.add_task(_run)
     return {"ok": True, "message": "Recompute iniciado em background"}

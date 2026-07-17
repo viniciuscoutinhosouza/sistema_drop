@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-07-17 — feat(estoque): FULL recomputável por replay (ADR-0019, Fase 1)
+
+O estoque FULL (`FullStock.qty`) passou de **só incremental** para **recomputável por replay** — base
+do subsistema pedido pelo dono (Fase 2: âncora de inventário na importação; Fase 3: sync/ler anúncio).
+
+- **`recompute_full_stock`** (`services/full_stock_service.py`): reconstrói o FULL por (produto CMIG ×
+  conta) — **acumular-e-fixar** (soma os deltas e grava `qty=max(0, soma)`, sem clampar a cada evento):
+  `+ Σ remessa` (Invoice `direction='out'` p/ CNPJ FULL) `− Σ retorno` (`direction='in'` de CNPJ FULL,
+  exclui `purpose='devolucao'`) `− Σ venda FULL` (Order `full` shipped/delivered, **exclui
+  `return_status='returned'`** e cancelado). **Débito da venda dirigido pelo PEDIDO, uma vez, só o FULL**
+  (nunca o galpão). Preserva `reserved_qty`; zera linhas stale do escopo. Reusa `is_full_cnpj`/
+  `resolve_full_*` (sem duplicar lógica). Função pura `_accumulate_full_balances` isolada + testada.
+- **Integrado ao botão "Recalcular Estoque (todos)"** (`POST /stock/recompute-all`): após o recompute
+  local + reservas, roda `recompute_full_stock` em `db3`.
+- **Cancelamento/devolução que reabastece o Full:** tratado — venda `returned`/cancelada não debita
+  (re-crédito por omissão no replay do zero).
+- **Limitações (Fase 1, documentadas no ADR-0019):** grava `qty` absoluto → evento incremental durante
+  o replay em background pode ser sobrescrito (auto-cura no próximo recompute; rodar em baixo tráfego).
+  `reserved_qty` fora do escopo desta fase.
+- Auditado: quality-guardian (sem CRITICAL; 2 HIGH de decisão — filtro `devolucao` alinhado + janela de
+  concorrência documentada) + adr-consistency-checker (**aprovado**, sem violação de 0004/0008/0009/0010/
+  0013). ruff limpo; import 3.11 OK; `test_full_recompute` 8 passed (regra de acumulação); **sem migration**.
+  Nota: `recompute_full_stock` (que toca o Oracle) não foi smoke-testado em DEV (sem Wallet) — validar em
+  produção numa CMIG antes de rodar amplo.
+
+---
+
 ## 2026-07-17 — feat(pedidos): filtro por período + filtro de Entrega + busca ampliada
 
 Três melhorias nos filtros da tela de **Pedidos**:

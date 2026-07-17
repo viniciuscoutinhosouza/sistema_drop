@@ -591,3 +591,186 @@ async def reconcile_full_dispatched(db: AsyncSession, limit: int = 2000) -> dict
             await db.rollback()
             logger.exception("reconcile_full_dispatched order=%s", o.id)
     return {"candidates": len(orders), "applied": applied}
+
+
+# ── Recompute (replay) — ADR-0019 Fase 1 ────────────────────────────────────────
+
+
+def _accumulate_full_balances(
+    invoice_events: list[tuple[int, int, int]],
+    order_events: list[tuple[int, int, int]],
+) -> dict[tuple[int, int], int]:
+    """Lógica PURA de acumulação do saldo FULL por (cmig_product_id, account_id).
+
+    ACUMULAR-E-FIXAR: soma todos os deltas (NÃO clampa a cada evento) e só ao final
+    o chamador aplica `max(0, saldo)` ao gravar. Aqui devolvemos a soma crua.
+
+    - invoice_events: (cmig_product_id, account_id, signed_qty)
+        signed_qty = +qty para remessa (direction='out' → CREDITA o FULL)
+                     -qty para retorno (direction='in'  → DEBITA o FULL)
+    - order_events:   (cmig_product_id, account_id, qty)  → sempre DÉBITO de venda.
+
+    Não filtra simbólicas/returned — isso é responsabilidade do chamador (as listas
+    já chegam prontas). Retorna o dict de saldos crus (pode conter negativos)."""
+    balances: dict[tuple[int, int], int] = {}
+    for cp_id, acct_id, signed_qty in invoice_events:
+        balances[(cp_id, acct_id)] = balances.get((cp_id, acct_id), 0) + signed_qty
+    for cp_id, acct_id, qty in order_events:
+        balances[(cp_id, acct_id)] = balances.get((cp_id, acct_id), 0) - qty
+    return balances
+
+
+async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) -> dict:
+    """Recomputa o estoque FULL (FullStock.qty) por replay das 3 fontes — ADR-0019 Fase 1.
+
+    Fontes (por (CMIGProduct, conta ML)):
+      + Σ remessa   (Invoice direction='out' para CNPJ FULL)   → crédito
+      − Σ retorno   (Invoice direction='in'  de CNPJ FULL)     → débito
+      − Σ venda     (Order shipping_mode='full' shipped/delivered, não 'returned') → débito
+
+    NÃO clampa a cada evento (ACUMULAR-E-FIXAR); grava qty=max(0, saldo). NÃO toca
+    `reserved_qty`. Escopo opcional por `cmig_id` (limita invoices e contas da CMIG).
+    Não recria as funções incrementais (apply_*), que seguem para o tempo real.
+
+    LIMITAÇÃO (Fase 1): grava `qty` ABSOLUTO. Se um evento incremental (webhook de pedido
+    shipped, NF-e) for aplicado DURANTE o replay em background, o delta dele pode ser
+    sobrescrito pela gravação absoluta → o FULL fica transitoriamente alto e AUTO-CURA no
+    próximo recompute (que vê o evento). Rodar em janela de baixo tráfego. Follow-up: cutoff
+    por timestamp + reconciliação dos movimentos posteriores (ver ADR-0019)."""
+    from sqlalchemy import func
+
+    from models.integration import MarketplaceAccount
+    from models.person import Person
+    from services.fiscal.fiscal_rules import is_simbolica
+
+    invoice_events: list[tuple[int, int, int]] = []
+    order_events: list[tuple[int, int, int]] = []
+
+    # Contas ML no escopo (para saber quais linhas FullStock zerar ao final).
+    acct_q = select(MarketplaceAccount.id)
+    if cmig_id is not None:
+        acct_q = acct_q.where(MarketplaceAccount.cmig_id == cmig_id)
+    scope_account_ids = set((await db.execute(acct_q)).scalars().all())
+
+    # ── INVOICES (crédito remessa / débito retorno) ─────────────────────────────
+    # Exclui purpose='devolucao': devolução é NF-e-driven em subsistema próprio (ADR-0009) e
+    # o recompute LOCAL também a exclui — o retorno LEGÍTIMO do FULL é purpose='retorno'
+    # (direction='in'). Mantém paridade replay↔recompute local, sem dupla contagem.
+    inv_q = select(Invoice).where(
+        Invoice.status.in_(("finalized", "authorized")),
+        func.coalesce(Invoice.purpose, "") != "devolucao",
+    )
+    if cmig_id is not None:
+        inv_q = inv_q.where(Invoice.cmig_id == cmig_id)
+    invoices = (await db.execute(inv_q)).scalars().all()
+
+    for inv in invoices:
+        if is_simbolica(inv.natureza_operacao):
+            continue
+        if not inv.person_id:
+            continue
+        person = (
+            await db.execute(select(Person).where(Person.id == inv.person_id))
+        ).scalar_one_or_none()
+        if not person:
+            continue
+        full = await is_full_cnpj(db, person.document, inv.cmig_id)
+        if not full:
+            continue
+        sign = 1 if inv.direction == "out" else -1
+        items = await _load_items(db, inv.id)
+        for item in items:
+            qty = int(item.quantity or 0)
+            if qty <= 0:
+                continue
+            cp = await resolve_full_cmig_product(
+                db,
+                cmig_id=inv.cmig_id,
+                cmig_product_id=item.cmig_product_id,
+                catalog_product_id=item.catalog_product_id,
+                ean=item.ean,
+                sku=item.sku,
+                create=(sign > 0),
+            )
+            if not cp:
+                continue
+            invoice_events.append((cp.id, full.marketplace_account_id, sign * qty))
+            scope_account_ids.add(full.marketplace_account_id)
+
+    # ── ORDERS (débito de venda FULL) ───────────────────────────────────────────
+    ord_q = select(Order).where(
+        Order.shipping_mode == "full",
+        Order.shipment_status.in_(("shipped", "delivered")),
+        func.coalesce(Order.return_status, "") != "returned",
+    )
+    if cmig_id is not None:
+        ord_q = ord_q.where(
+            Order.account_id.in_(
+                select(MarketplaceAccount.id).where(MarketplaceAccount.cmig_id == cmig_id)
+            )
+        )
+    orders = (await db.execute(ord_q)).scalars().all()
+    for order in orders:
+        if not order.account_id:
+            continue
+        items = await _get_order_items(db, order.id)
+        for item in items:
+            ptype, pid = await resolve_full_product(db, order, item)
+            if ptype != "cmig" or pid is None:
+                continue
+            order_events.append((pid, order.account_id, int(item.quantity or 0)))
+            scope_account_ids.add(order.account_id)
+
+    balances = _accumulate_full_balances(invoice_events, order_events)
+
+    # ── GRAVAR ──────────────────────────────────────────────────────────────────
+    zeroed = 0
+    seen_keys: set[tuple[int, int]] = set()
+    for (cp_id, acct_id), bal in balances.items():
+        seen_keys.add((cp_id, acct_id))
+        target = max(0, bal)
+        row = (
+            await db.execute(
+                select(FullStock).where(
+                    FullStock.product_type == "cmig",
+                    FullStock.product_id == cp_id,
+                    FullStock.marketplace_account_id == acct_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if row:
+            row.qty = target  # PRESERVA reserved_qty
+        elif bal > 0:
+            db.add(
+                FullStock(
+                    product_type="cmig",
+                    product_id=cp_id,
+                    marketplace_account_id=acct_id,
+                    qty=target,
+                    reserved_qty=0,
+                )
+            )
+            # Flush imediato: evita ORA-00001 na unique de FullStock se a mesma chave
+            # reaparecer (ver _adjust_full_stock).
+            await db.flush()
+        # bal <= 0 e linha inexistente: nada a criar.
+
+    # ── ZERAR linhas FULL do escopo que não apareceram no replay ────────────────
+    if scope_account_ids:
+        stale_q = select(FullStock).where(
+            FullStock.product_type == "cmig",
+            FullStock.marketplace_account_id.in_(scope_account_ids),
+        )
+        stale_rows = (await db.execute(stale_q)).scalars().all()
+        for row in stale_rows:
+            if (row.product_id, row.marketplace_account_id) in seen_keys:
+                continue
+            if int(row.qty or 0) != 0:
+                row.qty = 0  # NÃO toca reserved_qty
+                zeroed += 1
+
+    return {
+        "full_products_recomputed": len(seen_keys),
+        "accounts": len(scope_account_ids),
+        "zeroed": zeroed,
+    }
