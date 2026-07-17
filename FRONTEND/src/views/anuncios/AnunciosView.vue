@@ -1730,6 +1730,19 @@
                 <i class="fas fa-stop text-warning mr-1"></i>Operação cancelada pelo usuário.
               </li>
             </ul>
+
+            <!-- Inventário FULL de conferência (ADR-0019 Fase 3) -->
+            <div v-if="batchAction.fullDraftId" class="alert alert-light border small mt-3 mb-0"
+                 style="border-left:3px solid #6f42c1">
+              <i class="fas fa-warehouse mr-1" style="color:#6f42c1"></i>
+              <strong>{{ batchAction.fullItems }}</strong> anúncio(s) FULL — a contagem do ML foi para um
+              <strong>inventário de conferência</strong>. O estoque FULL do sistema é atualizado quando você
+              <strong>finaliza</strong> como Baseline (vira o número do ML) ou Ajuste.
+              <RouterLink :to="`/inventario/${batchAction.fullDraftId}`" class="ml-1 font-weight-bold"
+                          @click="batchAction.resultOpen = false">
+                Revisar e finalizar →
+              </RouterLink>
+            </div>
             <div v-if="batchAction.errors.length" class="mt-3">
               <h6 class="small text-muted">Detalhes dos erros:</h6>
               <div style="max-height:300px;overflow-y:auto">
@@ -2713,6 +2726,8 @@ function confirmBatchAction(action) {
     success: 0,
     errors: [],
     resultOpen: false,
+    fullDraftId: null,   // ADR-0019 Fase 3: inventário FULL de conferência criado no sync/ler
+    fullItems: 0,
   }
 }
 
@@ -2731,6 +2746,7 @@ async function runBatchAction() {
         })
         b.done = b.ids.length
         b.success = (data.updated || 0) + (data.full_read || 0)
+        if (data.full_inventory_draft_id) { b.fullDraftId = data.full_inventory_draft_id; b.fullItems = data.full_items || 0 }
         // error_details vem do backend — mapeia pro formato esperado
         for (const ed of data.error_details || []) {
           b.errors.push({ listing_id: ed.listing_id, error: ed.error, detail: ed })
@@ -2747,6 +2763,7 @@ async function runBatchAction() {
         })
         b.done = b.ids.length
         b.success = data.updated || 0
+        if (data.full_inventory_draft_id) { b.fullDraftId = data.full_inventory_draft_id; b.fullItems = data.full_items || 0 }
         for (const err of data.errors || []) {
           b.errors.push({ listing_id: err.listing_id, error: err.error })
         }

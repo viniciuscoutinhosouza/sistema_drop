@@ -6236,6 +6236,7 @@ async def sync_stock_to_marketplace(
     full_read = 0
     full_read_errors = 0
     error_details = []
+    synced_full_listings: list = []  # ADR-0019 Fase 3: FULL lidos → conferência de inventário
 
     # Quando listing_ids é fornecido, registra IDs não encontrados
     if listing_ids:
@@ -6284,6 +6285,7 @@ async def sync_stock_to_marketplace(
                 lst.available_quantity = lst.qty_full
                 lst.last_sync_at = now
                 full_read += 1
+                synced_full_listings.append(lst)
             except Exception as exc:
                 full_read_errors += 1
                 error_details.append({
@@ -6334,6 +6336,21 @@ async def sync_stock_to_marketplace(
 
     await db.commit()
 
+    # ADR-0019 Fase 3: sync MANUAL (user-triggered, com listing_ids) de anúncios FULL cria/atualiza
+    # o inventário FULL de conferência com a contagem do ML — revisão em lote → Baseline/Ajuste.
+    # NÃO roda no sync automático do scheduler (sem listing_ids), p/ não gerar rascunho a cada ciclo.
+    # Efeito SECUNDÁRIO em transação própria: nunca derruba o sync (guard try/except).
+    full_draft = {"inventory_id": None, "full_items": 0}
+    if listing_ids and account.platform == "mercadolivre" and synced_full_listings:
+        try:
+            full_draft = await _upsert_full_inventory_draft(
+                db, account, synced_full_listings, current_user
+            )
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("sync-stock: falha ao criar rascunho de inventário FULL (segue sem)")
+            await db.rollback()
+
     return {
         "updated": updated,
         "skipped": skipped,
@@ -6341,6 +6358,8 @@ async def sync_stock_to_marketplace(
         "full_read": full_read,
         "full_read_errors": full_read_errors,
         "error_details": error_details,
+        "full_inventory_draft_id": full_draft.get("inventory_id"),
+        "full_items": full_draft.get("full_items", 0),
     }
 
 
@@ -6486,6 +6505,7 @@ async def reimport_batch(
             ) from exc
 
     items_by_id = {it.get("id"): it for it in ml_items}
+    synced_full_listings: list = []  # ADR-0019 Fase 3: FULL relidos → conferência de inventário
 
     for lst in listings:
         if not lst.platform_item_id:
@@ -6505,6 +6525,8 @@ async def reimport_batch(
                 preserve_local_stock=True,
             )
             updated += 1
+            if lst.is_full or (lst.logistic_type or "") == "fulfillment":
+                synced_full_listings.append(lst)
         except Exception as exc:  # noqa: BLE001
             logger.exception("reimport_batch: erro inesperado em listing %s", lst.id)
             errors.append({
@@ -6513,7 +6535,26 @@ async def reimport_batch(
             })
 
     await db.commit()
-    return {"updated": updated, "errors": errors}
+
+    # ADR-0019 Fase 3: Ler Anúncio de FULL cria/atualiza o inventário FULL de conferência com a
+    # contagem do ML (revisão em lote → Baseline/Ajuste). Efeito secundário em transação própria.
+    full_draft = {"inventory_id": None, "full_items": 0}
+    if synced_full_listings:
+        try:
+            full_draft = await _upsert_full_inventory_draft(
+                db, account, synced_full_listings, current_user
+            )
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("reimport_batch: falha ao criar rascunho de inventário FULL (segue sem)")
+            await db.rollback()
+
+    return {
+        "updated": updated,
+        "errors": errors,
+        "full_inventory_draft_id": full_draft.get("inventory_id"),
+        "full_items": full_draft.get("full_items", 0),
+    }
 
 
 @router.post("/reactivate-batch")

@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-07-17 — feat(estoque): Sincronizar/Ler anúncio FULL cria inventário de conferência (ADR-0019 Fase 3)
+
+Fecha o pedido original: "Sincronizar Estoque" e "Ler Anúncio" de anúncios **FULL** passam a **ler o
+FULL do ML e criar/atualizar o inventário FULL de conferência** com essa contagem (reusa o
+`_upsert_full_inventory_draft` da Fase 2). O usuário revisa em lote e finaliza como **Baseline** (o FULL
+vira o número do ML) ou **Ajuste** — mantendo o FULL amarrado ao fiscal + âncora (decisão do dono; não
+sobrescreve direto).
+
+- **anuncios.py:** `sync_stock_to_marketplace` (só no sync MANUAL, com `listing_ids` — o scheduler
+  automático NÃO gera rascunho) e `reimport_batch` coletam os anúncios FULL lidos e chamam o hook de
+  conferência em transação própria (guard try/except: nunca derruba o sync). Ambos retornam
+  `full_inventory_draft_id`/`full_items`.
+- **Frontend (AnunciosView):** o modal de resultado da ação em lote mostra um callout com link
+  "Revisar e finalizar →" para o inventário FULL criado.
+- Reusa 100% do mecanismo auditado da Fase 2. ruff limpo; import 3.11 OK; `npm run build` OK. **Sem
+  migration** (usa a 130). Padrão de guard idêntico ao hook de import (já em produção).
+
+---
+
 ## 2026-07-17 — feat(estoque): inventário FULL como âncora do replay (ADR-0019 Fase 2)
 
 Ao importar anúncio(s) FULL novo(s), o sistema cria um **inventário FULL em rascunho** (revisão em

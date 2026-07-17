@@ -1,7 +1,7 @@
 # ADR-0019 — Estoque FULL recomputável (replay) + débito de venda dirigido pelo pedido + reconciliação por inventário
 
 **Data:** 2026-07-17
-**Status:** ✅ Aceito — Fase 1 e Fase 2 entregues; Fase 3 pendente
+**Status:** ✅ Aceito — Fases 1, 2 e 3 entregues
 **Decisores:** Vinicius (proprietário)
 
 ## Contexto
@@ -64,8 +64,12 @@ Princípios (endereçando os problemas acima):
 - **Fase 2 — Âncora de inventário do FULL:** ao importar anúncio(s) FULL novo(s), o sistema cria um
   **inventário FULL em rascunho** com a contagem do ML; o usuário revisa e finaliza em lote como
   **Baseline** ou **Ajuste** (revisão em lote — decisão do dono). O evento entra no replay da Fase 1.
-- **Fase 3 — Sincronizar/Ler anúncio:** essas funções, além do snapshot `qty_full`, disparam o
-  recompute do FULL (Fase 1) para os produtos/contas envolvidos. A conferência `sync-full` continua.
+- **Fase 3 — Sincronizar/Ler anúncio (entregue):** "Sincronizar Estoque" e "Ler Anúncio" de anúncios
+  FULL **criam/atualizam o inventário FULL de conferência** com a contagem do ML (reusa o
+  `_upsert_full_inventory_draft` da Fase 2) → revisão em lote → Baseline/Ajuste → recompute. Decisão do
+  dono: o sync NÃO sobrescreve o FULL direto; cria a conferência (mantém o FULL amarrado ao fiscal +
+  âncora). Só no sync MANUAL (com `listing_ids`) — o sync automático do scheduler não gera rascunho.
+  Efeito secundário em transação própria (nunca derruba o sync).
 
 ## Consequências
 
