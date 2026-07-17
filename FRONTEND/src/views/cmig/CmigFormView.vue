@@ -78,15 +78,21 @@
                     </div>
                   </div>
 
-                  <!-- Ao converter CPF→CNPJ: IE + IBGE obrigatórios (a PJ nasce apta ao fiscal) -->
-                  <div v-if="isConverting && personType === 'pj'" class="row">
-                    <div class="col-md-4 form-group">
+                  <!-- IE só na conversão CPF→CNPJ (fora dela, a IE mora na Configuração Fiscal).
+                       O IBGE aparece SEMPRE para PJ: é obrigatório na NF-e própria (cMunFG) e
+                       ficava inacessível fora da conversão — ninguém achava onde preencher. -->
+                  <div v-if="personType === 'pj'" class="row">
+                    <div v-if="isConverting" class="col-md-4 form-group">
                       <label>Inscrição Estadual (IE) <span class="text-danger">*</span></label>
-                      <input v-model="form.ie" class="form-control" :required="isConverting && personType === 'pj'" placeholder="Somente números ou ISENTO" />
+                      <input v-model="form.ie" class="form-control" :required="isConverting" placeholder="Somente números ou ISENTO" />
                     </div>
                     <div class="col-md-4 form-group">
-                      <label>Código IBGE do município <span class="text-danger">*</span></label>
-                      <input v-model="form.ibge_code" class="form-control" :required="isConverting && personType === 'pj'" maxlength="7" placeholder="ex.: 3304557" />
+                      <label>Código IBGE do município <span v-if="isConverting" class="text-danger">*</span></label>
+                      <input v-model="form.ibge_code" class="form-control" :required="isConverting" maxlength="7" placeholder="ex.: 3550308" />
+                      <small class="form-text text-muted">
+                        Código do município do endereço fiscal (7 dígitos) — obrigatório para emitir NF-e
+                        e para a prévia em PDF. Consulte em ibge.gov.br/explica/codigos-dos-municipios.php
+                      </small>
                     </div>
                   </div>
 
