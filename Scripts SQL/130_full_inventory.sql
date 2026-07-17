@@ -22,7 +22,8 @@ END;
 /
 
 ALTER TABLE inventories ADD CONSTRAINT ck_inv_catalog
-  CHECK (catalog_type IN ('pg','cmig','full'));
+  CHECK (catalog_type IN ('pg','cmig','full'))
+/
 
 -- 2) inventory_items.product_type aceitar 'full'
 DECLARE
@@ -38,7 +39,8 @@ END;
 /
 
 ALTER TABLE inventory_items ADD CONSTRAINT ck_invitem_type
-  CHECK (product_type IN ('pg','cmig','full'));
+  CHECK (product_type IN ('pg','cmig','full'))
+/
 
 -- 3) inventories.account_id — conta ML do inventário FULL (NULL p/ pg/cmig)
 DECLARE
