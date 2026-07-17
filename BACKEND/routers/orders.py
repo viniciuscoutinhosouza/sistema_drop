@@ -3074,7 +3074,9 @@ async def get_order_shipping_label(
             status_code=400, detail="Etiqueta disponível apenas para pedidos do Mercado Livre"
         )
     content = await _ml_label_fmt_bytes(db, order, current_user, fmt, refresh)
-    ext = "zpl" if fmt == "zpl2" else "pdf"
+    # A etiqueta ZPL é gravada com extensão .txt (o conteúdo continua ZPL puro, text/plain) —
+    # muitos leitores/impressoras esperam .txt e o eShip recusa o tipo .zpl no anexo.
+    ext = "txt" if fmt == "zpl2" else "pdf"
     media_type = "text/plain" if fmt == "zpl2" else "application/pdf"
     filename = order_download_filename(TIPO_ETIQUETA, ext, order=order)
     return Response(
@@ -3137,7 +3139,8 @@ async def get_order_label_zip(
     if pdf:
         files.append((order_download_filename(TIPO_ETIQUETA, "pdf", order=order), pdf))
     if zpl:
-        files.append((order_download_filename(TIPO_ETIQUETA, "zpl", order=order), zpl))
+        # ZPL gravado como .txt (conteúdo ZPL puro) — ver GET /{id}/label.
+        files.append((order_download_filename(TIPO_ETIQUETA, "txt", order=order), zpl))
     zip_name = order_download_filename(TIPO_ETIQUETA, "zip", order=order)
     return Response(
         content=_zip_label_files(files, []),
@@ -3182,7 +3185,8 @@ async def get_orders_labels_zip(
         if pdf:
             files.append((order_download_filename(TIPO_ETIQUETA, "pdf", order=order), pdf))
         if zpl:
-            files.append((order_download_filename(TIPO_ETIQUETA, "zpl", order=order), zpl))
+            # ZPL gravado como .txt (conteúdo ZPL puro) — ver GET /{id}/label.
+            files.append((order_download_filename(TIPO_ETIQUETA, "txt", order=order), zpl))
 
     if not files:
         raise HTTPException(
