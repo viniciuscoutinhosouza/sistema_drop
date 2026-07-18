@@ -14,6 +14,10 @@ import unicodedata
 
 # Tipos (rótulo = formato/representação, para distinguir na pasta de Downloads)
 TIPO_ETIQUETA = "Etiqueta"
+# Declaração de Conteúdo POSTAL (Correios, ZPL .txt, sem valor fiscal). "Postal" no nome para
+# NÃO confundir com a DC-e fiscal (modelo 99, ADR-0017), que também é chamada "Declaração de
+# Conteúdo" na UI.
+TIPO_DECLARACAO_POSTAL = "Declaracao-Postal"
 TIPO_NFE = "NF-e"       # XML da NF-e
 TIPO_DANFE = "DANFE"    # PDF impresso da NF-e
 TIPO_DACE = "DACE"      # PDF da DC-e
@@ -47,7 +51,8 @@ def order_download_filename(
         if cliente is None:
             cliente = order.buyer_name
     parts = [
-        slugify_name(tipo, maxlen=12, fallback="doc"),
+        # 20: cabe "Declaracao-Postal" inteiro (os demais tipos — Etiqueta/NF-e/DACE — são curtos).
+        slugify_name(tipo, maxlen=20, fallback="doc"),
         slugify_name(venda, maxlen=30, fallback="sem-venda"),
         slugify_name(cliente, maxlen=40, fallback="sem-nome"),
     ]

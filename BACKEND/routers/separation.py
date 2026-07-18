@@ -1338,6 +1338,17 @@ async def cart_bundle(
         except Exception as exc:  # noqa: BLE001
             avisos.append(f"Etiquetas manuais: falha ({str(exc)[:120]}).")
 
+    # 3b) Declaração de Conteúdo (postal, ZPL .txt) por pedido — a MESMA da tela de Pedidos,
+    # para que o Carrinho Gaiola não fique com comportamento divergente. Best-effort.
+    from services.content_declaration import _BATCH_IMAGE_BUDGET, append_declaration
+
+    dec_budget = [_BATCH_IMAGE_BUDGET]
+    for _p, order, *_rest in included:
+        dec_tmp: list[tuple[str, bytes]] = []
+        await append_declaration(db, order, dec_tmp, avisos, image_budget=dec_budget)
+        for name, data in dec_tmp:
+            label_files.append((f"Declaracoes/{name}", data))
+
     # 4) Monta o ZIP
     base = cart.cart_number
     # ref interno do ZIP = <venda>_<cliente> (a pasta NF-e/ + extensão já indicam o tipo)

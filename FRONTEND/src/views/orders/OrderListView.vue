@@ -115,7 +115,7 @@
             <a class="dropdown-item" href="#" @click.prevent="printSelected"><i class="fas fa-print mr-2"></i>Imprimir Etiquetas</a>
             <a class="dropdown-item" href="#" @click.prevent="viewSelectedLabels"><i class="fas fa-eye mr-2"></i>Visualizar Etiquetas</a>
             <div class="dropdown-divider"></div>
-            <a class="dropdown-item" href="#" @click.prevent="bulkDownloadLabels"><i class="fas fa-file-archive mr-2"></i>Baixar etiquetas (ZIP)</a>
+            <a class="dropdown-item" href="#" title="ZIP com as etiquetas dos marketplaces + a Declaração de Conteúdo (postal, sem valor fiscal) de cada pedido" @click.prevent="bulkDownloadLabels"><i class="fas fa-file-archive mr-2"></i>Baixar etiquetas (ZIP)</a>
           </div>
         </div>
         <div class="dropdown">

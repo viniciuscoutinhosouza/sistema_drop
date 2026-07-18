@@ -31,6 +31,7 @@ from models.user import User
 from models.webhook import WebhookEvent
 from services import ml_service as _ml
 from services.datetime_br import BR_TZ
+from services.content_declaration import append_declaration as _append_declaration
 from services.file_naming import (
     TIPO_DACE,
     TIPO_DANFE,
@@ -3162,18 +3163,28 @@ async def get_order_label_zip(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """ZIP com a etiqueta em PDF **e** ZPL de UM pedido (ML ou manual). Download direto."""
+    """ZIP com a etiqueta (PDF+ZPL) **e** a Declaração de Conteúdo (ZPL .txt) de UM pedido."""
     order = await _get_order_checked(db, order_id, current_user)
-    pdf, zpl = await _order_label_pair(db, order, current_user, refresh)
     files: list[tuple[str, bytes]] = []
-    if pdf:
-        files.append((order_download_filename(TIPO_ETIQUETA, "pdf", order=order), pdf))
-    if zpl:
-        # ZPL gravado como .txt (conteúdo ZPL puro) — ver GET /{id}/label.
-        files.append((order_download_filename(TIPO_ETIQUETA, "txt", order=order), zpl))
+    warnings: list[str] = []
+    # A etiqueta do marketplace pode não existir (ex.: Shopee, envio pendente) — a declaração
+    # é gerada para o pedido de qualquer forma, então o erro da etiqueta não derruba o ZIP.
+    try:
+        pdf, zpl = await _order_label_pair(db, order, current_user, refresh)
+        if pdf:
+            files.append((order_download_filename(TIPO_ETIQUETA, "pdf", order=order), pdf))
+        if zpl:
+            files.append((order_download_filename(TIPO_ETIQUETA, "txt", order=order), zpl))
+    except HTTPException as e:
+        warnings.append(f"Etiqueta do marketplace indisponível: {e.detail}")
+
+    await _append_declaration(db, order, files, warnings)
+
+    if not files:
+        raise HTTPException(status_code=404, detail="; ".join(warnings) or "Nada a gerar.")
     zip_name = order_download_filename(TIPO_ETIQUETA, "zip", order=order)
     return Response(
-        content=_zip_label_files(files, []),
+        content=_zip_label_files(files, warnings),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
     )
@@ -3199,26 +3210,32 @@ async def get_orders_labels_zip(
             detail=f"Máximo de {_LABELS_ZIP_MAX} pedidos por ZIP — selecione menos pedidos.",
         )
 
+    from services.content_declaration import _BATCH_IMAGE_BUDGET
+
     files: list[tuple[str, bytes]] = []
     warnings: list[str] = []
     pedidos_ok: list[Order] = []   # pedidos que renderam pelo menos uma etiqueta
+    img_budget = [_BATCH_IMAGE_BUDGET]  # teto compartilhado de imagens baixadas no ZIP (anti-DoS)
     for oid in ids:
         try:
             order = await _get_order_checked(db, int(oid), current_user)
         except HTTPException:
             warnings.append(f"Pedido {oid}: sem acesso ou inexistente.")
             continue
+        antes = len(files)
+        # Etiqueta do marketplace (pode faltar — ex.: Shopee/pendente); não pula o pedido, pois
+        # a Declaração de Conteúdo é gerada de qualquer forma.
         try:
             pdf, zpl = await _order_label_pair(db, order, current_user)
+            if pdf:
+                files.append((order_download_filename(TIPO_ETIQUETA, "pdf", order=order), pdf))
+            if zpl:
+                files.append((order_download_filename(TIPO_ETIQUETA, "txt", order=order), zpl))
         except HTTPException as e:
-            warnings.append(f"Pedido {order.id} ({order.buyer_name or 's/ nome'}): {e.detail}")
-            continue
-        if pdf:
-            files.append((order_download_filename(TIPO_ETIQUETA, "pdf", order=order), pdf))
-        if zpl:
-            # ZPL gravado como .txt (conteúdo ZPL puro) — ver GET /{id}/label.
-            files.append((order_download_filename(TIPO_ETIQUETA, "txt", order=order), zpl))
-        if pdf or zpl:
+            warnings.append(f"Pedido {order.id} ({order.buyer_name or 's/ nome'}): etiqueta {e.detail}")
+        # Declaração de Conteúdo (ZPL .txt) — sempre; orçamento de imagens compartilhado no lote.
+        await _append_declaration(db, order, files, warnings, image_budget=img_budget)
+        if len(files) > antes:
             pedidos_ok.append(order)
 
     if not files:
