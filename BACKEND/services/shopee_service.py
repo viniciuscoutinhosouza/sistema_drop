@@ -6,6 +6,7 @@ Docs: https://open.shopee.com/developer-guide/4
 
 import hashlib
 import hmac
+import logging
 import time
 
 import httpx
@@ -14,6 +15,7 @@ from fastapi import HTTPException
 from config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 SHOPEE_API_BASE = "https://partner.shopeemobile.com/api/v2"
 SHOPEE_AUTH_BASE = "https://partner.shopeemobile.com/api/v2/shop/auth_partner"
@@ -91,36 +93,89 @@ async def refresh_shopee_token(refresh_token: str, shop_id: int) -> dict:
     return resp.json()
 
 
-async def get_order_list(access_token: str, shop_id: int, time_from: int, time_to: int) -> list:
-    timestamp = int(time.time())
+async def get_order_list(
+    access_token: str,
+    shop_id: int,
+    time_from: int,
+    time_to: int,
+    *,
+    order_status: str = "READY_TO_SHIP",
+    time_range_field: str = "create_time",
+) -> list:
+    """Lista pedidos da loja no intervalo [time_from, time_to] (epoch, janela máx. 15 dias).
+
+    Pagina até `more=false` (antes parava na 1ª página de 50). Em erro, LEVANTA em vez de
+    devolver [] em silêncio — o chamador (sync) tem try/except e loga; assim uma falha de token/
+    assinatura não vira "0 pedidos" mudo.
+    """
     path = "/api/v2/order/get_order_list"
-    sign = _sign(path, timestamp, access_token, shop_id)
+    out: list = []
+    cursor = ""
+    while True:
+        timestamp = int(time.time())
+        sign = _sign(path, timestamp, access_token, shop_id)
+        params = {
+            "partner_id": settings.SHOPEE_PARTNER_ID,
+            "timestamp": timestamp,
+            "sign": sign,
+            "access_token": access_token,
+            "shop_id": shop_id,
+            "time_range_field": time_range_field,
+            "time_from": time_from,
+            "time_to": time_to,
+            "page_size": 100,
+            "order_status": order_status,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(f"{SHOPEE_API_BASE}/order/get_order_list", params=params)
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Shopee get_order_list HTTP {resp.status_code}: {resp.text[:300]}",
+            )
+        data = resp.json()
+        if data.get("error"):
+            logger.warning(
+                "[Shopee] get_order_list shop=%s error=%s msg=%s",
+                shop_id, data.get("error"), data.get("message"),
+            )
+            raise HTTPException(
+                status_code=502, detail=f"Shopee get_order_list: {data.get('message')}"
+            )
+        resp_body = data.get("response", {}) or {}
+        out.extend(resp_body.get("order_list", []) or [])
+        if not resp_body.get("more"):
+            break
+        cursor = resp_body.get("next_cursor") or ""
+        if not cursor:
+            break
+    return out
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{SHOPEE_API_BASE}/order/get_order_list",
-            params={
-                "partner_id": settings.SHOPEE_PARTNER_ID,
-                "timestamp": timestamp,
-                "sign": sign,
-                "access_token": access_token,
-                "shop_id": shop_id,
-                "time_range_field": "create_time",
-                "time_from": time_from,
-                "time_to": time_to,
-                "page_size": 50,
-                "order_status": "READY_TO_SHIP",
-            },
-        )
-    if resp.status_code != 200:
-        return []
-    return resp.json().get("response", {}).get("order_list", [])
 
+async def verify_push_signature(
+    partner_key: str, authorization: str, body: bytes, url: str | None = None
+) -> bool:
+    """Valida a assinatura do push da Shopee.
 
-async def verify_push_signature(partner_key: str, authorization: str, body: bytes) -> bool:
-    """Verify Shopee push notification signature."""
-    expected = hmac.new(partner_key.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(authorization, expected)
+    A base oficial do push é `url + body` (a URL de callback configurada no Open Platform +
+    o corpo cru). Antes só assinávamos o `body`, o que rejeitava pushes legítimos. Aceitamos
+    as variantes conhecidas (`url+body`, `url|body`, e o `body`-only legado) — todas dependem
+    da `partner_key`, então um atacante sem a chave não forja nenhuma; é seguro aceitar a união.
+    """
+    if not authorization:
+        return False
+    key = partner_key.encode()
+    candidates: list[bytes] = [body]  # legado (body-only)
+    if url:
+        candidates.append(url.encode() + body)
+        candidates.append((url + "|").encode() + body)
+    for base in candidates:
+        expected = hmac.new(key, base, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(authorization, expected):
+            return True
+    return False
 
 
 async def get_item_base_info(access_token: str, shop_id: int, item_id: int) -> dict:

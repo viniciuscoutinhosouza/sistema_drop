@@ -757,12 +757,18 @@ async def sync_orders_now(
             status_code=400, detail="Conta sem token de acesso. Faça o OAuth primeiro."
         )
 
-    from tasks.sync_orders import _sync_ml_integration, _sync_shopee_integration
+    import time as _time
 
+    from tasks.sync_orders import sync_ml_integration, sync_shopee_integration
+
+    # "Sincronizar agora" (manual): janela de catch-up de 24h (o job automático usa 60 min).
+    # Os dois helpers exigem a janela como parâmetro — sem ela o endpoint estourava.
     if account.platform == "mercadolivre":
-        await _sync_ml_integration(db, account)
+        date_from = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+        await sync_ml_integration(db, account, date_from)
     elif account.platform == "shopee":
-        await _sync_shopee_integration(db, account)
+        now_ts = int(_time.time())
+        await sync_shopee_integration(db, account, now_ts - 86400, now_ts)
     else:
         raise HTTPException(
             status_code=400, detail="Sincronização não disponível para esta plataforma."

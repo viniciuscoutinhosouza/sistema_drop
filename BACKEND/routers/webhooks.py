@@ -228,11 +228,17 @@ async def shopee_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     raw_body = await request.body()
     authorization = request.headers.get("Authorization", "")
 
-    # Verify signature
+    # A Shopee assina `url + body` (URL pública de callback + corpo). Atrás do nginx a
+    # request.url é http://127.0.0.1 — reconstruímos a URL pública com X-Forwarded-Proto/Host.
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("host", request.url.netloc)
+    push_url = f"{proto}://{host}{request.url.path}"
+
     is_valid = await shopee_service.verify_push_signature(
         settings.SHOPEE_PARTNER_KEY,
         authorization,
         raw_body,
+        url=push_url,
     )
     if not is_valid:
         raise HTTPException(status_code=401, detail="Assinatura Shopee inválida")
