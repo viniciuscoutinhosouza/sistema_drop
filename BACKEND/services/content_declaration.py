@@ -26,7 +26,7 @@ from models.order import Order, OrderItem
 import json
 
 from services.label_meta import resolve_item_base
-from services.label_service import _zpl_text
+from services.label_service import _zpl_barcode128, _zpl_barcode_ean, _zpl_text
 
 logger = logging.getLogger(__name__)
 
@@ -260,22 +260,22 @@ def _render(order: Order, cmig: CMIG | None, rows: list[dict], total: float) -> 
     body.append(f"^FO20,{y}^GB760,3,3^FS")
     y += 16
 
-    # REMETENTE sempre visível — o modelo dos Correios exige remetente; sem CMIG, deixa explícito
-    # o que falta (não some em silêncio).
-    body.append(_zpl_text(20, y, 24, "REMETENTE"))
-    y += 30
+    # REMETENTE sempre visível (o modelo dos Correios exige) — fonte reduzida, é secundário
+    # frente ao destinatário/produtos.
+    body.append(_zpl_text(20, y, 20, "REMETENTE"))
+    y += 24
     if cmig:
-        body.append(_zpl_text(20, y, 24, (cmig.company_name or "")[:52]))
-        y += 28
+        body.append(_zpl_text(20, y, 20, (cmig.company_name or "")[:62]))
+        y += 22
         if cmig.cnpj:
-            body.append(_zpl_text(20, y, 22, f"CNPJ: {cmig.cnpj}"))
-            y += 26
+            body.append(_zpl_text(20, y, 18, f"CNPJ: {cmig.cnpj}"))
+            y += 21
         for ln in _cmig_address_lines(cmig)[:2]:
-            body.append(_zpl_text(20, y, 22, ln[:56]))
-            y += 26
+            body.append(_zpl_text(20, y, 18, ln[:66]))
+            y += 21
     else:
-        body.append(_zpl_text(20, y, 22, "(remetente nao informado - vincule a CMIG ao pedido)"))
-        y += 26
+        body.append(_zpl_text(20, y, 18, "(remetente nao informado - vincule a CMIG ao pedido)"))
+        y += 21
     y += 6
     body.append(f"^FO20,{y}^GB760,2,2^FS")
     y += 14
@@ -295,8 +295,23 @@ def _render(order: Order, cmig: CMIG | None, rows: list[dict], total: float) -> 
     body.append(f"^FO20,{y}^GB760,2,2^FS")
     y += 14
 
-    body.append(_zpl_text(20, y, 24, f"PEDIDO: {order.platform_order_id or order.id}"))
-    y += 34
+    # ID interno do sistema — numeral + código de barras (Code128).
+    body.append(_zpl_text(20, y, 22, "ID PEDIDO (sistema)"))
+    body.append(_zpl_text(300, y, 26, f"#{order.id}"))
+    y += 30
+    body.append(_zpl_barcode128(20, y, 60, str(order.id)))
+    y += 74
+    # Número da venda no marketplace — numeral + código de barras (Code128).
+    venda = str(order.platform_order_id or "").strip()
+    if venda:
+        body.append(_zpl_text(20, y, 22, "VENDA (marketplace)"))
+        body.append(_zpl_text(300, y, 24, venda[:26]))
+        y += 30
+        body.append(_zpl_barcode128(20, y, 60, venda))
+        y += 74
+
+    body.append(f"^FO20,{y}^GB760,2,2^FS")
+    y += 14
     body.append(_zpl_text(20, y, 22, "PRODUTOS"))
     body.append(_zpl_text(600, y, 22, "QTD"))
     body.append(_zpl_text(680, y, 22, "VALOR"))
@@ -311,12 +326,28 @@ def _render(order: Order, cmig: CMIG | None, rows: list[dict], total: float) -> 
         for tl in _wrap(r["title"], 40)[:2]:
             body.append(_zpl_text(tx, ty, 22, tl))
             ty += 26
-        body.append(_zpl_text(tx, ty, 20, f"SKU: {r['sku'] or '-'}"))
-        ty += 24
         body.append(_zpl_text(600, top, 22, str(r["qty"])))
         body.append(_zpl_text(680, top, 22, _money(r["value"])))
+
+        sku = (r.get("sku") or "").strip()
+        ean = (r.get("ean") or "").strip()
+        # SKU — numeral + Code128.
+        body.append(_zpl_text(tx, ty, 20, f"SKU: {sku or '-'}"))
+        ty += 24
+        if sku:
+            body.append(_zpl_barcode128(tx, ty, 54, sku))
+            ty += 62
+        # EAN — numeral + EAN13 (cai para Code128 se não for 12/13 dígitos).
+        body.append(_zpl_text(tx, ty, 20, f"EAN: {ean or '-'}"))
+        ty += 24
+        if ean:
+            bc = _zpl_barcode_ean(tx, ty, 54, ean) or _zpl_barcode128(tx, ty, 54, ean)
+            if bc:
+                body.append(bc)
+                ty += 62
+
         row_h = max(r.get("gfa_h", 0) + 10, ty - top)
-        y = top + row_h + 10
+        y = top + row_h + 12
 
     body.append(f"^FO20,{y}^GB760,2,2^FS")
     y += 14
@@ -406,6 +437,7 @@ async def build_order_declaration_zpl(
         rows.append({
             "title": (it.title or base.get("title") or "").strip(),
             "sku": (it.sku or base.get("sku") or "").strip(),
+            "ean": (base.get("ean") or "").strip(),
             "qty": qty,
             "value": value,
             "gfa": gfa,
