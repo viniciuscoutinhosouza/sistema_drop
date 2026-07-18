@@ -261,22 +261,27 @@ def _render(order: Order, cmig: CMIG | None, rows: list[dict], total: float) -> 
     y += 16
 
     # REMETENTE sempre visível (o modelo dos Correios exige) — fonte reduzida, é secundário
-    # frente ao destinatário/produtos.
+    # frente ao destinatário/produtos. O ID interno do pedido vai à DIREITA deste grupo.
+    rem_top = y
     body.append(_zpl_text(20, y, 20, "REMETENTE"))
     y += 24
     if cmig:
-        body.append(_zpl_text(20, y, 20, (cmig.company_name or "")[:62]))
+        body.append(_zpl_text(20, y, 20, (cmig.company_name or "")[:44]))
         y += 22
         if cmig.cnpj:
             body.append(_zpl_text(20, y, 18, f"CNPJ: {cmig.cnpj}"))
             y += 21
         for ln in _cmig_address_lines(cmig)[:2]:
-            body.append(_zpl_text(20, y, 18, ln[:66]))
+            body.append(_zpl_text(20, y, 18, ln[:46]))
             y += 21
     else:
-        body.append(_zpl_text(20, y, 18, "(remetente nao informado - vincule a CMIG ao pedido)"))
+        body.append(_zpl_text(20, y, 18, "(remetente nao informado)"))
         y += 21
-    y += 6
+    # ID interno do pedido (sistema) — lado direito do grupo Remetente: numeral + Code128.
+    body.append(_zpl_text(520, rem_top, 20, "ID PEDIDO (sistema)"))
+    body.append(_zpl_text(520, rem_top + 24, 30, f"#{order.id}"))
+    body.append(_zpl_barcode128(520, rem_top + 58, 56, str(order.id)))
+    y = max(y, rem_top + 58 + 56) + 6
     body.append(f"^FO20,{y}^GB760,2,2^FS")
     y += 14
 
@@ -295,23 +300,17 @@ def _render(order: Order, cmig: CMIG | None, rows: list[dict], total: float) -> 
     body.append(f"^FO20,{y}^GB760,2,2^FS")
     y += 14
 
-    # ID interno do sistema — numeral + código de barras (Code128).
-    body.append(_zpl_text(20, y, 22, "ID PEDIDO (sistema)"))
-    body.append(_zpl_text(300, y, 26, f"#{order.id}"))
-    y += 30
-    body.append(_zpl_barcode128(20, y, 60, str(order.id)))
-    y += 74
     # Número da venda no marketplace — numeral + código de barras (Code128).
     venda = str(order.platform_order_id or "").strip()
     if venda:
         body.append(_zpl_text(20, y, 22, "VENDA (marketplace)"))
-        body.append(_zpl_text(300, y, 24, venda[:26]))
+        body.append(_zpl_text(320, y, 24, venda[:26]))
         y += 30
         body.append(_zpl_barcode128(20, y, 60, venda))
         y += 74
+        body.append(f"^FO20,{y}^GB760,2,2^FS")
+        y += 14
 
-    body.append(f"^FO20,{y}^GB760,2,2^FS")
-    y += 14
     body.append(_zpl_text(20, y, 22, "PRODUTOS"))
     body.append(_zpl_text(600, y, 22, "QTD"))
     body.append(_zpl_text(680, y, 22, "VALOR"))
@@ -331,20 +330,23 @@ def _render(order: Order, cmig: CMIG | None, rows: list[dict], total: float) -> 
 
         sku = (r.get("sku") or "").strip()
         ean = (r.get("ean") or "").strip()
-        # SKU — numeral + Code128.
+        eanx = 480  # coluna do EAN (SKU à esquerda, EAN à direita, na MESMA linha)
+        # Numerais SKU e EAN na mesma linha.
         body.append(_zpl_text(tx, ty, 20, f"SKU: {sku or '-'}"))
+        body.append(_zpl_text(eanx, ty, 20, f"EAN: {ean or '-'}"))
         ty += 24
+        # Barras lado a lado (Code128 do SKU à esquerda; EAN13 à direita, cai p/ Code128).
+        drew = False
         if sku:
             body.append(_zpl_barcode128(tx, ty, 54, sku))
-            ty += 62
-        # EAN — numeral + EAN13 (cai para Code128 se não for 12/13 dígitos).
-        body.append(_zpl_text(tx, ty, 20, f"EAN: {ean or '-'}"))
-        ty += 24
+            drew = True
         if ean:
-            bc = _zpl_barcode_ean(tx, ty, 54, ean) or _zpl_barcode128(tx, ty, 54, ean)
+            bc = _zpl_barcode_ean(eanx, ty, 54, ean) or _zpl_barcode128(eanx, ty, 54, ean)
             if bc:
                 body.append(bc)
-                ty += 62
+                drew = True
+        if drew:
+            ty += 62
 
         row_h = max(r.get("gfa_h", 0) + 10, ty - top)
         y = top + row_h + 12
@@ -354,7 +356,8 @@ def _render(order: Order, cmig: CMIG | None, rows: list[dict], total: float) -> 
     body.append(_zpl_text(470, y, 26, f"TOTAL: {_money(total)}"))
     y += 42
 
-    for ln in _wrap(DECLARACAO_TEXT, 62):
+    # Texto legal ocupando melhor a largura (antes ~62 chars deixavam muito branco à direita).
+    for ln in _wrap(DECLARACAO_TEXT, 80):
         body.append(_zpl_text(20, y, 20, ln))
         y += 24
     y += 20
@@ -365,7 +368,7 @@ def _render(order: Order, cmig: CMIG | None, rows: list[dict], total: float) -> 
     body.append(_zpl_text(450, y + 36, 18, "Assinatura do Declarante/Remetente"))
     y += 78
 
-    for ln in _wrap(OBSERVACAO_TEXT, 66):
+    for ln in _wrap(OBSERVACAO_TEXT, 88):
         body.append(_zpl_text(20, y, 18, ln))
         y += 22
     y += 20
