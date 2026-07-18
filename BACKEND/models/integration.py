@@ -37,6 +37,10 @@ class MarketplaceAccount(Base):
     platform_user_id = Column(String(200))
     platform_username = Column(String(200))
     shop_id = Column(Integer)  # Shopee shop ID
+    # Shopee: preenchidos por get_shop_info no callback (migration 132)
+    shop_region = Column(String(10))   # ex.: BR
+    shop_status = Column(String(20))   # NORMAL | FROZEN | BANNED
+    main_account_id = Column(Integer)  # conta principal (multi-loja) — nulo por ora
     api_key = Column(String(500))  # Para Bling
     is_active = Column(Boolean, nullable=False, default=False)
     is_official_store = Column(

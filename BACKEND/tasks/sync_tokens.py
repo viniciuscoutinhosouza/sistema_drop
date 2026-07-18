@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from database import task_db
 from models.integration import MarketplaceAccount
-from services import ml_auth, shopee_service
+from services import ml_auth, shopee_auth
 from tasks._job_wrapper import tracked_job
 
 
@@ -34,15 +34,10 @@ async def refresh_expiring_tokens():
                         # margin de 1h: renova se vence dentro da próxima hora.
                         await ml_auth.get_valid_token(integration, db, margin_seconds=3600)
                     elif integration.platform == "shopee":
-                        data = await shopee_service.refresh_shopee_token(
-                            integration.refresh_token, integration.shop_id
-                        )
-                        integration.access_token = data.get("access_token")
-                        integration.refresh_token = data.get(
-                            "refresh_token", integration.refresh_token
-                        )
-                        integration.token_expires_at = datetime.now(UTC) + timedelta(
-                            seconds=3600 * 4
+                        # Refresh proativo coordenado (lock por conta + re-leitura),
+                        # espelhando o ML — o refresh token da Shopee também rotaciona.
+                        await shopee_auth.get_valid_shopee_token(
+                            integration, db, margin_seconds=3600
                         )
 
                     await db.commit()

@@ -5,10 +5,13 @@ Uma CONTA é identificada unicamente por (platform, email, phone).
 Pode ser co-administrada por múltiplos ACs via AccountAdministrator.
 """
 
+import logging
 import random
 import secrets
 import string
 from datetime import UTC, datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 
 def _trunc_bytes(s: str, max_bytes: int) -> str:
@@ -729,15 +732,47 @@ async def shopee_callback(
     if not account:
         raise HTTPException(status_code=404, detail="Conta não encontrada")
 
+    # ── Isolamento: garante que a loja autorizada é a DESTA conta ──
+    # Se a conta já tinha um shop_id, e a autorização veio de OUTRA loja (outro vendedor logado
+    # no navegador), NÃO sobrescreve — o mesmo cuidado que o ML tem em ml_callback.
+    if account.shop_id and account.shop_id != resolved_shop_id:
+        from urllib.parse import quote
+
+        detail = quote(
+            f"Esperada a loja {account.shop_id}, mas você autorizou a loja {resolved_shop_id}. "
+            "Saia da Shopee no navegador (ou use uma aba anônima) e reconecte a loja correta."
+        )
+        return RedirectResponse(
+            f"{settings.FRONTEND_URL}/oauth/success"
+            f"?platform=shopee&status=wrong_account&detail={detail}"
+        )
+
+    # get_shop_info valida token+assinatura e traz nome/região/status da loja (antes ficavam vazios).
+    shop_name = None
+    try:
+        info = await shopee_service.get_shop_info(token_data["access_token"], resolved_shop_id)
+        shop_name = info.get("shop_name")
+        account.shop_region = info.get("region")
+        account.shop_status = info.get("status")
+    except Exception as exc:  # noqa: BLE001 — sem shop_info a conexão ainda vale; só loga
+        logger.warning("[Shopee] get_shop_info falhou no callback (shop=%s): %s", resolved_shop_id, exc)
+
     account.access_token = token_data["access_token"]
     account.refresh_token = token_data.get("refresh_token")
     account.token_expires_at = expires_at
     account.platform_user_id = str(resolved_shop_id)
+    account.platform_username = shop_name or account.platform_username
     account.shop_id = resolved_shop_id
     account.is_active = True
+    account.requires_reauth = False
     await db.commit()
 
-    frontend_url = f"{settings.FRONTEND_URL}/oauth/success?platform=shopee&status=connected"
+    from urllib.parse import quote
+
+    connected = quote(shop_name or str(resolved_shop_id))
+    frontend_url = (
+        f"{settings.FRONTEND_URL}/oauth/success?platform=shopee&status=connected&seller={connected}"
+    )
     return RedirectResponse(frontend_url)
 
 

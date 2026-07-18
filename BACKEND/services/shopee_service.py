@@ -17,8 +17,10 @@ from config import get_settings
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-SHOPEE_API_BASE = "https://partner.shopeemobile.com/api/v2"
-SHOPEE_AUTH_BASE = "https://partner.shopeemobile.com/api/v2/shop/auth_partner"
+# Host configurável por env (produção⇄sandbox). O `path` da assinatura é sempre `/api/v2/...`,
+# independente do host — trocar o host não afeta o cálculo do sign.
+SHOPEE_API_BASE = settings.SHOPEE_API_BASE or "https://partner.shopeemobile.com/api/v2"
+SHOPEE_AUTH_BASE = f"{SHOPEE_API_BASE}/shop/auth_partner"
 
 
 def _sign(path: str, timestamp: int, access_token: str = "", shop_id: int = 0) -> str:
@@ -90,7 +92,15 @@ async def refresh_shopee_token(refresh_token: str, shop_id: int) -> dict:
         )
     if resp.status_code != 200:
         raise HTTPException(status_code=400, detail=f"Erro ao renovar token Shopee: {resp.text}")
-    return resp.json()
+    data = resp.json()
+    # A Shopee devolve HTTP 200 com `error` preenchido em falha (ex.: error_auth,
+    # invalid_refresh_token) — sem esta checagem, um refresh falho passaria como sucesso.
+    if data.get("error"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Erro ao renovar token Shopee: {data.get('error')} {data.get('message') or ''}".strip(),
+        )
+    return data
 
 
 async def get_order_list(
@@ -151,6 +161,73 @@ async def get_order_list(
         cursor = resp_body.get("next_cursor") or ""
         if not cursor:
             break
+    return out
+
+
+async def get_shop_info(access_token: str, shop_id: int) -> dict:
+    """Dados da loja autorizada — nome, região, status. Serve de "ping" (valida token+assinatura)
+    e alimenta a validação de identidade no callback.
+
+    ⚠️ Campos exatos a confirmar contra loja real no Pré-voo (a doc SPA não expôs o schema
+    completo). O retorno hoje inclui, no nível raiz do JSON: `shop_name`, `region`, `status`,
+    `shop_id` (`error`="" em sucesso).
+    """
+    path = "/api/v2/shop/get_shop_info"
+    ts = int(time.time())
+    sign = _sign(path, ts, access_token, shop_id)
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"{SHOPEE_API_BASE}/shop/get_shop_info",
+            params={
+                "partner_id": settings.SHOPEE_PARTNER_ID,
+                "timestamp": ts,
+                "sign": sign,
+                "access_token": access_token,
+                "shop_id": shop_id,
+            },
+        )
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(
+            status_code=502, detail=f"Shopee get_shop_info: {data.get('message') or data.get('error')}"
+        )
+    return data
+
+
+async def get_shops_by_partner(page_size: int = 100, page_no: int = 0) -> list:
+    """Lojas que autorizaram este app (endpoint PÚBLICO — assinatura sem token/shop_id).
+
+    Útil para reconciliar quais lojas conectaram sem depender do token de cada uma.
+    ⚠️ Campos a confirmar no Pré-voo: `authed_shop_list[]` com `shop_id`, `shop_name`, `region`,
+    `status`, `expire_time`; paginação por `more`/`page_no`.
+    """
+    path = "/api/v2/public/get_shops_by_partner"
+    out: list = []
+    while True:
+        ts = int(time.time())
+        # Base pública: partner_id + path + timestamp (sem access_token/shop_id).
+        sign = _sign(path, ts)
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(
+                f"{SHOPEE_API_BASE}/public/get_shops_by_partner",
+                params={
+                    "partner_id": settings.SHOPEE_PARTNER_ID,
+                    "timestamp": ts,
+                    "sign": sign,
+                    "page_size": page_size,
+                    "page_no": page_no,
+                },
+            )
+        data = resp.json()
+        if data.get("error"):
+            raise HTTPException(
+                status_code=502,
+                detail=f"Shopee get_shops_by_partner: {data.get('message') or data.get('error')}",
+            )
+        out.extend(data.get("authed_shop_list", []) or [])
+        if not data.get("more"):
+            break
+        page_no += 1
     return out
 
 

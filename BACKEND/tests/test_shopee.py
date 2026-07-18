@@ -94,3 +94,92 @@ async def test_get_order_list_propaga_erro(monkeypatch):
 
     with pytest.raises(HTTPException):
         await s.get_order_list("tok", 123, 0, 3600)
+
+
+@pytest.mark.asyncio
+async def test_shopee_auth_reusa_token_valido(monkeypatch):
+    """Token ainda valido -> caminho rapido, sem chamar refresh."""
+    from datetime import UTC, datetime, timedelta
+    from services import shopee_auth
+
+    class Acc:
+        id = 1; platform = "shopee"
+        access_token = "tok-valido"
+        refresh_token = "r"; shop_id = 123
+        token_expires_at = datetime.now(UTC) + timedelta(hours=3)
+        requires_reauth = False
+
+    async def nao_chamar(*a, **k):
+        raise AssertionError("nao deveria renovar token valido")
+    monkeypatch.setattr(shopee_auth.shopee_service, "refresh_shopee_token", nao_chamar)
+
+    tok = await shopee_auth.get_valid_shopee_token(Acc(), db=None)
+    assert tok == "tok-valido"
+
+
+@pytest.mark.asyncio
+async def test_shopee_auth_renova_e_rotaciona(monkeypatch):
+    """Token vencido -> renova, salva NOVOS access+refresh (rotacao) e limpa requires_reauth."""
+    from datetime import UTC, datetime, timedelta
+    from services import shopee_auth
+
+    class Acc:
+        id = 2; platform = "shopee"
+        access_token = "velho"; refresh_token = "r-velho"; shop_id = 9
+        token_expires_at = datetime.now(UTC) - timedelta(minutes=1)  # vencido
+        requires_reauth = True
+
+    class FakeDB:
+        async def refresh(self, _o): pass
+        async def commit(self): pass
+
+    async def fake_refresh(refresh_token, shop_id):
+        assert refresh_token == "r-velho" and shop_id == 9
+        return {"access_token": "novo", "refresh_token": "r-novo", "expire_in": 14400}
+    monkeypatch.setattr(shopee_auth.shopee_service, "refresh_shopee_token", fake_refresh)
+
+    acc = Acc()
+    tok = await shopee_auth.get_valid_shopee_token(acc, FakeDB())
+    assert tok == "novo"
+    assert acc.refresh_token == "r-novo"      # rotacionou
+    assert acc.requires_reauth is False
+
+
+@pytest.mark.asyncio
+async def test_shopee_auth_refuso_marca_reauth(monkeypatch):
+    """Refresh invalido -> marca requires_reauth e levanta 401 de reconectar."""
+    from datetime import UTC, datetime, timedelta
+    from fastapi import HTTPException
+    from services import shopee_auth
+
+    class Acc:
+        id = 3; platform = "shopee"; description = "Loja X"
+        access_token = "velho"; refresh_token = "r"; shop_id = 9
+        token_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        requires_reauth = False; platform_username = None
+
+    class FakeDB:
+        async def refresh(self, _o): pass
+        async def commit(self): pass
+
+    async def fake_refresh(*a, **k):
+        raise HTTPException(status_code=400, detail="error_auth invalid refresh")
+    monkeypatch.setattr(shopee_auth.shopee_service, "refresh_shopee_token", fake_refresh)
+
+    acc = Acc()
+    with pytest.raises(HTTPException) as e:
+        await shopee_auth.get_valid_shopee_token(acc, FakeDB())
+    assert e.value.status_code == 401
+    assert acc.requires_reauth is True
+
+
+@pytest.mark.asyncio
+async def test_shopee_auth_recusa_conta_nao_shopee():
+    from fastapi import HTTPException
+    from services import shopee_auth
+
+    class Acc:
+        platform = "mercadolivre"
+    with pytest.raises(HTTPException) as e:
+        await shopee_auth.get_valid_shopee_token(Acc(), db=None)
+    assert e.value.status_code == 400
