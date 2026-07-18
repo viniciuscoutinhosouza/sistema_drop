@@ -567,6 +567,37 @@
       </div>
     </div>
 
+    <!-- Paginação rodapé (mesmos controles do topo) — só quando há pedidos -->
+    <div v-if="!loading && orders.length" class="d-flex align-items-center justify-content-between mt-2 flex-wrap" style="gap:.5rem">
+      <div class="d-flex align-items-center" style="gap:.25rem">
+        <select v-model="pageSize" class="form-control form-control-sm" style="width:70px" @change="onPageSizeChange">
+          <option :value="10">10</option>
+          <option :value="20">20</option>
+          <option :value="50">50</option>
+          <option :value="100">100</option>
+        </select>
+        <button class="btn btn-sm btn-outline-secondary" :disabled="currentPage <= 1" @click="goPage(1)" title="Primeira">
+          <i class="fas fa-angle-double-left"></i>
+        </button>
+        <button class="btn btn-sm btn-outline-secondary" :disabled="currentPage <= 1" @click="prevPage">
+          <i class="fas fa-angle-left"></i>
+        </button>
+        <template v-for="p in visiblePages" :key="`bottom-${p}`">
+          <button class="btn btn-sm" :class="p === currentPage ? 'btn-primary' : 'btn-outline-secondary'" @click="goPage(p)">{{ p }}</button>
+        </template>
+        <button class="btn btn-sm btn-outline-secondary" :disabled="currentPage >= totalPages" @click="nextPage">
+          <i class="fas fa-angle-right"></i>
+        </button>
+        <button class="btn btn-sm btn-outline-secondary" :disabled="currentPage >= totalPages" @click="goPage(totalPages)" title="Última">
+          <i class="fas fa-angle-double-right"></i>
+        </button>
+        <select v-model.number="currentPage" class="form-control form-control-sm" style="width:70px" @change="loadOrders">
+          <option v-for="p in totalPages" :key="`bottom-opt-${p}`" :value="p">{{ p }}</option>
+        </select>
+      </div>
+      <span class="text-muted small">{{ total }} pedidos</span>
+    </div>
+
     <!-- Modais -->
     <DeliveryModal :show="showDeliveryModal" :order="selectedOrder" @close="showDeliveryModal = false" />
     <InvoicesModal :show="showInvoicesModal" :order="invoicesOrder" @close="showInvoicesModal = false" />
