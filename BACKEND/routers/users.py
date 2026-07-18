@@ -319,9 +319,16 @@ async def update_user(
         new_pid = body["profile_id"]
         if new_pid is not None:
             from models.user import UserProfile
-            r = await db.execute(select(UserProfile).where(UserProfile.id == new_pid))
-            if not r.scalar_one_or_none():
+            profile = (
+                await db.execute(select(UserProfile).where(UserProfile.id == new_pid))
+            ).scalar_one_or_none()
+            if not profile:
                 raise HTTPException(status_code=404, detail="Perfil de acesso não encontrado")
+            # O `base_role` do perfil É o papel JWT/API usado nos require_role() (ver UserProfile).
+            # Sem sincronizar aqui, o usuário via o perfil novo na tela (menus) mas o backend
+            # continuava autorizando pelo role antigo — foi o que impediu o Ianelli (perfil 'admin',
+            # role 'go') de enviar ao eShip.
+            user.role = profile.base_role
         user.profile_id = new_pid
 
     await db.commit()
