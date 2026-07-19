@@ -7,12 +7,25 @@
 
     <div class="card">
       <div class="card-header d-flex align-items-center flex-wrap" style="gap:.5rem">
+        <!-- Filtro por CMIG (inclui "Todas as CMIGs") -->
         <div class="form-group mb-0" style="min-width:280px">
           <select class="form-control form-control-sm" v-model="cmigId" @change="load" :disabled="loading">
-            <option :value="null" disabled>Selecione uma CMIG com eShip…</option>
+            <option :value="null" disabled>Selecione…</option>
+            <option value="all">★ Todas as CMIGs</option>
             <option v-for="c in cmigsAtivas" :key="c.cmig_id" :value="c.cmig_id">
               {{ c.company_name }}{{ c.cnpj ? ` — ${c.cnpj}` : (c.cpf ? ` — ${c.cpf}` : '') }}
             </option>
+          </select>
+        </div>
+        <!-- Filtro por status (client-side) -->
+        <div class="form-group mb-0" style="min-width:180px">
+          <select class="form-control form-control-sm" v-model="statusFilter" :disabled="loading || !data">
+            <option value="">Todos os status</option>
+            <option value="conciliado">Conciliados</option>
+            <option value="so_sistema">Só no sistema</option>
+            <option value="indeterminado">Indeterminados</option>
+            <option value="falhou">Falhou envio</option>
+            <option value="cancelado">Cancelados</option>
           </select>
         </div>
         <button class="btn btn-sm btn-outline-primary" :disabled="!cmigId || loading" @click="load">
@@ -26,8 +39,8 @@
       <div class="card-body">
         <div v-if="!cmigId" class="text-center text-muted py-5">
           <i class="fas fa-warehouse fa-2x mb-2 d-block"></i>
-          Selecione uma CMIG configurada com o eShip para conciliar os pedidos enviados
-          com as ordens que estão de fato no WMS.
+          Selecione <strong>uma CMIG</strong> ou <strong>Todas as CMIGs</strong> para conciliar os pedidos
+          enviados ao eShip com as ordens que estão de fato no WMS.
         </div>
 
         <div v-else-if="loading" class="text-center text-muted py-5">
@@ -48,15 +61,15 @@
             <span v-if="data.cancelados_count" class="badge badge-dark p-2">
               Cancelados: {{ data.cancelados_count }}
             </span>
-            <span class="badge badge-info p-2">No WMS (empresa): {{ data.wms_count }}</span>
+            <span class="badge badge-info p-2">No WMS: {{ data.wms_count }}</span>
           </div>
 
           <!-- Avisos de qualidade da consulta ao WMS -->
-          <div v-if="data.wms_error" class="alert alert-danger py-2 small">
+          <div v-for="(err, i) in wmsErrors" :key="i" class="alert alert-danger py-2 small">
             <i class="fas fa-exclamation-triangle mr-1"></i>
-            Não foi possível consultar o eShip: {{ data.wms_error }}. A lista mostra apenas o lado do sistema.
+            Falha ao consultar o eShip: {{ err }}. A lista mostra o lado do sistema; divergências ficam indeterminadas.
           </div>
-          <div v-else-if="wmsMeta.escopo_indefinido" class="alert alert-warning py-2 small">
+          <div v-if="wmsMeta.escopo_indefinido" class="alert alert-warning py-2 small">
             <i class="fas fa-exclamation-circle mr-1"></i>
             A CMIG não tem CNPJ/CPF cadastrado — sem ele não dá para isolar a empresa no WMS multi-tenant.
             Cadastre o documento na CMIG para conciliar.
@@ -64,15 +77,19 @@
           <div v-else-if="wmsMeta.parcial || wmsMeta.truncado" class="alert alert-warning py-2 small">
             <i class="fas fa-exclamation-circle mr-1"></i>
             Varredura do WMS <strong>incompleta</strong>{{ wmsMeta.truncado ? ' (muitas páginas)' : '' }}{{ wmsMeta.parcial ? ' (falha em páginas)' : '' }} —
-            a coluna "Só no sistema" pode conter falsos positivos. Atualize novamente.
+            os "Só no sistema" viram "Indeterminado". Atualize novamente.
           </div>
 
           <!-- Enviados pelo sistema (com estado de conciliação) -->
-          <h2 class="h6 text-muted mt-2">Pedidos enviados ao eShip pelo sistema</h2>
+          <h2 class="h6 text-muted mt-2">
+            Pedidos enviados ao eShip pelo sistema
+            <span v-if="statusFilter" class="badge badge-light">filtro: {{ statusLabel(statusFilter) }} ({{ filteredLocal.length }})</span>
+          </h2>
           <div class="table-responsive">
             <table class="table table-sm table-hover">
               <thead>
                 <tr>
+                  <th v-if="isAll">CMIG</th>
                   <th style="width:70px">Pedido</th>
                   <th>numeroOrigem</th>
                   <th>Comprador</th>
@@ -82,8 +99,9 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in data.local" :key="row.order_id"
+                <tr v-for="row in filteredLocal" :key="row.order_id"
                     :class="{ 'table-danger': isDivergencia(row) }">
+                  <td v-if="isAll" class="small">{{ row.cmig_name || '—' }}</td>
                   <td class="text-monospace">#{{ row.order_id }}</td>
                   <td class="text-monospace small">{{ row.numero_origem }}</td>
                   <td class="small">{{ row.buyer_name || '—' }}</td>
@@ -98,7 +116,7 @@
                     <span v-else-if="row.conciliado" class="badge badge-success">
                       <i class="fas fa-check mr-1"></i>Conciliado
                     </span>
-                    <span v-else-if="!data.wms_confiavel" class="badge badge-secondary"
+                    <span v-else-if="!row.wms_confiavel" class="badge badge-secondary"
                           title="Não deu para varrer o WMS por completo — situação indeterminada">
                       <i class="fas fa-question mr-1"></i>Indeterminado
                     </span>
@@ -109,8 +127,10 @@
                   <td class="small">{{ row.wms_status || '—' }}</td>
                   <td><OrderEShipActions :order="asOrder(row)" @updated="load" /></td>
                 </tr>
-                <tr v-if="!data.local.length">
-                  <td colspan="6" class="text-center text-muted py-3">Nenhum pedido enviado ao eShip para esta CMIG.</td>
+                <tr v-if="!filteredLocal.length">
+                  <td :colspan="isAll ? 7 : 6" class="text-center text-muted py-3">
+                    {{ statusFilter ? 'Nenhum pedido neste status.' : 'Nenhum pedido enviado ao eShip.' }}
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -126,6 +146,7 @@
               <table class="table table-sm">
                 <thead>
                   <tr>
+                    <th v-if="isAll">CMIG</th>
                     <th>numeroOrigem</th>
                     <th>Ordem eShip</th>
                     <th>Destinatário</th>
@@ -134,7 +155,11 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="w in data.so_eship" :key="w.numero_origem">
+                  <tr v-for="w in data.so_eship" :key="`${w.eship_order_id || ''}-${w.numero_origem}`">
+                    <td v-if="isAll" class="small">
+                      <span v-if="w.cmig_ambiguo" class="text-muted" title="idTipo compartilhado — não dá para atribuir a uma CMIG">(compartilhado)</span>
+                      <span v-else>{{ w.cmig_name || '—' }}</span>
+                    </td>
                     <td class="text-monospace small">{{ w.numero_origem }}</td>
                     <td class="text-monospace small">{{ w.eship_order_id || '—' }}</td>
                     <td class="small">{{ w.destinatario || '—' }}</td>
@@ -164,9 +189,35 @@ const loadingCmigs = ref(false)
 const cmigId = ref(null)
 const data = ref(null)
 const loading = ref(false)
+const statusFilter = ref('')
 
 const cmigsAtivas = computed(() => cmigs.value.filter((c) => c.eship_active))
+const isAll = computed(() => cmigId.value === 'all')
 const wmsMeta = computed(() => data.value?.wms_meta || {})
+const wmsErrors = computed(() => {
+  if (!data.value) return []
+  if (data.value.wms_errors) return data.value.wms_errors          // consolidado
+  return data.value.wms_error ? [data.value.wms_error] : []        // per-CMIG
+})
+
+const STATUS_LABELS = {
+  conciliado: 'Conciliados', so_sistema: 'Só no sistema',
+  indeterminado: 'Indeterminados', falhou: 'Falhou envio', cancelado: 'Cancelados',
+}
+function statusLabel(s) { return STATUS_LABELS[s] || s }
+
+// Estado derivado de cada linha (mesma lógica dos badges) — usado pelo filtro por status.
+function estadoOf(row) {
+  if (row.cancelado) return 'cancelado'
+  if (row.falhou) return 'falhou'
+  if (row.conciliado) return 'conciliado'
+  if (!row.wms_confiavel) return 'indeterminado'
+  return 'so_sistema'
+}
+const filteredLocal = computed(() => {
+  const rows = data.value?.local || []
+  return statusFilter.value ? rows.filter((r) => estadoOf(r) === statusFilter.value) : rows
+})
 
 // Mapeia a linha da conciliação para o shape que OrderEShipActions consome (order.eship_*).
 function asOrder(row) {
@@ -187,10 +238,9 @@ function fmtDate(v) {
   return v ? formatDateTime(v) : '—'
 }
 
-// Divergência real (linha em vermelho) = enviado, presente só no sistema, com o WMS confiável.
-// Cancelado, falhou-sem-id e WMS incompleto NÃO são divergência (rótulo próprio / indeterminado).
+// Divergência real (linha em vermelho) = enviado, só no sistema, com o WMS confiável (por linha).
 function isDivergencia(row) {
-  return !row.conciliado && !row.cancelado && !row.falhou && !!data.value?.wms_confiavel
+  return estadoOf(row) === 'so_sistema'
 }
 
 async function loadCmigs() {
@@ -205,13 +255,26 @@ async function loadCmigs() {
   }
 }
 
+// Normaliza os dois payloads (consolidado e per-CMIG) para um shape único de renderização:
+// cada linha local ganha `wms_confiavel` (no per-CMIG é global; no consolidado já vem por linha).
+function normalize(res) {
+  if (!res.consolidado) {
+    const conf = !!res.wms_confiavel
+    for (const r of res.local || []) if (r.wms_confiavel === undefined) r.wms_confiavel = conf
+  }
+  return res
+}
+
 async function load() {
   if (!cmigId.value) return
   loading.value = true
   data.value = null
   try {
-    const { data: res } = await api.get(`/integrations/eship/cmigs/${cmigId.value}/reconciliacao`)
-    data.value = res
+    const url = isAll.value
+      ? '/integrations/eship/reconciliacao'
+      : `/integrations/eship/cmigs/${cmigId.value}/reconciliacao`
+    const { data: res } = await api.get(url)
+    data.value = normalize(res)
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao conciliar com o eShip')
   } finally {

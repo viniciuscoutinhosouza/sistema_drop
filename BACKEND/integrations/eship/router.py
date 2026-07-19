@@ -265,6 +265,135 @@ async def eship_reconciliation(
     }
 
 
+@router.get("/reconciliacao")
+async def eship_reconciliation_all(
+    current_user: User = Depends(require_role("admin", "ugo")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Conciliação CONSOLIDADA: todos os pedidos enviados ao eShip × ordens no WMS, de TODAS as
+    CMIGs acessíveis ao usuário, numa listagem só. Alimenta o modo "Todas as CMIGs" da Armazenaki.
+
+    Varre o WMS UMA vez por endpoint (base_url+api_key): várias CMIGs podem ser o mesmo lojista
+    (mesmo idTipo) — não duplica. Cada linha traz `cmig_id`/`cmig_name`. A conciliação é dirigida
+    pelo lado LOCAL (autoritativo: `Order.cmig_id`); o WMS enriquece o status. A confiabilidade do
+    WMS é POR GRUPO (uma CMIG cujo grupo veio parcial/truncado não gera divergência-fantasma).
+    O filtro por CMIG e por status é aplicado no cliente sobre este payload.
+    """
+    allowed = await _accessible_cmig_ids(db, current_user)  # None = admin (todas)
+    q = select(CMIG)
+    if allowed is not None:
+        if not allowed:
+            return {"cmigs": [], "local": [], "so_eship": [], "conciliados_count": 0,
+                    "so_sistema_count": 0, "so_eship_count": 0, "cancelados_count": 0,
+                    "enviados_count": 0, "wms_count": 0, "wms_errors": [], "consolidado": True}
+        q = q.where(CMIG.id.in_(allowed))
+    cmigs = (await db.execute(q.order_by(CMIG.company_name))).scalars().all()
+    cmig_by_id = {c.id: c for c in cmigs}
+    accessible_ids = set(cmig_by_id)
+
+    # LOCAL: pedidos com marca eShip de TODAS as CMIGs acessíveis (mesmo filtro canônico do
+    # per-CMIG). Cada linha carrega o cmig_id/cmig_name reais (Order.cmig_id é autoritativo).
+    local_orders = (
+        await db.execute(
+            select(Order).where(
+                Order.cmig_id.in_(accessible_ids),
+                or_(
+                    Order.eship_order_id.isnot(None),
+                    Order.eship_dispatch_status.in_(["sent", "partial", "cancelled", "failed"]),
+                ),
+            ).order_by(Order.eship_dispatch_at.desc().nullslast(), Order.id.desc())
+        )
+    ).scalars().all()
+    local = [
+        {
+            "order_id": o.id,
+            "cmig_id": o.cmig_id,
+            "cmig_name": cmig_by_id[o.cmig_id].company_name if o.cmig_id in cmig_by_id else None,
+            "numero_origem": _num_origem_key(o),
+            "eship_order_id": o.eship_order_id,
+            "dispatch_status": o.eship_dispatch_status,
+            "cancelado": o.eship_dispatch_status == "cancelled",
+            "falhou": o.eship_dispatch_status == "failed" and not o.eship_order_id,
+            "nfe_attached": bool(o.eship_nfe_attached),
+            "label_attached": bool(o.eship_label_attached),
+            "dispatch_error": o.eship_dispatch_error,
+            "buyer_name": o.buyer_name,
+            "platform": o.platform,
+        }
+        for o in local_orders
+    ]
+
+    # WMS (ao vivo, uma varredura por endpoint). Best-effort: erros agregados por grupo.
+    res = await service.list_eship_orders_multi(db, cmigs)
+    wms = res["ordens"]
+    by_cmig = res["by_cmig"]
+    wms_errors = res["errors"]
+
+    wms_by_num = {w["numero_origem"]: w for w in wms if w.get("numero_origem")}
+    local_nums = {x["numero_origem"] for x in local}
+    for x in local:
+        w = wms_by_num.get(x["numero_origem"])
+        x["conciliado"] = w is not None
+        x["wms_status"] = w.get("status_desc") if w else None
+        x["wms_status_id"] = w.get("status_id") if w else None
+        # Confiabilidade do WMS do GRUPO desta CMIG (não um flag global).
+        x["wms_confiavel"] = bool(by_cmig.get(x["cmig_id"], {}).get("confiavel"))
+
+    # "Só no eShip": ordens no WMS sem pedido local NAS CMIGs acessíveis.
+    so_eship = [w for w in wms if w.get("numero_origem") and w["numero_origem"] not in local_nums]
+    # LGPD/isolação: remove do "só no eShip" qualquer numeroOrigem que pertença a um pedido de
+    # CMIG FORA do escopo do usuário (mesmo lojista/idTipo pode trazer ordem de galpão vizinho).
+    if so_eship:
+        nums = [w["numero_origem"] for w in so_eship]
+        fora = set()
+        by_pid = (
+            await db.execute(
+                select(Order.platform_order_id, Order.cmig_id).where(
+                    Order.platform_order_id.in_(nums)
+                )
+            )
+        ).all()
+        for pid, cid in by_pid:
+            if pid and cid not in accessible_ids:
+                fora.add(pid)
+        int_nums = [int(n) for n in nums if n.isdigit()]
+        if int_nums:
+            by_id = (
+                await db.execute(
+                    select(Order.id, Order.cmig_id).where(Order.id.in_(int_nums))
+                )
+            ).all()
+            for oid, cid in by_id:
+                if cid not in accessible_ids:
+                    fora.add(str(oid))
+        so_eship = [w for w in so_eship if w["numero_origem"] not in fora]
+
+    conciliados = [x for x in local if x["conciliado"]]
+    # Divergência real só quando o WMS do grupo daquela CMIG é confiável.
+    so_sistema = [
+        x for x in local
+        if not x["conciliado"] and not x["cancelado"] and not x["falhou"] and x["wms_confiavel"]
+    ]
+    cancelados = [x for x in local if x["cancelado"]]
+    return {
+        "cmigs": [
+            {"cmig_id": c.id, "company_name": c.company_name,
+             "eship_active": bool(getattr(c, "eship_active", 0))}
+            for c in cmigs
+        ],
+        "local": local,
+        "so_eship": so_eship,
+        "conciliados_count": len(conciliados),
+        "so_sistema_count": len(so_sistema),
+        "so_eship_count": len(so_eship),
+        "cancelados_count": len(cancelados),
+        "enviados_count": len([x for x in local if not x["cancelado"]]),
+        "wms_count": len(wms),
+        "wms_errors": wms_errors,
+        "consolidado": True,
+    }
+
+
 @router.get("/cmigs/{cmig_id}/produtos")
 async def list_eship_products_endpoint(
     cmig_id: int,

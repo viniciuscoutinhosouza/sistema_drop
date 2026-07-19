@@ -88,6 +88,10 @@ _PRODUTOS_CACHE_TTL = 300  # segundos — evita re-buscar o catálogo inteiro a 
 # Varredura do saldo (GetSaldoEstoque já vem escopado ao depósito da conta — costuma ser 1 pág)
 _SALDO_MAX_PAGES = 100
 _produtos_cache: dict[int, tuple[float, dict]] = {}
+# Cache curto da varredura de ORDENS por endpoint (base_url, api_key). Evita martelar o WMS em
+# cliques repetidos de "Atualizar" e no consolidado (N CMIGs / 1 endpoint) — ainda "ao vivo".
+_ORDENS_SCAN_TTL = 15  # segundos
+_ordens_scan_cache: dict[tuple, tuple[float, dict]] = {}
 
 
 def _digits(s: str | None) -> str:
@@ -1460,23 +1464,20 @@ def _eship_ordem_row(o: dict) -> dict:
     }
 
 
-async def list_eship_orders(db: AsyncSession, cmig_id: int) -> dict:
-    """Lista as ORDENS do eShip (WMS) da EMPRESA (CMIG), varrendo o GetOrdem paginado.
+async def _scan_ordens(creds: EShipCreds, use_cache: bool = True) -> dict:
+    """Varre o webServiceGetOrdem paginado de UM endpoint (best-effort) e devolve as ordens CRUAS.
 
-    Espelha `list_all_eship_products`: WMS multi-tenant → varre as páginas (best-effort,
-    concorrência limitada, deadline) e filtra no cliente por `remetente.cnpj`/`cpf`. Marca
-    `parcial`/`truncado` quando não deu para varrer tudo. Sem cache (a conciliação quer o
-    estado ao vivo).
+    Espelha `list_all_eship_products`: concorrência limitada, deadline; `parcial` (páginas
+    falhas) / `truncado` (mais páginas que o teto). O filtro por empresa (CNPJ/CPF/idTipo) e a
+    serialização ficam a cargo de quem chama — este helper só busca. Cache curto por endpoint
+    (`_ORDENS_SCAN_TTL`) para não martelar o WMS; varredura parcial NÃO é cacheada.
     """
-    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
-    creds = creds_from_cmig(cmig)
-    if not creds:
-        raise EShipError("CMIG sem integração eShip ativa/configurada.")
-
-    cnpj, cpf = _digits(getattr(cmig, "cnpj", None)), _digits(getattr(cmig, "cpf", None))
-    if not cnpj and not cpf:
-        return {"ordens": [], "total": 0, "total_wms": None, "paginas": 0,
-                "truncado": False, "parcial": False, "escopo_indefinido": True}
+    cache_key = (creds.base_url, creds.api_key)
+    now = time.monotonic()
+    if use_cache:
+        cached = _ordens_scan_cache.get(cache_key)
+        if cached and (now - cached[0]) < _ORDENS_SCAN_TTL:
+            return cached[1]
 
     payload = {"incluirInfo": True, "quantidadeRegistros": _PRODUTOS_PAGE_SIZE}
     first = await client.call(creds, FUNC_GET_ORDEM, {**payload, "pagina": 1})
@@ -1511,23 +1512,170 @@ async def list_eship_orders(db: AsyncSession, cmig_id: int) -> dict:
                 timeout=_PRODUTOS_TOTAL_DEADLINE,
             )
         except TimeoutError:
-            logger.warning("[eShip] conciliação cmig=%s excedeu %ss; parcial",
-                           cmig_id, _PRODUTOS_TOTAL_DEADLINE)
+            logger.warning("[eShip] varredura de ordens excedeu %ss; parcial",
+                           _PRODUTOS_TOTAL_DEADLINE)
 
     paginas_falhas = sum(1 for pg in range(1, cap + 1) if by_page.get(pg) is None)
-    ordens = [
-        _eship_ordem_row(o)
-        for pg in range(1, cap + 1) for o in (by_page.get(pg) or [])
-        if isinstance(o, dict) and _ordem_da_cmig(o, cnpj, cpf)
-    ]
-    return {
-        "ordens": ordens,
-        "total": len(ordens),
+    raw = [o for pg in range(1, cap + 1) for o in (by_page.get(pg) or []) if isinstance(o, dict)]
+    result = {
+        "raw": raw,
         "total_wms": pag.get("totalObjetos"),
         "paginas": total_pages,
         "truncado": total_pages > cap,
         "parcial": paginas_falhas > 0,
+    }
+    if not result["parcial"]:  # não fixa uma varredura furada no cache
+        _ordens_scan_cache[cache_key] = (now, result)
+    return result
+
+
+async def list_eship_orders(db: AsyncSession, cmig_id: int) -> dict:
+    """Lista as ORDENS do eShip (WMS) da EMPRESA (CMIG), varrendo o GetOrdem paginado.
+
+    WMS multi-tenant → varre as páginas (`_scan_ordens`) e filtra no cliente por
+    `remetente.cnpj`/`cpf`. Marca `parcial`/`truncado` quando não deu para varrer tudo.
+    """
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    creds = creds_from_cmig(cmig)
+    if not creds:
+        raise EShipError("CMIG sem integração eShip ativa/configurada.")
+
+    cnpj, cpf = _digits(getattr(cmig, "cnpj", None)), _digits(getattr(cmig, "cpf", None))
+    if not cnpj and not cpf:
+        return {"ordens": [], "total": 0, "total_wms": None, "paginas": 0,
+                "truncado": False, "parcial": False, "escopo_indefinido": True}
+
+    scan = await _scan_ordens(creds)
+    ordens = [_eship_ordem_row(o) for o in scan["raw"] if _ordem_da_cmig(o, cnpj, cpf)]
+    return {
+        "ordens": ordens,
+        "total": len(ordens),
+        "total_wms": scan["total_wms"],
+        "paginas": scan["paginas"],
+        "truncado": scan["truncado"],
+        "parcial": scan["parcial"],
         "escopo_indefinido": False,
+    }
+
+
+def _attribute_cmig(o: dict, cmigs: list):
+    """Atribui uma ordem do WMS a UMA CMIG do grupo (mesmo endpoint eShip).
+
+    ESCOPO (anti-vazamento LGPD): só é "nossa" a ordem cujo `remetente` casa o CNPJ/CPF de
+    alguma CMIG acessível — o WMS é multi-tenant e devolve ordens de EMPRESAS DE TERCEIROS que
+    NÃO são CMIGs do sistema; essas são descartadas. O `idTipo` é apenas DESEMPATE entre CMIGs
+    acessíveis que compartilham o mesmo documento (mesmo lojista) — nunca cruza documentos.
+
+    Devolve `(cmig|None, ambiguo, in_scope)`:
+    - `in_scope=False` → ordem de terceiro, NÃO exibir;
+    - `(cmig, False, True)` → atribuída a uma CMIG acessível;
+    - `(None, True, True)` → é de alguma CMIG acessível (documento casa) mas não dá para dizer
+      qual (documento+idTipo compartilhados) — rótulo "(compartilhado)", sem vazamento.
+    """
+    rem = o.get("remetente") if isinstance(o.get("remetente"), dict) else {}
+    dcnpj, dcpf = _digits(rem.get("cnpj")), _digits(rem.get("cpf"))
+    matched = [
+        c for c in cmigs
+        if (dcnpj and _digits(getattr(c, "cnpj", None)) == dcnpj)
+        or (dcpf and _digits(getattr(c, "cpf", None)) == dcpf)
+    ]
+    if not matched:
+        return None, False, False  # externa/terceiro → fora de escopo
+    if len(matched) == 1:
+        return matched[0], False, True
+    idt = o.get("idTipo")  # desempate entre CMIGs que compartilham o documento
+    if idt is not None:
+        by_idt = [c for c in matched if getattr(c, "eship_id_tipo", None) == idt]
+        if len(by_idt) == 1:
+            return by_idt[0], False, True
+    return None, True, True  # dentro do escopo, mas indistinguível → compartilhado
+
+
+async def list_eship_orders_multi(db: AsyncSession, cmigs: list) -> dict:
+    """Varre o WMS de TODAS as CMIGs dadas, UMA vez por endpoint (base_url+api_key).
+
+    Várias CMIGs podem ser o MESMO lojista no eShip (mesmo apikey + mesmo idTipo). Para não
+    duplicar, agrupamos por endpoint e varremos cada um só uma vez (em paralelo, com teto de
+    concorrência e DEADLINE AGREGADO); cada ordem é escopada+atribuída por `_attribute_cmig`
+    (ordens de terceiros são descartadas — anti-vazamento). Best-effort.
+
+    Retorna também `by_cmig[cmig_id]` = confiabilidade da varredura do grupo daquela CMIG —
+    a conciliação usa isso para não marcar "só no sistema" (divergência) quando o WMS do grupo
+    veio parcial/truncado/erro/deadline (a ausência é INDETERMINADA, não real).
+    """
+    endpoints: dict[tuple, list] = {}
+    for c in cmigs:
+        creds = creds_from_cmig(c)
+        if not creds:
+            continue  # inativa/sem credencial → não entra na varredura do WMS
+        endpoints.setdefault((creds.base_url, creds.api_key), [creds, []])[1].append(c)
+
+    # Varre os endpoints em paralelo (teto de concorrência), com deadline AGREGADO — evita
+    # N×deadline sequencial estourando o proxy quando há muitas apikeys distintas.
+    results: dict[tuple, dict] = {}
+    sem = asyncio.Semaphore(_PRODUTOS_FETCH_CONCURRENCY)
+
+    async def _work(ck: tuple, creds: EShipCreds) -> None:
+        async with sem:
+            try:
+                results[ck] = {"scan": await _scan_ordens(creds)}
+            except EShipError as e:
+                results[ck] = {"error": str(e)}
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*[_work(ck, creds) for ck, (creds, _grp) in endpoints.items()]),
+            timeout=_PRODUTOS_TOTAL_DEADLINE,
+        )
+    except TimeoutError:
+        logger.warning("[eShip] conciliação consolidada excedeu deadline agregado (%ss)",
+                       _PRODUTOS_TOTAL_DEADLINE)
+
+    ordens: list = []
+    seen: set = set()
+    by_cmig: dict[int, dict] = {}
+    errors: list = []
+    for ck, (creds, grp) in endpoints.items():
+        r = results.get(ck)
+        if r is None:  # não terminou dentro do deadline agregado
+            for c in grp:
+                by_cmig[c.id] = {"parcial": True, "truncado": False,
+                                 "error": None, "confiavel": False}
+            continue
+        if "error" in r:
+            errors.append(r["error"])
+            for c in grp:
+                by_cmig[c.id] = {"parcial": False, "truncado": False,
+                                 "error": r["error"], "confiavel": False}
+            continue
+        scan = r["scan"]
+        rel = {"parcial": scan["parcial"], "truncado": scan["truncado"],
+               "error": None, "confiavel": not scan["parcial"] and not scan["truncado"]}
+        for c in grp:
+            by_cmig[c.id] = rel
+        for o in scan["raw"]:
+            cmig, ambiguo, in_scope = _attribute_cmig(o, grp)
+            if not in_scope:
+                continue  # ordem de terceiro (documento não casa nenhuma CMIG acessível)
+            row = _eship_ordem_row(o)
+            key = row.get("eship_order_id") or row.get("numero_origem")
+            if key in seen:  # dedup (defensivo)
+                continue
+            seen.add(key)
+            row["id_tipo"] = o.get("idTipo")
+            row["cmig_id"] = cmig.id if cmig else None
+            row["cmig_name"] = cmig.company_name if cmig else None
+            row["cmig_ambiguo"] = ambiguo
+            ordens.append(row)
+    # CMIGs sem credencial/varredura → confiabilidade desconhecida (indeterminado, não divergência).
+    for c in cmigs:
+        by_cmig.setdefault(c.id, {"parcial": False, "truncado": False,
+                                  "error": None, "confiavel": False, "sem_scan": True})
+    return {
+        "ordens": ordens,
+        "total": len(ordens),
+        "by_cmig": by_cmig,
+        "errors": errors,
     }
 
 
