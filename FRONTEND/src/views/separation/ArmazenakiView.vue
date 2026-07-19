@@ -91,6 +91,7 @@
                 <tr>
                   <th v-if="isAll">CMIG</th>
                   <th style="width:70px">Pedido</th>
+                  <th style="width:120px">Data</th>
                   <th>numeroOrigem</th>
                   <th>Comprador</th>
                   <th style="width:130px">Conciliação</th>
@@ -103,6 +104,7 @@
                     :class="{ 'table-danger': isDivergencia(row) }">
                   <td v-if="isAll" class="small">{{ row.cmig_name || '—' }}</td>
                   <td class="text-monospace">#{{ row.order_id }}</td>
+                  <td class="small">{{ fmtDate(row.data) }}</td>
                   <td class="text-monospace small">{{ row.numero_origem }}</td>
                   <td class="small">{{ row.buyer_name || '—' }}</td>
                   <td>
@@ -128,7 +130,7 @@
                   <td><OrderEShipActions :order="asOrder(row)" @updated="load" /></td>
                 </tr>
                 <tr v-if="!filteredLocal.length">
-                  <td :colspan="isAll ? 7 : 6" class="text-center text-muted py-3">
+                  <td :colspan="isAll ? 8 : 7" class="text-center text-muted py-3">
                     {{ statusFilter ? 'Nenhum pedido neste status.' : 'Nenhum pedido enviado ao eShip.' }}
                   </td>
                 </tr>
@@ -136,17 +138,20 @@
             </table>
           </div>
 
-          <!-- Ordens que estão no eShip mas sem registro de envio local -->
-          <template v-if="data.so_eship.length">
+          <!-- TODAS as ordens que estão no eShip (WMS), marcando conciliadas × só no eShip -->
+          <template v-if="wmsOrdens.length">
             <h2 class="h6 text-muted mt-3">
-              <i class="fas fa-exclamation-triangle text-warning mr-1"></i>
-              Ordens no eShip sem registro de envio local ({{ data.so_eship.length }})
+              <i class="fas fa-dolly-flatbed text-info mr-1"></i>
+              Ordens no eShip (WMS) — {{ wmsOrdens.length }}
+              <span class="badge badge-success">{{ wmsConciliadas }} conciliadas</span>
+              <span class="badge badge-warning">{{ data.so_eship_count }} só no eShip</span>
             </h2>
             <div class="table-responsive">
               <table class="table table-sm">
                 <thead>
                   <tr>
                     <th v-if="isAll">CMIG</th>
+                    <th style="width:130px">Conciliação</th>
                     <th>numeroOrigem</th>
                     <th>Ordem eShip</th>
                     <th>Destinatário</th>
@@ -155,10 +160,19 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="w in data.so_eship" :key="`${w.eship_order_id || ''}-${w.numero_origem}`">
+                  <tr v-for="w in wmsOrdens" :key="`${w.eship_order_id || ''}-${w.numero_origem}`"
+                      :class="{ 'table-success': w.conciliado }">
                     <td v-if="isAll" class="small">
                       <span v-if="w.cmig_ambiguo" class="text-muted" title="idTipo compartilhado — não dá para atribuir a uma CMIG">(compartilhado)</span>
                       <span v-else>{{ w.cmig_name || '—' }}</span>
+                    </td>
+                    <td>
+                      <span v-if="w.conciliado" class="badge badge-success">
+                        <i class="fas fa-check mr-1"></i>Conciliada
+                      </span>
+                      <span v-else class="badge badge-warning">
+                        <i class="fas fa-exclamation-triangle mr-1"></i>Só no eShip
+                      </span>
                     </td>
                     <td class="text-monospace small">{{ w.numero_origem }}</td>
                     <td class="text-monospace small">{{ w.eship_order_id || '—' }}</td>
@@ -193,6 +207,9 @@ const statusFilter = ref('')
 
 const cmigsAtivas = computed(() => cmigs.value.filter((c) => c.eship_active))
 const isAll = computed(() => cmigId.value === 'all')
+// Lista completa das ordens do WMS (com fallback p/ payloads antigos que só traziam so_eship).
+const wmsOrdens = computed(() => data.value?.wms_ordens || data.value?.so_eship || [])
+const wmsConciliadas = computed(() => wmsOrdens.value.filter((w) => w.conciliado).length)
 const wmsMeta = computed(() => data.value?.wms_meta || {})
 const wmsErrors = computed(() => {
   if (!data.value) return []

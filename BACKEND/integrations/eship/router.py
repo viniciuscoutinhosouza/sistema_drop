@@ -177,6 +177,7 @@ async def eship_reconciliation(
         {
             "order_id": o.id,
             "numero_origem": _num_origem_key(o),
+            "data": o.created_at.isoformat() if o.created_at else None,
             "eship_order_id": o.eship_order_id,
             "dispatch_status": o.eship_dispatch_status,
             "cancelado": o.eship_dispatch_status == "cancelled",
@@ -206,7 +207,8 @@ async def eship_reconciliation(
     wms_confiavel = not wms_error and not wms_meta.get("escopo_indefinido") \
         and not wms_meta.get("parcial") and not wms_meta.get("truncado")
 
-    # Conciliação por numero_origem (ambos os lados já são str).
+    # Conciliação por numero_origem (ambos os lados já são str). Marca cada linha LOCAL e cada
+    # ordem do WMS como conciliada (presente nos dois lados) ou não.
     wms_by_num = {w["numero_origem"]: w for w in wms if w.get("numero_origem")}
     local_nums = {x["numero_origem"] for x in local}
     for x in local:
@@ -214,15 +216,17 @@ async def eship_reconciliation(
         x["conciliado"] = w is not None
         x["wms_status"] = w.get("status_desc") if w else None
         x["wms_status_id"] = w.get("status_id") if w else None
-    so_eship = [w for w in wms if w.get("numero_origem") and w["numero_origem"] not in local_nums]
+    for w in wms:
+        w["conciliado"] = w.get("numero_origem") in local_nums
 
     # LGPD/isolação: o filtro do WMS é por CNPJ/CPF do remetente — se o MESMO documento estiver
-    # em duas CMIGs (galpões distintos), o "só no eShip" traria ordens (e o nome do comprador) de
-    # uma CMIG-irmã à qual o usuário pode não ter acesso. Remove do "só no eShip" qualquer
-    # numeroOrigem que resolva para um pedido de OUTRA CMIG (mantém os genuinamente externos).
-    if so_eship:
-        nums = [w["numero_origem"] for w in so_eship]
-        other = set()
+    # em duas CMIGs (galpões distintos), as órfãs (sem pedido nesta CMIG) poderiam trazer ordens
+    # (e o nome do comprador) de uma CMIG-irmã. Remove das ÓRFÃS qualquer numeroOrigem que resolva
+    # para um pedido de OUTRA CMIG (as conciliadas já são desta CMIG; genuinamente externas ficam).
+    orfas = [w for w in wms if w.get("numero_origem") and not w["conciliado"]]
+    other = set()
+    if orfas:
+        nums = [w["numero_origem"] for w in orfas]
         by_pid = (
             await db.execute(
                 select(Order.platform_order_id).where(
@@ -239,7 +243,11 @@ async def eship_reconciliation(
                 )
             ).all()
             other.update(str(r[0]) for r in by_id)
-        so_eship = [w for w in so_eship if w["numero_origem"] not in other]
+
+    # Lista COMPLETA das ordens do WMS (conciliadas + órfãs desta CMIG), marcadas — é a "lista de
+    # todos que estão no eShip". so_eship = só as órfãs (para o contador).
+    wms_ordens = [w for w in wms if w["conciliado"] or w["numero_origem"] not in other]
+    so_eship = [w for w in wms_ordens if not w["conciliado"]]
 
     conciliados = [x for x in local if x["conciliado"]]
     # Divergência real só quando o WMS é confiável; cancelado/falhou-sem-id têm rótulo próprio.
@@ -252,6 +260,7 @@ async def eship_reconciliation(
         "cmig": {"cmig_id": cmig.id, "company_name": cmig.company_name,
                  "eship_active": bool(getattr(cmig, "eship_active", 0))},
         "local": local,
+        "wms_ordens": wms_ordens,
         "so_eship": so_eship,
         "wms_confiavel": wms_confiavel,
         "conciliados_count": len(conciliados),
@@ -259,7 +268,7 @@ async def eship_reconciliation(
         "so_eship_count": len(so_eship),
         "cancelados_count": len(cancelados),
         "enviados_count": len([x for x in local if not x["cancelado"]]),
-        "wms_count": len(wms),
+        "wms_count": len(wms_ordens),
         "wms_meta": wms_meta,
         "wms_error": wms_error,
     }
@@ -310,6 +319,7 @@ async def eship_reconciliation_all(
             "cmig_id": o.cmig_id,
             "cmig_name": cmig_by_id[o.cmig_id].company_name if o.cmig_id in cmig_by_id else None,
             "numero_origem": _num_origem_key(o),
+            "data": o.created_at.isoformat() if o.created_at else None,
             "eship_order_id": o.eship_order_id,
             "dispatch_status": o.eship_dispatch_status,
             "cancelado": o.eship_dispatch_status == "cancelled",
@@ -339,13 +349,15 @@ async def eship_reconciliation_all(
         # Confiabilidade do WMS do GRUPO desta CMIG (não um flag global).
         x["wms_confiavel"] = bool(by_cmig.get(x["cmig_id"], {}).get("confiavel"))
 
-    # "Só no eShip": ordens no WMS sem pedido local NAS CMIGs acessíveis.
-    so_eship = [w for w in wms if w.get("numero_origem") and w["numero_origem"] not in local_nums]
-    # LGPD/isolação: remove do "só no eShip" qualquer numeroOrigem que pertença a um pedido de
-    # CMIG FORA do escopo do usuário (mesmo lojista/idTipo pode trazer ordem de galpão vizinho).
-    if so_eship:
-        nums = [w["numero_origem"] for w in so_eship]
-        fora = set()
+    for w in wms:
+        w["conciliado"] = w.get("numero_origem") in local_nums
+    # Órfãs: ordens no WMS sem pedido local NAS CMIGs acessíveis.
+    orfas = [w for w in wms if w.get("numero_origem") and not w["conciliado"]]
+    # LGPD/isolação: remove das órfãs qualquer numeroOrigem que pertença a um pedido de CMIG FORA
+    # do escopo do usuário (mesmo lojista/idTipo pode trazer ordem de galpão vizinho).
+    fora = set()
+    if orfas:
+        nums = [w["numero_origem"] for w in orfas]
         by_pid = (
             await db.execute(
                 select(Order.platform_order_id, Order.cmig_id).where(
@@ -366,7 +378,10 @@ async def eship_reconciliation_all(
             for oid, cid in by_id:
                 if cid not in accessible_ids:
                     fora.add(str(oid))
-        so_eship = [w for w in so_eship if w["numero_origem"] not in fora]
+
+    # Lista COMPLETA das ordens do WMS (conciliadas + órfãs), marcadas. so_eship = só as órfãs.
+    wms_ordens = [w for w in wms if w["conciliado"] or w["numero_origem"] not in fora]
+    so_eship = [w for w in wms_ordens if not w["conciliado"]]
 
     conciliados = [x for x in local if x["conciliado"]]
     # Divergência real só quando o WMS do grupo daquela CMIG é confiável.
@@ -382,13 +397,14 @@ async def eship_reconciliation_all(
             for c in cmigs
         ],
         "local": local,
+        "wms_ordens": wms_ordens,
         "so_eship": so_eship,
         "conciliados_count": len(conciliados),
         "so_sistema_count": len(so_sistema),
         "so_eship_count": len(so_eship),
         "cancelados_count": len(cancelados),
         "enviados_count": len([x for x in local if not x["cancelado"]]),
-        "wms_count": len(wms),
+        "wms_count": len(wms_ordens),
         "wms_errors": wms_errors,
         "consolidado": True,
     }
