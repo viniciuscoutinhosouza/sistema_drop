@@ -132,6 +132,7 @@ const SchedulerMonitoringView = () => import('@/views/monitoring/SchedulerMonito
 // Separação (Operador Logístico — pedidos não-FULL)
 const SeparationView = () => import('@/views/separation/SeparationView.vue')
 const CartsListView  = () => import('@/views/separation/CartsListView.vue')
+const ArmazenakiView = () => import('@/views/separation/ArmazenakiView.vue')
 
 
 const routes = [
@@ -212,6 +213,7 @@ const routes = [
       // Separação (Operador Logístico — pedidos não-FULL)
       { path: 'separacao',         component: SeparationView, meta: { title: 'Separação', menuKey: 'separacao' } },
       { path: 'separacao/gaiolas', component: CartsListView,  meta: { title: 'Gaiolas / Transportadora', menuKey: 'separacao' } },
+      { path: 'separacao/armazenaki', component: ArmazenakiView, meta: { title: 'Armazenaki', menuKey: 'separacao' } },
 
       // Inventário (ESTOQUE)
       { path: 'inventario',        component: InventoryListView, meta: { title: 'Inventário', menuKey: 'inventario' } },

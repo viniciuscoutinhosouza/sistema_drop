@@ -16,6 +16,7 @@ import re
 import time
 import zipfile
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, or_, select
 from sqlalchemy import update as sa_update
@@ -26,6 +27,7 @@ from models.cmig import CMIG
 from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
 from services import ml_service as _ml
+from services.datetime_br import iso_utc
 from services.fiscal.order_docs import resolve_nfe_xml
 from services.ml_auth import get_valid_token
 
@@ -1406,6 +1408,127 @@ async def list_all_eship_products(db: AsyncSession, cmig_id: int, force: bool = 
     if not result["parcial"]:
         _produtos_cache[cmig_id] = (now, result)
     return result
+
+
+def _ordem_da_cmig(o: dict, cnpj: str, cpf: str) -> bool:
+    """True se a ordem do WMS pertence à empresa (casa `remetente.cnpj`/`cpf`, só dígitos).
+
+    O WMS é multi-tenant e o GetOrdem devolve ordens de TODAS as empresas — o escopo é feito
+    aqui, no cliente, como em `_produto_da_cmig`. Sem isso a tela vazaria ordens de terceiros.
+    """
+    rem = o.get("remetente") if isinstance(o.get("remetente"), dict) else {}
+    return (bool(cnpj) and _digits(rem.get("cnpj")) == cnpj) or (
+        bool(cpf) and _digits(rem.get("cpf")) == cpf
+    )
+
+
+def _eship_dt_to_iso(node) -> str | None:
+    """Converte o dataHora do eShip para ISO UTC (ADR-0013 — transporte em UTC aware).
+
+    O eShip devolve `{"date": "2026-07-18 19:57:15.000000", "timezone": "America/Fortaleza"}`:
+    hora LOCAL naive + o nome do fuso (UTC-3). Sem localizar, o front trataria a string naive
+    como UTC e exibiria 3h a menos. Aqui, na borda de entrada, viramos UTC aware.
+    """
+    if not isinstance(node, dict):
+        return None
+    raw = node.get("date")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw))  # 3.11 aceita separador espaço + microssegundos
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        try:
+            dt = dt.replace(tzinfo=ZoneInfo(node.get("timezone") or "America/Sao_Paulo"))
+        except (ZoneInfoNotFoundError, ValueError):
+            dt = dt.replace(tzinfo=ZoneInfo("America/Sao_Paulo"))
+    return iso_utc(dt)
+
+
+def _eship_ordem_row(o: dict) -> dict:
+    infos = o.get("infos") if isinstance(o.get("infos"), dict) else {}
+    st = o.get("status") if isinstance(o.get("status"), dict) else {}
+    dest = o.get("destinatario") if isinstance(o.get("destinatario"), dict) else {}
+    return {
+        "numero_origem": str(infos.get("norigem") or o.get("numeroOrigem") or "").strip(),
+        "eship_order_id": _coax_id(o.get("id")),
+        "status_id": st.get("id"),
+        "status_desc": st.get("descricao"),
+        "destinatario": dest.get("nome"),
+        "data_hora": _eship_dt_to_iso(o.get("dataHora")),
+    }
+
+
+async def list_eship_orders(db: AsyncSession, cmig_id: int) -> dict:
+    """Lista as ORDENS do eShip (WMS) da EMPRESA (CMIG), varrendo o GetOrdem paginado.
+
+    Espelha `list_all_eship_products`: WMS multi-tenant → varre as páginas (best-effort,
+    concorrência limitada, deadline) e filtra no cliente por `remetente.cnpj`/`cpf`. Marca
+    `parcial`/`truncado` quando não deu para varrer tudo. Sem cache (a conciliação quer o
+    estado ao vivo).
+    """
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    creds = creds_from_cmig(cmig)
+    if not creds:
+        raise EShipError("CMIG sem integração eShip ativa/configurada.")
+
+    cnpj, cpf = _digits(getattr(cmig, "cnpj", None)), _digits(getattr(cmig, "cpf", None))
+    if not cnpj and not cpf:
+        return {"ordens": [], "total": 0, "total_wms": None, "paginas": 0,
+                "truncado": False, "parcial": False, "escopo_indefinido": True}
+
+    payload = {"incluirInfo": True, "quantidadeRegistros": _PRODUTOS_PAGE_SIZE}
+    first = await client.call(creds, FUNC_GET_ORDEM, {**payload, "pagina": 1})
+    body = ((first or {}).get("corpo") or {}).get("body") or {}
+    pag = body.get("dadosPaginacao") or {}
+    try:
+        total_pages = int(pag.get("quantidadePaginas") or 1)
+    except (ValueError, TypeError):
+        total_pages = 1
+    cap = min(max(total_pages, 1), _PRODUTOS_MAX_PAGES)
+
+    def _dados(b) -> list:
+        d = b.get("dados") or []
+        return [d] if isinstance(d, dict) else (d or [])
+
+    by_page: dict[int, list | None] = {1: _dados(body)}
+    if cap > 1:
+        sem = asyncio.Semaphore(_PRODUTOS_FETCH_CONCURRENCY)
+
+        async def _fetch(pg: int) -> None:
+            async with sem:
+                try:
+                    r = await client.call(creds, FUNC_GET_ORDEM, {**payload, "pagina": pg})
+                    by_page[pg] = _dados(((r or {}).get("corpo") or {}).get("body") or {})
+                except EShipError as e:
+                    logger.warning("[eShip] GetOrdem página %s falhou: %s", pg, e)
+                    by_page[pg] = None
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*[_fetch(pg) for pg in range(2, cap + 1)]),
+                timeout=_PRODUTOS_TOTAL_DEADLINE,
+            )
+        except TimeoutError:
+            logger.warning("[eShip] conciliação cmig=%s excedeu %ss; parcial",
+                           cmig_id, _PRODUTOS_TOTAL_DEADLINE)
+
+    paginas_falhas = sum(1 for pg in range(1, cap + 1) if by_page.get(pg) is None)
+    ordens = [
+        _eship_ordem_row(o)
+        for pg in range(1, cap + 1) for o in (by_page.get(pg) or [])
+        if isinstance(o, dict) and _ordem_da_cmig(o, cnpj, cpf)
+    ]
+    return {
+        "ordens": ordens,
+        "total": len(ordens),
+        "total_wms": pag.get("totalObjetos"),
+        "paginas": total_pages,
+        "truncado": total_pages > cap,
+        "parcial": paginas_falhas > 0,
+        "escopo_indefinido": False,
+    }
 
 
 async def get_saldo_estoque(db: AsyncSession, cmig_id: int, sku: str | None = None) -> dict:

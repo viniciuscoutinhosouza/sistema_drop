@@ -192,6 +192,11 @@
                   <i class="nav-icon fas fa-shipping-fast"></i><p>Gaiolas / Transportadora</p>
                 </RouterLink>
               </li>
+              <li class="nav-item">
+                <RouterLink to="/separacao/armazenaki" class="nav-link" :class="{ active: route.path.startsWith('/separacao/armazenaki') }">
+                  <i class="nav-icon fas fa-warehouse"></i><p>Armazenaki</p>
+                </RouterLink>
+              </li>
             </ul>
           </li>
 
