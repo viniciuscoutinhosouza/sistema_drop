@@ -171,8 +171,8 @@
         <!-- Banner do pacote (carrinho ML): N orders, mesmo envio, 1 etiqueta -->
         <div
           v-if="group.orders.length > 1"
-          class="d-flex align-items-center flex-wrap px-2 py-1 mb-1 rounded"
-          style="background:#ede7f6;border-left:4px solid #6f42c1;gap:.5rem;font-size:.8rem"
+          class="d-flex align-items-center flex-wrap px-2 py-1 mb-2 rounded"
+          style="background:#ede7f6;gap:.5rem;font-size:.8rem"
         >
           <span class="font-weight-bold" style="color:#6f42c1">
             <i class="fas fa-box mr-1"></i>Pacote de {{ groupItemCount(group) }} produtos
@@ -1432,6 +1432,14 @@ onMounted(() => {
 <style scoped>
 .order-card { transition: box-shadow .15s; }
 .order-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+/* Moldura do pacote (carrinho ML): barra vertical roxa + borda envolvendo banner e pedidos */
+.pack-group {
+  border: 1px solid #d1c4e9;
+  border-left: 4px solid #6f42c1;
+  border-radius: .5rem;
+  background: #faf8fd;
+  padding: .5rem .5rem .15rem .5rem;
+}
 .btn-xs { padding: .15rem .4rem; font-size: .72rem; line-height: 1.4; border-radius: .2rem; }
 .border-left-warning { border-left: 4px solid #ffc107 !important; }
 .border-left-light { border-left: 4px solid #dee2e6 !important; }
