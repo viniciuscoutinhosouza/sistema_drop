@@ -681,7 +681,24 @@ async def register_or_update_fiscal_information(
                 "error": None,
             }
 
-        # Ambos falharam — retorna erro
+        # Ambos falharam — retorna erro. Traduz o 10419 (conta não é emissora de NF-e no
+        # Faturador do ML — típico de conta CPF, que emite DC-e; ou CNPJ com emissor não
+        # habilitado no painel do ML). NÃO é campo faltando no payload: o ML deriva o
+        # `tax_payer_type` do perfil da conta e ignora o campo se enviado (verificado ao vivo).
+        if _has_ml_error_code(post_body, "10419"):
+            return {
+                "ok": False,
+                "status_code": post_resp.status_code,
+                "method": "POST",
+                "error_code": "10419",
+                "body": {"post": post_body, "put": put_body},
+                "error": (
+                    "Conta não habilitada como emissora de NF-e no Faturador do ML "
+                    "(erro 10419). Contas CPF não emitem NF-e modelo 55 por aqui — usam DC-e "
+                    "(emissão própria). Se for CNPJ, conclua a ativação do emissor de NF-e no "
+                    "painel do Mercado Livre. Não é um campo faltando no anúncio."
+                ),
+            }
         err_msg = None
         if isinstance(put_body, dict):
             err_msg = (
@@ -695,6 +712,18 @@ async def register_or_update_fiscal_information(
             "body": {"post": post_body, "put": put_body},
             "error": err_msg or f"ML returned {post_resp.status_code} on POST, {put_resp.status_code} on PUT",
         }
+
+
+def _has_ml_error_code(body, code: str) -> bool:
+    """True se o corpo de erro do ML contém `code` (no topo ou em `fields[].error_code`)."""
+    if not isinstance(body, dict):
+        return False
+    if str(body.get("error_code") or "") == code:
+        return True
+    for f in body.get("fields") or []:
+        if isinstance(f, dict) and str(f.get("error_code") or "") == code:
+            return True
+    return False
 
 
 def build_fiscal_information_payload(
