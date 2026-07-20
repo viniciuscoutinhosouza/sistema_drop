@@ -34,6 +34,9 @@ class Order(Base):
     # 'CPF' | 'CNPJ' — vem de GET /orders/{id}/billing_info (o ML tirou o documento do /orders).
     # Migration 127. Escolhe cpfDestinatario x cnpjDestinatario pela FONTE, não pelo tamanho.
     buyer_document_type = Column(String(10))
+    # Razão social do PJ (CNPJ) — vem de billing_info.name; usado no eShip
+    # (razaoSocialDestinatario, obrigatório p/ CNPJ não cadastrado). Migration 133.
+    buyer_business_name = Column(String(255))
     shipping_address = Column(String)  # JSON CLOB
     shipping_method = Column(String(100))
     shipping_mode = Column(String(20))  # full|flex|agencia|correios|coletado|combinado|desconhecido

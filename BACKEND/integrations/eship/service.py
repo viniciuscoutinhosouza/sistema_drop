@@ -409,16 +409,21 @@ async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
 
     O ML **não devolve mais** o documento em `GET /orders/{id}` (privacidade): `buyer.identification`
     sumiu, e por isso `order.buyer_document` nascia nulo em todos os pedidos. O documento vive em
-    `GET /orders/{id}/billing_info` (x-version: 2) e é buscado aqui **uma vez** e persistido — não a
-    cada envio ao WMS.
+    `GET /orders/{id}/billing_info` (x-version: 2) e é buscado aqui e persistido. Para destinatário
+    **PJ** também capturamos a **razão social** (`billing_info.name`), que o eShip exige
+    (`razaoSocialDestinatario`) — então buscamos o billing_info também quando o doc já existe mas a
+    razão social ainda falta num CNPJ.
 
     Retorna o documento em dígitos ('' se indisponível).
     """
     doc = _digits(order.buyer_document)
-    if len(doc) in (11, 14):
-        return doc
+    have_doc = len(doc) in (11, 14)
+    is_pj = (order.buyer_document_type or "").upper() == "CNPJ" or (have_doc and len(doc) == 14)
+    need_razao = is_pj and not (order.buyer_business_name or "").strip()
+    if have_doc and not need_razao:
+        return doc  # já temos tudo que o eShip precisa
     if order.platform != "mercadolivre" or not order.platform_order_id:
-        return ""
+        return doc
 
     acc = (
         await db.execute(
@@ -426,26 +431,35 @@ async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
         )
     ).scalar_one_or_none()
     if not acc or not acc.access_token:
-        return ""
+        return doc
 
     # `get_valid_token` renova sob lock quando o token está vencido — o billing_info responde 401
-    # com token velho, e aí o pedido iria ao WMS sem documento.
+    # com token velho, e aí o pedido iria ao WMS sem documento/razão social.
     try:
         token = await get_valid_token(acc, db)
     except Exception as exc:  # noqa: BLE001 — conta desconectada/refresh falhou
         logger.warning("[eShip] pedido=%s: token ML indisponível: %s", order.id, exc)
-        return ""
+        return doc
 
     info = await _ml.get_order_billing_info(token, order.platform_order_id)
-    ident = ((info.get("buyer") or {}).get("billing_info") or {}).get("identification") or {}
-    doc = _digits(ident.get("number"))
+    billing = ((info.get("buyer") or {}).get("billing_info") or {})
+    ident = billing.get("identification") or {}
+    new_doc = _digits(ident.get("number"))
     tipo = (ident.get("type") or "").upper()
-    if len(doc) not in (11, 14):
-        return ""
-
-    order.buyer_document = doc
-    order.buyer_document_type = tipo if tipo in ("CPF", "CNPJ") else None
-    await db.commit()
+    changed = False
+    if len(new_doc) in (11, 14):
+        order.buyer_document = new_doc
+        order.buyer_document_type = tipo if tipo in ("CPF", "CNPJ") else None
+        doc = new_doc
+        changed = True
+    # Razão social do PJ: o eShip exige `razaoSocialDestinatario` p/ CNPJ ainda não cadastrado.
+    # `billing_info.name` é o nome fiscal (razão social do PJ). Guardamos sempre que vier.
+    razao = (billing.get("name") or "").strip()
+    if razao and razao != (order.buyer_business_name or ""):
+        order.buyer_business_name = razao[:255]
+        changed = True
+    if changed:
+        await db.commit()
     return doc
 
 
@@ -465,8 +479,13 @@ def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
     # O tipo vem do ML (billing_info). Só caímos no comprimento quando o tipo não foi informado —
     # um CPF que tenha perdido o zero à esquerda em algum cadastro manual não vira "CNPJ" por engano.
     tipo = (order.buyer_document_type or "").upper()
-    if tipo == "CNPJ" or (not tipo and len(doc) == 14):
+    is_cnpj = tipo == "CNPJ" or (not tipo and len(doc) == 14)
+    if is_cnpj:
         dest["cnpjDestinatario"] = doc
+        # Destinatário PJ: o eShip recusa (MCA9102) se `razaoSocialDestinatario` vier vazio
+        # quando o CNPJ ainda não tem cadastro no WMS. Razão social = billing_info.name (PJ);
+        # cai p/ buyer_name se, por algum motivo, a razão social não foi capturada.
+        dest["razaoSocialDestinatario"] = order.buyer_business_name or order.buyer_name or ""
     elif tipo == "CPF" or (not tipo and len(doc) == 11):
         dest["cpfDestinatario"] = doc
 
@@ -558,6 +577,14 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
             "Falta o CPF/CNPJ do destinatário (obrigatório no eShip). O documento vem do Mercado "
             "Livre (billing_info) e só existe após o pagamento aprovado — se o pedido já está pago, "
             "verifique se a conta ML está conectada (Integrações)."
+        )
+    # Destinatário PJ sem razão social: o eShip recusa (MCA9102) ao criar o cadastro do CNPJ.
+    if dest.get("cnpjDestinatario") and not (dest.get("razaoSocialDestinatario") or "").strip():
+        bloqueios.append(
+            "Destinatário é CNPJ (PJ) mas falta a razão social (razaoSocialDestinatario) — o eShip "
+            "recusa (MCA9102) ao cadastrar o CNPJ. A razão social vem do Mercado Livre "
+            "(billing_info) e só existe após o pagamento aprovado; confirme se a conta ML está "
+            "conectada (Integrações)."
         )
     if not creds.warehouse_code:
         bloqueios.append("Falta o código do armazém (codigoArmazemOrigem) na configuração da CMIG.")
