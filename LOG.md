@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-07-20 — feat(eship): envia e atualiza o Transporte na ordem do WMS
+
+**Pedido (dono):** o envio ao eShip não estava mandando o Transporte (transportadora); identificar a forma de envio e enviar o código; atualizar o transporte nos já enviados ao sincronizar.
+
+**Investigação ao vivo (produção, verificado contra OpenAPI + API real):**
+- Campo do transporte no `webServicePostOrdem`: bloco `transporte: {codigoTransporte: "<str>"}`. Estava **ausente** no `build_ordem_payload`.
+- Atualizar ordem já criada: `webServicePutOrdem {id, transporte:{codigoTransporte}}` — **funciona** (0.5s), mas exige o **id INTERNO real** (o `eship_order_id` guardado é o fallback falso = nº do ML → resolvido via `GetOrdem`).
+- **Descoberta crítica:** os códigos 26/21/4 que o dono usava **NÃO existem** no cadastro do eShip dele — o Correios real é `codigo="01"` (id 28). Enviar código inexistente **TRAVA o WMS** (timeout, não é erro em erros[]). `webServiceGetTransporte` não existe no tenant (MAP0014) → sem pré-validação.
+
+**Decisão do dono (interim):** usar **`01` (Correios) para TODOS** por enquanto (único código validado). Quando cadastrar Flex/Envios e informar os códigos reais, trocar `transporte_code_for_order` por de-para por `shipping_mode`.
+
+**Implementação (`integrations/eship/`):**
+- `transporte_code_for_order(order)` → "01" (interim, estruturado p/ virar de-para).
+- `build_ordem_payload` passa a incluir `transporte:{codigoTransporte}` (ordens novas saem com transporte).
+- `ensure_order_transport(db, order, creds, resp=)` → resolve id real via GetOrdem + `PutOrdem`; **selo de idempotência** `orders.eship_transporte_codigo` (migration 134) evita martelar o WMS a cada sync do scheduler (15min); best-effort (nunca derruba envio/sync).
+- Integrado no `send_order_full` (última palavra, pós-anexos — imune a reprocessamento do XML) e no `sync_order_status` (reaproveita o `resp` do GetOrdem — sem chamada extra). **Não** mexeu no `attach_nfe_xml` (as flags também linkam a NF-e — orientação do consistency-auditor).
+
+**Auditorias:** eship-especialista (campo/função), consistency-auditor + quality-guardian (plano). Migration 134. `pytest -k eship` 49 passed.
+
+---
+
 ## 2026-07-20 — feat(pedidos): agrupar carrinho ML (pacote) na tela de Pedidos
 
 **Sintoma (dono):** uma venda FLEX com 2 produtos (carrinho #2000014081594617) foi importada como **2 vendas separadas** (order_ids 2000017478044390 e 2000017478041376).

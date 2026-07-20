@@ -463,6 +463,22 @@ async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
     return doc
 
 
+# Código de transporte (codigoTransporte) do eShip por forma de envio.
+#
+# INTERIM (decisão do dono, 2026-07-20): "01" (Correios) para TODOS os pedidos. Motivo: só o "01"
+# está cadastrado e VALIDADO ao vivo no WMS do dono (grava CORREIOS em 0.5s). Os códigos 26/21/4 que
+# ele usava NÃO existem no cadastro do eShip e, pior, quando enviados o WMS **trava** (timeout, sem
+# resposta) — testado nas 4 contas. Quando o dono cadastrar Flex/Envios no eShip e informar os
+# códigos REAIS (a coluna `codigo` da tela Cadastros → Transportes), trocar `transporte_code_for_order`
+# por um de-para por `order.shipping_mode` (flex/agencia/coletado/correios/combinado/desconhecido).
+_TRANSPORTE_CODIGO_INTERIM = "01"
+
+
+def transporte_code_for_order(order: Order) -> str:
+    """codigoTransporte do eShip para a forma de envio do pedido. Interim: "01" p/ todos."""
+    return _TRANSPORTE_CODIGO_INTERIM
+
+
 def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
     """Monta o payload de Inserir Ordem conforme a spec §4.
 
@@ -539,6 +555,11 @@ def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
     payload["cadastroDestinatario"] = dest
     payload["infosOrdem"] = infos_ordem
     payload["produtos"] = produtos
+    # Transporte (transportadora): bloco `transporte.codigoTransporte` (string). Sem ele o WMS
+    # criava a ordem SEM transporte. O código vem da forma de envio do pedido (ver
+    # transporte_code_for_order). ATENÇÃO: só mandar código que EXISTE no eShip — código inválido
+    # TRAVA o WMS (não é erro em erros[], é timeout).
+    payload["transporte"] = {"codigoTransporte": transporte_code_for_order(order)}
     return payload
 
 
@@ -944,6 +965,73 @@ async def touch_order(creds: EShipCreds, order: Order) -> bool:
         return False
 
 
+def _real_eship_order_id(resp: dict) -> int | None:
+    """Extrai o id INTERNO real da ordem de uma resposta do GetOrdem (`corpo.body.dados[0].id`).
+
+    O `order.eship_order_id` guardado é NÃO confiável (muitas vezes é o fallback = nº do ML); o
+    PutOrdem exige o id interno real do WMS.
+    """
+    if not isinstance(resp, dict):
+        return None
+    dados = ((resp.get("corpo") or {}).get("body") or {}).get("dados")
+    d = dados[0] if isinstance(dados, list) and dados else (dados if isinstance(dados, dict) else None)
+    rid = d.get("id") if isinstance(d, dict) else None
+    try:
+        return int(rid) if rid not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def ensure_order_transport(
+    db: AsyncSession, order: Order, creds: EShipCreds, *, resp: dict | None = None
+) -> dict:
+    """Garante o transporte (codigoTransporte) na ordem do eShip via PutOrdem. Idempotente.
+
+    - Selo `order.eship_transporte_codigo`: se já é o código atual, não faz nada (não martela o WMS
+      a cada ciclo de sync do scheduler).
+    - Resolve o id INTERNO real via GetOrdem (o `eship_order_id` guardado não serve p/ o PutOrdem).
+      `resp` = uma resposta de GetOrdem já obtida (o sync reaproveita a dele, evita 2ª chamada).
+    - PutOrdem só com {id, transporte} — não toca produtos/anexos/status (ver touch_order). É a
+      "última palavra" sobre o transporte, mesmo que o anexo do XML da NF-e tenha reprocessado.
+    """
+    if _is_full_order(order):
+        return {"ok": False, "reason": "full"}
+    codigo = transporte_code_for_order(order)
+    if (order.eship_transporte_codigo or "") == codigo:
+        return {"ok": True, "skipped": "already_set", "codigo": codigo}
+
+    if resp is None:
+        try:
+            resp = await client.call(
+                creds, FUNC_GET_ORDEM,
+                {"numeroOrigem": order.platform_order_id or str(order.id),
+                 "incluirInfo": True, "pagina": 1},
+            )
+        except EShipError as e:
+            logger.warning("[eShip] pedido=%s: GetOrdem p/ transporte falhou: %s", order.id, e)
+            return {"ok": False, "reason": "getordem_falhou"}
+
+    real_id = _real_eship_order_id(resp)
+    if not real_id:
+        # Ordem não localizada no WMS por numeroOrigem — falhar alto (precisa reenviar).
+        logger.warning("[eShip] pedido=%s: ordem não localizada no WMS p/ aplicar transporte", order.id)
+        return {"ok": False, "reason": "nao_encontrada_no_wms"}
+
+    try:
+        await client.call(
+            creds, FUNC_PUT_ORDEM,
+            {"id": real_id, "transporte": {"codigoTransporte": codigo}},
+        )
+    except EShipError as e:
+        logger.warning("[eShip] pedido=%s: PutOrdem transporte=%s falhou: %s", order.id, codigo, e)
+        return {"ok": False, "reason": str(e)[:200]}
+
+    order.eship_transporte_codigo = codigo
+    await db.commit()
+    logger.info("[eShip] pedido=%s: transporte %s aplicado na ordem %s", order.id, codigo, real_id)
+    return {"ok": True, "codigo": codigo, "eship_order_id": real_id}
+
+
 async def _categorias_anexadas(db: AsyncSession, order: Order) -> dict[str, int]:
     """`{categoria: nº de arquivos}` do que o eShip JÁ TEM na ordem — o antiduplicidade."""
     return {a["categoria"]: a["quantidade"] for a in await get_anexos(db, order)}
@@ -1244,12 +1332,18 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
             except EShipError as e:
                 result["erros"].append({"etapa": "etiqueta:zpl", "erro": str(e)})
 
-        # 4) Carimba a "Data da última atualização" na ordem. Sem isso a grade do eShip mostra
-        # "Sem data de atualização registrada" e o galpão não vê que a ordem foi mexida — vale
-        # tanto para a criação quanto para o "Atualizar" (anexo de NF-e/etiqueta que faltavam).
+        # 4) Transporte + carimbo da "Data da última atualização".
+        # O transporte é aplicado por ÚLTIMO (após os anexos), como palavra final sobre a
+        # transportadora — mesmo que o anexo do XML da NF-e tenha reprocessado o transporte. É
+        # idempotente (selo `eship_transporte_codigo`). O carimbo garante que a grade do eShip
+        # mostre "atualizada" (senão o galpão não vê que a ordem foi mexida).
         if order.eship_order_id:
             creds, _cmig = await _creds_for_order(db, order)
             if creds:
+                try:
+                    result["transporte"] = await ensure_order_transport(db, order, creds)
+                except Exception as e:  # noqa: BLE001 — transporte é complementar, não derruba envio
+                    logger.warning("[eShip] pedido=%s: ensure_order_transport falhou: %s", order.id, e)
                 result["atualizada_em_eship"] = await touch_order(creds, order)
     except Exception as e:  # noqa: BLE001 — registra e não deixa o pedido preso em "sending"
         result["erros"].append({"etapa": "interno", "erro": str(e)})
@@ -1662,7 +1756,7 @@ async def list_eship_orders_multi(db: AsyncSession, cmigs: list) -> dict:
     seen: set = set()
     by_cmig: dict[int, dict] = {}
     errors: list = []
-    for ck, (creds, grp) in endpoints.items():
+    for ck, (_creds, grp) in endpoints.items():
         r = results.get(ck)
         if r is None:  # não terminou dentro do deadline agregado
             for c in grp:
@@ -1755,4 +1849,14 @@ async def sync_order_status(db: AsyncSession, order: Order) -> bool:
 
     if changed:
         await db.commit()
+
+    # Garante o transporte na ordem do WMS (idempotente via selo `eship_transporte_codigo`).
+    # Reaproveita o `resp` do GetOrdem acima — sem chamada extra p/ resolver o id interno real.
+    # Best-effort: nunca derruba o sync de status. É o "quando eu sincronizar, atualiza o transporte
+    # dos já enviados" — roda uma vez por pedido (depois o selo pula, sem martelar o scheduler).
+    try:
+        await ensure_order_transport(db, order, creds, resp=resp)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[eShip] pedido=%s: transporte no sync falhou: %s", order.id, e)
+
     return changed

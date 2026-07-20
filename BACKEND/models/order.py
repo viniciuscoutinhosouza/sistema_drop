@@ -54,6 +54,9 @@ class Order(Base):
     # Migration 126:
     eship_last_response = Column(Text)                  # resposta CRUA do PostOrdem (conferência)
     eship_dispatch_at = Column(TIMESTAMP(timezone=True))  # instante do claim (TTL do lock 'sending')
+    # Migration 134: selo de idempotência do TRANSPORTE (codigoTransporte gravado no eShip).
+    # Evita reenviar o PutOrdem de transporte a cada ciclo de sync (scheduler 15min).
+    eship_transporte_codigo = Column(String(10))
     label_url = Column(String(1000))
     label_cached_at = Column(TIMESTAMP(timezone=True))  # quando a etiqueta foi salva no disco
     nfe_url = Column(String(1000))
