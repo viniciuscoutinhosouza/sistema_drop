@@ -30,8 +30,8 @@ from models.product import (
 from models.user import User
 from models.webhook import WebhookEvent
 from services import ml_service as _ml
-from services.datetime_br import BR_TZ
 from services.content_declaration import append_declaration as _append_declaration
+from services.datetime_br import BR_TZ
 from services.file_naming import (
     TIPO_DACE,
     TIPO_DANFE,
@@ -397,6 +397,7 @@ def _serialize_order_list(
         "platform": o.platform,
         "platform_order_id": o.platform_order_id,
         "platform_order_ref": o.platform_order_ref,
+        "pack_id": o.pack_id,
         "platform_status": o.platform_status,
         "status": o.status,
         "payment_status": o.payment_status,
@@ -603,7 +604,21 @@ async def list_orders(
 
     query = (
         query.options(selectinload(Order.items))
-        .order_by(Order.created_at.desc())
+        # Ordena os GRUPOS (carrinho = mesmo shipment_id) pela data do pedido mais recente do
+        # grupo, mantendo TODOS os orders de um mesmo envio contíguos — assim o agrupamento por
+        # pacote no frontend não é partido por um pedido de terceiro com data intermediária (mesmo
+        # quando os orders do carrinho têm created_at ligeiramente diferentes). shipment_id nulo
+        # (sem envio) vira grupo próprio via COALESCE(id) para não aglomerar todos os avulsos.
+        # Limitação conhecida: um carrinho ainda pode ser partido na BORDA de página (offset/limit)
+        # — degrada de forma benigna (mostra cards separados, como antes), sem duplicar/errar dado.
+        .order_by(
+            func.max(Order.created_at)
+            .over(partition_by=func.coalesce(Order.shipment_id, func.to_char(Order.id)))
+            .desc(),
+            func.coalesce(Order.shipment_id, func.to_char(Order.id)),
+            Order.created_at.desc(),
+            Order.id,
+        )
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
@@ -906,6 +921,7 @@ async def get_order(
         "platform": order.platform,
         "platform_order_id": order.platform_order_id,
         "platform_order_ref": order.platform_order_ref,
+        "pack_id": order.pack_id,
         "platform_status": order.platform_status,
         "status": order.status,
         "payment_status": order.payment_status,

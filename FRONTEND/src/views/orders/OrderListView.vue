@@ -164,7 +164,28 @@
     <!-- Cards -->
     <div v-else>
       <div
-        v-for="order in orders"
+        v-for="group in orderGroups"
+        :key="group.key"
+        :class="group.orders.length > 1 ? 'pack-group mb-2' : ''"
+      >
+        <!-- Banner do pacote (carrinho ML): N orders, mesmo envio, 1 etiqueta -->
+        <div
+          v-if="group.orders.length > 1"
+          class="d-flex align-items-center flex-wrap px-2 py-1 mb-1 rounded"
+          style="background:#ede7f6;border-left:4px solid #6f42c1;gap:.5rem;font-size:.8rem"
+        >
+          <span class="font-weight-bold" style="color:#6f42c1">
+            <i class="fas fa-box mr-1"></i>Pacote de {{ groupItemCount(group) }} produtos
+          </span>
+          <span v-if="group.pack_id" class="badge badge-light border" title="Número do carrinho no Mercado Livre">
+            Carrinho #{{ group.pack_id }}
+          </span>
+          <span class="text-muted">· {{ group.orders.length }} vendas · mesmo envio (1 etiqueta)</span>
+          <strong class="ml-auto">{{ formatCurrency(groupTotal(group)) }}</strong>
+        </div>
+
+      <div
+        v-for="order in group.orders"
         :key="order.id"
         class="card mb-2 order-card"
         :class="isCancelled(order) ? 'border-left-danger' : (isDeliveryUrgent(order) ? 'border-left-warning' : 'border-left-light')"
@@ -565,6 +586,7 @@
           </div>
         </div>
       </div>
+      </div>
     </div>
 
     <!-- Paginação rodapé (mesmos controles do topo) — só quando há pedidos -->
@@ -754,6 +776,35 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.v
 const allSelected = computed(() =>
   orders.value.length > 0 && orders.value.every(o => selectedOrders.value.includes(o.id))
 )
+
+// Agrupa os pedidos de um mesmo carrinho ML (pacote) para exibir "Pacote de N produtos".
+// Chave = shipment_id (1:1 com o envio/etiqueta e já presente no histórico — dispensa backfill);
+// cai para pack_id, e por fim uma chave única por pedido (avulsos, manuais, sem envio ainda).
+// Preserva a ordem de primeira aparição da lista (o backend já ordena por data + shipment_id).
+const orderGroups = computed(() => {
+  const groups = []
+  const byKey = new Map()
+  for (const o of orders.value) {
+    const key = o.shipment_id
+      ? `s:${o.shipment_id}`
+      : (o.pack_id ? `p:${o.pack_id}` : `o:${o.id}`)
+    let g = byKey.get(key)
+    if (!g) {
+      g = { key, orders: [], pack_id: o.pack_id || null, shipment_id: o.shipment_id || null }
+      byKey.set(key, g)
+      groups.push(g)
+    }
+    g.orders.push(o)
+  }
+  return groups
+})
+// Nº total de itens de um pacote (soma dos itens de cada order do grupo)
+function groupItemCount(group) {
+  return group.orders.reduce((n, o) => n + (o.items?.length || 0), 0)
+}
+function groupTotal(group) {
+  return group.orders.reduce((s, o) => s + Number(o.sale_amount || 0), 0)
+}
 const userRole = computed(() => authStore.user?.role || '')
 const canPay = computed(() => ['ac', 'admin'].includes(userRole.value))
 const canUpdateStatus = computed(() => ['ugo', 'admin'].includes(userRole.value))

@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-07-20 — feat(pedidos): agrupar carrinho ML (pacote) na tela de Pedidos
+
+**Sintoma (dono):** uma venda FLEX com 2 produtos (carrinho #2000014081594617) foi importada como **2 vendas separadas** (order_ids 2000017478044390 e 2000017478041376).
+
+**Causa-raiz:** no ML, um carrinho de N produtos diferentes vira **N orders separados** (order_id cada), agrupados por `pack_id`, com **1 shipment/1 etiqueta**. A importação (`process_ml_order`) cria 1 Order por order_id e **descartava o `pack_id`** (coluna `orders.pack_id` existia mas nunca era preenchida). Confirmado no banco: `pack_id` NULL, `shipment_id` idêntico nos 2.
+
+**Decisão (dono):** **agrupar** na visualização (não fundir os registros — cada order continua venda fiscal separada, **1 NF-e por order**). Confirmado via API real que `GET /orders/{id}` retorna `pack_id` no topo do payload (tags `pack_order`).
+
+**Implementação:**
+- `services/webhook_service.py`: captura `pack_id` no novo pedido + backfill idempotente no ramo de pedido existente (só quando NULL).
+- `routers/orders.py`: serializa `pack_id` (lista + detalhe); **ordenação por grupo** — `MAX(created_at) OVER (PARTITION BY COALESCE(shipment_id, TO_CHAR(id)))` desc, mantendo todos os orders de um mesmo envio **contíguos** (verificado em produção: os 936 pedidos, TODOS os pacotes multi-order ficam adjacentes).
+- `views/orders/OrderListView.vue`: computed `orderGroups` agrupa por `shipment_id` (1:1 com a etiqueta e já no histórico → **dispensa migration de backfill**), fallback `pack_id`/`id`; banner "📦 Pacote de N produtos · Carrinho #pack_id · mesmo envio (1 etiqueta) · total" quando N>1; card por-order preservado (NF-e/financeiro/entrega intactos). Pedidos avulsos idênticos a antes.
+
+**Auditorias:** consistency-auditor (pré, incorporado: usar shipment_id p/ dispensar backfill, ordenação p/ adjacência, serializar 2 endpoints, C1 verificado) + quality-guardian (pós: sem CRITICAL; HIGH-2 de adjacência resolvido pela ordenação por grupo).
+
+**Limitação conhecida (documentada):** um pacote ainda pode ser partido na **borda de página** (offset/limit) — degrada de forma benigna (cards separados, como antes), sem duplicar/errar dado.
+
+**Follow-ups comunicados ao dono (não entram agora):** (H2) deduplicar a **etiqueta** por `shipment_id` no ZIP/lote — hoje 2 orders do pacote geram 2 cópias idênticas da mesma etiqueta; (H3) 1 envio físico = 2 ordens no **eShip** (uma por order) — decisão de negócio; (M3) "selecionar pacote inteiro" em lote.
+
+`npm run build` OK; `pytest -m "not integration"` (orders/webhook) 16 passed / 2 falhas pré-existentes (mock, linha 603, sem relação).
+
+---
+
 ## 2026-07-17 — feat(anúncios): modal de finalização do inventário FULL na tela de Anúncios
 
 **Pedido (dono):** finalizar o inventário FULL de conferência (ADR-0019 Fase 3) direto na tela de **Gestão de Anúncios**, sem navegar para a tela de Inventário.

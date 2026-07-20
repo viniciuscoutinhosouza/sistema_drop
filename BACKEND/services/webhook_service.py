@@ -332,6 +332,10 @@ async def process_ml_order(
                     await release_reservation(db, existing_order)
             except Exception as exc:
                 logger.warning("stock cancel hook order=%s: %s", existing_order.id, exc)
+        # Backfill pack_id em pedidos já importados antes desta feature (idempotente).
+        if existing_order.pack_id is None and ml_order_data.get("pack_id"):
+            existing_order.pack_id = str(ml_order_data["pack_id"])
+
         # Backfill created_at with ML date_created if currently wrong (same day = sync artifact)
         raw_created = ml_order_data.get("date_created")
         if raw_created:
@@ -565,6 +569,10 @@ async def process_ml_order(
         platform="mercadolivre",
         platform_order_id=ml_order_id,
         platform_order_ref=str(ml_order_data.get("order_id", ml_order_id)),
+        # pack_id: agrupa os N orders de um mesmo carrinho ML (1 envio/1 etiqueta). Toda compra
+        # tem pack_id (mesmo de 1 item). Usado para exibir "Pacote de N produtos" (ADR: agrupar,
+        # não fundir — cada order continua venda fiscal separada).
+        pack_id=str(ml_order_data["pack_id"]) if ml_order_data.get("pack_id") else None,
         platform_status=ml_order_data.get("status", ""),
         status="cancelled" if ml_order_data.get("status") == "cancelled" else "downloaded",
         payment_status="pending",
