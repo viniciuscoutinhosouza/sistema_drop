@@ -404,6 +404,37 @@ def _parse_address(order: Order) -> dict:
     }
 
 
+# Cache de município por CEP (o ViaCEP é a fonte confiável; evita repetir a chamada por CEP).
+_cep_municipio_cache: dict[str, str] = {}
+
+
+async def _municipio_por_cep(cep: str | None) -> str | None:
+    """Município (localidade IBGE) do CEP via ViaCEP. Best-effort — None se não resolver.
+
+    O Mercado Livre às vezes manda o **bairro** no campo cidade (ex.: "Santa Terezinha de Minas" é
+    bairro de **Itatiaiuçu**), e o eShip recusa (END0101 — município indefinido). O CEP é a fonte
+    correta do município. Nunca levanta: qualquer falha → None (o envio cai no que veio do ML).
+    """
+    digits = "".join(ch for ch in (cep or "") if ch.isdigit())
+    if len(digits) != 8:
+        return None
+    if digits in _cep_municipio_cache:
+        return _cep_municipio_cache[digits] or None
+    try:
+        from services.viacep_service import fetch_address
+        addr = await fetch_address(digits)
+        muni = (addr.get("city") or "").strip()
+    except Exception:  # noqa: BLE001 — ViaCEP indisponível/CEP não achado: cai no fallback
+        muni = ""
+    _cep_municipio_cache[digits] = muni
+    return muni or None
+
+
+async def resolve_municipio_ordem(order: Order) -> str | None:
+    """Município correto (pelo CEP) para a ordem do eShip, ou None se não resolver."""
+    return await _municipio_por_cep(_parse_address(order).get("cep"))
+
+
 async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
     """Garante o CPF/CNPJ do comprador — o eShip exige `cpfDestinatario` OU `cnpjDestinatario`.
 
@@ -483,12 +514,18 @@ def transporte_code_for_order(order: Order) -> str | None:
     return _TRANSPORTE_POR_CMIG.get(order.cmig_id)
 
 
-def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
+def build_ordem_payload(
+    order: Order, creds: EShipCreds, municipio_override: str | None = None
+) -> dict:
     """Monta o payload de Inserir Ordem conforme a spec §4.
 
     Obrigatórios: numeroOrigem, codigoArmazemOrigem, cadastroDestinatario (com CPF **ou** CNPJ).
+    `municipio_override` (resolvido pelo CEP via ViaCEP) corrige quando o ML manda o bairro no
+    campo cidade — senão o eShip recusa (END0101).
     """
     endereco = _parse_address(order)
+    if municipio_override:
+        endereco["municipio"] = municipio_override
     doc = _digits(order.buyer_document)
     dest: dict = {}
 
@@ -593,7 +630,8 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
     # Busca/persiste o CPF/CNPJ para que a prévia mostre o MESMO corpo que o envio real mandaria
     # (sem isso a prévia sairia sem o documento, escondendo o problema).
     await ensure_buyer_document(db, order)
-    body = build_ordem_payload(order, creds)
+    municipio = await resolve_municipio_ordem(order)
+    body = build_ordem_payload(order, creds, municipio_override=municipio)
 
     # A prévia PRECISA denunciar o que falta — antes ela apenas omitia o campo em silêncio, e o
     # erro só aparecia lá no WMS. Cada bloqueio vira um aviso explícito na tela.
@@ -622,6 +660,11 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
     # foi o que aconteceu — pedidos foram parar no WMS sem documento nem etiqueta. Usa as MESMAS
     # funções do envio real, então o que a prévia diz é o que o envio faria, não um palpite.
     avisos: list[str] = []
+    _ml_city = (_parse_address(order).get("municipio") or "").strip()
+    if municipio and _ml_city and municipio.strip().lower() != _ml_city.lower():
+        avisos.append(
+            f"Município corrigido pelo CEP: '{_ml_city}' (o ML mandou o bairro) → '{municipio}'."
+        )
     if not order.eship_nfe_attached and not await resolve_nfe_xml(db, order):
         avisos.append("NF-e ainda não autorizada — a ordem irá ao WMS SEM o XML da nota.")
     if not order.eship_label_attached and not (await _resolve_labels(db, order))[0]:
@@ -797,8 +840,11 @@ async def push_order(db: AsyncSession, order: Order) -> dict:
         ean = await _resolve_item_ean(db, item)
         await upsert_produto(creds, item, gtin=ean)
 
+    municipio = await resolve_municipio_ordem(order)
     try:
-        resp = await client.call(creds, FUNC_POST_ORDEM, build_ordem_payload(order, creds))
+        resp = await client.call(
+            creds, FUNC_POST_ORDEM, build_ordem_payload(order, creds, municipio_override=municipio)
+        )
     except EShipError as e:
         # "MOR8003: Nº Ordem já cadastrada" NÃO é falha: a ordem existe no WMS (foi criada num
         # envio anterior cujo id se perdeu). Recupera o id pela consulta e segue para os anexos —

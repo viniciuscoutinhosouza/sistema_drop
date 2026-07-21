@@ -12,7 +12,9 @@
 - **2216 (MIG/cmig 1):** `MOR9347: transporte '01' não encontrado para o cadastro 'MIG IMPORTACOES LTDA'`. Causa-raiz: **os códigos de transporte são por-CMIG** (cada cadastro tem os seus). O "01" existe na LPS (cmig 21) mas **não na MIG** → o `transporte:{codigoTransporte:"01"}` que eu passei a mandar para todos **derrubava** o PostOrdem da MIG (regressão minha do commit e576a3c). A MIG mostra CORREIOS nas ordens, mas isso vem do **XML da NF-e**, não de um codigoTransporte no cadastro.
 - **2222 (MIG):** `END0101: Município indefinido para 'Santa Terezinha de Minas'` — **não é transporte**. O ML mandou `city="Santa Terezinha de Minas"` com `municipality:{id:null}` → o eShip não reconhece o município (dado de endereço).
 
-**Correção (commit 919e91f):** `_TRANSPORTE_POR_CMIG` (só LPS 21→"01" confirmado); `build_ordem_payload` só inclui o bloco `transporte` quando há código confirmado para a CMIG; demais vão SEM transporte (comportamento antigo). `ensure_order_transport` pula quando não há código. Verificado: 2216 reenviado passou a **criar a ordem** no eShip (id 3101176) — restou erro fiscal separado (`MNF0917: CFOP 6108 não cadastrado`). Deploy + restart OK.
+**Correção (commit 919e91f):** `_TRANSPORTE_POR_CMIG` (só LPS 21→"01" confirmado); `build_ordem_payload` só inclui o bloco `transporte` quando há código confirmado para a CMIG; demais vão SEM transporte (comportamento antigo). `ensure_order_transport` pula quando não há código. Verificado: 2216 reenviado passou a **criar a ordem** no eShip (id 3101176) — restou erro fiscal separado (`MNF0917: CFOP 6108 não cadastrado`, config no eShip — CFOP está correto). Deploy + restart OK.
+
+**Município pelo CEP (2222):** o ML mandou o **bairro** no campo cidade ("Santa Terezinha de Minas" é bairro de **Itatiaiuçu**/MG, IBGE 3133709) → eShip recusava (END0101). Novo `_municipio_por_cep` (reusa `services/viacep_service.fetch_address`, com cache e best-effort — nunca derruba o envio) resolve o município pelo CEP; `build_ordem_payload(..., municipio_override=)` usa o correto; `push_order` e `preview_ordem` passam a resolver. Prévia ganha aviso "Município corrigido pelo CEP".
 
 ---
 
