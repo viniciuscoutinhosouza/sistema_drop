@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-21 — fix(fiscal): destrava pedidos presos em "Processando NF-e" (job)
+
+**Sintoma (dono):** venda 2000017470080738 travada em "Processando NF-e".
+
+**Diagnóstico:** a NF-e estava **AUTORIZADA no ML** (invoice 6539476773), mas o banco ficou `nfe_status='pending'`. Causa: o Faturador do ML é **assíncrono** — `emit_order_nfe` marca 'pending' na hora e faz um fetch imediato; se o ML ainda processava, ficava 'pending' **para sempre** (nada re-sincroniza `nfe_status` de pedido existente; o botão "Processando NF-e…" fica desabilitado, sem como forçar o sync).
+
+**Correção:**
+- **Rede de segurança (job):** novo `tasks/sync_pending_nfe.py` — a cada 15 min re-consulta o ML (via `fetch_and_cache_order_invoices`) para pedidos ML em `pending`/`in_process` (janela 30 dias, não cancelados) e atualiza o status quando o ML resolve. Registrado no scheduler (`sync_pending_nfe`).
+- O pedido 2134 foi destravado manualmente (sync → `authorized`, chave `35260759951479000275550020000020031237124160`).
+
+Deploy + restart (o scheduler registra o job novo no boot).
+
+---
+
 ## 2026-07-21 — fix(contas): admin pode desconectar contas de marketplace
 
 **Pedido (dono):** na tela "Minhas Contas de Marketplace", o **admin** precisa poder desconectar contas — hoje só o proprietário (owner) conseguia.

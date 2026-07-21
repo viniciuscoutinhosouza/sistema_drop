@@ -17,16 +17,16 @@ scheduler = AsyncIOScheduler()
 
 
 def start_scheduler():
+    from integrations.eship.tasks import sync_eship_status
     from tasks.check_subscriptions import check_overdue_subscriptions
     from tasks.fiscal_alerts import run_fiscal_alerts
     from tasks.release_orphan_reservations_job import run_release_orphan_reservations
     from tasks.sync_dfe import sync_all_dfe
     from tasks.sync_orders import sync_all_orders
+    from tasks.sync_pending_nfe import sync_pending_nfe
     from tasks.sync_stock import sync_all_stock
     from tasks.sync_tokens import refresh_expiring_tokens
     from tasks.sync_variation_stock import sync_all_variation_stock
-
-    from integrations.eship.tasks import sync_eship_status
 
     scheduler.add_job(
         sync_all_orders,
@@ -41,6 +41,16 @@ def start_scheduler():
         IntervalTrigger(hours=1),
         id="refresh_tokens",
         name="Refresh OAuth Tokens",
+        replace_existing=True,
+    )
+
+    # Rede de segurança: destrava pedidos presos em "Processando NF-e" (nfe_status pending/in_process)
+    # re-consultando o ML — a emissão do Faturador é assíncrona e o status podia ficar preso.
+    scheduler.add_job(
+        sync_pending_nfe,
+        IntervalTrigger(minutes=15),
+        id="sync_pending_nfe",
+        name="Sync NF-e Pendentes (destrava 'Processando')",
         replace_existing=True,
     )
 
