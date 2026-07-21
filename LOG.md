@@ -14,6 +14,8 @@ Início da conexão de contas Shopee (sandbox) — credenciais Test do app "Ecom
 
 **Verificado ao vivo:** `get_shops_by_partner` → HTTP 200 (`error:""`); `auth_partner` (URL gerada pelo sistema) → HTTP 302 redirecionando para o login da Shopee, sem error_sign. Também corrigido o `SHOPEE_REDIRECT_URI` de PROD (`/integrations/` → `/accounts/shopee/callback`). `.env` nunca commitado (gitignored). Testes `test_shopee.py` 7 passed.
 
+**3º bug — callback OAuth não retornava** (commit 5b9d16e): após autorizar, a Shopee ficava parada e não redirecionava (callback nunca chamado — confirmado nos logs). Causa: (a) o `redirect` não era URL-encoded no `auth_partner`; (b) o `state` ia em **query** (`?state=`), mas a Shopee anexa `?code=&shop_id=` e NÃO preserva state → URL malformada (`?state=...?code=...`). Correção: `state` no **caminho** (`GET /accounts/shopee/callback/{state}`) + `redirect` URL-encoded. Verificado: redirect limpo, `auth_partner` → 302 aceito.
+
 ---
 
 ## 2026-07-21 — fix(fiscal): destrava pedidos presos em "Processando NF-e" (job)
