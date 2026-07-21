@@ -24,8 +24,18 @@ SHOPEE_AUTH_BASE = f"{SHOPEE_API_BASE}/shop/auth_partner"
 
 
 def _sign(path: str, timestamp: int, access_token: str = "", shop_id: int = 0) -> str:
-    """Generate HMAC-SHA256 signature for Shopee API requests."""
-    base_str = f"{settings.SHOPEE_PARTNER_ID}{path}{timestamp}{access_token}{shop_id}"
+    """Generate HMAC-SHA256 signature for Shopee API requests.
+
+    Regra da Shopee (open.shopee.com):
+      - APIs **públicas** (auth_partner, token/get, public/*): base = partner_id + path + timestamp.
+      - APIs de **loja**:  base = partner_id + path + timestamp + access_token + shop_id.
+    Anexar access_token/shop_id nas públicas (o código antigo colava "" e "0") gera 'Wrong sign'.
+    """
+    base_str = f"{settings.SHOPEE_PARTNER_ID}{path}{timestamp}"
+    if access_token:
+        base_str += access_token
+    if shop_id:
+        base_str += str(shop_id)
     return hmac.new(
         settings.SHOPEE_PARTNER_KEY.encode(),
         base_str.encode(),
