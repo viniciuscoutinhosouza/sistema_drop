@@ -14,6 +14,8 @@
 
 **Correção (commit 919e91f):** `_TRANSPORTE_POR_CMIG` (só LPS 21→"01" confirmado); `build_ordem_payload` só inclui o bloco `transporte` quando há código confirmado para a CMIG; demais vão SEM transporte (comportamento antigo). `ensure_order_transport` pula quando não há código. Verificado: 2216 reenviado passou a **criar a ordem** no eShip (id 3101176) — restou erro fiscal separado (`MNF0917: CFOP 6108 não cadastrado`, config no eShip — CFOP está correto). Deploy + restart OK.
 
+**Refinamento (Post vs Put):** sondagem ao vivo revelou que o eShip valida o transporte DIFERENTE na criação vs atualização — o "01" (CORREIOS global id 28) é **recusado no PostOrdem** da MIG (MOR9347), mas **aceito no PutOrdem** de MIG/LPS/MBS (grava CORREIOS em <1s). Solução final: **não mandar transporte no PostOrdem** (removido do `build_ordem_payload`); aplicar sempre via `ensure_order_transport` (PutOrdem), com **"01" para TODAS as CMIGs** (interim). Volta a ser uniforme e não falha por-CMIG.
+
 **Município pelo CEP (2222):** o ML mandou o **bairro** no campo cidade ("Santa Terezinha de Minas" é bairro de **Itatiaiuçu**/MG, IBGE 3133709) → eShip recusava (END0101). Novo `_municipio_por_cep` (reusa `services/viacep_service.fetch_address`, com cache e best-effort — nunca derruba o envio) resolve o município pelo CEP; `build_ordem_payload(..., municipio_override=)` usa o correto; `push_order` e `preview_ordem` passam a resolver. Prévia ganha aviso "Município corrigido pelo CEP".
 
 ---

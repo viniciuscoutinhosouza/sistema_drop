@@ -494,24 +494,23 @@ async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
     return doc
 
 
-# Código de transporte (codigoTransporte) do eShip é POR-CMIG (cada cadastro tem os SEUS transportes).
+# Código de transporte (codigoTransporte) do eShip.
 #
-# Confirmado ao vivo (2026-07-21): a LPS (cmig 21) tem "01" (Correios) e o PostOrdem aceita; a MIG
-# (cmig 1) NÃO tem "01" no cadastro dela e o PostOrdem **recusa** (MOR9347), derrubando o envio —
-# mesmo a MIG mostrando CORREIOS nas ordens (esse vem do XML da NF-e, não de um codigoTransporte).
-# Por isso: só enviamos o bloco `transporte` para CMIGs com código CONFIRMADO; as demais vão SEM
-# transporte (comportamento antigo — a transportadora vem do XML da nota), para NÃO quebrar o envio.
+# Descoberta ao vivo (2026-07-21): o eShip valida o transporte de forma DIFERENTE na criação vs na
+# atualização — o "01" (CORREIOS, transporte global id 28) é **recusado no PostOrdem** da MIG
+# (MOR9347 "não encontrado para o cadastro"), mas é **aceito no PutOrdem** de MIG, LPS e MBS (grava
+# CORREIOS em <1s). Por isso o transporte NÃO vai mais no PostOrdem (falharia por-CMIG); é aplicado
+# depois via `ensure_order_transport` (PutOrdem), que aceita "01" para todas as CMIGs.
 #
-# ATENÇÃO: código inexistente para a CMIG = MOR9347 (PostOrdem) ou timeout (PutOrdem). Nunca colocar
-# um código aqui sem validar ao vivo naquela CMIG. Preencher conforme o dono confirmar cada cadastro.
-_TRANSPORTE_POR_CMIG: dict[int, str] = {
-    21: "01",   # LPS Mercado Place — Correios (validado ao vivo)
-}
+# INTERIM (decisão do dono): "01" (Correios) para TODOS. Quando o dono cadastrar Flex/Envios e
+# informar os códigos reais (por CMIG), trocar por de-para `shipping_mode`×CMIG — validando cada
+# código via PutOrdem antes (código inexistente TRAVA o PutOrdem: timeout de 30s).
+_TRANSPORTE_CODIGO_INTERIM = "01"
 
 
 def transporte_code_for_order(order: Order) -> str | None:
-    """codigoTransporte do eShip para a CMIG do pedido, ou None se não há código confirmado."""
-    return _TRANSPORTE_POR_CMIG.get(order.cmig_id)
+    """codigoTransporte do eShip para o pedido (aplicado via PutOrdem). Interim: "01" p/ todos."""
+    return _TRANSPORTE_CODIGO_INTERIM
 
 
 def build_ordem_payload(
@@ -596,13 +595,9 @@ def build_ordem_payload(
     payload["cadastroDestinatario"] = dest
     payload["infosOrdem"] = infos_ordem
     payload["produtos"] = produtos
-    # Transporte (transportadora): bloco `transporte.codigoTransporte`. Só entra quando há código
-    # CONFIRMADO para a CMIG (ver transporte_code_for_order) — código inexistente para o cadastro
-    # faz o PostOrdem recusar (MOR9347) e derruba o envio. Sem código → ordem vai sem transporte
-    # (como antes; a transportadora vem do XML da NF-e).
-    _cod_transp = transporte_code_for_order(order)
-    if _cod_transp:
-        payload["transporte"] = {"codigoTransporte": _cod_transp}
+    # NÃO enviamos transporte no PostOrdem: o eShip recusa o código no PostOrdem de algumas CMIGs
+    # (MOR9347) e derruba o envio. O transporte é aplicado DEPOIS via ensure_order_transport
+    # (PutOrdem), que aceita o "01" para todas as CMIGs. Ver comentário em transporte_code_for_order.
     return payload
 
 
