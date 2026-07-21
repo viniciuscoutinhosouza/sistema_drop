@@ -463,20 +463,24 @@ async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
     return doc
 
 
-# Código de transporte (codigoTransporte) do eShip por forma de envio.
+# Código de transporte (codigoTransporte) do eShip é POR-CMIG (cada cadastro tem os SEUS transportes).
 #
-# INTERIM (decisão do dono, 2026-07-20): "01" (Correios) para TODOS os pedidos. Motivo: só o "01"
-# está cadastrado e VALIDADO ao vivo no WMS do dono (grava CORREIOS em 0.5s). Os códigos 26/21/4 que
-# ele usava NÃO existem no cadastro do eShip e, pior, quando enviados o WMS **trava** (timeout, sem
-# resposta) — testado nas 4 contas. Quando o dono cadastrar Flex/Envios no eShip e informar os
-# códigos REAIS (a coluna `codigo` da tela Cadastros → Transportes), trocar `transporte_code_for_order`
-# por um de-para por `order.shipping_mode` (flex/agencia/coletado/correios/combinado/desconhecido).
-_TRANSPORTE_CODIGO_INTERIM = "01"
+# Confirmado ao vivo (2026-07-21): a LPS (cmig 21) tem "01" (Correios) e o PostOrdem aceita; a MIG
+# (cmig 1) NÃO tem "01" no cadastro dela e o PostOrdem **recusa** (MOR9347), derrubando o envio —
+# mesmo a MIG mostrando CORREIOS nas ordens (esse vem do XML da NF-e, não de um codigoTransporte).
+# Por isso: só enviamos o bloco `transporte` para CMIGs com código CONFIRMADO; as demais vão SEM
+# transporte (comportamento antigo — a transportadora vem do XML da nota), para NÃO quebrar o envio.
+#
+# ATENÇÃO: código inexistente para a CMIG = MOR9347 (PostOrdem) ou timeout (PutOrdem). Nunca colocar
+# um código aqui sem validar ao vivo naquela CMIG. Preencher conforme o dono confirmar cada cadastro.
+_TRANSPORTE_POR_CMIG: dict[int, str] = {
+    21: "01",   # LPS Mercado Place — Correios (validado ao vivo)
+}
 
 
-def transporte_code_for_order(order: Order) -> str:
-    """codigoTransporte do eShip para a forma de envio do pedido. Interim: "01" p/ todos."""
-    return _TRANSPORTE_CODIGO_INTERIM
+def transporte_code_for_order(order: Order) -> str | None:
+    """codigoTransporte do eShip para a CMIG do pedido, ou None se não há código confirmado."""
+    return _TRANSPORTE_POR_CMIG.get(order.cmig_id)
 
 
 def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
@@ -555,11 +559,13 @@ def build_ordem_payload(order: Order, creds: EShipCreds) -> dict:
     payload["cadastroDestinatario"] = dest
     payload["infosOrdem"] = infos_ordem
     payload["produtos"] = produtos
-    # Transporte (transportadora): bloco `transporte.codigoTransporte` (string). Sem ele o WMS
-    # criava a ordem SEM transporte. O código vem da forma de envio do pedido (ver
-    # transporte_code_for_order). ATENÇÃO: só mandar código que EXISTE no eShip — código inválido
-    # TRAVA o WMS (não é erro em erros[], é timeout).
-    payload["transporte"] = {"codigoTransporte": transporte_code_for_order(order)}
+    # Transporte (transportadora): bloco `transporte.codigoTransporte`. Só entra quando há código
+    # CONFIRMADO para a CMIG (ver transporte_code_for_order) — código inexistente para o cadastro
+    # faz o PostOrdem recusar (MOR9347) e derruba o envio. Sem código → ordem vai sem transporte
+    # (como antes; a transportadora vem do XML da NF-e).
+    _cod_transp = transporte_code_for_order(order)
+    if _cod_transp:
+        payload["transporte"] = {"codigoTransporte": _cod_transp}
     return payload
 
 
@@ -997,6 +1003,9 @@ async def ensure_order_transport(
     if _is_full_order(order):
         return {"ok": False, "reason": "full"}
     codigo = transporte_code_for_order(order)
+    if not codigo:
+        # CMIG sem código de transporte confirmado — não mexe (transporte vem do XML da nota).
+        return {"ok": False, "reason": "sem_codigo_p_cmig"}
     if (order.eship_transporte_codigo or "") == codigo:
         return {"ok": True, "skipped": "already_set", "codigo": codigo}
 
