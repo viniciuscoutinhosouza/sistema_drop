@@ -57,7 +57,9 @@ class Settings(BaseSettings):
     SHOPEE_PARTNER_KEY: str = ""
     SHOPEE_REDIRECT_URI: str = "http://localhost:8000/api/v1/accounts/shopee/callback"
     # Host da API — troca produção⇄sandbox por env, sem tocar código.
-    # Sandbox: https://partner.test-stable.shopeemobile.com/api/v2 (confirmar host vigente).
+    # Produção: https://partner.shopeemobile.com/api/v2
+    # Sandbox v2 (validado 2026-07-21): https://openplatform.sandbox.test-stable.shopee.sg/api/v2
+    #   (NÃO é partner.test-stable.shopeemobile.com — esse é um sandbox antigo e dá error_sign).
     SHOPEE_API_BASE: str = "https://partner.shopeemobile.com/api/v2"
 
     # Platform fee (R$) charged per order payment

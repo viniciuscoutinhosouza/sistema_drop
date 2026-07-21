@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-07-21 — fix(shopee): conexão de conta (assinatura + host sandbox v2)
+
+Início da conexão de contas Shopee (sandbox) — credenciais Test do app "Ecommerce Made in Group" (partner_id 1238914).
+
+**Dois bugs corrigidos:**
+1. **`_sign` colava access_token+shop_id nas APIs públicas** → base string com um "0" a mais → `error_sign`. Agora só anexa em APIs de loja (público = `partner_id+path+timestamp`). `services/shopee_service.py` (commit 1ed54d7).
+2. **Host do sandbox errado:** o `SHOPEE_API_BASE` apontava para `partner.test-stable.shopeemobile.com` (sandbox antigo — reconhece o partner_id mas dá `error_sign`). A **Sandbox v2** é `https://openplatform.sandbox.test-stable.shopee.sg/api/v2` (descoberto pelo API Test Tool do console). Corrigido nos `.env` (local + PROD) e documentado no comentário do `config.py`.
+
+**Verificado ao vivo:** `get_shops_by_partner` → HTTP 200 (`error:""`); `auth_partner` (URL gerada pelo sistema) → HTTP 302 redirecionando para o login da Shopee, sem error_sign. Também corrigido o `SHOPEE_REDIRECT_URI` de PROD (`/integrations/` → `/accounts/shopee/callback`). `.env` nunca commitado (gitignored). Testes `test_shopee.py` 7 passed.
+
+---
+
 ## 2026-07-21 — fix(fiscal): destrava pedidos presos em "Processando NF-e" (job)
 
 **Sintoma (dono):** venda 2000017470080738 travada em "Processando NF-e".
