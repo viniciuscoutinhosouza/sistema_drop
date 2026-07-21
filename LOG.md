@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-07-21 — fix(eship): transporte é POR-CMIG (regressão do "01 para todos")
+
+**Sintoma (dono):** pedidos 2000017507243984 e 2000017513478494 falhando no envio ao eShip.
+
+**Diagnóstico:**
+- **2216 (MIG/cmig 1):** `MOR9347: transporte '01' não encontrado para o cadastro 'MIG IMPORTACOES LTDA'`. Causa-raiz: **os códigos de transporte são por-CMIG** (cada cadastro tem os seus). O "01" existe na LPS (cmig 21) mas **não na MIG** → o `transporte:{codigoTransporte:"01"}` que eu passei a mandar para todos **derrubava** o PostOrdem da MIG (regressão minha do commit e576a3c). A MIG mostra CORREIOS nas ordens, mas isso vem do **XML da NF-e**, não de um codigoTransporte no cadastro.
+- **2222 (MIG):** `END0101: Município indefinido para 'Santa Terezinha de Minas'` — **não é transporte**. O ML mandou `city="Santa Terezinha de Minas"` com `municipality:{id:null}` → o eShip não reconhece o município (dado de endereço).
+
+**Correção (commit 919e91f):** `_TRANSPORTE_POR_CMIG` (só LPS 21→"01" confirmado); `build_ordem_payload` só inclui o bloco `transporte` quando há código confirmado para a CMIG; demais vão SEM transporte (comportamento antigo). `ensure_order_transport` pula quando não há código. Verificado: 2216 reenviado passou a **criar a ordem** no eShip (id 3101176) — restou erro fiscal separado (`MNF0917: CFOP 6108 não cadastrado`). Deploy + restart OK.
+
+---
+
 ## 2026-07-20 — feat(eship): envia e atualiza o Transporte na ordem do WMS
 
 **Pedido (dono):** o envio ao eShip não estava mandando o Transporte (transportadora); identificar a forma de envio e enviar o código; atualizar o transporte nos já enviados ao sincronizar.
