@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import logging
 import time
+from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException
@@ -47,12 +48,16 @@ def get_authorization_url(redirect_uri: str) -> str:
     timestamp = int(time.time())
     path = "/api/v2/shop/auth_partner"
     sign = _sign(path, timestamp)
+    # O `redirect` PRECISA ser URL-encoded: sem isso, se a URL tiver `?`/`&`, a Shopee os
+    # interpreta como parâmetros DELA e o redirect chega truncado (ou ela nem redireciona).
+    # O `state` vai no CAMINHO da redirect_uri (não em query) — a Shopee anexa `?code=&shop_id=`
+    # ao redirect; um `?state=` prévio viraria `?state=...?code=...` (malformado) e ela não volta.
     return (
         f"{SHOPEE_AUTH_BASE}"
         f"?partner_id={settings.SHOPEE_PARTNER_ID}"
         f"&timestamp={timestamp}"
         f"&sign={sign}"
-        f"&redirect={redirect_uri}"
+        f"&redirect={quote(redirect_uri, safe='')}"
     )
 
 

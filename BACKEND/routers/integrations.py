@@ -693,19 +693,23 @@ async def shopee_authorize(
     await _assert_ac_can_access(account_id, current_user.id, db)
     state = secrets.token_urlsafe(16)
     _oauth_states[state] = {"user_id": current_user.id, "account_id": account_id}
-    redirect_uri_with_state = f"{settings.SHOPEE_REDIRECT_URI}?state={state}"
+    # `state` vai no CAMINHO (não em query): a Shopee anexa `?code=&shop_id=` ao redirect; um
+    # `?state=` prévio quebraria a URL (`?state=...?code=...`) e ela não redirecionaria de volta.
+    redirect_uri_with_state = f"{settings.SHOPEE_REDIRECT_URI.rstrip('/')}/{state}"
     url = shopee_service.get_authorization_url(redirect_uri_with_state)
     return {"auth_url": url}
 
 
-@router.get("/shopee/callback")
+@router.get("/shopee/callback/{state}")
 async def shopee_callback(
-    code: str,
     state: str,
+    code: str,
     shop_id: int = Query(None),
     shopid: int = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
+    # `state` vem no CAMINHO (a Shopee só devolve `code`+`shop_id` na query — não preserva state
+    # como o OAuth padrão). Ver shopee_authorize.
     resolved_shop_id = shop_id or shopid
     if not resolved_shop_id:
         raise HTTPException(status_code=400, detail="shop_id ausente no callback Shopee")
