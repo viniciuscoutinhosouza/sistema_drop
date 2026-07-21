@@ -24,7 +24,7 @@ def _trunc_bytes(s: str, max_bytes: int) -> str:
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -583,21 +583,12 @@ async def disconnect_account(
     current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Desativa uma CONTA (apenas owner pode fazer isso)."""
-    owner_check = await db.execute(
-        select(AccountAdministrator).where(
-            AccountAdministrator.account_id == account_id,
-            AccountAdministrator.user_id == current_user.id,
-            AccountAdministrator.is_owner == True,
-        )
-    )
-    if not owner_check.scalar_one_or_none():
-        raise HTTPException(status_code=403, detail="Apenas o owner pode desativar a conta")
+    """Desativa uma CONTA — o **owner** da conta OU um **admin** da plataforma.
 
-    result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
-    account = result.scalar_one_or_none()
-    if not account:
-        raise HTTPException(status_code=404, detail="Conta não encontrada")
+    Reusa `_assert_owner_or_admin` (mesmo guard dos demais endpoints de conta) — antes o
+    disconnect era o único caso "só owner", o que impedia o admin de desconectar.
+    """
+    account = await _assert_owner_or_admin(account_id, current_user, db)
     account.is_active = False
     await db.commit()
 

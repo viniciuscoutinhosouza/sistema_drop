@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-07-21 — fix(contas): admin pode desconectar contas de marketplace
+
+**Pedido (dono):** na tela "Minhas Contas de Marketplace", o **admin** precisa poder desconectar contas — hoje só o proprietário (owner) conseguia.
+
+**Causa:** `disconnect_account` (`DELETE /accounts/{id}`) tinha um check **inline só-owner** (`is_owner=True` → 403 "Apenas o owner"), o único endpoint de conta que não aceitava admin. O botão no frontend já aparecia para todos, mas o backend recusava o admin com 403.
+
+**Correção:** `disconnect_account` passa a reusar o helper `_assert_owner_or_admin` (mesmo guard "owner OU admin da plataforma" dos demais endpoints de conta) — DRY e consistente. Frontend não precisou mudar (botão já visível; `IntegrationsView` já tinha `isAdmin`). Removido import `or_` órfão. `py_compile`/ruff OK.
+
+---
+
 ## 2026-07-21 — fix(eship): transporte é POR-CMIG (regressão do "01 para todos")
 
 **Sintoma (dono):** pedidos 2000017507243984 e 2000017513478494 falhando no envio ao eShip.
