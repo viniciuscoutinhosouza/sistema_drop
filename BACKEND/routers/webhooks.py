@@ -227,6 +227,17 @@ async def shopee_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     raw_body = await request.body()
     authorization = request.headers.get("Authorization", "")
 
+    # DEBUG TEMPORÁRIO (remover): captura o push REAL da Shopee p/ descobrir chave/base do sign.
+    import logging as _lg
+    _lg.getLogger("shopee_push_debug").warning(
+        "[SHOPEE PUSH DEBUG] auth=%s xfp=%s host=%s path=%s body=%r",
+        authorization,
+        request.headers.get("x-forwarded-proto"),
+        request.headers.get("host"),
+        request.url.path,
+        raw_body[:500],
+    )
+
     # A Shopee assina `url + body` (URL pública de callback configurada no console + corpo). A URL
     # que a Shopee usa é SEMPRE https (a que o dono digita). Atrás do nginx, se o `X-Forwarded-Proto`
     # não vier, o scheme interno é http — por isso tentamos AMBOS os schemes (https e http).
