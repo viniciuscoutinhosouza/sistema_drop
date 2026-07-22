@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-07-22 — chore(shopee): Fase 3 PAUSADA até Go-Live (endpoints fiscais indisponíveis no sandbox)
+
+Ao iniciar a Fase 3 (fiscal), descoberto que os endpoints fiscais BR (`order/get_pending_buyer_invoice_order_list`, `order/get_buyer_invoice_info`, `order/upload_invoice_doc`, `order/download_invoice_doc`) retornam **"404 page not found"** no host de sandbox `openplatform.sandbox.test-stable.shopee.sg` (paths confirmados corretos via SDK; `get_shop_info` dá 200) — são **BR-only, indisponíveis nesse sandbox**. A loja de teste também está vazia (0 pedidos). Como fiscal exige prova de funcionamento (CLAUDE.md) e não há como validar aqui, **decisão do dono: PAUSAR a Shopee até o Go-Live** (loja real BR + credenciais de produção), quando os endpoints fiscais e pedidos reais existirem. Contrato fiscal já confirmado (SDK), pronto para implementar na retomada. Nenhum código fiscal foi commitado (nada não-verificável entregue). Token do sandbox restaurado (refresh+save). **Já no ar:** F0, Fase 1, Fase 2 (pedido rico), webhook/push verificado.
+
+---
+
 ## 2026-07-22 — feat(shopee): Fase 2 — pedido rico (get_order_detail)
 
 Com a loja de teste conectada, implementada a **Fase 2** do `PLANO_PARIDADE_SHOPEE.md` (pedido rico), **sem tocar em nada do ML** (`process_ml_order` intacto; regra de ouro respeitada).
