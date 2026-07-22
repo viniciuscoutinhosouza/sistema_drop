@@ -4,9 +4,11 @@
 
 ---
 
-## 2026-07-21 — fix(shopee): conexão de conta (assinatura + host sandbox v2)
+## 2026-07-21/22 — fix(shopee): conexão de conta (assinatura + host sandbox v2) — ✅ CONECTADO
 
 Início da conexão de contas Shopee (sandbox) — credenciais Test do app "Ecommerce Made in Group" (partner_id 1238914).
+
+**✅ RESOLVIDO (2026-07-22):** loja de teste **227767957** CONECTADA (conta id 141, is_active=1, com access_token). O OAuth completou (callback recebeu `code`+`shop_id`, 307 de sucesso) e o `get_shop_info` retornou `shop_name=OpenSANDBOX...`, region=BR, status=NORMAL, error="" — token válido, assinatura de loja OK. O bloqueio anterior (403 no login direto do sandbox) resolveu logando com o usuário/senha do test account (`SANDBOX.b1cecc933c4de524d2a2`/`20d4341316944d7c`) na tela do OAuth. **Próximo:** pré-voo Get* read-only + Fases 2→7 do `DOCs/PLANO_PARIDADE_SHOPEE.md`.
 
 **Dois bugs corrigidos:**
 1. **`_sign` colava access_token+shop_id nas APIs públicas** → base string com um "0" a mais → `error_sign`. Agora só anexa em APIs de loja (público = `partner_id+path+timestamp`). `services/shopee_service.py` (commit 1ed54d7).
