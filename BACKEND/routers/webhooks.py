@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database import get_db
-from models.fiscal import CMIGFiscalConfig, Invoice
 from models.integration import MarketplaceAccount
 from services import ml_service, shopee_service, webhook_service
 
@@ -234,12 +233,22 @@ async def shopee_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     host = request.headers.get("host", request.url.netloc)
     push_url = f"{proto}://{host}{request.url.path}"
 
+    # A Shopee assina o PUSH com a "Push Partner Key" (separada da chave de API). Tenta a chave de
+    # push (Test/Live) e, como fallback, a de API — assim a verificação passa em qualquer config.
     is_valid = await shopee_service.verify_push_signature(
-        settings.SHOPEE_PARTNER_KEY,
+        settings.SHOPEE_PUSH_PARTNER_KEY or settings.SHOPEE_PARTNER_KEY,
         authorization,
         raw_body,
         url=push_url,
     )
+    if (
+        not is_valid
+        and settings.SHOPEE_PUSH_PARTNER_KEY
+        and settings.SHOPEE_PUSH_PARTNER_KEY != settings.SHOPEE_PARTNER_KEY
+    ):
+        is_valid = await shopee_service.verify_push_signature(
+            settings.SHOPEE_PARTNER_KEY, authorization, raw_body, url=push_url
+        )
     if not is_valid:
         raise HTTPException(status_code=401, detail="Assinatura Shopee inválida")
 

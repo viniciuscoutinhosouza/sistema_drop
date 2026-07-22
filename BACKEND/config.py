@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     # Shopee
     SHOPEE_PARTNER_ID: str = ""
     SHOPEE_PARTNER_KEY: str = ""
+    # Chave de PUSH (webhooks) — SEPARADA da chave de API. A Shopee assina as notificações push
+    # com a "Push Partner Key" (Test/Live), não com a de API. Se vazia, o webhook usa a de API.
+    SHOPEE_PUSH_PARTNER_KEY: str = ""
     SHOPEE_REDIRECT_URI: str = "http://localhost:8000/api/v1/accounts/shopee/callback"
     # Host da API — troca produção⇄sandbox por env, sem tocar código.
     # Produção: https://partner.shopeemobile.com/api/v2
