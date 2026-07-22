@@ -179,6 +179,62 @@ async def get_order_list(
     return out
 
 
+# Campos ricos do get_order_detail (o default do endpoint vem magro). Buyer/itens/valor só vêm
+# quando pedidos em response_optional_fields — é o que transforma o "pedido pobre" em "pedido rico".
+_ORDER_DETAIL_FIELDS = (
+    "buyer_user_id,buyer_username,recipient_address,item_list,pay_time,total_amount,"
+    "order_status,ship_by_date,create_time,update_time,payment_method,message_to_seller,cod,currency"
+)
+
+
+async def get_order_detail(
+    access_token: str,
+    shop_id: int,
+    order_sn_list,
+    *,
+    optional_fields: str | None = None,
+) -> list:
+    """Detalhe RICO de até 50 pedidos (buyer, recipient_address, item_list, valores, status).
+
+    `order_sn_list`: str ou lista de order_sn. Segue o padrão do get_order_list — levanta em erro
+    (nunca devolve [] mudo). Retorna `response.order_list`.
+    """
+    if isinstance(order_sn_list, str):
+        order_sn_list = [order_sn_list]
+    order_sn_list = [str(o) for o in order_sn_list if o]
+    if not order_sn_list:
+        return []
+    path = "/api/v2/order/get_order_detail"
+    timestamp = int(time.time())
+    sign = _sign(path, timestamp, access_token, shop_id)
+    params = {
+        "partner_id": settings.SHOPEE_PARTNER_ID,
+        "timestamp": timestamp,
+        "sign": sign,
+        "access_token": access_token,
+        "shop_id": shop_id,
+        "order_sn_list": ",".join(order_sn_list),
+        "response_optional_fields": optional_fields or _ORDER_DETAIL_FIELDS,
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(f"{SHOPEE_API_BASE}/order/get_order_detail", params=params)
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Shopee get_order_detail HTTP {resp.status_code}: {resp.text[:300]}",
+        )
+    data = resp.json()
+    if data.get("error"):
+        logger.warning(
+            "[Shopee] get_order_detail shop=%s error=%s msg=%s",
+            shop_id, data.get("error"), data.get("message"),
+        )
+        raise HTTPException(
+            status_code=502, detail=f"Shopee get_order_detail: {data.get('message')}"
+        )
+    return (data.get("response", {}) or {}).get("order_list", []) or []
+
+
 async def get_shop_info(access_token: str, shop_id: int) -> dict:
     """Dados da loja autorizada — nome, região, status. Serve de "ping" (valida token+assinatura)
     e alimenta a validação de identidade no callback.

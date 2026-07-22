@@ -722,33 +722,71 @@ async def process_shopee_order(
     shopee_order_data: dict,
     integration: MarketplaceAccount,
 ):
-    """Process a Shopee order webhook event."""
-    shopee_order_id = str(shopee_order_data.get("ordersn", ""))
+    """Cria o pedido Shopee com dados RICOS (buscados via get_order_detail).
+
+    O push (webhook) e o get_order_list vêm POBRES — só o order_sn (nem comprador, nem itens, nem
+    valor). Só o get_order_detail traz o pedido completo. Se o detalhe falhar (token/rede), NÃO
+    criamos um pedido pobre (que o dedup cristalizaria) — logamos e saímos; o sync retenta com
+    token válido. `process_ml_order` NÃO é tocado.
+    """
+    # order_sn vem como `ordersn` (push), `order_sn` (get_order_list) ou aninhado em `data`.
+    order_sn = str(
+        shopee_order_data.get("ordersn")
+        or shopee_order_data.get("order_sn")
+        or (shopee_order_data.get("data") or {}).get("ordersn")
+        or ""
+    )
+    if not order_sn:
+        logger.warning("[shopee] evento sem order_sn — ignorado: %.200s", str(shopee_order_data))
+        return
 
     existing = await db.execute(
         select(Order).where(
             Order.platform == "shopee",
-            Order.platform_order_id == shopee_order_id,
+            Order.platform_order_id == order_sn,
             Order.dropshipper_id == integration.owner_id,
         )
     )
     if existing.scalar_one_or_none():
         return
 
-    recipient_address = shopee_order_data.get("recipient_address", {})
+    # Detalhe RICO — token coordenado + get_order_detail, ambos best-effort. Falha → não cria pedido
+    # pobre; loga alto (falhar alto) e sai (retentável pelo sync com token renovado).
+    try:
+        from services import shopee_service
+        from services.shopee_auth import get_valid_shopee_token
+        token = await get_valid_shopee_token(integration, db)
+        details = await shopee_service.get_order_detail(token, integration.shop_id, [order_sn])
+        detail = details[0] if details else None
+    except Exception as exc:  # noqa: BLE001 — token/rede: loga e sai; o sync retenta
+        logger.warning(
+            "[shopee] get_order_detail falhou pedido=%s — pedido NÃO criado (retentável): %s",
+            order_sn, exc,
+        )
+        return
+    if not detail:
+        logger.warning("[shopee] get_order_detail vazio pedido=%s — pedido NÃO criado", order_sn)
+        return
 
+    if detail.get("currency") and detail.get("currency") != "BRL":
+        logger.warning(
+            "[shopee] pedido=%s em moeda %s (esperado BRL) — sale_amount pode ficar inconsistente",
+            order_sn, detail.get("currency"),
+        )
+
+    recipient_address = detail.get("recipient_address") or {}
     order = Order(
         dropshipper_id=integration.owner_id,
         account_id=integration.id,
         cmig_id=integration.cmig_id,
         platform="shopee",
-        platform_order_id=shopee_order_id,
-        platform_status=shopee_order_data.get("order_status", ""),
+        platform_order_id=order_sn,
+        platform_status=detail.get("order_status") or "",
         status="downloaded",
         payment_status="pending",
-        buyer_name=recipient_address.get("name", ""),
+        buyer_name=recipient_address.get("name") or "",
         shipping_address=json.dumps(recipient_address, ensure_ascii=False),
-        sale_amount=Decimal(str(shopee_order_data.get("total_amount", 0))),
+        sale_amount=Decimal(str(detail.get("total_amount") or 0)),
         shipping_mode=MODE_DESCONHECIDO,  # Shopee usa rede propria — fora do escopo do bucket ML
     )
     db.add(order)
@@ -761,17 +799,17 @@ async def process_shopee_order(
             await db.execute(
                 select(Order).where(
                     Order.platform == "shopee",
-                    Order.platform_order_id == shopee_order_id,
+                    Order.platform_order_id == order_sn,
                     Order.dropshipper_id == integration.owner_id,
                 )
             )
         ).scalar_one_or_none()
         if dup:
-            logger.info("[shopee] pedido %s criado concorrentemente — duplicata evitada", shopee_order_id)
+            logger.info("[shopee] pedido %s criado concorrentemente — duplicata evitada", order_sn)
             return
         raise
 
-    for item_data in shopee_order_data.get("item_list", []):
+    for item_data in detail.get("item_list", []):
         shopee_item_id = item_data.get("item_id")
 
         # Caminho legado (DropshipperProduct.shopee_item_id) — preservar pro fallback de DP

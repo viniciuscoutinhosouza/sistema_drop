@@ -100,12 +100,15 @@ async def test_get_order_list_propaga_erro(monkeypatch):
 async def test_shopee_auth_reusa_token_valido(monkeypatch):
     """Token ainda valido -> caminho rapido, sem chamar refresh."""
     from datetime import UTC, datetime, timedelta
+
     from services import shopee_auth
 
     class Acc:
-        id = 1; platform = "shopee"
+        id = 1
+        platform = "shopee"
         access_token = "tok-valido"
-        refresh_token = "r"; shop_id = 123
+        refresh_token = "r"
+        shop_id = 123
         token_expires_at = datetime.now(UTC) + timedelta(hours=3)
         requires_reauth = False
 
@@ -121,11 +124,15 @@ async def test_shopee_auth_reusa_token_valido(monkeypatch):
 async def test_shopee_auth_renova_e_rotaciona(monkeypatch):
     """Token vencido -> renova, salva NOVOS access+refresh (rotacao) e limpa requires_reauth."""
     from datetime import UTC, datetime, timedelta
+
     from services import shopee_auth
 
     class Acc:
-        id = 2; platform = "shopee"
-        access_token = "velho"; refresh_token = "r-velho"; shop_id = 9
+        id = 2
+        platform = "shopee"
+        access_token = "velho"
+        refresh_token = "r-velho"
+        shop_id = 9
         token_expires_at = datetime.now(UTC) - timedelta(minutes=1)  # vencido
         requires_reauth = True
 
@@ -149,14 +156,21 @@ async def test_shopee_auth_renova_e_rotaciona(monkeypatch):
 async def test_shopee_auth_refuso_marca_reauth(monkeypatch):
     """Refresh invalido -> marca requires_reauth e levanta 401 de reconectar."""
     from datetime import UTC, datetime, timedelta
+
     from fastapi import HTTPException
+
     from services import shopee_auth
 
     class Acc:
-        id = 3; platform = "shopee"; description = "Loja X"
-        access_token = "velho"; refresh_token = "r"; shop_id = 9
+        id = 3
+        platform = "shopee"
+        description = "Loja X"
+        access_token = "velho"
+        refresh_token = "r"
+        shop_id = 9
         token_expires_at = datetime.now(UTC) - timedelta(minutes=1)
-        requires_reauth = False; platform_username = None
+        requires_reauth = False
+        platform_username = None
 
     class FakeDB:
         async def refresh(self, _o): pass
@@ -176,6 +190,7 @@ async def test_shopee_auth_refuso_marca_reauth(monkeypatch):
 @pytest.mark.asyncio
 async def test_shopee_auth_recusa_conta_nao_shopee():
     from fastapi import HTTPException
+
     from services import shopee_auth
 
     class Acc:
@@ -183,3 +198,85 @@ async def test_shopee_auth_recusa_conta_nao_shopee():
     with pytest.raises(HTTPException) as e:
         await shopee_auth.get_valid_shopee_token(Acc(), db=None)
     assert e.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_rico(monkeypatch):
+    """Manda order_sn_list + response_optional_fields (com recipient_address/item_list) e devolve
+    o pedido RICO (buyer/itens/valor) — o que transforma o pedido pobre em rico na Fase 2."""
+    captured = {}
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"error": "", "response": {"order_list": [{
+                "order_sn": "A1", "order_status": "READY_TO_SHIP", "total_amount": 123.45,
+                "currency": "BRL", "recipient_address": {"name": "Fulano"},
+                "item_list": [{"item_sku": "SKU1", "item_name": "Prod",
+                               "model_quantity_purchased": 2, "model_discounted_price": 61.72}],
+            }]}}
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, _url, params=None):
+            captured.update(params or {})
+            return FakeResp()
+
+    monkeypatch.setattr(s.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(s.settings, "SHOPEE_PARTNER_ID", "1")
+    monkeypatch.setattr(s.settings, "SHOPEE_PARTNER_KEY", "k")
+
+    out = await s.get_order_detail("tok", 123, ["A1"])
+    assert out[0]["order_sn"] == "A1"
+    assert out[0]["recipient_address"]["name"] == "Fulano"
+    assert captured["order_sn_list"] == "A1"
+    assert "recipient_address" in captured["response_optional_fields"]
+    assert "item_list" in captured["response_optional_fields"]
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_lista_vazia_nao_chama_api():
+    """order_sn_list vazio -> retorna [] cedo, sem tocar a API (se chamasse httpx, quebraria)."""
+    out = await s.get_order_detail("tok", 123, [])
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_propaga_erro(monkeypatch):
+    """Erro da Shopee levanta (não vira [] mudo) — igual ao get_order_list."""
+    from fastapi import HTTPException
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"error": "error_auth", "message": "invalid access_token"}
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, _url, params=None):
+            return FakeResp()
+
+    monkeypatch.setattr(s.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(s.settings, "SHOPEE_PARTNER_ID", "1")
+    monkeypatch.setattr(s.settings, "SHOPEE_PARTNER_KEY", "k")
+
+    with pytest.raises(HTTPException):
+        await s.get_order_detail("tok", 123, ["A1"])

@@ -187,8 +187,10 @@ async def sync_shopee_integration(
     """Sync Shopee orders for one account in Unix timestamp range. Returns count of new orders imported."""
     imported = 0
     try:
+        from services.shopee_auth import get_valid_shopee_token
+        token = await get_valid_shopee_token(integration, db)
         orders = await shopee_service.get_order_list(
-            integration.access_token,
+            token,
             integration.shop_id,
             time_from,
             time_to,

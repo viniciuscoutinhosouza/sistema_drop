@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-07-22 — feat(shopee): Fase 2 — pedido rico (get_order_detail)
+
+Com a loja de teste conectada, implementada a **Fase 2** do `PLANO_PARIDADE_SHOPEE.md` (pedido rico), **sem tocar em nada do ML** (`process_ml_order` intacto; regra de ouro respeitada).
+
+- `services/shopee_service.py`: novo **`get_order_detail(access_token, shop_id, order_sn_list, optional_fields=)`** — pede `response_optional_fields` (recipient_address, item_list, total_amount, order_status, currency…) que transforma o "pedido pobre" em rico. Mesmo padrão do `get_order_list` (assinatura de loja, levanta em erro, sem [] mudo).
+- `services/webhook_service.process_shopee_order` **reestruturada**: (a) resolve `order_sn` de `ordersn`/`order_sn`/`data.ordersn` — **corrige perda de pedido** no sync (antes lia só `ordersn` → `platform_order_id=""` → colisão no índice único); (b) busca o detalhe rico com **token coordenado** (`get_valid_shopee_token`) + `get_order_detail`, **ambos best-effort**; (c) se o detalhe falhar, **NÃO cria pedido pobre** (evita cristalizar) — loga alto e sai (retentável pelo sync); (d) popula buyer/itens/valor do detalhe; aviso se `currency != BRL`.
+- `tasks/sync_orders.py` e `tasks/sync_stock.py` (ramos Shopee): passam a usar `get_valid_shopee_token` (refresh coordenado) em vez do `access_token` cru.
+- Testes: `test_get_order_detail_*` (rico/erro/lista-vazia). `pytest -m "not integration"` 168 passed / 2 falhas pré-existentes.
+
+**Auditoria prévia:** consistency-auditor (incorporados: order_sn ambas chaves como fix de perda de pedido; não cristalizar pedido pobre; token+detalhe no try; aviso de moeda). **Follow-ups registrados:** re-hidratar pedido já criado porém pobre; busca de detalhe em lote no sync; validação estrita de moeda; `buyer_document` → Fase 3. **Falta:** smoke com pedido de teste real no sandbox (loja vazia).
+
 ## 2026-07-21/22 — fix(shopee): conexão de conta (assinatura + host sandbox v2) — ✅ CONECTADO
 
 Início da conexão de contas Shopee (sandbox) — credenciais Test do app "Ecommerce Made in Group" (partner_id 1238914).

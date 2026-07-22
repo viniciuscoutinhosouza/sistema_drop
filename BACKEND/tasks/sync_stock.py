@@ -30,9 +30,8 @@ from datetime import UTC, datetime
 from sqlalchemy import or_, select
 
 from database import AsyncSyncSession, task_db
-from models.cmig import CMIGProduct
 from models.integration import MarketplaceAccount
-from models.product import CatalogProduct, DropshipperProduct, ProductListing
+from models.product import ProductListing
 from services.ml_service import update_item_status as ml_update_status
 from services.ml_service import update_item_stock as ml_update_stock
 from services.shopee_service import update_item_stock as shopee_update_stock
@@ -170,8 +169,10 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
                 # uma medida real de disponível.
                 await _apply_auto_pause(db, account, listing, disponivel, stats)
             elif account.platform == "shopee":
+                from services.shopee_auth import get_valid_shopee_token
+                shopee_token = await get_valid_shopee_token(account, db)
                 await shopee_update_stock(
-                    account.access_token,
+                    shopee_token,
                     account.shop_id,
                     int(listing.platform_item_id),
                     stock,
