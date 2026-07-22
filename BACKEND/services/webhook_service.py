@@ -737,7 +737,9 @@ async def process_shopee_order(
         or ""
     )
     if not order_sn:
-        logger.warning("[shopee] evento sem order_sn — ignorado: %.200s", str(shopee_order_data))
+        # Loga só as CHAVES (não o payload — evita vazar PII de recipient_address em log).
+        _keys = list(shopee_order_data.keys()) if isinstance(shopee_order_data, dict) else type(shopee_order_data)
+        logger.warning("[shopee] evento sem order_sn — ignorado (chaves: %s)", _keys)
         return
 
     existing = await db.execute(
@@ -750,22 +752,19 @@ async def process_shopee_order(
     if existing.scalar_one_or_none():
         return
 
-    # Detalhe RICO — token coordenado + get_order_detail, ambos best-effort. Falha → não cria pedido
-    # pobre; loga alto (falhar alto) e sai (retentável pelo sync com token renovado).
-    try:
-        from services import shopee_service
-        from services.shopee_auth import get_valid_shopee_token
-        token = await get_valid_shopee_token(integration, db)
-        details = await shopee_service.get_order_detail(token, integration.shop_id, [order_sn])
-        detail = details[0] if details else None
-    except Exception as exc:  # noqa: BLE001 — token/rede: loga e sai; o sync retenta
-        logger.warning(
-            "[shopee] get_order_detail falhou pedido=%s — pedido NÃO criado (retentável): %s",
-            order_sn, exc,
-        )
-        return
+    # Detalhe RICO — token coordenado + get_order_detail. Se FALHAR (token expirado, rede,
+    # HTTPException), a exceção PROPAGA de propósito: NÃO criamos pedido pobre nem marcamos o
+    # evento como processado. No sync o `except` faz rollback (desfaz o WebhookEvent, que usa
+    # flush não-commit) e retenta no próximo ciclo; no push vira 5xx e a Shopee reenvia. Também é
+    # "falhar alto" — um bug de parsing propaga em vez de virar "pedido sumido" silencioso.
+    from services import shopee_service
+    from services.shopee_auth import get_valid_shopee_token
+    token = await get_valid_shopee_token(integration, db)
+    details = await shopee_service.get_order_detail(token, integration.shop_id, [order_sn])
+    detail = details[0] if details else None
     if not detail:
-        logger.warning("[shopee] get_order_detail vazio pedido=%s — pedido NÃO criado", order_sn)
+        # Shopee não retornou esse order_sn (não deve ocorrer p/ push real): nada a criar, sem retry.
+        logger.warning("[shopee] get_order_detail vazio pedido=%s — sem detalhe, nada a criar", order_sn)
         return
 
     if detail.get("currency") and detail.get("currency") != "BRL":
