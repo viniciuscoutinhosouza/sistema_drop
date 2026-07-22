@@ -227,16 +227,21 @@ async def shopee_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     raw_body = await request.body()
     authorization = request.headers.get("Authorization", "")
 
-    # DEBUG TEMPORÁRIO (remover): captura o push REAL da Shopee p/ descobrir chave/base do sign.
-    import logging as _lg
-    _lg.getLogger("shopee_push_debug").warning(
-        "[SHOPEE PUSH DEBUG] auth=%s xfp=%s host=%s path=%s body=%r",
-        authorization,
-        request.headers.get("x-forwarded-proto"),
-        request.headers.get("host"),
-        request.url.path,
-        raw_body[:500],
-    )
+    # Handshake de verificação da tela "Definir Push": a Shopee manda `{"code":0,"data":
+    # {"verify_info": "...Verification message..."}}` e só quer um **2xx** para marcar a URL como
+    # válida. É um ping de SETUP (não um evento), então respondemos 200 sem exigir assinatura —
+    # nada é processado. Pushes REAIS (code != 0) seguem validando a assinatura abaixo.
+    try:
+        _peek = json.loads(raw_body)
+    except Exception:
+        _peek = None
+    if (
+        isinstance(_peek, dict)
+        and _peek.get("code") == 0
+        and isinstance(_peek.get("data"), dict)
+        and "verify_info" in _peek["data"]
+    ):
+        return {"code": 0, "msg": "success"}
 
     # A Shopee assina `url + body` (URL pública de callback configurada no console + corpo). A URL
     # que a Shopee usa é SEMPRE https (a que o dono digita). Atrás do nginx, se o `X-Forwarded-Proto`
