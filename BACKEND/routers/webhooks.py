@@ -227,28 +227,25 @@ async def shopee_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     raw_body = await request.body()
     authorization = request.headers.get("Authorization", "")
 
-    # A Shopee assina `url + body` (URL pública de callback + corpo). Atrás do nginx a
-    # request.url é http://127.0.0.1 — reconstruímos a URL pública com X-Forwarded-Proto/Host.
-    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    # A Shopee assina `url + body` (URL pública de callback configurada no console + corpo). A URL
+    # que a Shopee usa é SEMPRE https (a que o dono digita). Atrás do nginx, se o `X-Forwarded-Proto`
+    # não vier, o scheme interno é http — por isso tentamos AMBOS os schemes (https e http).
     host = request.headers.get("host", request.url.netloc)
-    push_url = f"{proto}://{host}{request.url.path}"
+    path = request.url.path
+    fwd_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    candidate_urls = [f"{s}://{host}{path}" for s in dict.fromkeys([fwd_proto, "https", "http"])]
 
     # A Shopee assina o PUSH com a "Push Partner Key" (separada da chave de API). Tenta a chave de
-    # push (Test/Live) e, como fallback, a de API — assim a verificação passa em qualquer config.
-    is_valid = await shopee_service.verify_push_signature(
-        settings.SHOPEE_PUSH_PARTNER_KEY or settings.SHOPEE_PARTNER_KEY,
-        authorization,
-        raw_body,
-        url=push_url,
-    )
-    if (
-        not is_valid
-        and settings.SHOPEE_PUSH_PARTNER_KEY
-        and settings.SHOPEE_PUSH_PARTNER_KEY != settings.SHOPEE_PARTNER_KEY
-    ):
-        is_valid = await shopee_service.verify_push_signature(
-            settings.SHOPEE_PARTNER_KEY, authorization, raw_body, url=push_url
-        )
+    # push (Test/Live) e a de API como fallback, contra cada scheme — passa em qualquer config.
+    keys = [k for k in (settings.SHOPEE_PUSH_PARTNER_KEY, settings.SHOPEE_PARTNER_KEY) if k]
+    is_valid = False
+    for key in keys:
+        for cand in candidate_urls:
+            if await shopee_service.verify_push_signature(key, authorization, raw_body, url=cand):
+                is_valid = True
+                break
+        if is_valid:
+            break
     if not is_valid:
         raise HTTPException(status_code=401, detail="Assinatura Shopee inválida")
 
