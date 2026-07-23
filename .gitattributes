@@ -1,0 +1,2 @@
+# Bundle de raízes ICP-Brasil: manter LF (é lido por OpenSSL/ssl no servidor Linux)
+BACKEND/services/fiscal/sefaz/icp_brasil_cabundle.pem text eol=lf

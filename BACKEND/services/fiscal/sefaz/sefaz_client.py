@@ -169,6 +169,19 @@ def soap_envelope(servico: str, inner_xml: str) -> str:
 def _build_ssl_context(cert_pem: str, key_pem: str, verify_ssl: bool) -> ssl.SSLContext:
     """SSLContext compatível com SEFAZ/SVRS (TLS legado + mTLS)."""
     ctx = ssl.create_default_context() if verify_ssl else ssl._create_unverified_context()
+    if verify_ssl:
+        # O TLS da SEFAZ é emitido pela **ICP-Brasil** (ex.: nfe.fazenda.sp.gov.br ← AC SOLUTI ←
+        # AC Raiz Brasileira v10), cujas raízes NÃO estão no trust store público → verificação
+        # falha com "unable to get local issuer certificate". Adiciona o cabundle ICP-Brasil
+        # (config `NFE_ICP_CABUNDLE`; senão o bundle versionado ao lado deste módulo) ÀS raízes
+        # padrão — escopo só desta conexão, sem mexer no trust store do servidor.
+        from config import get_settings
+        cabundle = get_settings().NFE_ICP_CABUNDLE or str(
+            Path(__file__).parent / "icp_brasil_cabundle.pem"
+        )
+        if cabundle and Path(cabundle).exists():
+            with contextlib.suppress(ssl.SSLError, OSError):
+                ctx.load_verify_locations(cafile=cabundle)
     with contextlib.suppress(ssl.SSLError):
         ctx.set_ciphers("DEFAULT:@SECLEVEL=1")
     if hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):

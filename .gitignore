@@ -78,6 +78,9 @@ BACKEND/static/labels/
 # Chaves SSH e binários pessoais (NUNCA commitar credenciais)
 *.key
 *.pem
+# Exceção: bundle de raízes ICP-Brasil (certificados PÚBLICOS do governo, não segredo) —
+# necessário para validar o TLS mTLS da SEFAZ (raízes ICP-Brasil não estão no trust store público).
+!BACKEND/services/fiscal/sefaz/icp_brasil_cabundle.pem
 DOCs/*.zip
 
 # Configurações locais de máquina (caminhos específicos por desktop)
