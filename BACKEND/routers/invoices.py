@@ -1658,12 +1658,8 @@ async def reopen_invoice(
     if era == "rejected":
         # A tentativa morta não pode "assombrar" o rascunho: a retransmissão reserva número
         # NOVO, e manter o número rejeitado faria a prévia (e um eventual finalize) exibirem
-        # uma numeração que será inutilizada.
-        inv.access_key = None
-        inv.sefaz_cstat = None
-        inv.sefaz_xmotivo = None
-        inv.nfe_number = None
-        inv.serie = None
+        # uma numeração que será inutilizada. Mesma limpeza da recuperação de 217 (fonte única).
+        sefaz_service.reset_invoice_to_draft(inv)
 
     stock: dict = {}
     if era == "finalized":

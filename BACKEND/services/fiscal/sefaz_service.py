@@ -460,6 +460,26 @@ async def carta_correcao(
     return {"ok": ret.ok, "cstat": ret.cstat, "motivo": ret.motivo, "protocolo": ret.protocolo}
 
 
+def reset_invoice_to_draft(inv: Invoice) -> None:
+    """Devolve uma NF-e para 'draft' descartando a identidade da tentativa de transmissão morta.
+
+    Usado quando a nota nunca chegou a ser autorizada — SEFAZ 217 na consulta (`consultar`) ou
+    reabertura de nota rejeitada (`reopen`). A próxima transmissão reserva número/série NOVOS via
+    `reservar_numero`; manter número/chave/cStat antigos só faria a prévia exibir uma numeração
+    que será inutilizada (e um cStat residual "217" num rascunho). Não mexe em estoque nem em
+    notas autorizadas — quem chama garante o estado de origem (draft só a partir de tentativa morta).
+    """
+    inv.status = "draft"
+    inv.nfe_number = None
+    inv.access_key = None
+    inv.serie = None
+    inv.auth_protocol = None
+    inv.sefaz_cstat = None
+    inv.sefaz_xmotivo = None
+    inv.focus_status = None
+    inv.focus_message = None
+
+
 async def consultar(db: AsyncSession, inv: Invoice, cmig: CMIG, cfg: CMIGFiscalConfig) -> dict:
     """Regra N-6: consulta a situação da nota pela chave (antes de reenviar / refresh-status)."""
     if not inv.access_key:
@@ -483,6 +503,14 @@ async def consultar(db: AsyncSession, inv: Invoice, cmig: CMIG, cfg: CMIGFiscalC
         inv.auth_protocol = ret.nprot or inv.auth_protocol
     elif ret.cstat in ("101", "151", "135"):
         inv.status = "cancelled"
+    elif ret.cstat == "217" and inv.status == "processing":
+        # 217 = "NF-e não consta na base de dados da SEFAZ": a SEFAZ confirma que a nota NUNCA foi
+        # autorizada (o envio não a alcançou — ex.: rede/TLS caiu no meio da transmissão, que grava
+        # 'processing' ANTES de falar com a SEFAZ). Sem isto a nota fica presa em 'processing' para
+        # sempre (a consulta não a encontra). Devolve para 'draft' para reemitir; a numeração
+        # reservada é abandonada (vira gap, inutilizável depois) e a próxima transmissão reserva
+        # um número novo. Só dispara quando ainda está 'processing' — nunca reverte autorizada.
+        reset_invoice_to_draft(inv)
     await db.commit()
     return {"cstat": ret.cstat, "motivo": ret.motivo, "protocolo": ret.nprot, "status": inv.status}
 

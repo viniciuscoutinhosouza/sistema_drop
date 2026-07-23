@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-07-23 — fix(fiscal): recuperar NF-e presa em 'processing' quando SEFAZ responde 217 (NF-e 478, 3ª causa)
+
+**Sintoma (dono):** após corrigir o TLS, a 478 ficou com status **"Processando" e não saía**.
+
+**Diagnóstico (produção):** a 478 estava `status=processing`, `sefaz_cstat=217` ("NF-e não consta na base de dados da SEFAZ"), com **apenas 1 log `consulta`** e **nenhum `autorizacao`** — ou seja, o envio do lote **nunca chegou à SEFAZ** (estourou no TLS, na era anterior). `emitir` grava `status='processing'` + reserva número **antes** de falar com a SEFAZ (linha 365-366); se `emitir_nfe` estoura, a nota fica presa. O `consultar` (recuperação via "Atualizar status") tratava só `autorizada→authorized` e `101/151/135→cancelled` — **217 não mudava o status** → presa em `processing` para sempre (a consulta nunca a encontra).
+
+**Recuperação da 478 (operação de banco, reversível):** confirmado que a 478 é a **única** nota da série 3 e o contador estava em 2 (número 1 reservado, nunca autorizado). Resetada para `draft` (número/chave/cStat limpos) + contador `manual_nfe_next_number` recuado 2→1, para a retransmissão reusar o **número 1** limpo (sem gap, sem inutilização).
+
+**Correção estrutural:** `consultar` passa a tratar **cStat 217 + status 'processing'** devolvendo a nota para `draft` (via novo helper `reset_invoice_to_draft`, fonte única também usada pelo `reopen` de nota rejeitada — elimina a divergência de limpeza apontada pela auditoria). A numeração reservada vira gap (inutilizável); a próxima transmissão reserva número novo. Guard `status=='processing'` garante que **nunca** reverte nota autorizada/cancelada. O job `_refresh_stale_invoices` (varre `processing/queued`) herda a recuperação automática sem código novo. Auditado por quality-guardian (aprovado, 0 CRITICAL/HIGH) + consistency-auditor (aprovado; helper único incorporado). `pytest -k "sefaz or invoice or fiscal or nfe"` 7 passed.
+
+---
+
 ## 2026-07-23 — fix(fiscal): confiar nas raízes ICP-Brasil no TLS da SEFAZ (NF-e 478, 2ª causa)
 
 **Sintoma (dono):** após corrigir o ORA-14551, transmitir a NF-e 478 pela SEFAZ voltou a falhar: `SEFAZ indisponível: TLS handshake falhou contra nfe.fazenda.sp.gov.br: [SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate`.
