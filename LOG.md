@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-07-23 — fix(fiscal): confiar nas raízes ICP-Brasil no TLS da SEFAZ (NF-e 478, 2ª causa)
+
+**Sintoma (dono):** após corrigir o ORA-14551, transmitir a NF-e 478 pela SEFAZ voltou a falhar: `SEFAZ indisponível: TLS handshake falhou contra nfe.fazenda.sp.gov.br: [SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate`.
+
+**Causa-raiz:** o certificado **TLS do servidor da SEFAZ** (não o A1 do cliente — o A1 está OK) é emitido pela cadeia **ICP-Brasil** (`nfe.fazenda.sp.gov.br` ← *AC SOLUTI SSL EV G4* ← *Autoridade Certificadora Raiz Brasileira v10*). As raízes ICP-Brasil **não estão no trust store público** do SO → `create_default_context()` não conseguia validar a cadeia. Bloqueava **toda** transmissão em produção (verify_ssl sempre True em prod).
+
+**Correção:** `sefaz_client._build_ssl_context` agora, quando `verify_ssl=True`, faz `ctx.load_verify_locations(cafile=<bundle ICP-Brasil>)` **além** das raízes padrão (config `NFE_ICP_CABUNDLE`, com fallback para o bundle versionado ao lado do módulo). Escopo só da conexão SEFAZ — **não** mexe no trust store do servidor (menor privilégio). Bundle `icp_brasil_cabundle.pem` com as raízes **v2..v11** (certificados **públicos** do governo, baixados via HTTP do ITI — o HTTPS do ITI estava inacessível do servidor) versionado no repo; exceção no `.gitignore` + `eol=lf` no `.gitattributes`.
+
+**Verificado (produção):** `openssl s_client` contra `nfe.fazenda.sp.gov.br` com o bundle → `Verify return code: 0 (ok)`; e pelo **venv do servidor**, reproduzindo o caminho de `_build_ssl_context` (create_default_context + load bundle) → handshake **sem** `CERTIFICATE_VERIFY_FAILED` (server cert verificado). `_verify_ssl('production')=True` confirma que a 478 carrega o bundle. Deploy: commit `4cbea0f` puxado no servidor + `pm2 restart sistema-drop-backend`. **Falta o dono re-transmitir a 478** e observar o cStat da SEFAZ.
+
+---
+
 ## 2026-07-23 — fix(fiscal): reserva de número da NF-e manual (ORA-14551 na transmissão SEFAZ)
 
 **Sintoma (dono):** transmitir uma saída pela SEFAZ (NF-e id 478, MIG, série manual) dava erro.
