@@ -28,7 +28,6 @@ from models.person import Person
 from services.datetime_br import to_br
 from services.fiscal import cert_crypto
 from services.fiscal.sefaz import cancelamento, consulta
-from services.fiscal.sefaz.sefaz_client import SEFAZ_EVENTO_AN
 from services.fiscal.sefaz.chave import gerar_cnf, montar_chave
 from services.fiscal.sefaz.emitter import RetornoEmissao, emitir_nfe
 from services.fiscal.sefaz.exceptions import FiscalError
@@ -41,6 +40,7 @@ from services.fiscal.sefaz.models import (
     Pagamento,
     Produto,
 )
+from services.fiscal.sefaz.sefaz_client import SEFAZ_EVENTO_AN
 from services.fiscal.sefaz.xml_builder import codigo_uf
 
 logger = logging.getLogger(__name__)
@@ -202,15 +202,32 @@ def build_nota_emissao(
 
 
 async def reservar_numero(db: AsyncSession, cmig_id: int, environment: str) -> int:
-    """Reserva o próximo número da série manual via PL/SQL (lock de linha curto)."""
-    res = await db.execute(
-        text("SELECT NFE_NEXTVAL_MANUAL(:cmig, :amb) AS n FROM dual"),
-        {"cmig": cmig_id, "amb": environment},
+    """Reserva o próximo número da série manual sob lock de linha (FOR UPDATE), na MESMA transação.
+
+    NÃO usar `SELECT NFE_NEXTVAL_MANUAL(...) FROM dual`: a função faz DML (UPDATE do contador) e o
+    Oracle proíbe DML dentro de um SELECT (ORA-14551 — toda emissão manual falhava aqui). Fazemos
+    o SELECT ... FOR UPDATE + UPDATE inline: o lock serializa emissões concorrentes da mesma CMIG e
+    o número é reservado na transação da emissão (o caller commita junto do Invoice). Gaps são
+    fiscalmente aceitos (número rejeitado é "queimado"; número nunca usado resolve-se por inutilização).
+    """
+    # Coluna por ambiente (produção x homologação) — valores fixos, não entram por usuário.
+    col = "manual_nfe_next_number" if environment == "production" else "manual_nfe_next_number_homolog"
+    row = (
+        await db.execute(
+            text(f"SELECT {col} AS n FROM cmig_fiscal_config WHERE cmig_id = :c FOR UPDATE"),
+            {"c": cmig_id},
+        )
+    ).first()
+    if row is None or row[0] is None:
+        raise SefazServiceError(
+            "Config fiscal não encontrada / número inicial da série manual ausente para esta CMIG."
+        )
+    numero = int(row[0])
+    await db.execute(
+        text(f"UPDATE cmig_fiscal_config SET {col} = {col} + 1 WHERE cmig_id = :c"),
+        {"c": cmig_id},
     )
-    numero = res.scalar()
-    if numero is None:
-        raise SefazServiceError("Falha ao reservar número da NF-e manual (config fiscal ausente?).")
-    return int(numero)
+    return numero
 
 
 # ── Persistência de log ───────────────────────────────────────────────────────

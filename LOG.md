@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-07-23 — fix(fiscal): reserva de número da NF-e manual (ORA-14551 na transmissão SEFAZ)
+
+**Sintoma (dono):** transmitir uma saída pela SEFAZ (NF-e id 478, MIG, série manual) dava erro.
+
+**Causa-raiz:** `sefaz_service.reservar_numero` chamava `SELECT NFE_NEXTVAL_MANUAL(:cmig,:amb) FROM dual`, mas essa função (migration 117) faz **DML** (`SELECT ... FOR UPDATE` + `UPDATE` do contador) — e o Oracle **proíbe DML dentro de um SELECT** → `ORA-14551: cannot perform a DML operation inside a query`. Bug **latente**: toda emissão de **série manual** falhava aqui (contador de MIG ainda em 1 — nunca emitiu manual). O Faturador ML não passa por aqui, por isso só apareceu agora na 1ª emissão manual direta.
+
+**Correção:** `reservar_numero` faz o `SELECT {col} ... FOR UPDATE` + `UPDATE {col}=+1` **inline** (na mesma transação da emissão — o caller commita junto do Invoice), preservando a semântica documentada (lock de linha serializa emissões concorrentes; gaps fiscalmente aceitos). `col` = `manual_nfe_next_number`(produção) ou `_homolog`, valores fixos (sem injeção). A função `NFE_NEXTVAL_MANUAL` fica como código morto (inócua). ML/DC-e/Faturador intocados.
+
+---
+
 ## 2026-07-22 — chore(shopee): Fase 3 PAUSADA até Go-Live (endpoints fiscais indisponíveis no sandbox)
 
 Ao iniciar a Fase 3 (fiscal), descoberto que os endpoints fiscais BR (`order/get_pending_buyer_invoice_order_list`, `order/get_buyer_invoice_info`, `order/upload_invoice_doc`, `order/download_invoice_doc`) retornam **"404 page not found"** no host de sandbox `openplatform.sandbox.test-stable.shopee.sg` (paths confirmados corretos via SDK; `get_shop_info` dá 200) — são **BR-only, indisponíveis nesse sandbox**. A loja de teste também está vazia (0 pedidos). Como fiscal exige prova de funcionamento (CLAUDE.md) e não há como validar aqui, **decisão do dono: PAUSAR a Shopee até o Go-Live** (loja real BR + credenciais de produção), quando os endpoints fiscais e pedidos reais existirem. Contrato fiscal já confirmado (SDK), pronto para implementar na retomada. Nenhum código fiscal foi commitado (nada não-verificável entregue). Token do sandbox restaurado (refresh+save). **Já no ar:** F0, Fase 1, Fase 2 (pedido rico), webhook/push verificado.
