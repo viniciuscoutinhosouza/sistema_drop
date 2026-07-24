@@ -557,3 +557,181 @@ async def download_invoice_doc(access_token: str, shop_id: int, order_sn: str) -
     if data.get("error"):
         raise HTTPException(status_code=502, detail=f"Shopee download_invoice_doc: {data.get('message')}")
     return (data.get("response", {}) or {}).get("url")
+
+
+# Mapa status Shopee → vocabulário de shipment_status do sistema (ML): handling|ready_to_ship|
+# shipped|delivered|cancelled. NÃO gravar status cru (quebra filtros da Separação e o display).
+_SHOPEE_STATUS_MAP = {
+    "READY_TO_SHIP": "ready_to_ship",
+    "PROCESSED": "ready_to_ship",       # expedido, aguardando coleta pela transportadora
+    "RETRY_SHIP": "ready_to_ship",
+    "SHIPPED": "shipped",
+    "TO_CONFIRM_RECEIVE": "shipped",
+    "COMPLETED": "delivered",
+    "IN_CANCEL": "handling",
+    "CANCELLED": "cancelled",
+    # logistics_status (get_tracking_info)
+    "LOGISTICS_REQUEST_CREATED": "ready_to_ship",
+    "LOGISTICS_READY": "ready_to_ship",
+    "LOGISTICS_PICKUP_DONE": "shipped",
+    "LOGISTICS_PICKUP_RETRY": "ready_to_ship",
+    "LOGISTICS_DELIVERY_DONE": "delivered",
+    "LOGISTICS_DELIVERY_FAILED": "not_delivered",
+}
+
+
+def map_shopee_shipment_status(status) -> str | None:
+    """Traduz um order_status/logistics_status da Shopee p/ o vocabulário do sistema (ou None)."""
+    return _SHOPEE_STATUS_MAP.get(str(status or "").upper())
+
+
+# ─── Logística BR (despacho + etiqueta + rastreio) — Fase 4 ──────────────────────
+# Sequência: get_shipping_parameter → ship_order (síncrono) → create_shipping_document
+# (assíncrono) → get_shipping_document_result (poll READY) → download_shipping_document (PDF)
+# → get_tracking_number/get_tracking_info. No BR o ship_order só libera após a NF-e validada.
+
+
+async def _shop_get(suffix: str, access_token: str, shop_id: int, extra: dict | None = None) -> dict:
+    path = "/api/v2" + suffix
+    params = _shop_params(access_token, shop_id, path)
+    if extra:
+        params.update(extra)
+    async with httpx.AsyncClient(timeout=25) as client:
+        resp = await client.get(f"{SHOPEE_API_BASE}{suffix}", params=params)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Shopee {suffix} HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(status_code=502, detail=f"Shopee {suffix} [{data.get('error')}]: {data.get('message')}")
+    return data.get("response", {}) or {}
+
+
+async def _shop_post(suffix: str, access_token: str, shop_id: int, body: dict) -> dict:
+    path = "/api/v2" + suffix
+    params = _shop_params(access_token, shop_id, path)
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{SHOPEE_API_BASE}{suffix}", params=params, json=body)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Shopee {suffix} HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(status_code=502, detail=f"Shopee {suffix} [{data.get('error')}]: {data.get('message')}")
+    return data.get("response", {}) or {}
+
+
+async def get_shipping_parameter(access_token: str, shop_id: int, order_sn: str) -> dict:
+    """Parâmetros de expedição do pedido: `info_needed` (pickup|dropoff|non_integrated) + as
+    listas de endereços/pontos. É o que decide o bloco do ship_order. Só responde p/ READY_TO_SHIP."""
+    return await _shop_get("/logistics/get_shipping_parameter", access_token, shop_id,
+                           {"order_sn": order_sn})
+
+
+def build_ship_block(param: dict) -> dict:
+    """Monta o bloco do ship_order a partir do `info_needed` (o método correto — não deduzir pelo
+    nome do canal). pickup → 1º address_id + 1º pickup_time_id; dropoff → 1º branch_id.
+
+    Levanta ValueError se não der para montar (o chamador vira 400 com msg clara — falhar alto).
+    """
+    info = param.get("info_needed") or {}
+    if info.get("pickup") is not None:
+        addrs = (param.get("pickup") or {}).get("address_list") or []
+        if not addrs:
+            raise ValueError("Shopee não retornou endereço de coleta (pickup) para este pedido.")
+        a = addrs[0]
+        block = {"pickup": {"address_id": a.get("address_id")}}
+        slots = a.get("time_slot_list") or []
+        if slots:
+            block["pickup"]["pickup_time_id"] = slots[0].get("pickup_time_id")
+        return block
+    if info.get("dropoff") is not None:
+        branches = (param.get("dropoff") or {}).get("branch_list") or []
+        block = {"dropoff": {}}
+        if branches:
+            block["dropoff"]["branch_id"] = branches[0].get("branch_id")
+        return block
+    if info.get("non_integrated") is not None:
+        return {"non_integrated": {}}  # canal não-integrado: tracking_number deve ser provido à parte
+    raise ValueError("get_shipping_parameter não indicou pickup/dropoff/non_integrated para o pedido.")
+
+
+async def ship_order(access_token: str, shop_id: int, order_sn: str, *,
+                     package_number: str | None = None, block: dict | None = None) -> dict:
+    """Expede o pedido (SÍNCRONO): READY_TO_SHIP → PROCESSED. `block` = bloco pickup/dropoff/
+    non_integrated montado por `build_ship_block`. Falha alto (inclui recusa por NF-e não validada)."""
+    body: dict = {"order_sn": order_sn}
+    if package_number:
+        body["package_number"] = package_number
+    if block:
+        body.update(block)
+    return await _shop_post("/logistics/ship_order", access_token, shop_id, body)
+
+
+async def get_shipping_document_parameter(access_token: str, shop_id: int, order_sn: str,
+                                          package_number: str | None = None) -> dict:
+    """Tipos de documento (etiqueta) que o pedido suporta, antes de criar."""
+    extra = {"order_sn": order_sn}
+    if package_number:
+        extra["package_number"] = package_number
+    return await _shop_get("/logistics/get_shipping_document_parameter", access_token, shop_id, extra)
+
+
+def _doc_item(order_sn: str, package_number: str | None, doc_type: str | None = None) -> dict:
+    it: dict = {"order_sn": order_sn}
+    if package_number:
+        it["package_number"] = package_number
+    if doc_type:
+        it["shipping_document_type"] = doc_type
+    return it
+
+
+async def create_shipping_document(access_token: str, shop_id: int, order_sn: str, *,
+                                   package_number: str | None = None,
+                                   doc_type: str = "THERMAL_AIR_WAYBILL") -> dict:
+    """Enfileira a geração da etiqueta (ASSÍNCRONO). Poll com get_shipping_document_result."""
+    body = {"order_list": [_doc_item(order_sn, package_number, doc_type)]}
+    return await _shop_post("/logistics/create_shipping_document", access_token, shop_id, body)
+
+
+async def get_shipping_document_result(access_token: str, shop_id: int, order_sn: str, *,
+                                       package_number: str | None = None,
+                                       doc_type: str = "THERMAL_AIR_WAYBILL") -> dict:
+    """Status da geração da etiqueta: result_list[].status = READY|PROCESSING|FAILED."""
+    body = {"order_list": [_doc_item(order_sn, package_number, doc_type)]}
+    return await _shop_post("/logistics/get_shipping_document_result", access_token, shop_id, body)
+
+
+async def download_shipping_document(access_token: str, shop_id: int, order_sn: str, *,
+                                     package_number: str | None = None) -> bytes:
+    """Baixa a etiqueta em PDF (binário). Levanta se a Shopee devolver JSON de erro (não pronto)."""
+    suffix = "/logistics/download_shipping_document"
+    path = "/api/v2" + suffix
+    params = _shop_params(access_token, shop_id, path)
+    body = {"order_list": [_doc_item(order_sn, package_number)]}
+    async with httpx.AsyncClient(timeout=40) as client:
+        resp = await client.post(f"{SHOPEE_API_BASE}{suffix}", params=params, json=body)
+    ctype = resp.headers.get("content-type", "")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Shopee download_document HTTP {resp.status_code}")
+    if "application/json" in ctype:  # erro vem como JSON (documento não pronto)
+        data = resp.json()
+        raise HTTPException(status_code=502,
+                            detail=f"Shopee download_document [{data.get('error')}]: {data.get('message')}")
+    return resp.content  # PDF binário
+
+
+async def get_tracking_number(access_token: str, shop_id: int, order_sn: str,
+                              package_number: str | None = None) -> dict:
+    """Código de rastreio do pedido (disponível após o ship_order em canal integrado)."""
+    extra = {"order_sn": order_sn}
+    if package_number:
+        extra["package_number"] = package_number
+    return await _shop_get("/logistics/get_tracking_number", access_token, shop_id, extra)
+
+
+async def get_tracking_info(access_token: str, shop_id: int, order_sn: str,
+                            package_number: str | None = None) -> dict:
+    """Histórico de rastreio + `logistics_status` agregado."""
+    extra = {"order_sn": order_sn}
+    if package_number:
+        extra["package_number"] = package_number
+    return await _shop_get("/logistics/get_tracking_info", access_token, shop_id, extra)

@@ -566,10 +566,33 @@
 
             <!-- eShip (WMS): enviar/sincronizar — só se há galpão eShip ativo e não é Full/manual -->
             <OrderEShipActions
-              v-if="eshipEnabled && !isFullOrder(order) && order.platform !== 'manual'"
+              v-if="eshipEnabled && !isFullOrder(order) && order.platform !== 'manual' && order.platform !== 'shopee'"
               :order="order"
               @updated="loadOrders"
             />
+
+            <!-- Shopee: despacho + etiqueta + rastreio (Fase 4 — rede própria Shopee) -->
+            <template v-if="order.platform === 'shopee'">
+              <button
+                v-if="!['shipped','delivered'].includes(order.shipment_status)"
+                class="btn btn-xs btn-outline-primary"
+                :disabled="shopeeLogBusy[order.id]"
+                @click="shipShopee(order)"
+                title="Despachar na Shopee (exige NF-e validada)"
+              ><i class="fas" :class="shopeeLogBusy[order.id] ? 'fa-spinner fa-spin' : 'fa-dolly'"></i></button>
+              <button
+                class="btn btn-xs btn-outline-secondary"
+                :disabled="shopeeLogBusy[order.id]"
+                @click="labelShopee(order)"
+                title="Etiqueta Shopee (PDF)"
+              ><i class="fas fa-tag"></i></button>
+              <button
+                class="btn btn-xs btn-outline-info"
+                :disabled="shopeeLogBusy[order.id]"
+                @click="trackShopee(order)"
+                title="Rastreio Shopee"
+              ><i class="fas fa-truck"></i></button>
+            </template>
 
             <!-- Atualizar status (UGO/Admin) — acoes restantes apos label/NFe.
                  Oculto em Full: separação/coleta são geridas pelo ML. -->
@@ -773,6 +796,7 @@ const syncRangeResult = ref(null)
 const syncRange = ref({ date_from: '', date_to: '', platform: 'all' })
 const nfeEmitting = ref({})
 const shopeeFiscalBusy = ref({})  // { [orderId]: bool } — anexo/consulta de NF-e na Shopee
+const shopeeLogBusy = ref({})     // { [orderId]: bool } — despacho/etiqueta/rastreio Shopee
 const showInvoicesModal = ref(false)
 const invoicesOrder = ref(null)
 const showShipmentModal = ref(false)
@@ -1371,6 +1395,65 @@ async function checkShopeeInvoice(order) {
     toast.error(err.response?.data?.detail || 'Erro ao consultar o status na Shopee')
   } finally {
     shopeeFiscalBusy.value = { ...shopeeFiscalBusy.value, [order.id]: false }
+  }
+}
+
+// ── Logística Shopee (Fase 4): despachar / etiqueta / rastreio ──
+function _setShopeeLogBusy(id, v) { shopeeLogBusy.value = { ...shopeeLogBusy.value, [id]: v } }
+
+async function shipShopee(order) {
+  _setShopeeLogBusy(order.id, true)
+  try {
+    const { data } = await api.post(`/shopee/orders/${order.id}/ship`)
+    order.shipment_status = data.shipment_status
+    toast.success('Pedido despachado na Shopee.')
+  } catch (err) {
+    // Falha alto: NF-e não validada, pedido não elegível, etc.
+    toast.error(err.response?.data?.detail || 'Erro ao despachar na Shopee')
+  } finally {
+    _setShopeeLogBusy(order.id, false)
+  }
+}
+
+async function labelShopee(order) {
+  _setShopeeLogBusy(order.id, true)
+  try {
+    const resp = await api.get(`/shopee/orders/${order.id}/label`, { responseType: 'blob' })
+    if ((resp.data.type || '').includes('application/pdf')) {
+      const url = URL.createObjectURL(resp.data)
+      window.open(url, '_blank')
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+    } else {
+      // 202 processing (ou JSON de erro) veio como blob — lê o texto
+      const txt = await resp.data.text()
+      let msg = 'Etiqueta ainda em geração — clique novamente em instantes.'
+      try { msg = JSON.parse(txt).detail || msg } catch { /* keep */ }
+      toast.info(msg)
+    }
+  } catch (err) {
+    let detail = 'Erro ao gerar a etiqueta Shopee'
+    if (err.response?.data instanceof Blob) {
+      try { detail = JSON.parse(await err.response.data.text()).detail || detail } catch { /* keep */ }
+    } else {
+      detail = err.response?.data?.detail || detail
+    }
+    toast.error(detail)
+  } finally {
+    _setShopeeLogBusy(order.id, false)
+  }
+}
+
+async function trackShopee(order) {
+  _setShopeeLogBusy(order.id, true)
+  try {
+    const { data } = await api.get(`/shopee/orders/${order.id}/tracking`)
+    if (data.tracking_code) order.tracking_code = data.tracking_code
+    if (data.shipment_status) order.shipment_status = data.shipment_status
+    toast.info(`Rastreio: ${data.tracking_code || '—'} · ${data.logistics_status || 'sem status'}`)
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao consultar rastreio Shopee')
+  } finally {
+    _setShopeeLogBusy(order.id, false)
   }
 }
 

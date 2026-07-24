@@ -77,6 +77,9 @@ def _eligibility_conditions() -> list:
     """
     return [
         Order.is_hidden == False,  # noqa: E712
+        # Shopee tem despacho próprio (rede Shopee, routers/shopee_logistics.py) — NÃO entra na
+        # Separação/Carrinho Gaiola do ML. Filtro aditivo/protetor (mantém ML + manual + NULL).
+        or_(Order.platform == None, Order.platform != "shopee"),  # noqa: E711
         Order.shipping_mode != "full",  # exclui FULL e NULL
         or_(
             Order.shipment_status == None,  # noqa: E711
