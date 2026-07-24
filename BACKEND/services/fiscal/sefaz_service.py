@@ -183,7 +183,10 @@ def build_nota_emissao(
     )
 
     finalidade = _FINALIDADE.get(inv.purpose or "venda", 1)
-    ind_final = 1 if dest.tipo == "PF" else 0
+    # indFinal deve casar com indIEDest: NÃO-contribuinte (indIEDest=9 — toda PF, e PJ sem IE) é
+    # obrigatoriamente consumidor final, senão a SEFAZ rejeita (cStat 696 "Operação com não
+    # contribuinte deve indicar operação com consumidor final"). Contribuinte (1) / isento (2) → 0.
+    ind_final = 1 if dest.indicador_ie == 9 else 0
     pagamentos: tuple[Pagamento, ...] = ()
     if inv.payment_method:
         pagamentos = (Pagamento(forma_pag=inv.payment_method, valor=_dec(inv.total_invoice), ind_pag=0),)
