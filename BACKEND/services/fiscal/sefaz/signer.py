@@ -6,6 +6,15 @@ Regras validadas em produção (cStat=100) e preservadas:
 2. **Lista de 1 cert** no `cert=` — SEFAZ rejeita (cStat=225) se a cadeia for incluída.
 3. **`reference_uri=Id`** apontando para o `Id` do `infNFe`/`infEvento`.
 4. **PKCS#12** via `cryptography.pkcs12`.
+5. **Assinatura SEM prefixo `ds:`** (namespace default) — o `signxml` 5.x passou a
+   emitir `<ds:Signature>`, mas a SEFAZ valida a assinatura no formato canônico com o
+   namespace xmldsig **default** (regra E01 → cStat 290 "Certificado Assinatura inválido"
+   quando o `X509Certificate` vem prefixado). Setar `namespaces = {None: ds}` faz o
+   `signxml` gerar sem prefixo. Mesma lição do ADR-0017 (DC-e "assinatura sem prefixo ds:").
+6. **base64 em linha única** no `X509Certificate`/`SignatureValue` — o `signxml` quebra o
+   base64 em 64 colunas; validadores SEFAZ podem recusar. Como `KeyInfo` e `SignatureValue`
+   **não** integram o `SignedInfo` assinado, remover as quebras depois de assinar é seguro
+   e não invalida a assinatura.
 """
 
 from __future__ import annotations
@@ -16,10 +25,16 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.hazmat.primitives.serialization import pkcs12
 from lxml import etree
 from signxml import methods
+from signxml import namespaces as _sx_namespaces
 from signxml.algorithms import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.signer import XMLSigner
 
 from services.fiscal.sefaz.exceptions import SignError
+
+_NS_DS = _sx_namespaces.ds  # "http://www.w3.org/2000/09/xmldsig#"
+# Elementos cujo base64 pode ser recolapsado em linha única SEM invalidar a assinatura
+# (ficam FORA do SignedInfo assinado). NÃO incluir DigestValue (está dentro do SignedInfo).
+_ONE_LINE_TAGS = ("X509Certificate", "SignatureValue")
 
 
 class _NFeXMLSigner(XMLSigner):
@@ -66,8 +81,16 @@ def assinar_xml(xml: str, pfx_path: str | Path, pfx_password: str, ref_id: str) 
             digest_algorithm=DigestAlgorithm.SHA1,
             c14n_algorithm=CanonicalizationMethod.CANONICAL_XML_1_0,
         )
+        # Regra 5: assina no namespace xmldsig DEFAULT (sem prefixo `ds:`).
+        signer.namespaces = {None: _NS_DS}
         signed = signer.sign(root, key=key, cert=[cert], reference_uri=ref_id)
     except Exception as exc:  # noqa: BLE001 — signxml levanta várias; consolidamos
         raise SignError(f"falha ao assinar XML: {exc}") from exc
+
+    # Regra 6: recolapsa o base64 (fora do SignedInfo) em linha única.
+    for tag in _ONE_LINE_TAGS:
+        for el in signed.iter(f"{{{_NS_DS}}}{tag}"):
+            if el.text:
+                el.text = "".join(el.text.split())
 
     return '<?xml version="1.0" encoding="UTF-8"?>' + etree.tostring(signed, encoding="unicode")
