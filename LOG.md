@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-07-23 — fix(fiscal): 290/696/927 na transmissão SEFAZ da 478 (validado por smoke em homologação)
+
+Com a 478 finalmente chegando à SEFAZ, uma cadeia de rejeições foi depurada **iterativamente por smoke em homologação** (reusando os dados reais da 478, `emitir_nfe` → SEFAZ SP homolog, sem gastar número de produção — cada correção avança para a próxima regra):
+
+1. **cStat 290 "Certificado Assinatura inválido"** (assinatura) — o `signxml` 5.x serializa a `Signature` com prefixo `ds:` e quebra o base64 do `X509Certificate` em 64 colunas; a SEFAZ valida no formato canônico (namespace xmldsig **default**, base64 contínuo). Corrigido em `sefaz/signer.py`: `namespaces={None: ds}` (sem prefixo) + recolapsa base64 de `X509Certificate`/`SignatureValue` (fora do `SignedInfo` → seguro). Mesma lição do ADR-0017 (DC-e sem `ds:`). Raiz: `requirements` pina `signxml>=3.2` sem teto → subiu 5.0.1. **Cert de assinatura conferido:** A1 real, matriz `59951479/0001` assinando filial `0002` (raiz igual → permitido).
+2. **cStat 696 "Operação com não contribuinte deve indicar consumidor final"** — `ind_final` era `1 if PF else 0`, ignorando PJ não-contribuinte. Corrigido em `build_nota_emissao`: `ind_final = 1 if indIEDest==9 else 0` (alinha com o indicador de IE).
+3. **cStat 927 "Número do item fora da ordem sequencial"** — `nItem` usava o `item_number` cru do banco (com buracos). Corrigido: reindexa `1..N` na emissão (`_item` aceita `numero_item` opcional).
+
+Todas as três validadas em homologação (avançaram 290→696→927→232). Commits f5428d9, 1b3707a, 5ada435. **Bloqueio atual (dado, não código): cStat 232 "IE do destinatário não informada"** — a SEFAZ SP reconhece o destinatário (SUPPLY TITANS LTDA, SP) como **contribuinte** e exige a IE, ausente no cadastro da Pessoa. Ação do dono: informar a IE em Fiscal > Pessoas. Depois: re-smoke em homolog até cStat 100 e então retransmitir a 478 em produção (resetar contador da série 3 p/ número 1 antes, evitando gap).
+
+---
+
 ## 2026-07-23 — fix(fiscal): recuperar NF-e presa em 'processing' quando SEFAZ responde 217 (NF-e 478, 3ª causa)
 
 **Sintoma (dono):** após corrigir o TLS, a 478 ficou com status **"Processando" e não saía**.
