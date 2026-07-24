@@ -419,6 +419,7 @@ def _serialize_order_list(
         "nfe_key": o.nfe_key,
         "nfe_status": o.nfe_status,
         "dce_status": o.dce_status,
+        "shopee_invoice_status": o.shopee_invoice_status,
         "shipment_id": o.shipment_id,
         # eShip (WMS) — estado do envio completo (Ordem + NF-e + Etiqueta)
         "eship_order_id": o.eship_order_id,

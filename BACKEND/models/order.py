@@ -69,6 +69,11 @@ class Order(Base):
     # emitem NF-e. dce_status: None | 'pending' | 'emitted'. pack_id: dedup por envio.
     dce_status = Column(String(30))
     pack_id = Column(String(50))
+    # Shopee — estado do anexo da NF-e no pedido (Fase 3). None|pending|uploaded|validated|rejected.
+    # Migration 135. `uploaded`=enviado à Shopee; `validated`=Shopee validou na SEFAZ (invoice_data
+    # preenchido no get_order_detail); pré-requisito do ship_order no BR.
+    shopee_invoice_status = Column(String(20))
+    shopee_invoice_uploaded_at = Column(TIMESTAMP(timezone=True))
     invoice_id = Column(Integer, ForeignKey("invoices.id"))
     estimated_delivery_date = Column(Date)
     estimated_handling_limit = Column(Date)

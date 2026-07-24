@@ -115,6 +115,7 @@ from routers import (
     scheduler_monitoring,
     separation,
     settings_email,
+    shopee_fiscal,
     simulator,
     stock,
     supplier_products,
@@ -144,6 +145,7 @@ app.include_router(inventories.router, prefix=f"{PREFIX}/inventories", tags=["In
 app.include_router(full_cnpjs.router, prefix=f"{PREFIX}/full-cnpjs", tags=["FullCNPJs"])
 app.include_router(notifications.router, prefix=f"{PREFIX}/notifications", tags=["Notifications"])
 app.include_router(webhooks.router, prefix=f"{PREFIX}/webhooks", tags=["Webhooks"])
+app.include_router(shopee_fiscal.router, prefix=f"{PREFIX}/shopee", tags=["ShopeeFiscal"])
 app.include_router(warehouse.router, prefix=f"{PREFIX}/warehouse", tags=["Warehouse"])
 app.include_router(goes.router, prefix=f"{PREFIX}/goes", tags=["GOs"])
 app.include_router(cmigs.router, prefix=f"{PREFIX}/cmigs", tags=["CMIGs"])

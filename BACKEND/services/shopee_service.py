@@ -431,3 +431,129 @@ async def update_item_stock(access_token: str, shop_id: int, item_id: int, stock
     data = resp.json()
     if data.get("error"):
         raise Exception(f"Shopee update_stock error: {data.get('message')}")
+
+
+# ─── Fiscal BR (anexar NF-e ao pedido) — Fase 3 ─────────────────────────────────
+# Fluxo BR: comprador pede nota → pedido entra no pending → get_buyer_invoice_info dá o
+# destinatário fiscal → o Drop EMITE a NF-e (SEFAZ próprio) → upload_invoice_doc anexa →
+# Shopee valida na SEFAZ (assíncrono; `invoice_data` preenchido no get_order_detail) → libera
+# ship. Todas são chamadas de LOJA (sign inclui access_token+shop_id). Erro = HTTP 200 com
+# `error!=""` → levanta (falhar alto), nunca [] mudo.
+
+
+def _shop_params(access_token: str, shop_id: int, path: str) -> dict:
+    ts = int(time.time())
+    return {
+        "partner_id": settings.SHOPEE_PARTNER_ID,
+        "timestamp": ts,
+        "sign": _sign(path, ts, access_token, shop_id),
+        "access_token": access_token,
+        "shop_id": shop_id,
+    }
+
+
+async def get_pending_buyer_invoice_order_list(
+    access_token: str, shop_id: int, *, page_size: int = 100
+) -> list:
+    """Lista os `order_sn` que o comprador pediu nota e ainda aguardam o envio dela (BR/PH).
+
+    Pagina por `cursor` até `more=false`. Retorna lista de `order_sn` (strings).
+    """
+    path = "/api/v2/order/get_pending_buyer_invoice_order_list"
+    out: list = []
+    cursor = ""
+    while True:
+        params = _shop_params(access_token, shop_id, path)
+        params["page_size"] = page_size
+        if cursor:
+            params["cursor"] = cursor
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(f"{SHOPEE_API_BASE}/order/get_pending_buyer_invoice_order_list",
+                                    params=params)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502,
+                                detail=f"Shopee pending_invoice HTTP {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        if data.get("error"):
+            raise HTTPException(status_code=502, detail=f"Shopee pending_invoice: {data.get('message')}")
+        body = data.get("response", {}) or {}
+        out.extend(body.get("order_sn_list", []) or [])
+        if not body.get("more"):
+            break
+        cursor = body.get("next_cursor") or ""
+        if not cursor:
+            break
+    return out
+
+
+async def get_buyer_invoice_info(access_token: str, shop_id: int, order_sn_list) -> list:
+    """Dados fiscais que o COMPRADOR pediu na nota (fonte do destinatário da NF-e).
+
+    POST body `{queries:[{order_sn}]}`. Retorna `invoice_info_list[]`: cada item tem
+    `invoice_type` (personal|company), `is_requested`, `error`, `invoice_detail`
+    (PF: name/tax_id=CPF; PJ: company_name/company_tax_id=CNPJ; + address).
+    """
+    if isinstance(order_sn_list, str):
+        order_sn_list = [order_sn_list]
+    order_sn_list = [str(o) for o in order_sn_list if o]
+    if not order_sn_list:
+        return []
+    path = "/api/v2/order/get_buyer_invoice_info"
+    params = _shop_params(access_token, shop_id, path)
+    body = {"queries": [{"order_sn": osn} for osn in order_sn_list]}
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(f"{SHOPEE_API_BASE}/order/get_buyer_invoice_info",
+                                 params=params, json=body)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502,
+                            detail=f"Shopee buyer_invoice_info HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(status_code=502, detail=f"Shopee buyer_invoice_info: {data.get('message')}")
+    return (data.get("response", {}) or {}).get("invoice_info_list", []) or []
+
+
+async def upload_invoice_doc(
+    access_token: str, shop_id: int, order_sn: str, file_bytes: bytes,
+    *, filename: str, file_type: str = "nfe", mime: str = "application/xml",
+) -> dict:
+    """Anexa o documento fiscal (XML autorizado / DANFE) ao pedido Shopee.
+
+    ⚠️ Encoding CONFIRMADO A CONFIRMAR AO VIVO: a doc oficial descreve multipart/form-data com
+    arquivo binário; o SDK-espelho sugere JSON+base64. A assinatura NÃO inclui o body, então
+    multipart não afeta o `sign`. Tentamos multipart (`order_sn`, `file_type`, `file` binário) e,
+    se a Shopee reclamar do campo (`error_param` citando base64/invoice_file), o chamador pode
+    reajustar. Levanta em `error!=""` (falhar alto). Sucesso: `error=""` (validação SEFAZ é
+    posterior/assíncrona — ver invoice_data no get_order_detail).
+    """
+    path = "/api/v2/order/upload_invoice_doc"
+    params = _shop_params(access_token, shop_id, path)
+    files = {"file": (filename, file_bytes, mime)}
+    form = {"order_sn": order_sn, "file_type": file_type}
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(f"{SHOPEE_API_BASE}/order/upload_invoice_doc",
+                                 params=params, data=form, files=files)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502,
+                            detail=f"Shopee upload_invoice_doc HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(status_code=502,
+                            detail=f"Shopee upload_invoice_doc [{data.get('error')}]: {data.get('message')}")
+    return data.get("response", {}) or {}
+
+
+async def download_invoice_doc(access_token: str, shop_id: int, order_sn: str) -> str | None:
+    """URL do documento fiscal anexado ao pedido (conferência). None se não houver."""
+    path = "/api/v2/order/download_invoice_doc"
+    params = _shop_params(access_token, shop_id, path)
+    params["order_sn"] = order_sn
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(f"{SHOPEE_API_BASE}/order/download_invoice_doc", params=params)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502,
+                            detail=f"Shopee download_invoice_doc HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(status_code=502, detail=f"Shopee download_invoice_doc: {data.get('message')}")
+    return (data.get("response", {}) or {}).get("url")

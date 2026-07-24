@@ -499,6 +499,36 @@
                   <i class="fas fa-file-invoice mr-1"></i>
                   {{ nfeEmitting[order.id] ? 'Emitindo…' : 'Emitir NF-e' }}
                 </button>
+                <!-- Shopee: anexar a NF-e emitida ao pedido (Fase 3 — fiscal Shopee) -->
+                <span
+                  v-else-if="order.platform === 'shopee' && order.shopee_invoice_status === 'validated'"
+                  class="badge badge-success flex-grow-1 py-2 d-flex align-items-center justify-content-center"
+                  title="NF-e validada pela Shopee (contra a SEFAZ)"
+                >
+                  <i class="fas fa-check mr-1"></i>NF-e validada
+                </span>
+                <button
+                  v-else-if="order.platform === 'shopee' && order.shopee_invoice_status === 'uploaded'"
+                  class="btn btn-sm btn-outline-info flex-grow-1"
+                  style="font-size:.78rem"
+                  :disabled="shopeeFiscalBusy[order.id]"
+                  @click="checkShopeeInvoice(order)"
+                  title="Nota anexada na Shopee — verificar se já foi validada na SEFAZ"
+                >
+                  <i class="fas mr-1" :class="shopeeFiscalBusy[order.id] ? 'fa-spinner fa-spin' : 'fa-sync'"></i>
+                  Anexada — verificar
+                </button>
+                <button
+                  v-else-if="order.platform === 'shopee'"
+                  class="btn btn-sm btn-outline-warning flex-grow-1"
+                  style="font-size:.78rem"
+                  :disabled="shopeeFiscalBusy[order.id]"
+                  @click="uploadShopeeInvoice(order)"
+                  title="Anexar a NF-e já emitida ao pedido Shopee (exige NF-e autorizada)"
+                >
+                  <i class="fas mr-1" :class="shopeeFiscalBusy[order.id] ? 'fa-spinner fa-spin' : 'fa-file-upload'"></i>
+                  {{ shopeeFiscalBusy[order.id] ? 'Anexando…' : 'Anexar NF-e' }}
+                </button>
                 <!-- Outros canais -->
                 <button v-else class="btn btn-sm btn-outline-secondary flex-grow-1" style="font-size:.78rem" disabled>
                   <i class="fas fa-file-invoice mr-1"></i>NF-e Pendente
@@ -742,6 +772,7 @@ const syncingRange = ref(false)
 const syncRangeResult = ref(null)
 const syncRange = ref({ date_from: '', date_to: '', platform: 'all' })
 const nfeEmitting = ref({})
+const shopeeFiscalBusy = ref({})  // { [orderId]: bool } — anexo/consulta de NF-e na Shopee
 const showInvoicesModal = ref(false)
 const invoicesOrder = ref(null)
 const showShipmentModal = ref(false)
@@ -1308,6 +1339,38 @@ async function emitNfe(order) {
     toast.error(err.response?.data?.detail || 'Erro ao emitir NF-e')
   } finally {
     nfeEmitting.value[order.id] = false
+  }
+}
+
+// ── Fiscal Shopee (Fase 3): anexar a NF-e emitida ao pedido + verificar validação ──
+async function uploadShopeeInvoice(order) {
+  shopeeFiscalBusy.value = { ...shopeeFiscalBusy.value, [order.id]: true }
+  try {
+    await api.post(`/shopee/orders/${order.id}/upload-invoice`)
+    order.shopee_invoice_status = 'uploaded'
+    toast.success('NF-e anexada na Shopee — aguardando validação na SEFAZ.')
+  } catch (err) {
+    // Falha alto: msg clara (sem NF-e emitida, DC-e, etc.)
+    toast.error(err.response?.data?.detail || 'Erro ao anexar NF-e na Shopee')
+  } finally {
+    shopeeFiscalBusy.value = { ...shopeeFiscalBusy.value, [order.id]: false }
+  }
+}
+
+async function checkShopeeInvoice(order) {
+  shopeeFiscalBusy.value = { ...shopeeFiscalBusy.value, [order.id]: true }
+  try {
+    const { data } = await api.get(`/shopee/orders/${order.id}/invoice-status`)
+    if (data.validado) {
+      order.shopee_invoice_status = 'validated'
+      toast.success('NF-e validada pela Shopee.')
+    } else {
+      toast.info('Ainda não validada pela Shopee — a validação na SEFAZ é assíncrona; tente em instantes.')
+    }
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao consultar o status na Shopee')
+  } finally {
+    shopeeFiscalBusy.value = { ...shopeeFiscalBusy.value, [order.id]: false }
   }
 }
 
