@@ -3,20 +3,53 @@ Gerenciamento de anúncios (ProductListings) por CONTA de marketplace.
 Um AC pode ter anúncios de uma mesma CONTA publicados em marketplace.
 """
 
+import logging
 from datetime import UTC, datetime
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user
 from models.integration import MarketplaceAccount
-from models.product import DropshipperProduct, ProductListing
+from models.product import CatalogProduct, DropshipperProduct, ProductListing
 from models.user import AccountAdministrator, User
 from services import ml_service, shopee_service
+from services.content_declaration import _host_is_safe  # guard SSRF reusável (resolve DNS, bloqueia IP privado)
+from services.shopee_auth import get_valid_shopee_token
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_IMG_MAX_BYTES = 3_000_000  # teto anti-imagem-gigante no download (igual content_declaration)
+
+
+async def _fetch_image_bytes(url: str) -> bytes | None:
+    """Baixa uma imagem do produto (URL interna/externa) com guarda SSRF, para re-upload na Shopee
+    (que NÃO aceita URL externa — exige o image_id do media_space). Stream com teto de tamanho."""
+    if not url or not str(url).lower().startswith(("http://", "https://")):
+        return None
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname
+        if not host or not await _host_is_safe(host):
+            return None
+        async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+            async with client.stream("GET", url) as resp:
+                if resp.status_code != 200:
+                    return None
+                buf = b""
+                async for chunk in resp.aiter_bytes():
+                    buf += chunk
+                    if len(buf) > _IMG_MAX_BYTES:
+                        return None
+                return buf
+    except Exception as exc:  # noqa: BLE001 — imagem indisponível não deve derrubar a publicação
+        logger.warning("[shopee] falha ao baixar imagem %s: %s", url, exc)
+        return None
 
 
 def _serialize_listing(listing: ProductListing, account: MarketplaceAccount) -> dict:
@@ -223,7 +256,9 @@ async def publish_listing(
     """
     listing, account = await _get_listing_for_user(listing_id, product_id, current_user.id, db)
     product_result = await db.execute(
-        select(DropshipperProduct).where(DropshipperProduct.id == product_id)
+        select(DropshipperProduct)
+        .where(DropshipperProduct.id == product_id)
+        .options(selectinload(DropshipperProduct.images))
     )
     product = product_result.scalar_one()
     mode = body.get("mode", "link")
@@ -257,10 +292,9 @@ async def publish_listing(
                 result = await ml_service.create_item(account.access_token, item_data)
                 listing.platform_item_id = result["id"]
             elif account.platform == "shopee":
-                item_data = _build_shopee_item(product, listing)
-                item_id = await shopee_service.create_item(
-                    account.access_token, account.shop_id, item_data
-                )
+                item_data = await _build_shopee_item(product, listing, account, db)
+                token = await get_valid_shopee_token(account, db)
+                item_id = await shopee_service.add_item(token, account.shop_id, item_data)
                 listing.platform_item_id = str(item_id)
             else:
                 raise HTTPException(
@@ -308,10 +342,42 @@ async def pause_listing(
     try:
         if account.platform == "mercadolivre":
             await ml_service.pause_item(account.access_token, listing.platform_item_id)
+        elif account.platform == "shopee":
+            # Pausar na Shopee = unlist (oculta); NÃO zerar estoque (ADR-0014). Falhar alto.
+            token = await get_valid_shopee_token(account, db)
+            await shopee_service.unlist_item(token, account.shop_id, int(listing.platform_item_id), unlist=True)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erro ao pausar anúncio: {exc}")
 
     listing.status = "paused"
+    await db.commit()
+    return _serialize_listing(listing, account)
+
+
+@router.post("/{listing_id}/reactivate")
+async def reactivate_listing(
+    product_id: int,
+    listing_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reativa (republica) um anúncio pausado. ML: unpause; Shopee: unlist(False)."""
+    listing, account = await _get_listing_for_user(listing_id, product_id, current_user.id, db)
+    if listing.status != "paused":
+        raise HTTPException(status_code=400, detail="Somente anúncios pausados podem ser reativados")
+    if not listing.platform_item_id:
+        raise HTTPException(status_code=400, detail="Anúncio sem ID no marketplace")
+
+    try:
+        if account.platform == "mercadolivre":
+            await ml_service.activate_item(account.access_token, listing.platform_item_id)
+        elif account.platform == "shopee":
+            token = await get_valid_shopee_token(account, db)
+            await shopee_service.unlist_item(token, account.shop_id, int(listing.platform_item_id), unlist=False)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erro ao reativar anúncio: {exc}")
+
+    listing.status = "published"
     await db.commit()
     return _serialize_listing(listing, account)
 
@@ -340,17 +406,78 @@ def _build_ml_item(product: DropshipperProduct, listing: ProductListing) -> dict
     }
 
 
-def _build_shopee_item(product: DropshipperProduct, listing: ProductListing) -> dict:
+async def _build_shopee_item(
+    product: DropshipperProduct, listing: ProductListing,
+    account: MarketplaceAccount, db: AsyncSession,
+) -> dict:
+    """Monta o payload do add_item da Shopee (contrato BR vivo). Diferente do ML (que recebe URL),
+    a Shopee exige image_id (media_space) + peso/dimensão/logistic_info/seller_stock. Falha alto
+    com bloqueios claros quando falta dado obrigatório (categoria folha, preço, peso, imagem, canal).
+    """
     if not listing.category_id:
-        raise HTTPException(
-            status_code=400, detail="category_id é obrigatório para criar anúncio na Shopee"
-        )
+        raise HTTPException(status_code=400, detail="category_id (folha) é obrigatório para publicar na Shopee")
+    price = listing.sale_price or getattr(product, "sale_price_shopee", None)
+    if not price:
+        raise HTTPException(status_code=400, detail="Preço de venda ausente para a Shopee")
+
+    token = await get_valid_shopee_token(account, db)
+
+    # Peso/dimensões: do produto ou do CatalogProduct vinculado.
+    cat = None
+    if getattr(product, "catalog_product_id", None):
+        cat = (await db.execute(
+            select(CatalogProduct).where(CatalogProduct.id == product.catalog_product_id)
+        )).scalar_one_or_none()
+
+    def _num(*vals, default=None):
+        for v in vals:
+            if v is not None:
+                return float(v)
+        return default
+
+    weight = _num(getattr(product, "weight_kg", None), getattr(cat, "weight_kg", None), default=None)
+    length = _num(getattr(product, "length_cm", None), getattr(cat, "length_cm", None), default=None)
+    width = _num(getattr(product, "width_cm", None), getattr(cat, "width_cm", None), default=None)
+    height = _num(getattr(product, "height_cm", None), getattr(cat, "height_cm", None), default=None)
+    faltando = [n for n, v in (("peso", weight), ("comprimento", length),
+                               ("largura", width), ("altura", height)) if not v]
+    if faltando:
+        raise HTTPException(status_code=400,
+                            detail=f"Shopee exige {', '.join(faltando)} do produto para publicar (add_item).")
+
+    # Canais habilitados (logistic_info exige ≥1 enabled).
+    channels = await shopee_service.get_channel_list(token, account.shop_id)
+    logistic_info = [{"logistic_id": c["logistics_channel_id"], "enabled": True}
+                     for c in channels if c.get("enabled")]
+    if not logistic_info:
+        raise HTTPException(status_code=400, detail="Nenhum canal de logística habilitado na loja Shopee.")
+
+    # Imagens: baixa (SSRF-safe) e sobe no media_space → image_id (máx 9; capa primeiro).
+    imgs = sorted(product.images or [], key=lambda i: (not i.is_primary, i.sort_order or 0))
+    image_ids: list = []
+    for img in imgs[:9]:
+        data = await _fetch_image_bytes(img.url)
+        if not data:
+            continue
+        iid = await shopee_service.upload_image(token, account.shop_id, data)
+        if iid:
+            image_ids.append(iid)
+    if not image_ids:
+        raise HTTPException(status_code=400, detail="Nenhuma imagem válida do produto para a Shopee (add_item exige imagem).")
+
+    name = (product.title_shopee or listing.title_override or product.title or "")[:100]
     return {
-        "original_price": float(listing.sale_price),
-        "item_name": listing.title_override or product.title,
+        "item_name": name,
+        "description": (product.description or name)[:3000],
         "category_id": int(listing.category_id),
-        "condition": 1,
+        "original_price": float(price),
+        "seller_stock": [{"stock": 1}],
+        "weight": weight,
+        "dimension": {"package_length": int(length), "package_width": int(width),
+                      "package_height": int(height)},
+        "logistic_info": logistic_info,
+        "image": {"image_id_list": image_ids},
+        "brand": {"brand_id": 0},          # 0 = "Sem marca" (NoBrand); ajustar se categoria exigir
+        "condition": "NEW",
         "item_status": "NORMAL",
-        "logistic_info": [],
-        "normal_stock": 1,
     }

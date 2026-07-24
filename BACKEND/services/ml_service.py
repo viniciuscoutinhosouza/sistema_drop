@@ -1367,6 +1367,19 @@ async def pause_item(access_token: str, item_id: str) -> dict:
     return resp.json()
 
 
+async def activate_item(access_token: str, item_id: str) -> dict:
+    """Reativa (status active) um anúncio ML pausado. Inverso de pause_item."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.put(
+            f"{ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"status": "active"},
+        )
+    if resp.status_code not in (200, 201):
+        raise HTTPException(status_code=400, detail=f"Erro ao reativar anúncio ML: {resp.text}")
+    return resp.json()
+
+
 async def close_item(access_token: str, item_id: str) -> None:
     """Fecha definitivamente um anúncio ML (equivalente ao delete na plataforma)."""
     async with httpx.AsyncClient() as client:

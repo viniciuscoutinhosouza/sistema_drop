@@ -418,9 +418,11 @@ async def update_item_stock(access_token: str, shop_id: int, item_id: int, stock
         "timestamp": ts,
         "sign": sign,
     }
+    # Formato VIVO (2026-07): a Shopee recusa `normal_stock` (product.error_param "invalid field
+    # seller_stock, value must Not Null"). O aceito é `seller_stock:[{stock}]` (verificado ao vivo).
     payload = {
         "item_id": item_id,
-        "stock_list": [{"model_id": 0, "normal_stock": stock}],
+        "stock_list": [{"model_id": 0, "seller_stock": [{"stock": stock}]}],
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -735,3 +737,121 @@ async def get_tracking_info(access_token: str, shop_id: int, order_sn: str,
     if package_number:
         extra["package_number"] = package_number
     return await _shop_get("/logistics/get_tracking_info", access_token, shop_id, extra)
+
+
+async def get_channel_list(access_token: str, shop_id: int) -> list:
+    """Canais de logística da loja. Só os `enabled=true` entram no `logistic_info` do add_item."""
+    r = await _shop_get("/logistics/get_channel_list", access_token, shop_id)
+    return r.get("logistics_channel_list", []) or []
+
+
+# ─── Categorias / atributos / marcas (Fase 6) ───────────────────────────────────
+# Categoria FOLHA (has_children=false) é a única que aceita anúncio. Atributos vêm do
+# get_attribute_tree (get_attributes está api_suspended). Marca 0 = "Sem marca" (NoBrand).
+
+
+async def get_category(access_token: str, shop_id: int, *, language: str = "pt-br") -> list:
+    """Árvore de categorias da loja. Folha = has_children=false (só folha publica)."""
+    r = await _shop_get("/product/get_category", access_token, shop_id, {"language": language})
+    return r.get("category_list", []) or []
+
+
+async def get_attribute_tree(access_token: str, shop_id: int, category_id: int,
+                             *, language: str = "pt-br") -> list:
+    """Atributos da categoria (get_attribute_tree — o get_attributes está OFFLINE). Cada atributo
+    tem `mandatory` (bool) e `attribute_value_list`. Retorna a lista de atributos da categoria."""
+    r = await _shop_get("/product/get_attribute_tree", access_token, shop_id,
+                        {"category_id_list": str(category_id), "language": language})
+    lst = r.get("list") or []
+    for it in lst:
+        if str(it.get("category_id")) == str(category_id):
+            return it.get("attribute_tree", []) or []
+    return (lst[0].get("attribute_tree", []) if lst else []) or []
+
+
+async def get_brand_list(access_token: str, shop_id: int, category_id: int,
+                         *, page_size: int = 100, offset: int = 0, status: int = 1) -> dict:
+    """Marcas da categoria (brand_id 0 = 'Sem marca'). Response inclui `is_mandatory` da categoria."""
+    return await _shop_get("/product/get_brand_list", access_token, shop_id,
+                           {"category_id": category_id, "page_size": page_size,
+                            "offset": offset, "status": status})
+
+
+async def category_recommend(access_token: str, shop_id: int, item_name: str) -> list:
+    """Sugestão de category_id (ordenada) a partir do nome do item (GET). Validar folha depois."""
+    r = await _shop_get("/product/category_recommend", access_token, shop_id, {"item_name": item_name})
+    cids = r.get("category_id")
+    return cids if isinstance(cids, list) else ([cids] if cids else [])
+
+
+async def get_item_list(access_token: str, shop_id: int, *, offset: int = 0,
+                        page_size: int = 100, item_status: str = "NORMAL") -> dict:
+    """IDs dos itens da loja (enriquecer com get_item_base_info). Pagina por next_offset."""
+    return await _shop_get("/product/get_item_list", access_token, shop_id,
+                           {"offset": offset, "page_size": page_size, "item_status": item_status})
+
+
+# ─── Publicação / gestão de anúncio (Fase 5) ────────────────────────────────────
+
+
+async def upload_image(access_token: str, shop_id: int, image_bytes: bytes,
+                       *, filename: str = "img.jpg", mime: str = "image/jpeg") -> str | None:
+    """Sobe uma imagem ao media_space e devolve o `image_id` (a Shopee NÃO aceita URL externa
+    no add_item — precisa do image_id). multipart; assinatura não inclui o body."""
+    suffix = "/media_space/upload_image"
+    path = "/api/v2" + suffix
+    params = _shop_params(access_token, shop_id, path)
+    files = {"image": (filename, image_bytes, mime)}
+    async with httpx.AsyncClient(timeout=40) as client:
+        resp = await client.post(f"{SHOPEE_API_BASE}{suffix}", params=params, files=files)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Shopee upload_image HTTP {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    if data.get("error"):
+        raise HTTPException(status_code=502, detail=f"Shopee upload_image [{data.get('error')}]: {data.get('message')}")
+    resp_body = data.get("response", {}) or {}
+    info = resp_body.get("image_info") or {}
+    if info.get("image_id"):
+        return info["image_id"]
+    lst = resp_body.get("image_info_list") or []
+    if lst:
+        return ((lst[0].get("image_info") or {}).get("image_id")) or lst[0].get("image_id")
+    return None
+
+
+async def add_item(access_token: str, shop_id: int, item: dict) -> int | None:
+    """Cria o item (add_item). `item` = payload já montado (item_name, description, category_id
+    folha, original_price, seller_stock:[{stock}], weight, dimension, logistic_info, image,
+    brand, attribute_list, item_status, condition). Retorna o item_id."""
+    r = await _shop_post("/product/add_item", access_token, shop_id, item)
+    return r.get("item_id")
+
+
+async def update_item(access_token: str, shop_id: int, item_id: int, fields: dict) -> dict:
+    """Edita campos de um item existente (não altera preço/estoque — use update_price/stock)."""
+    body = {"item_id": item_id, **fields}
+    return await _shop_post("/product/update_item", access_token, shop_id, body)
+
+
+async def unlist_item(access_token: str, shop_id: int, item_id: int, *, unlist: bool = True) -> dict:
+    """Pausa (unlist=True) ou republica (unlist=False) o anúncio. Pausar ≠ zerar estoque."""
+    body = {"item_list": [{"item_id": item_id, "unlist": unlist}]}
+    return await _shop_post("/product/unlist_item", access_token, shop_id, body)
+
+
+async def delete_item(access_token: str, shop_id: int, item_id: int) -> dict:
+    """Remove o item definitivamente."""
+    return await _shop_post("/product/delete_item", access_token, shop_id, {"item_id": item_id})
+
+
+async def init_tier_variation(access_token: str, shop_id: int, item_id: int,
+                              tier_variation: list, model: list) -> dict:
+    """Define os eixos de variação + os models (preço/estoque por model) de um item base."""
+    body = {"item_id": item_id, "tier_variation": tier_variation, "model": model}
+    return await _shop_post("/product/init_tier_variation", access_token, shop_id, body)
+
+
+async def add_model(access_token: str, shop_id: int, item_id: int, model_list: list) -> dict:
+    """Adiciona models a um item que já tem tier_variation."""
+    body = {"item_id": item_id, "model_list": model_list}
+    return await _shop_post("/product/add_model", access_token, shop_id, body)
