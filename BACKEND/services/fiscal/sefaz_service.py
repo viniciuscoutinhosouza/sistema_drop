@@ -140,7 +140,7 @@ def _cliente(person: Person) -> Cliente:
     )
 
 
-def _item(it) -> ItemEmissao:
+def _item(it, numero_item: int | None = None) -> ItemEmissao:
     csosn = (it.icms_csosn or "102").strip()
     ncm = _digits(it.ncm)
     if len(ncm) != 8:
@@ -155,7 +155,8 @@ def _item(it) -> ItemEmissao:
         info_adicional=(it.additional_info or None),
     )
     return ItemEmissao(
-        numero_item=it.item_number, produto=prod, quantidade=_dec(it.quantity),
+        numero_item=numero_item if numero_item is not None else it.item_number, produto=prod,
+        quantidade=_dec(it.quantity),
         preco_unitario=_dec(it.unit_value), cfop=(it.cfop or "5102"),
         valor_frete=_dec(it.freight_value), valor_desconto=_dec(it.discount),
         valor_seguro=_dec(it.insurance_value), valor_outras=_dec(it.other_value),
@@ -171,7 +172,11 @@ def build_nota_emissao(
         raise SefazServiceError("NF-e sem itens.")
     emit = _estabelecimento(cmig, cfg)
     dest = _cliente(person)
-    itens = tuple(_item(it) for it in sorted(items, key=lambda x: x.item_number))
+    # nItem tem de ser sequencial 1..N (SEFAZ cStat 927); o item_number do banco pode ter
+    # buracos (itens removidos/reordenados) → reindexa na emissão pela ordem de item_number.
+    itens = tuple(
+        _item(it, i) for i, it in enumerate(sorted(items, key=lambda x: x.item_number), start=1)
+    )
 
     # ADR-0013: trata naive como UTC e converte para a borda (America/Sao_Paulo).
     dh = to_br(inv.issue_date) or to_br(datetime.now(UTC))
