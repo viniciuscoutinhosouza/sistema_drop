@@ -42,7 +42,9 @@ class RetornoConsulta:
 
     @property
     def autorizada(self) -> bool:
-        return self.cstat == "100"
+        # 100 = autorizada; 150 = autorizada "fora de prazo" — ambas são autorização válida
+        # (o protNFe traz o protocolo). Consistente com RetornoEmissao.autorizada.
+        return self.cstat in ("100", "150")
 
     @property
     def permite_reenvio(self) -> bool:

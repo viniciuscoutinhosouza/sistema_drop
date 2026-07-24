@@ -17,8 +17,8 @@ from services.fiscal.sefaz.sefaz_client import (
     NFE_NAMESPACE,
     SEFAZ_NFE_ENDPOINTS_POR_UF,
     SefazResponse,
-    extract_chnfe,
     extract_cert_pem,
+    extract_chnfe,
     extract_cstat,
     extract_nprot,
     post_sefaz,
@@ -55,7 +55,10 @@ class RetornoEmissao:
 
     @property
     def autorizada(self) -> bool:
-        return self.cstat_final == "100"
+        # 100 = autorizada; 150 = autorizada "fora de prazo" (dhEmi fora da janela) — TAMBÉM é
+        # autorização válida. Tratar 150 como rejeitada marcaria localmente como 'rejected' uma
+        # nota que a SEFAZ tem como autorizada → duplicidade (204) na retransmissão.
+        return self.cstat_final in ("100", "150")
 
 
 def montar_enviNFe(xml_signed: str, id_lote: int | str, indSinc: Literal[0, 1] = 1) -> str:
