@@ -406,6 +406,72 @@ def _build_ml_item(product: DropshipperProduct, listing: ProductListing) -> dict
     }
 
 
+async def _shopee_publish_bloqueios(
+    product: DropshipperProduct, listing: ProductListing,
+    account: MarketplaceAccount, db: AsyncSession,
+) -> list[str]:
+    """Valida (READ-ONLY, sem publicar) se o produto tem tudo que o add_item da Shopee exige.
+    Retorna a lista de bloqueios — a UI mostra ANTES de publicar (falhar alto, padrão preview_ordem).
+    """
+    b: list[str] = []
+    if not listing.category_id:
+        b.append("Falta a categoria (folha) da Shopee — use 'Sugerir categoria' e escolha uma folha.")
+    if not (listing.sale_price or getattr(product, "sale_price_shopee", None)):
+        b.append("Falta o preço de venda para a Shopee.")
+
+    cat = None
+    if getattr(product, "catalog_product_id", None):
+        cat = (await db.execute(
+            select(CatalogProduct).where(CatalogProduct.id == product.catalog_product_id)
+        )).scalar_one_or_none()
+    for nome, attr in (("peso", "weight_kg"), ("comprimento", "length_cm"),
+                       ("largura", "width_cm"), ("altura", "height_cm")):
+        if not (getattr(product, attr, None) or getattr(cat, attr, None)):
+            b.append(f"Falta {nome} do produto (a Shopee exige para o add_item).")
+    if not (product.images or []):
+        b.append("Produto sem imagens (a Shopee exige ao menos uma).")
+
+    try:
+        token = await get_valid_shopee_token(account, db)
+        channels = await shopee_service.get_channel_list(token, account.shop_id)
+        if not any(c.get("enabled") for c in channels):
+            b.append("Nenhum canal de logística habilitado na loja Shopee.")
+        if listing.category_id:
+            br = await shopee_service.get_brand_list(token, account.shop_id, int(listing.category_id))
+            if br.get("is_mandatory"):
+                b.append("Esta categoria EXIGE marca, e o sistema publica como 'Sem marca' — "
+                         "escolha uma categoria sem marca obrigatória (por ora).")
+            attrs = await shopee_service.get_attribute_tree(token, account.shop_id, int(listing.category_id))
+            mand = [a.get("name") for a in attrs if a.get("mandatory")]
+            if mand:
+                b.append(f"Categoria exige atributo(s) obrigatório(s) ainda não suportado(s): {', '.join(mand[:5])}.")
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — falha ao consultar a Shopee vira aviso, não quebra o preview
+        b.append(f"Não foi possível validar categoria/canais na Shopee agora: {exc}")
+    return b
+
+
+@router.get("/{listing_id}/publish-preview")
+async def publish_preview(
+    product_id: int,
+    listing_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Prévia da publicação Shopee: o que falta (bloqueios[]) ANTES de chamar o add_item."""
+    listing, account = await _get_listing_for_user(listing_id, product_id, current_user.id, db)
+    if account.platform != "shopee":
+        return {"bloqueios": [], "plataforma": account.platform}
+    product = (await db.execute(
+        select(DropshipperProduct)
+        .where(DropshipperProduct.id == product_id)
+        .options(selectinload(DropshipperProduct.images))
+    )).scalar_one()
+    bloqueios = await _shopee_publish_bloqueios(product, listing, account, db)
+    return {"bloqueios": bloqueios, "pode_publicar": not bloqueios, "plataforma": "shopee"}
+
+
 async def _build_shopee_item(
     product: DropshipperProduct, listing: ProductListing,
     account: MarketplaceAccount, db: AsyncSession,

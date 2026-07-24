@@ -68,6 +68,10 @@
                       class="btn btn-xs btn-outline-warning mr-1" title="Pausar" @click="pauseListing(l)">
                 <i class="fas fa-pause"></i>
               </button>
+              <button v-if="l.status === 'paused'"
+                      class="btn btn-xs btn-outline-info mr-1" title="Reativar" @click="reactivateListing(l)">
+                <i class="fas fa-play"></i>
+              </button>
               <button class="btn btn-xs btn-outline-danger" title="Remover" @click="removeListing(l)">
                 <i class="fas fa-trash"></i>
               </button>
@@ -165,6 +169,22 @@
             O anúncio será criado com o título e preço configurados. Certifique-se de ter preenchido
             <strong>categoria</strong> e <strong>tipo de anúncio</strong> antes de continuar.
           </div>
+
+          <!-- Shopee: prévia de bloqueios (o que a Shopee vai exigir no add_item) -->
+          <div v-if="loadingPreview" class="text-muted small">
+            <i class="fas fa-spinner fa-spin mr-1"></i>verificando requisitos da Shopee…
+          </div>
+          <div v-else-if="publishTarget?.platform === 'shopee' && publishBloqueios.length"
+               class="alert alert-warning py-2">
+            <strong><i class="fas fa-exclamation-triangle mr-1"></i>Pendências para publicar na Shopee:</strong>
+            <ul class="mb-0 mt-1 pl-4 small">
+              <li v-for="(b, i) in publishBloqueios" :key="i">{{ b }}</li>
+            </ul>
+          </div>
+          <div v-else-if="publishTarget?.platform === 'shopee' && publishForm.mode === 'create'"
+               class="alert alert-success py-2 small">
+            <i class="fas fa-check mr-1"></i>Pronto para publicar na Shopee.
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" @click="showPublishModal = false">Cancelar</button>
@@ -181,8 +201,10 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import api from '@/composables/useApi'
+import { useToast } from '@/composables/useToast'
 
 const props = defineProps({ productId: { type: Number, required: true } })
+const toast = useToast()
 
 const listings = ref([])
 const integrations = ref([])
@@ -193,6 +215,8 @@ const showModal = ref(false)
 const showPublishModal = ref(false)
 const editingListing = ref(null)
 const publishTarget = ref(null)
+const publishBloqueios = ref([])   // Shopee: o que falta antes do add_item (preview)
+const loadingPreview = ref(false)
 
 const defaultForm = () => ({
   account_id: '',
@@ -241,10 +265,21 @@ function closeModal() {
   editingListing.value = null
 }
 
-function openPublishModal(listing) {
+async function openPublishModal(listing) {
   publishTarget.value = listing
   publishForm.value = { mode: 'link', platform_item_id: listing.platform_item_id || '' }
+  publishBloqueios.value = []
   showPublishModal.value = true
+  // Shopee: prévia do que falta pra criar o anúncio (falhar alto antes do add_item).
+  if (listing.platform === 'shopee') {
+    loadingPreview.value = true
+    try {
+      const { data } = await api.get(`/products/${props.productId}/listings/${listing.id}/publish-preview`)
+      publishBloqueios.value = data.bloqueios || []
+    } catch { /* preview é best-effort */ } finally {
+      loadingPreview.value = false
+    }
+  }
 }
 
 async function saveListing() {
@@ -272,11 +307,17 @@ async function removeListing(listing) {
 
 async function doPublish() {
   if (publishForm.value.mode === 'link' && !publishForm.value.platform_item_id) return
+  if (publishForm.value.mode === 'create' && publishBloqueios.value.length
+      && !confirm('Há pendências que a Shopee pode recusar. Publicar mesmo assim?')) return
   publishing.value = true
   try {
     await api.post(`/products/${props.productId}/listings/${publishTarget.value.id}/publish`, publishForm.value)
     showPublishModal.value = false
+    toast.success('Anúncio publicado.')
     await load()
+  } catch (err) {
+    // Falhar alto: mensagem clara da Shopee (categoria, imagem, peso, marca obrigatória, etc.)
+    toast.error(err.response?.data?.detail || 'Erro ao publicar o anúncio')
   } finally {
     publishing.value = false
   }
@@ -284,8 +325,22 @@ async function doPublish() {
 
 async function pauseListing(listing) {
   if (!confirm('Pausar este anúncio no marketplace?')) return
-  await api.post(`/products/${props.productId}/listings/${listing.id}/pause`)
-  await load()
+  try {
+    await api.post(`/products/${props.productId}/listings/${listing.id}/pause`)
+    await load()
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao pausar o anúncio')
+  }
+}
+
+async function reactivateListing(listing) {
+  try {
+    await api.post(`/products/${props.productId}/listings/${listing.id}/reactivate`)
+    toast.success('Anúncio reativado.')
+    await load()
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao reativar o anúncio')
+  }
 }
 
 function platformLabel(platform) {
