@@ -12,7 +12,12 @@ Com a 478 finalmente chegando à SEFAZ, uma cadeia de rejeições foi depurada *
 2. **cStat 696 "Operação com não contribuinte deve indicar consumidor final"** — `ind_final` era `1 if PF else 0`, ignorando PJ não-contribuinte. Corrigido em `build_nota_emissao`: `ind_final = 1 if indIEDest==9 else 0` (alinha com o indicador de IE).
 3. **cStat 927 "Número do item fora da ordem sequencial"** — `nItem` usava o `item_number` cru do banco (com buracos). Corrigido: reindexa `1..N` na emissão (`_item` aceita `numero_item` opcional).
 
-Todas as três validadas em homologação (avançaram 290→696→927→232). Commits f5428d9, 1b3707a, 5ada435. **Bloqueio atual (dado, não código): cStat 232 "IE do destinatário não informada"** — a SEFAZ SP reconhece o destinatário (SUPPLY TITANS LTDA, SP) como **contribuinte** e exige a IE, ausente no cadastro da Pessoa. Ação do dono: informar a IE em Fiscal > Pessoas. Depois: re-smoke em homolog até cStat 100 e então retransmitir a 478 em produção (resetar contador da série 3 p/ número 1 antes, evitando gap).
+Todas validadas em homologação (avançaram 290→696→927→232). Commits f5428d9, 1b3707a, 5ada435.
+
+4. **cStat 232 "IE do destinatário não informada"** (dado, não código) — a SEFAZ SP reconhece o destinatário (SUPPLY TITANS LTDA, SP) como **contribuinte**; a IE estava ausente no cadastro da Pessoa. O dono informou a IE (`160851452119`) → gravada no cadastro.
+5. **cStat 150 tratado como autorizada** (`emitter.py`/`consulta.py`, commit 1c1ec3a) — 150 "Autorizado o uso da NF-e, autorização fora de prazo" É autorização válida, mas `RetornoEmissao.autorizada`/`RetornoConsulta.autorizada` só aceitavam 100 → em produção um 150 marcaria a nota como 'rejected' localmente enquanto a SEFAZ a tem autorizada (duplicidade 204 na retentativa). Agora aceitam 100 e 150.
+
+**✅ RESULTADO: cStat 100 "Autorizado o uso da NF-e" em homologação** (protocolo 135260006922484, número novo + data fresca) — pipeline provado ponta a ponta contra a SEFAZ real. **478 preparada para produção:** resetada para `draft`, `issue_date` refrescada (evita 150 fora de prazo), contador da série 3 recuado para **1**. Falta o dono clicar **Transmitir SEFAZ** em produção (documento fiscal real — acionado por ele). Nota de acompanhamento: notas paradas em rascunho por dias pegam cStat 150 (dhEmi antiga); mitigado pelo fix #5, mas avaliar refrescar dhEmi na transmissão.
 
 ---
 
