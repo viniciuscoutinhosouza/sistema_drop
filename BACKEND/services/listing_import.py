@@ -24,6 +24,16 @@ def _trunc_bytes(s: str, max_bytes: int) -> str:
     return s if len(enc) <= max_bytes else enc[:max_bytes].decode("utf-8", errors="ignore")
 
 
+def _num(v):
+    """float seguro para colunas Numeric (a Shopee às vezes manda número como string). None se vazio."""
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
 async def import_marketplace_listings(account, user, db) -> dict:
     """Importa os anúncios da conta conforme a plataforma (dispatcher).
 
@@ -66,10 +76,14 @@ async def _import_shopee(account, user, db) -> dict:
         pinfo = (it.get("price_info") or [{}])[0] if it.get("price_info") else {}
         price = float(pinfo.get("current_price") or pinfo.get("original_price") or 0)
         category = it.get("category_id")
-        # Campos do anúncio pra a tela não ficar "sem informação".
+        # Campos do anúncio pra a tela não ficar "sem informação". A Shopee às vezes devolve
+        # weight/dimension como STRING → converter (coluna é Numeric; str quebra o bind Oracle).
         thumb = ((it.get("image") or {}).get("image_url_list") or [None])[0]
         dim = it.get("dimension") or {}
-        weight = it.get("weight")
+        weight = _num(it.get("weight"))
+        length = _num(dim.get("package_length"))
+        width = _num(dim.get("package_width"))
+        height = _num(dim.get("package_height"))
         cond = "used" if (it.get("condition") or "").upper() == "USED" else "new"
         item_sku = _trunc_bytes(it.get("item_sku") or "", 100) or None
 
@@ -81,9 +95,9 @@ async def _import_shopee(account, user, db) -> dict:
             lst.sku = item_sku or lst.sku
             lst.item_condition = cond
             lst.weight_kg = weight if weight is not None else lst.weight_kg
-            lst.length_cm = dim.get("package_length") or lst.length_cm
-            lst.width_cm = dim.get("package_width") or lst.width_cm
-            lst.height_cm = dim.get("package_height") or lst.height_cm
+            lst.length_cm = length if length is not None else lst.length_cm
+            lst.width_cm = width if width is not None else lst.width_cm
+            lst.height_cm = height if height is not None else lst.height_cm
             lst.status = "published"
             lst.last_sync_at = datetime.now(UTC)
 
