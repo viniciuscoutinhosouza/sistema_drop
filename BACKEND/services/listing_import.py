@@ -17,6 +17,13 @@ from services import shopee_service
 from services.shopee_auth import get_valid_shopee_token
 
 
+def _trunc_bytes(s: str, max_bytes: int) -> str:
+    """Trunca a string para caber em max_bytes UTF-8 (colunas Oracle contam bytes — 'Musculação'
+    tem acento multibyte, então title[:100] estoura ORA-12899)."""
+    enc = (s or "").encode("utf-8")
+    return s if len(enc) <= max_bytes else enc[:max_bytes].decode("utf-8", errors="ignore")
+
+
 async def import_marketplace_listings(account, user, db) -> dict:
     """Importa os anúncios da conta conforme a plataforma (dispatcher).
 
@@ -51,8 +58,10 @@ async def _import_shopee(account, user, db) -> dict:
     items = await shopee_service.get_items_base_info(token, account.shop_id, item_ids)
     imported, updated = 0, 0
     for it in items:
-        sid = str(it.get("item_id"))
-        title = (it.get("item_name") or "")[:500]
+        item_id = it.get("item_id")
+        sid = str(item_id)
+        title = _trunc_bytes(it.get("item_name") or "", 500)
+        title_sh = _trunc_bytes(it.get("item_name") or "", 100)   # coluna 100 bytes (byte-safe)
         pinfo = (it.get("price_info") or [{}])[0] if it.get("price_info") else {}
         price = float(pinfo.get("current_price") or pinfo.get("original_price") or 0)
         category = it.get("category_id")
@@ -71,15 +80,17 @@ async def _import_shopee(account, user, db) -> dict:
                 select(DropshipperProduct).where(DropshipperProduct.id == listing.product_id)
             )).scalar_one_or_none()
             if prod:
-                prod.title_shopee = title[:100]
+                prod.title_shopee = title_sh
                 prod.sale_price_shopee = price
             updated += 1
         else:
             prod = DropshipperProduct(
                 dropshipper_id=user.id,
                 title=title,
-                title_shopee=title[:100],
+                title_shopee=title_sh,
                 sale_price_shopee=price,
+                shopee_item_id=int(item_id) if item_id else None,
+                shopee_category_id=int(category) if category else None,
                 status="active",
             )
             db.add(prod)
