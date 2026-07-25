@@ -96,6 +96,13 @@
                 <i class="fas fa-link mr-1"></i>
                 {{ acc.is_active ? 'Reconectar Shopee' : 'Conectar Shopee' }}
               </button>
+              <!-- Import de anúncios Shopee (a tela de Anúncios é só ML — ADR-0020) -->
+              <button v-if="acc.platform === 'shopee' && acc.is_active"
+                      class="btn btn-sm btn-outline-secondary btn-block mt-1"
+                      :disabled="syncing[acc.id] === 'listings'" @click="importListings(acc)">
+                <i class="fas mr-1" :class="syncing[acc.id] === 'listings' ? 'fa-spinner fa-spin' : 'fa-download'"></i>
+                Importar anúncios da Shopee
+              </button>
               <button v-else-if="acc.platform === 'bling'"
                       class="btn btn-sm btn-info btn-block" @click="openBlingModal(acc)">
                 <i class="fas fa-key mr-1"></i>

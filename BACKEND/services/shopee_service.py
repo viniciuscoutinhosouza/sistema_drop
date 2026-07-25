@@ -815,6 +815,19 @@ async def get_item_list(access_token: str, shop_id: int, *, offset: int = 0,
                            {"offset": offset, "page_size": page_size, "item_status": item_status})
 
 
+async def get_items_base_info(access_token: str, shop_id: int, item_ids: list) -> list:
+    """Info base de VÁRIOS itens (lotes de 50). Retorna item_list (item_name, category_id,
+    price_info, image, item_status…). Usado na importação de anúncios da loja."""
+    out: list = []
+    ids = [int(x) for x in item_ids if x]
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i + 50]
+        r = await _shop_get("/product/get_item_base_info", access_token, shop_id,
+                            {"item_id_list": ",".join(str(x) for x in chunk)})
+        out.extend(r.get("item_list", []) or [])
+    return out
+
+
 # ─── Publicação / gestão de anúncio (Fase 5) ────────────────────────────────────
 
 
