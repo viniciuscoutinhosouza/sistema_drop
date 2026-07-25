@@ -45,6 +45,13 @@ Concretamente:
 - **`listings.py` agnóstico por ramificação existente.** Onde o router já ramifica por plataforma,
   a Shopee entra por um **novo ramo** (`_build_shopee_item` async com contrato BR; `pause` ganha um
   `elif shopee → unlist`; novo `reactivate`) — sem tocar o ramo do ML.
+- **Import de anúncios multi-marketplace por dispatcher.** A tela "Gestão de Anúncios" (AnunciosView)
+  é multi-marketplace: seu `POST /anuncios/import/{id}` roteia por plataforma — ML segue no fluxo
+  **rico** de `anuncios.py` (auto-match, descrições, categorias, visitas), intocado; Shopee e
+  **marketplaces futuros** entram por `services/listing_import.py::import_marketplace_listings`
+  (ponto de extensão: 1 `elif` por plataforma). O `GET /anuncios` que lista é query no banco
+  (`ProductListing` por conta) — já agnóstico, exibe os anúncios importados de qualquer plataforma.
+  Ações **ricas** por anúncio (Full/Flex, promoções) permanecem `v-if` ML.
 - **Superfície comum tocada só ADITIVAMENTE:** `main.py` só ganha `include_router` novos; migrations
   são **aditivas** (colunas novas `orders.shopee_invoice_status`, `orders.shopee_platform_fee` via
   `Order.platform_fee`); o frontend ramifica por `v-if`.

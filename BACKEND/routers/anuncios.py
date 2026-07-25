@@ -1263,6 +1263,11 @@ async def import_anuncios(
     resultados, visto em testes com tokens reais).
     """
     account = await _get_account_or_403(account_id, current_user, db)
+    # Multi-marketplace: ML segue no fluxo rico abaixo; Shopee e futuros marketplaces vão pelo
+    # dispatcher extensível (services/listing_import.py) — sem tocar a lógica ML.
+    if account.platform != "mercadolivre":
+        from services import listing_import
+        return await listing_import.import_marketplace_listings(account, current_user, db)
     access_token = await _get_valid_token(account, db)
     seller_id = await _validate_token_owner(account, access_token)
 

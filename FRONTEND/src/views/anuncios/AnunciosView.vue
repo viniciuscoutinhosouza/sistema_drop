@@ -21,7 +21,7 @@
                 <label class="mb-0 mr-2 text-muted"><small>Conta Marketplace:</small></label>
                 <select v-model="selectedAccountId" class="form-control form-control-sm d-inline-block" style="width:auto;min-width:260px" @change="onAccountChange">
                   <option value="">Selecione uma conta...</option>
-                  <option v-for="a in mlAccounts" :key="a.id" :value="a.id">
+                  <option v-for="a in accounts" :key="a.id" :value="a.id">
                     {{ a.platform_label }} — {{ a.description || a.platform_username || a.email }}
                     <template v-if="a.cmig_name"> ({{ a.cmig_name }})</template>
                   </option>
@@ -2037,9 +2037,6 @@ const statusTabs = [
 
 const selectedAccount = computed(() => accounts.value.find(a => a.id === selectedAccountId.value))
 const selectedAccountPlatform = computed(() => selectedAccount.value?.platform || '')
-// Esta tela é do Mercado Livre (ADR-0020). Contas Shopee gerenciam anúncios em Produtos
-// (ListingManager) e importam por Integrações → não aparecem no seletor daqui (evita erro).
-const mlAccounts = computed(() => accounts.value.filter(a => a.platform === 'mercadolivre'))
 
 // Filtros aplicados em ordem: vínculo → status → busca textual.
 // `filteredBeforeSearch` é exposto pra UI mostrar "X de Y anúncios" no header da busca.
@@ -3137,7 +3134,7 @@ async function importAnuncios(statuses = null) {
   // Estado inicial do progresso
   importProgress.value = {
     phase: 'fetching',
-    message: 'Buscando anúncios no Mercado Livre…',
+    message: `Buscando anúncios${selectedAccount.value?.platform_label ? ' no ' + selectedAccount.value.platform_label : ''}…`,
     sub: statuses === 'all'
       ? 'Modo "Importar TUDO" — pode levar 1–2 minutos para contas grandes (>500 anúncios).'
       : 'Status padrão: active, paused, closed, under_review.',
