@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-07-25 — feat(shopee): PARIDADE COMPLETA (Fases 1-7) + eShip Armazenaki + fiscal ML (10714/10419) — ADR-0020
+
+Sessão de fechamento de três frentes já **commitadas e deployadas em produção** (hashes confirmados no servidor).
+
+### Shopee — paridade operacional Fases 1-7 (ADR-0020, regra de ouro respeitada: nenhum diff em bloco `if platform == "mercadolivre"`)
+Config **LIVE** em produção (`.env` partner_id 2039749 + chave live + host produção); loja real "Made In Group" (shop_id 1556009762) conectada (conta id 141).
+- **Fase 3 fiscal** (commit `3a8b239` + migration 135 `orders.shopee_invoice_status`): `routers/shopee_fiscal.py` (`/api/v1/shopee`) — pending-invoice, populate-buyer (CPF/CNPJ do `get_buyer_invoice_info`), upload-invoice (`resolve_nfe_xml` + `upload_invoice_doc`; **anexa** o XML da emissão própria — não emite pela Shopee; bloqueia sem NF-e/DC-e; reentrante), invoice-status. `shopee_service` +4 fns fiscais.
+- **Fase 4 logística** (commit `0e7dfef`): `routers/shopee_logistics.py` — ship (gate NF-e validada; reentrante 409), label (`private_labels/` + poll + 202), tracking. `shopee_service` +8 fns + `build_ship_block` + `map_shopee_shipment_status`. `separation.py` ganhou filtro protetor **excluindo Shopee do picking ML** (separação é só ML — ADR-0005).
+- **Fases 5-6** (commit `0da24db`): FIX crítico `update_item_stock` (`normal_stock`→`seller_stock`, quebrava em prod). `shopee_service` +14 fns (get_category, get_attribute_tree [get_attributes offline], get_brand_list, category_recommend, upload_image, add_item, unlist_item…). `listings.py` `_build_shopee_item` reescrito (era stub quebrado) async com contrato BR; `pause` +elif shopee=unlist; novo `reactivate` + `ml_service.activate_item`. `routers/shopee_catalog.py` (categorias/atributos/marcas).
+- **Fecha Fase 5** (commit `146b329`): publish-preview (`bloqueios[]`) + ListingManager UI (reativar + preview + toasts).
+- **Fase 7 custos** (commit `39560be`): `get_escrow_detail` + `seller_platform_fee` → `Order.platform_fee`; `GET /shopee/orders/{id}/fees`; botão Custos. Verificado ao vivo (commission 46.8 + service 25.2 = 72.0).
+- **Agentes:** shopee-especialista (contratos fiscal/logística/publicação/escrow, ao vivo), consistency-auditor (todos os planos), quality-guardian.
+- **Não verificado (depende de evento/ação do dono):** `upload_invoice_doc` encoding real, `ship_order`/etiqueta (precisa READY_TO_SHIP), `add_item` real (publicar item teste), **Push Key LIVE** no `.env`.
+
+### eShip — tela "Armazenaki" (menu Separação): conciliação de ordens enviadas × WMS
+- Commit `240a573`: tela per-CMIG (`GET /api/v1/integrations/eship/cmigs/{id}/reconciliacao`). `service.list_eship_orders` varre `webServiceGetOrdem` paginado, escopo client-side por CNPJ/CPF (WMS multi-tenant). Conciliação por `numero_origem` (=`platform_order_id` ou `str(id)`). Grupos: conciliados / só-no-sistema / só-no-eShip / cancelados. ADR-0013: `dataHora` do eShip (naive America/Fortaleza) → UTC na borda (`_eship_dt_to_iso`). LGPD: só-no-eShip filtrado por documento da CMIG. Frontend `ArmazenakiView.vue` + rota `/separacao/armazenaki` + item no menu.
+- Commit `044bc82`: modo "Todas as CMIGs" (consolidado) — varre cada endpoint (base_url+api_key) uma vez, atribui por idTipo/CNPJ sem duplicar (`_attribute_cmig` escopa por documento, anti-vazamento); confiabilidade por-grupo; filtro por status; coluna CMIG. Auditado quality-guardian (CRITICAL LGPD corrigido) + consistency-auditor.
+- Commit `e4df93d`: tabela de baixo lista TODAS as ordens do WMS (conciliadas+órfãs, com badge) + coluna Data (`created_at`) nos pedidos.
+
+### Fiscal ML — erro 10714 (2ª onda) + mensagem 10419
+- **Causa-raiz 10714:** `cest "2806400"` (porta-a-porta) preso no `product_listings.fiscal_json` de 136 anúncios (o override vence o produto já corrigido). Correção **em produção** via script (backup `/tmp/backup_fiscal_json_20260720.csv`): removido `cest` do `fiscal_json` dos 136; re-sync fiscal em 3 contas CNPJ (MADE_IN_GROUP 107, MBS 36, LPS 18) = 161 SKUs; `can_invoice`→true.
+- Contas CPF (MLV_ONLINE, FERALM) usam DC-e, não Faturador → **erro 10419 esperado** (`tax_payer_type` é derivado da conta, não do payload — verificado ao vivo pelo mercado-livre-especialista).
+- Commit `bca6c5b`: `register_or_update_fiscal_information` detecta 10419 e devolve mensagem clara (helper `_has_ml_error_code`) em vez de JSON cru ("falhar alto").
+
+### eShip — razaoSocialDestinatario para destinatário PJ (CNPJ)
+- Commit `cf8f47f` + migration 133 (`orders.buyer_business_name`): eShip recusava (MCA9102) CNPJ sem cadastro quando `razaoSocialDestinatario` vazio. Captura a razão social do `billing_info.name` do ML em `ensure_buyer_document`; `build_ordem_payload` envia `razaoSocialDestinatario` p/ CNPJ; `preview_ordem` bloqueia se faltar. Verificado em produção (prévia do pedido 2096 com razão social preenchida).
+
+---
+
 ## 2026-07-23 — fix(fiscal): 290/696/927 na transmissão SEFAZ da 478 (validado por smoke em homologação)
 
 Com a 478 finalmente chegando à SEFAZ, uma cadeia de rejeições foi depurada **iterativamente por smoke em homologação** (reusando os dados reais da 478, `emitir_nfe` → SEFAZ SP homolog, sem gastar número de produção — cada correção avança para a próxima regra):
