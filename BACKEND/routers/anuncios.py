@@ -2014,12 +2014,21 @@ async def suggest_products(
             for p in scored[:5]
         ]
 
-    # CatalogProducts do warehouse do AC
+    # CatalogProducts do galpão: usa o warehouse do usuário (UGO) OU, se ele não tiver (admin/AC/
+    # super admin com warehouse_id nulo), o galpão da CMIG vinculada à conta do anúncio — senão a
+    # busca de PG sai vazia ("Nenhum produto PG encontrado") mesmo havendo produtos.
+    pg_warehouse_id = current_user.warehouse_id
+    if not pg_warehouse_id and listing.account.cmig_id:
+        from models.cmig import CMIG
+        _cmig = (await db.execute(
+            select(CMIG).where(CMIG.id == listing.account.cmig_id)
+        )).scalar_one_or_none()
+        pg_warehouse_id = getattr(_cmig, "warehouse_id", None)
     pg_suggestions = []
-    if current_user.warehouse_id:
+    if pg_warehouse_id:
         pg_result = await db.execute(
             select(CatalogProduct).where(
-                CatalogProduct.warehouse_id == current_user.warehouse_id,
+                CatalogProduct.warehouse_id == pg_warehouse_id,
                 CatalogProduct.is_active == True,
             )
         )
