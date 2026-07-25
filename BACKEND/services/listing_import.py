@@ -60,11 +60,32 @@ async def _import_shopee(account, user, db) -> dict:
     for it in items:
         item_id = it.get("item_id")
         sid = str(item_id)
-        title = _trunc_bytes(it.get("item_name") or "", 500)
-        title_sh = _trunc_bytes(it.get("item_name") or "", 100)   # coluna 100 bytes (byte-safe)
+        name = it.get("item_name") or ""
+        title = _trunc_bytes(name, 500)
+        title_sh = _trunc_bytes(name, 100)   # coluna 100 bytes (byte-safe)
         pinfo = (it.get("price_info") or [{}])[0] if it.get("price_info") else {}
         price = float(pinfo.get("current_price") or pinfo.get("original_price") or 0)
         category = it.get("category_id")
+        # Campos do anúncio pra a tela não ficar "sem informação".
+        thumb = ((it.get("image") or {}).get("image_url_list") or [None])[0]
+        dim = it.get("dimension") or {}
+        weight = it.get("weight")
+        cond = "used" if (it.get("condition") or "").upper() == "USED" else "new"
+        item_sku = _trunc_bytes(it.get("item_sku") or "", 100) or None
+
+        def _apply_listing(lst):
+            lst.title_override = _trunc_bytes(name, 500)
+            lst.sale_price = price
+            lst.category_id = str(category) if category else lst.category_id
+            lst.thumbnail = thumb or lst.thumbnail
+            lst.sku = item_sku or lst.sku
+            lst.item_condition = cond
+            lst.weight_kg = weight if weight is not None else lst.weight_kg
+            lst.length_cm = dim.get("package_length") or lst.length_cm
+            lst.width_cm = dim.get("package_width") or lst.width_cm
+            lst.height_cm = dim.get("package_height") or lst.height_cm
+            lst.status = "published"
+            lst.last_sync_at = datetime.now(UTC)
 
         listing = (await db.execute(
             select(ProductListing).where(
@@ -73,9 +94,7 @@ async def _import_shopee(account, user, db) -> dict:
             )
         )).scalar_one_or_none()
         if listing:
-            listing.sale_price = price
-            listing.status = "published"
-            listing.last_sync_at = datetime.now(UTC)
+            _apply_listing(listing)
             prod = (await db.execute(
                 select(DropshipperProduct).where(DropshipperProduct.id == listing.product_id)
             )).scalar_one_or_none()
@@ -95,16 +114,14 @@ async def _import_shopee(account, user, db) -> dict:
             )
             db.add(prod)
             await db.flush()
-            db.add(ProductListing(
+            new_listing = ProductListing(
                 product_id=prod.id,
                 account_id=account.id,
                 platform_item_id=sid,
-                sale_price=price,
-                category_id=str(category) if category else None,
-                status="published",
                 published_at=datetime.now(UTC),
-                last_sync_at=datetime.now(UTC),
-            ))
+            )
+            _apply_listing(new_listing)
+            db.add(new_listing)
             imported += 1
 
     await db.commit()
