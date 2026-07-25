@@ -592,6 +592,12 @@
                 @click="trackShopee(order)"
                 title="Rastreio Shopee"
               ><i class="fas fa-truck"></i></button>
+              <button
+                class="btn btn-xs btn-outline-secondary"
+                :disabled="shopeeLogBusy[order.id]"
+                @click="feesShopee(order)"
+                title="Custos / comissão Shopee (escrow)"
+              ><i class="fas fa-coins"></i></button>
             </template>
 
             <!-- Atualizar status (UGO/Admin) — acoes restantes apos label/NFe.
@@ -1452,6 +1458,19 @@ async function trackShopee(order) {
     toast.info(`Rastreio: ${data.tracking_code || '—'} · ${data.logistics_status || 'sem status'}`)
   } catch (err) {
     toast.error(err.response?.data?.detail || 'Erro ao consultar rastreio Shopee')
+  } finally {
+    _setShopeeLogBusy(order.id, false)
+  }
+}
+
+async function feesShopee(order) {
+  _setShopeeLogBusy(order.id, true)
+  try {
+    const { data } = await api.get(`/shopee/orders/${order.id}/fees`)
+    if (data.platform_fee != null) order.platform_fee = data.platform_fee
+    toast.info(`Custos Shopee: comissão R$ ${data.commission_fee ?? '—'} · taxas totais R$ ${data.platform_fee ?? '—'} · líquido R$ ${data.escrow_amount ?? '—'}`)
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao consultar custos Shopee')
   } finally {
     _setShopeeLogBusy(order.id, false)
   }

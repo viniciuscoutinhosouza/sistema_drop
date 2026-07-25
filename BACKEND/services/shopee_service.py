@@ -745,6 +745,30 @@ async def get_channel_list(access_token: str, shop_id: int) -> list:
     return r.get("logistics_channel_list", []) or []
 
 
+# ─── Custos / comissão (Fase 7) ─────────────────────────────────────────────────
+# Taxas cobradas do VENDEDOR pela Shopee (para Order.platform_fee): comissão + service fee +
+# transaction fee do vendedor (+ campaign). São valores REAIS liquidados no escrow.
+_SELLER_FEE_KEYS = ("commission_fee", "service_fee", "seller_transaction_fee", "campaign_fee",
+                    "order_ams_commission_fee", "seller_order_processing_fee")
+
+
+async def get_escrow_detail(access_token: str, shop_id: int, order_sn: str) -> dict:
+    """Detalhe de repasse (escrow) do pedido: comissão, service fee, frete, líquido. Retorna o
+    `order_income` (dict com dezenas de campos de taxa/valor). Disponível após o pagamento."""
+    r = await _shop_get("/payment/get_escrow_detail", access_token, shop_id, {"order_sn": order_sn})
+    return r.get("order_income", {}) or {}
+
+
+def seller_platform_fee(order_income: dict) -> float:
+    """Soma as taxas cobradas do vendedor (→ Order.platform_fee). Valores absolutos."""
+    total = 0.0
+    for k in _SELLER_FEE_KEYS:
+        v = order_income.get(k)
+        if isinstance(v, (int, float)):
+            total += abs(float(v))
+    return round(total, 2)
+
+
 # ─── Categorias / atributos / marcas (Fase 6) ───────────────────────────────────
 # Categoria FOLHA (has_children=false) é a única que aceita anúncio. Atributos vêm do
 # get_attribute_tree (get_attributes está api_suspended). Marca 0 = "Sem marca" (NoBrand).
