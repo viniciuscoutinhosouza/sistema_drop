@@ -3197,11 +3197,12 @@ async function deleteAnuncioSistema(listing) {
 }
 
 async function deleteAnuncioMarketplace(listing) {
-  if (!confirm(`Excluir "${listing.title_override}" do sistema E do Marketplace?\n\nEsta ação fechará o anúncio no Mercado Livre e não pode ser desfeita.`)) return
+  const mkt = selectedAccount.value?.platform_label || (selectedAccount.value?.platform === 'shopee' ? 'Shopee' : 'marketplace')
+  if (!confirm(`Excluir "${listing.title_override}" do sistema E do ${mkt}?\n\nEsta ação encerra o anúncio no ${mkt} e não pode ser desfeita.`)) return
   try {
     await api.delete(`/anuncios/${listing.id}/marketplace`)
     anuncios.value = anuncios.value.filter(a => a.id !== listing.id)
-    toast.success('Anúncio removido do sistema e fechado no Marketplace')
+    toast.success('Anúncio removido do sistema e encerrado no marketplace')
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao excluir anúncio no Marketplace')
   }

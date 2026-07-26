@@ -5720,6 +5720,18 @@ async def pause_anuncio(
     if not listing.platform_item_id:
         raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma para pausar")
 
+    # Shopee: pausar = unlist (oculta o item), não é o pause do ML. Ramo próprio (ADR-0020).
+    if listing.account.platform == "shopee":
+        from services import shopee_service
+        from services.shopee_auth import get_valid_shopee_token
+        token = await get_valid_shopee_token(listing.account, db)
+        await shopee_service.unlist_item(
+            token, listing.account.shop_id, int(listing.platform_item_id), unlist=True)
+        listing.status = "paused"
+        listing.last_sync_at = datetime.now(UTC)
+        await db.commit()
+        return _serialize_listing(listing)
+
     access_token = await _get_valid_token(listing.account, db)
     ml_item = await ml_service.pause_item(access_token, listing.platform_item_id)
 
@@ -6039,8 +6051,15 @@ async def delete_anuncio_marketplace(
         details=_audit_snapshot(listing), request=request,
     )
     if listing.platform_item_id:
-        access_token = await _get_valid_token(listing.account, db)
-        await ml_service.close_item(access_token, listing.platform_item_id)
+        if listing.account.platform == "shopee":
+            from services import shopee_service
+            from services.shopee_auth import get_valid_shopee_token
+            token = await get_valid_shopee_token(listing.account, db)
+            await shopee_service.delete_item(
+                token, listing.account.shop_id, int(listing.platform_item_id))
+        else:
+            access_token = await _get_valid_token(listing.account, db)
+            await ml_service.close_item(access_token, listing.platform_item_id)
     db.delete(listing)
     await db.commit()
 
