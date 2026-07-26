@@ -2077,13 +2077,22 @@ async def link_product(
         listing.catalog_product_id = None
 
     elif catalog_product_id:
-        # Valida que o produto PG pertence ao warehouse do AC
+        # Valida que o produto PG é do galpão da conta do anúncio.
         r = await db.execute(select(CatalogProduct).where(CatalogProduct.id == catalog_product_id))
         product = r.scalar_one_or_none()
         if not product:
             raise HTTPException(status_code=404, detail="Produto PG não encontrado")
-        if product.warehouse_id and product.warehouse_id != current_user.warehouse_id:
-            raise HTTPException(status_code=403, detail="Produto não pertence ao seu galpão")
+        # Galpão de referência: o do usuário (UGO) OU, se ele não tiver (admin/AC/super admin), o
+        # galpão da CMIG da conta do anúncio — senão admin (warehouse nulo) tomava 403 indevido.
+        ref_wh = current_user.warehouse_id
+        if not ref_wh and listing.account.cmig_id:
+            from models.cmig import CMIG
+            _c = (await db.execute(
+                select(CMIG).where(CMIG.id == listing.account.cmig_id)
+            )).scalar_one_or_none()
+            ref_wh = getattr(_c, "warehouse_id", None)
+        if product.warehouse_id and ref_wh and product.warehouse_id != ref_wh:
+            raise HTTPException(status_code=403, detail="Produto não pertence ao galpão desta conta")
         listing.catalog_product_id = catalog_product_id
         listing.cmig_product_id = None
 
