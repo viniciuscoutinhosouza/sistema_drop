@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-07-27 — fix(estoque): transmissão SEFAZ autorizada baixa estoque (NF-e não sumia do recálculo)
+
+**Sintoma (dono):** a NF-e de saída 478 foi gravada/autorizada, mas o recálculo de estoque (tanto o botão "Recalcular Estoque" da Nota quanto o "Recalcular Estoque (todos)" da página Controle de Estoque) **não considerava** a nota.
+
+**Causa-raiz:** `transmit_invoice` autoriza a nota (via `sefaz_service.emitir` → `status='authorized'`) mas **nunca chamava `_apply_stock_movement`**, ao contrário do `finalize_invoice_no_sefaz`. Assim `invoices.stock_updated` ficava False. O replay de estoque (`stock_history._fetch_direct_pg_events` / `_fetch_nfe_events_for_cmig_product`) filtra `stock_updated==True AND status in (authorized,finalized)` — filtro **correto** (exclui devoluções/simbólicas de propósito, ADR-0009) —, então a saída autorizada ficava invisível aos dois recálculos (`/invoices/{id}/reapply-stock` e `/stock/recompute-all`, que usam o mesmo replay). Só a 478 estava nesse estado (as demais saídas passaram por finalize/Faturador ML, que setam a flag).
+
+**Correção (`routers/invoices.py`, commit 7c07038):**
+- Novo `_apply_stock_on_authorization(inv, db)` (idempotente por `stock_updated`, pula simbólica) — baixa o estoque quando a nota vira `authorized`. Chamado em **`transmit_invoice`** E em **`refresh_status`** (recuperação N-6: nota que caiu em `processing` por rede e é confirmada pela consulta também baixa estoque — apontado pelo consistency-auditor).
+- Extraído `_post_commit_full_and_push` (estoque FULL + push de sync), compartilhado por `finalize` e pelo novo caminho de autorização (elimina divergência; status generalizado para `in (finalized,authorized)`).
+- `cancel_invoice`: após cancelar, recomputa o cache dos produtos afetados + push (a nota cancelada sai do replay pelo filtro de status, mas o cache `stock_quantity` só atualiza recomputando) — lacuna de estorno criada por passar a baixar estoque na transmissão; `selectinload(items)` adicionado.
+- `reapply-stock` **não** auto-seta a flag (devoluções são `stock_updated=False` de propósito).
+
+**Backfill + verificação (produção):** aplicado o movimento na 478 → `stock_updated=True`, 25 produtos PG recomputados, cada um reduzido exatamente pela quantidade da nota (ex.: PG 6 200→100). Os dois recálculos passam a refletir a 478 (mesmo replay). **Atenção de dado:** PG 232 ficou em -2 (a nota declarou 37 num item com 35 em estoque) — conferir contagem/quantidade. `pytest -k "stock or invoice or fiscal"` 18 passed. Consistency-auditor incorporado (cobertura N-6 + estorno no cancel).
+
+---
+
 ## 2026-07-25 — feat(shopee): PARIDADE COMPLETA (Fases 1-7) + eShip Armazenaki + fiscal ML (10714/10419) — ADR-0020
 
 Sessão de fechamento de três frentes já **commitadas e deployadas em produção** (hashes confirmados no servidor).
