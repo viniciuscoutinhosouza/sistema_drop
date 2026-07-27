@@ -1458,6 +1458,9 @@ async def transmit_invoice(
     except _SefazFiscalError as e:
         raise HTTPException(status_code=422, detail=f"Falha fiscal ao montar a NF-e: {e}")
 
+    # Autorizada → baixa o estoque (a saída deixou o galpão). Sem isto a nota fica invisível
+    # ao recálculo de estoque (o replay filtra stock_updated==True).
+    await _apply_stock_on_authorization(inv, db)
     await db.refresh(inv, attribute_names=["items"])
     return _serialize(inv, with_items=True)
 
@@ -1495,6 +1498,58 @@ async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
 
     result = await recompute_after_invoice_change(inv, db)
     return {**result, "already_updated": False}
+
+
+async def _post_commit_full_and_push(inv: Invoice, db: AsyncSession, stock: dict) -> None:
+    """Pós-commit de uma nota que moveu estoque (finalize OU transmissão/consulta SEFAZ):
+    aplica o estoque FULL (se a contraparte for CNPJ FULL) e agenda o push de sync p/ os
+    marketplaces. Best-effort — nunca quebra a emissão. Relê o status no banco (guard anti-`/reopen`
+    do finalize; inócuo na transmissão, onde `/reopen` é bloqueado em 'authorized')."""
+    if inv.person_id:
+        try:
+            from services.full_stock_service import (
+                apply_nfe_entrada_from_full,
+                apply_nfe_saida_to_full,
+                is_full_cnpj,
+            )
+            _st = (
+                await db.execute(select(Invoice.status).where(Invoice.id == inv.id))
+            ).scalar_one_or_none()
+            _person = (
+                await db.execute(select(Person).where(Person.id == inv.person_id))
+            ).scalar_one_or_none()
+            if (
+                _st in ("finalized", "authorized")
+                and _person and _person.document
+                and not _is_simbolica(inv.natureza_operacao)
+            ):
+                _full_cnpj = await is_full_cnpj(db, _person.document, inv.cmig_id)
+                if _full_cnpj:
+                    if inv.direction == "out":
+                        await apply_nfe_saida_to_full(db, inv, _full_cnpj.marketplace_account_id)
+                    elif inv.direction == "in":
+                        await apply_nfe_entrada_from_full(db, inv, _full_cnpj.marketplace_account_id)
+                    await db.commit()
+        except Exception:
+            pass
+    try:
+        from services.stock_sync_service import schedule_push
+        schedule_push(stock.get("cmig_ids", set()), stock.get("pg_ids", set()))
+    except Exception:
+        pass
+
+
+async def _apply_stock_on_authorization(inv: Invoice, db: AsyncSession) -> None:
+    """Baixa de estoque quando uma NF-e é AUTORIZADA pela SEFAZ própria — na transmissão
+    (`transmit_invoice`) OU na recuperação N-6 via consulta (`refresh_status`). Sem isto a saída
+    autorizada nunca sai do estoque e fica invisível ao recálculo (o replay filtra
+    `stock_updated==True`). Espelha o finalize: `_apply_stock_movement` (idempotente por
+    `stock_updated`, pula simbólica) + FULL + push. Idempotente — seguro chamar nos dois caminhos."""
+    if inv.status != "authorized" or inv.stock_updated:
+        return
+    stock = await _apply_stock_movement(inv, db)
+    await db.commit()
+    await _post_commit_full_and_push(inv, db, stock)
 
 
 @router.post("/{invoice_id}/finalize-no-sefaz")
@@ -1545,35 +1600,7 @@ async def finalize_invoice_no_sefaz(
 
     _recompute_totals(inv)
     await db.commit()
-    if inv.person_id:
-        try:
-            from services.full_stock_service import (
-                apply_nfe_entrada_from_full,
-                apply_nfe_saida_to_full,
-                is_full_cnpj,
-            )
-            # Reconfere o status no BANCO: um /reopen que chegue entre o commit do finalize e
-            # este bloco veria o guard FULL ainda vazio — aplicar o crédito aqui deixaria um
-            # rascunho editável com FULL já movimentado (o pior estado possível).
-            _st = (
-                await db.execute(select(Invoice.status).where(Invoice.id == inv.id))
-            ).scalar_one_or_none()
-            _person = (await db.execute(select(Person).where(Person.id == inv.person_id))).scalar_one_or_none()
-            if _st == "finalized" and _person and _person.document and not _is_simbolica(inv.natureza_operacao):
-                _full_cnpj = await is_full_cnpj(db, _person.document, inv.cmig_id)
-                if _full_cnpj:
-                    if inv.direction == "out":
-                        await apply_nfe_saida_to_full(db, inv, _full_cnpj.marketplace_account_id)
-                    elif inv.direction == "in":
-                        await apply_nfe_entrada_from_full(db, inv, _full_cnpj.marketplace_account_id)
-                    await db.commit()
-        except Exception:
-            pass
-    try:
-        from services.stock_sync_service import schedule_push
-        schedule_push(stock.get("cmig_ids", set()), stock.get("pg_ids", set()))
-    except Exception:
-        pass
+    await _post_commit_full_and_push(inv, db, stock)
     await db.refresh(inv, attribute_names=["items"])
     return {
         **_serialize(inv, with_items=True),
@@ -1758,6 +1785,10 @@ async def refresh_status(
     except _SefazNetError as e:
         raise HTTPException(status_code=502, detail=f"SEFAZ indisponível: {e}")
 
+    # Se a consulta N-6 confirmou a autorização (nota que caiu em 'processing' na transmissão),
+    # baixa o estoque agora — mesmo efeito da transmissão bem-sucedida.
+    await _apply_stock_on_authorization(inv, db)
+
     return {
         "status": inv.status,
         "cstat": result.get("cstat"),
@@ -1774,7 +1805,11 @@ async def cancel_invoice(
     current_user: User = Depends(get_current_user),
 ):
     """Cancela NFe autorizada (até 24h após autorização)."""
-    inv = (await db.execute(select(Invoice).where(Invoice.id == invoice_id))).scalar_one_or_none()
+    inv = (
+        await db.execute(
+            select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice_id)
+        )
+    ).scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, current_user, db)
@@ -1815,6 +1850,18 @@ async def cancel_invoice(
         )
     )
     await db.commit()
+    # Estorno de estoque: a nota cancelada sai do replay (filtro `status in (authorized,finalized)`),
+    # então o saldo volta sozinho no próximo cálculo — mas o cache `stock_quantity` só atualiza
+    # recomputando os produtos afetados agora. Só recomputa se a nota chegou a baixar estoque.
+    if inv.stock_updated:
+        try:
+            from services.fiscal.stock_calculator import recompute_after_invoice_change
+            _res = await recompute_after_invoice_change(inv, db)
+            await db.commit()
+            from services.stock_sync_service import schedule_push
+            schedule_push(_res.get("cmig_ids", set()), _res.get("pg_ids", set()))
+        except Exception:
+            pass
     return {"detail": "NFe cancelada", "protocol": inv.cancel_protocol}
 
 
