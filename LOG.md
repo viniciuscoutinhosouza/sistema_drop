@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-07-29 — fix(shopee): pedido com variação baixa o produto certo (model_sku, não item_sku)
+
+**Sintoma (dono):** alguns pedidos Shopee (produtos com variação) não estavam sendo baixados do estoque.
+
+**Causa-raiz:** `process_shopee_order` gravava/resolvia o produto pelo **`item_sku` (SKU do "pai")**, ignorando o **`model_sku` (SKU da variação comprada)**. Cada variação é um `CatalogProduct` (PG) separado, com SKU e estoque próprios. Quando `item_sku != model_sku`, o pedido baixava o **produto errado** e a variação real **nunca** era baixada. O ML não tinha o bug (usa `seller_sku` da variação). Confirmado ao vivo: pedido 260728SKFR2U5Q comprou "Bola Pilates **55cm Rosa**" (`model_sku=5178` → PG 84) mas baixou **PG 62 (75cm Preta**, `5171`). Foam roller funcionava por coincidência (`item_sku==model_sku==5200`).
+
+**Correção (commit b5e85fa, ramo Shopee — ADR-0020, ML intocado):**
+- `process_shopee_order` + `_resolve_shopee_item_links`: `OrderItem.sku` e o resolvedor usam `model_sku or item_sku`; `by_sku` reindexado por `model_sku` (alinha ao `oi.sku`).
+- `resolve_order_item_link`: novo param **opt-in** `prefer_variation_sku` (só Shopee). Quando True, `_resolve_by_sku` casa o SKU da variação (CMIG escopado por `cmig_id` → `CatalogProduct.sku` → `CatalogProductVariant.sku`) **ANTES** do `ProductListing` do item (que aponta para uma só variação). ML chama sem o param → listing-first, zero diff.
+- Teste de regressão do caso vivo (`model_sku=5178` → PG 84, vence o listing).
+
+**Backfill + verificação (produção):** rebuscados os detalhes Shopee de todos os pedidos, re-resolvidos por `model_sku`. **1 correção**: pedido 260728SKFR2U5Q (item 2239) `5171→5178`, PG 62→84. Estoque recomputado e idempotente (PG 62=10, PG 84=4, PG 281=9). Os 4 pedidos de foam roller já estavam certos. Auditado (consistency-auditor pré + quality-guardian/adr-checker no fecho). `pytest -k shopee/resolver` verde (2 falhas pré-existentes em test_orders.py, alheias).
+
+---
+
 ## 2026-07-28 — feat(estoque): tela "Extrato de Movimentação por Produto" (razão por produto)
 
 **Pedido (dono):** tela onde se seleciona **um** produto (dropdown por SKU ou nome) e vê TODAS as movimentações agrupadas por domínio de estoque — entradas, saídas, ajustes de inventário, pedidos, devoluções, envios ao FULL — do início ou de um marco de inventário (baseline). Regras confirmadas: **PG só tem galpão; CMIG tem galpão E FULL; FULL nunca aparece sob o PG (sempre sob a CMIG, ADR-0010); TODOS os marketplaces têm FULL (não só ML)**.
