@@ -286,8 +286,17 @@ async def build_movements_response(
             if oq > 0 and not e.order_invoice_finalized:
                 running_pending += oq
         elif e.source == "inventory":
-            # baseline → reseta o físico corrido para a contagem (o piso já zera reservas
-            # anteriores); adjustment → soma o delta congelado (counted − system).
+            # baseline → reseta o físico corrido para a contagem; adjustment → soma o delta
+            # congelado (counted − system). Espelha calculate_pg/cmig_product_stock.
+            #
+            # LIMITAÇÃO CONHECIDA (baseline): ao resetar zeramos running_pending e o piso
+            # descarta eventos anteriores — incluindo RESERVAS ainda ativas criadas antes do
+            # baseline. As unidades reservadas estão fisicamente na contagem, então o
+            # running_available da coluna corrida pode SUPERESTIMAR o disponível pela qty
+            # reservada pré-baseline. O card canônico (stock_view: stock_quantity − reserved_quantity)
+            # e o banner de reconciliação seguem CORRETOS. Hoje inócuo: não há inventário baseline
+            # em produção (só 'adjustment', que não zera pending). Endurecer o pending ao piso
+            # (somar reservas ativas que atravessam o baseline) quando baseline entrar em uso.
             if e.inventory_mode == "baseline":
                 running_nfe = int(e.inventory_counted or 0)
                 running_pending = 0
