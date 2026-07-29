@@ -100,6 +100,18 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
             stats["listings_skipped_full"] += 1
             continue
 
+        # Shopee SEM vínculo de estoque real (PG/CMIG): anúncio importado que só tem
+        # DropshipperProduct (placeholder) até o vínculo manual. Não há fonte de estoque a
+        # empurrar — pular claramente. Sem isto, o job estoura update_stock em massa (itens
+        # com variações falham com model_id=0, mensagem vazia = "None"). ADR-0020: só ramo Shopee.
+        if account.platform == "shopee" and not (
+            listing.catalog_product_id or listing.cmig_product_id
+        ):
+            stats["listings_unresolved"] += 1
+            reasons = stats["unresolved_by_reason"]
+            reasons["shopee_sem_vinculo"] = reasons.get("shopee_sem_vinculo", 0) + 1
+            continue
+
         # NOTA: ml_catalog_id NÃO é motivo para pular.
         # Itens de catálogo ML ainda têm available_quantity editável pelo vendedor via
         # PUT /user-products/{user_product_id}/stock — ml_update_stock já trata esse fallback.

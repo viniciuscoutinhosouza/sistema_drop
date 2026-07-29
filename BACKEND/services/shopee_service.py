@@ -432,7 +432,9 @@ async def update_item_stock(access_token: str, shop_id: int, item_id: int, stock
         )
     data = resp.json()
     if data.get("error"):
-        raise Exception(f"Shopee update_stock error: {data.get('message')}")
+        # message costuma vir vazio → sem o error (código) a falha fica ilegível ("None").
+        detail = (data.get("message") or "").strip() or "(sem mensagem)"
+        raise Exception(f"Shopee update_stock error: {data.get('error')} — {detail}")
 
 
 # ─── Fiscal BR (anexar NF-e ao pedido) — Fase 3 ─────────────────────────────────
