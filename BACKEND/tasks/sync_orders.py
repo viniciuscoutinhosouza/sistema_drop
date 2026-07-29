@@ -217,6 +217,37 @@ async def sync_shopee_integration(
                     f"(account {integration.id}): {e}"
                 )
 
+        # 2ª passada — PROGRESSÃO de status (embarque/cancelamento) por update_time. A 1ª passada só
+        # vê READY_TO_SHIP novos (create_time); sem esta, a transição p/ SHIPPED (baixa física) e o
+        # cancelamento (libera reserva) nunca chegam ao nosso lado. event_id inclui o status → cada
+        # transição re-processa UMA vez (process_shopee_order acha o pedido e dirige o estoque).
+        for st in ("PROCESSED", "SHIPPED", "COMPLETED", "CANCELLED"):
+            try:
+                moved = await shopee_service.get_order_list(
+                    token, integration.shop_id, time_from, time_to,
+                    order_status=st, time_range_field="update_time",
+                )
+            except Exception as e:
+                print(f"[SYNC] Shopee progress poll {st} (account {integration.id}) erro: {e}")
+                continue
+            for order_sn in moved:
+                sn = order_sn.get("order_sn", "")
+                event_id = f"poll:{integration.shop_id}:{sn}:{st}"
+                if await webhook_service.is_already_processed(db, "shopee", event_id):
+                    continue
+                try:
+                    event = await webhook_service.record_webhook(
+                        db, "shopee", event_id, "order_update", order_sn
+                    )
+                    if event:
+                        await webhook_service.process_shopee_order(db, order_sn, integration)
+                        event.processed = True
+                        event.processed_at = datetime.now(UTC)
+                        await db.commit()
+                except Exception as e:
+                    await db.rollback()
+                    print(f"[SYNC] Error updating Shopee order {sn} ({st}, account {integration.id}): {e}")
+
         integration.last_sync_at = datetime.now(UTC)
         await db.commit()
     except Exception as e:

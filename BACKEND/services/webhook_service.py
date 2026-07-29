@@ -742,15 +742,13 @@ async def process_shopee_order(
         logger.warning("[shopee] evento sem order_sn — ignorado (chaves: %s)", _keys)
         return
 
-    existing = await db.execute(
+    existing_order = (await db.execute(
         select(Order).where(
             Order.platform == "shopee",
             Order.platform_order_id == order_sn,
             Order.dropshipper_id == integration.owner_id,
         )
-    )
-    if existing.scalar_one_or_none():
-        return
+    )).scalar_one_or_none()
 
     # Detalhe RICO — token coordenado + get_order_detail. Se FALHAR (token expirado, rede,
     # HTTPException), a exceção PROPAGA de propósito: NÃO criamos pedido pobre nem marcamos o
@@ -767,6 +765,18 @@ async def process_shopee_order(
         logger.warning("[shopee] get_order_detail vazio pedido=%s — sem detalhe, nada a criar", order_sn)
         return
 
+    order_status = detail.get("order_status") or ""
+    ship_status = shopee_service.map_shopee_shipment_status(order_status)
+    is_cancelled = order_status == "CANCELLED"
+
+    if existing_order is not None:
+        # Pedido já existe → NÃO recria (dedup); atualiza status e DIRIGE o estoque na transição
+        # (reserva→baixa→libera). É o análogo Shopee do caminho de update do ML (:355-392).
+        await _update_shopee_order_stock(
+            db, existing_order, detail, order_status, ship_status, is_cancelled, integration
+        )
+        return
+
     if detail.get("currency") and detail.get("currency") != "BRL":
         logger.warning(
             "[shopee] pedido=%s em moeda %s (esperado BRL) — sale_amount pode ficar inconsistente",
@@ -780,9 +790,13 @@ async def process_shopee_order(
         cmig_id=integration.cmig_id,
         platform="shopee",
         platform_order_id=order_sn,
-        platform_status=detail.get("order_status") or "",
-        status="downloaded",
-        payment_status="pending",
+        platform_status=order_status,
+        # shipment_status canônico (map_shopee_shipment_status) — SEM ele o pedido fica invisível
+        # para TODO o estoque (razão/reserva/separação/recompute filtram por shipped/ready_to_ship…).
+        shipment_status=ship_status,
+        # status='cancelled' quando a Shopee cancela — o gate do reserve_stock olha Order.status.
+        status="cancelled" if is_cancelled else "downloaded",
+        payment_status="pending" if order_status == "UNPAID" else "paid",
         buyer_name=recipient_address.get("name") or "",
         shipping_address=json.dumps(recipient_address, ensure_ascii=False),
         sale_amount=Decimal(str(detail.get("total_amount") or 0)),
@@ -866,6 +880,23 @@ async def process_shopee_order(
 
     await db.commit()
 
+    # Dirige o estoque ESPELHANDO o ramo ML (:688-695): reserva sempre; se o pedido JÁ nasce
+    # despachado (importado tarde), libera a reserva — o físico é event-sourced (o recompute conta
+    # a saída). Só com status de estoque real e não cancelado. UNPAID/TO_RETURN → ship_status=None
+    # → não reserva (sem reserva fantasma). ADR-0020: ramo Shopee, o caminho ML fica intocado.
+    if order.status != "cancelled" and ship_status in ("handling", "ready_to_ship", "shipped", "delivered"):
+        try:
+            from services.stock_reservation_service import (
+                _order_was_dispatched,
+                release_reservation,
+                reserve_stock,
+            )
+            await reserve_stock(db, order)
+            if order.shipping_mode != "full" and _order_was_dispatched(order):
+                await release_reservation(db, order)
+        except Exception as exc:
+            logger.warning("reserve_stock shopee order=%s: %s", order.id, exc)
+
     # Trigger recálculo de estoque (cobre kits via explosão de componentes)
     try:
         from services.fiscal.stock_calculator import (
@@ -884,3 +915,83 @@ async def process_shopee_order(
         reference_type="order",
         reference_id=order.id,
     )
+
+
+async def _resolve_shopee_item_links(db, order, detail, integration):
+    """Vincula OrderItems Shopee ainda SEM produto, casando por shopee_item_id (via ProductListing)
+    — o MESMO caminho do create. Necessário quando o pedido foi importado ANTES do anúncio ser
+    vinculado ao PG/CMIG (caso dos itens com catalog_product_id=None). Idempotente."""
+    items = (
+        await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
+    ).scalars().all()
+    if not items:
+        return
+    by_sku = {
+        (it.get("item_sku") or ""): it.get("item_id")
+        for it in (detail.get("item_list") or [])
+        if it.get("item_sku")
+    }
+    for oi in items:
+        # Só pula quando já há vínculo de ESTOQUE (catalog/cmig). Ter apenas dropshipper_product_id
+        # NÃO basta — o estoque debita por catalog_product_id/cmig_product_id. Era o furo: itens
+        # importados antes do anúncio ter listing pegavam só o DP (dp=45) e ficavam com cat=None.
+        if oi.catalog_product_id or oi.cmig_product_id:
+            continue
+        resolved = await resolve_order_item_link(
+            db,
+            account_id=order.account_id,
+            shopee_item_id=by_sku.get(oi.sku or ""),
+            cmig_id=order.cmig_id,
+            sku=oi.sku or None,
+            dropshipper_id=integration.owner_id if integration else None,
+        )
+        if resolved.dropshipper_product and not oi.dropshipper_product_id:
+            oi.dropshipper_product_id = resolved.dropshipper_product.id
+        if resolved.catalog_product:
+            oi.catalog_product_id = resolved.catalog_product.id
+        if resolved.cmig_product:
+            oi.cmig_product_id = resolved.cmig_product.id
+        if oi.unit_cost is None and resolved.unit_cost is not None:
+            oi.unit_cost = resolved.unit_cost
+
+
+async def _update_shopee_order_stock(
+    db, order, detail, order_status, ship_status, is_cancelled, integration
+):
+    """Atualiza um pedido Shopee JÁ existente: status + vínculo de itens + DIRIGE o estoque na
+    transição — análogo ao update do ML (:355-392). Idempotente: reserve/confirm_dispatch/
+    release_reservation têm guard por pedido, então re-sync/re-push não dobram estoque.
+
+    Transições:
+    - vira reservado (handling/ready_to_ship) → reserve_stock (garante a reserva).
+    - vira shipped/delivered → confirm_dispatch (libera a reserva + baixa física, uma vez).
+    - cancelado → release_reservation (libera o que foi reservado).
+    TO_RETURN/UNPAID (ship_status None) NÃO sobrescrevem o status já baixado (re-entrada é da
+    Devolução — ADR-0009). Sempre recomputa o físico ao final.
+    """
+    prev_ship = order.shipment_status
+    order.platform_status = order_status
+    if is_cancelled:
+        order.status = "cancelled"
+    if ship_status is not None and ship_status != prev_ship:
+        order.shipment_status = ship_status
+
+    await _resolve_shopee_item_links(db, order, detail, integration)
+    await db.commit()
+
+    changed = order.shipment_status != prev_ship
+    try:
+        if is_cancelled:
+            from services.stock_reservation_service import release_reservation
+            await release_reservation(db, order)
+        elif changed and order.shipment_status in (
+            "handling", "ready_to_ship", "shipped", "delivered",
+        ):
+            from services.stock_reservation_service import confirm_dispatch, reserve_stock
+            await reserve_stock(db, order)
+            if order.shipping_mode != "full" and order.shipment_status in ("shipped", "delivered"):
+                await confirm_dispatch(db, order)
+        from services.fiscal.stock_calculator import recompute_after_order_change
+        await recompute_after_order_change(order, db)
+    except Exception as exc:
+        logger.warning("shopee update stock order=%s: %s", order.id, exc)

@@ -566,13 +566,16 @@ async def download_invoice_doc(access_token: str, shop_id: int, order_sn: str) -
 # Mapa status Shopee → vocabulário de shipment_status do sistema (ML): handling|ready_to_ship|
 # shipped|delivered|cancelled. NÃO gravar status cru (quebra filtros da Separação e o display).
 _SHOPEE_STATUS_MAP = {
+    # UNPAID → ausente (=None): não pago, NÃO reserva (reserva fantasma). TO_RETURN → ausente:
+    # o item já saiu (baixa vale); a re-entrada é do módulo Devolução (ADR-0009), não do status.
+    "INVOICE_PENDING": "handling",      # pago, aguardando anexo da NF-e (BR) → RESERVA
     "READY_TO_SHIP": "ready_to_ship",
     "PROCESSED": "ready_to_ship",       # expedido, aguardando coleta pela transportadora
     "RETRY_SHIP": "ready_to_ship",
-    "SHIPPED": "shipped",
+    "SHIPPED": "shipped",               # 1º scan da transportadora = saiu do galpão → BAIXA
     "TO_CONFIRM_RECEIVE": "shipped",
     "COMPLETED": "delivered",
-    "IN_CANCEL": "handling",
+    "IN_CANCEL": "handling",            # cancelamento em análise (pré-envio) → mantém reserva
     "CANCELLED": "cancelled",
     # logistics_status (get_tracking_info)
     "LOGISTICS_REQUEST_CREATED": "ready_to_ship",
