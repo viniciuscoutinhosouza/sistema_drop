@@ -970,10 +970,20 @@ async def _update_shopee_order_stock(
     Devolução — ADR-0009). Sempre recomputa o físico ao final.
     """
     prev_ship = order.shipment_status
+    was_dispatched = (prev_ship or "") in ("shipped", "delivered")
     order.platform_status = order_status
+
     if is_cancelled:
         order.status = "cancelled"
-    if ship_status is not None and ship_status != prev_ship:
+        if was_dispatched:
+            # Cancelamento PÓS-envio: o produto está FORA. NÃO devolve ao vendável (não
+            # sobrescreve shipment_status → o físico event-sourced segue baixado). A re-entrada,
+            # se houver, é da Devolução (ADR-0009 / paridade com mark_awaiting_return do ML). Só
+            # marca o retorno esperado, sem mexer no estoque (evita reserved negativo).
+            order.return_status = "awaiting_return"
+        elif ship_status is not None and ship_status != prev_ship:
+            order.shipment_status = ship_status  # ainda não saiu → 'cancelled'
+    elif ship_status is not None and ship_status != prev_ship:
         order.shipment_status = ship_status
 
     await _resolve_shopee_item_links(db, order, detail, integration)
@@ -981,16 +991,18 @@ async def _update_shopee_order_stock(
 
     changed = order.shipment_status != prev_ship
     try:
-        if is_cancelled:
-            from services.stock_reservation_service import release_reservation
-            await release_reservation(db, order)
-        elif changed and order.shipment_status in (
-            "handling", "ready_to_ship", "shipped", "delivered",
-        ):
-            from services.stock_reservation_service import confirm_dispatch, reserve_stock
-            await reserve_stock(db, order)
-            if order.shipping_mode != "full" and order.shipment_status in ("shipped", "delivered"):
-                await confirm_dispatch(db, order)
+        # NUNCA usar confirm_dispatch aqui: ele faz reserved−=qty assumindo reserva viva e o físico
+        # −=qty (transitório). Como o físico é event-sourced (recompute conta shipped/delivered) e a
+        # reserva se resolve por release_reservation (idempotente pelo guard de 'unreserve'), basta:
+        from services.stock_reservation_service import release_reservation, reserve_stock
+        if is_cancelled and not was_dispatched:
+            await release_reservation(db, order)          # libera a reserva (idempotente)
+        elif not is_cancelled and changed:
+            new = order.shipment_status
+            if new in ("handling", "ready_to_ship"):
+                await reserve_stock(db, order)            # garante a reserva (idempotente)
+            elif new in ("shipped", "delivered") and order.shipping_mode != "full":
+                await release_reservation(db, order)      # saiu: libera a reserva; físico vem do recompute
         from services.fiscal.stock_calculator import recompute_after_order_change
         await recompute_after_order_change(order, db)
     except Exception as exc:
