@@ -217,7 +217,7 @@ function onSearch() {
   searchTimer = setTimeout(async () => {
     try {
       const { data } = await api.get('/stock/summary', {
-        params: { search: q, show_zeroed: true, page_size: 15 },
+        params: { search: q, show_zeroed: true, active_cmig_only: true, page_size: 15 },
       })
       results.value = data.items || []
     } catch (e) {

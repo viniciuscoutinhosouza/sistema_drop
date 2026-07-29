@@ -35,6 +35,7 @@ async def _collect_stock_items(
     warehouse_id: int | None = None,
     cmig_id: int | None = None,
     show_zeroed: bool = False,
+    active_cmig_only: bool = False,
     sort_by: str = "name",
     sort_dir: str = "asc",
 ) -> list[dict]:
@@ -173,6 +174,8 @@ async def _collect_stock_items(
             )
             .join(CMIG, CMIG.id == CMIGProduct.cmig_id)
         )
+        if active_cmig_only:
+            q_cmig = q_cmig.where(CMIG.is_active == True)  # noqa: E712
         local_cmig_filter = (
             (CMIGProduct.stock_quantity > 0)
             | (CMIGProduct.reserved_quantity > 0)
@@ -264,6 +267,7 @@ async def stock_summary(
     warehouse_id: int = Query(None),
     cmig_id: int = Query(None),
     show_zeroed: bool = Query(False),  # incluir produtos zerados (local e full)
+    active_cmig_only: bool = Query(False),  # excluir produtos de CMIG inativa (ex.: typeahead)
     sort_by: str = Query("name", regex="^(sku|name|physical|available)$"),
     sort_dir: str = Query("asc", regex="^(asc|desc)$"),
     current_user: User = Depends(get_current_user),
@@ -271,7 +275,8 @@ async def stock_summary(
 ):
     items = await _collect_stock_items(
         db, current_user, search=search, scope=scope, warehouse_id=warehouse_id,
-        cmig_id=cmig_id, show_zeroed=show_zeroed, sort_by=sort_by, sort_dir=sort_dir,
+        cmig_id=cmig_id, show_zeroed=show_zeroed, active_cmig_only=active_cmig_only,
+        sort_by=sort_by, sort_dir=sort_dir,
     )
     total = len(items)
     start = (page - 1) * page_size

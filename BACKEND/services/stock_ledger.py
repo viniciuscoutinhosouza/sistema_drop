@@ -222,7 +222,7 @@ async def _operational_movements(
 async def _variant_keys_pg(db, pg_id: int) -> dict[tuple[str, int], str]:
     rows = await db.execute(
         select(CatalogProductVariant.id, CatalogProductVariant.sku, CatalogProductVariant.size_label)
-        .where(CatalogProductVariant.catalog_product_id == pg_id)
+        .where(CatalogProductVariant.product_id == pg_id)
     )
     return {("variant_pg", int(r[0])): (r[1] or r[2] or f"Variante #{r[0]}") for r in rows.all()}
 
