@@ -834,13 +834,17 @@ async def process_shopee_order(
         )
         dp_legacy = dp_result.scalar_one_or_none()
 
+        # Variação: o model_sku (SKU da variação comprada) manda; item_sku é o SKU do "pai".
+        # Sem isto, todas as variações de um anúncio caem no mesmo produto (baixa errada).
+        variation_sku = item_data.get("model_sku") or item_data.get("item_sku") or None
         resolved = await resolve_order_item_link(
             db,
             account_id=integration.id,
             shopee_item_id=shopee_item_id,
             cmig_id=order.cmig_id,
-            sku=item_data.get("item_sku") or None,
+            sku=variation_sku,
             dropshipper_id=integration.owner_id,
+            prefer_variation_sku=True,
         )
 
         # Se o helper não achou via ProductListing mas o lookup legado achou, usa esse
@@ -860,7 +864,7 @@ async def process_shopee_order(
                 order_id=order.id,
                 dropshipper_product_id=dp_resolved.id if dp_resolved else None,
                 catalog_product_id=catalog_resolved.id if catalog_resolved else None,
-                sku=item_data.get("item_sku", ""),
+                sku=variation_sku or "",
                 title=item_data.get("item_name", ""),
                 quantity=item_data.get("model_quantity_purchased", 1),
                 unit_price=Decimal(str(item_data.get("model_discounted_price", 0))),
@@ -926,10 +930,12 @@ async def _resolve_shopee_item_links(db, order, detail, integration):
     ).scalars().all()
     if not items:
         return
+    # Key por model_sku (SKU da variação), alinhado ao OrderItem.sku gravado no create — senão o
+    # lookup do shopee_item_id falha. Fallback para item_sku quando a variação não tem SKU próprio.
     by_sku = {
-        (it.get("item_sku") or ""): it.get("item_id")
+        (it.get("model_sku") or it.get("item_sku") or ""): it.get("item_id")
         for it in (detail.get("item_list") or [])
-        if it.get("item_sku")
+        if (it.get("model_sku") or it.get("item_sku"))
     }
     for oi in items:
         # Só pula quando já há vínculo de ESTOQUE (catalog/cmig). Ter apenas dropshipper_product_id
@@ -944,6 +950,7 @@ async def _resolve_shopee_item_links(db, order, detail, integration):
             cmig_id=order.cmig_id,
             sku=oi.sku or None,
             dropshipper_id=integration.owner_id if integration else None,
+            prefer_variation_sku=True,
         )
         if resolved.dropshipper_product and not oi.dropshipper_product_id:
             oi.dropshipper_product_id = resolved.dropshipper_product.id

@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.cmig import CMIGProduct
 from models.integration import MarketplaceAccount
-from models.product import CatalogProduct, DropshipperProduct, ProductListing
+from models.product import (
+    CatalogProduct,
+    CatalogProductVariant,
+    DropshipperProduct,
+    ProductListing,
+)
 
 
 @dataclass
@@ -68,6 +73,53 @@ def _cost_for(cmig: CMIGProduct | None, catalog: CatalogProduct | None) -> Decim
     return None
 
 
+async def _resolve_by_sku(
+    db: AsyncSession, *, sku: str, cmig_id: int | None
+) -> ResolvedLink | None:
+    """Resolve o produto pelo SKU da VARIAÇÃO (ex.: Shopee `model_sku`).
+
+    Cada variação é um produto próprio (CMIGProduct ou CatalogProduct/variante) com SKU distinto;
+    casar o SKU específico evita que TODAS as variações de um anúncio caiam no mesmo produto (o
+    `ProductListing` do item aponta para uma só). Ordem: CMIG (escopado por `cmig_id`, pois
+    `sku_cmig` só é único por CMIG) → PG por `CatalogProduct.sku` (único global) → PG por
+    `CatalogProductVariant.sku` (caso o SKU da variação more só na tabela de variantes).
+    """
+    if cmig_id:
+        cmig = (
+            await db.execute(
+                select(CMIGProduct).where(
+                    and_(CMIGProduct.cmig_id == cmig_id, CMIGProduct.sku_cmig == sku)
+                )
+            )
+        ).scalars().first()
+        if cmig:
+            catalog = await _load_catalog(db, cmig.pg_product_id)
+            return ResolvedLink(
+                cmig_product=cmig, catalog_product=catalog,
+                unit_cost=_cost_for(cmig, catalog), source="variation_sku_cmig",
+            )
+    catalog = (
+        await db.execute(select(CatalogProduct).where(CatalogProduct.sku == sku))
+    ).scalars().first()
+    if catalog:
+        return ResolvedLink(
+            catalog_product=catalog, unit_cost=_cost_for(None, catalog), source="variation_sku_pg",
+        )
+    variant_pgid = (
+        await db.execute(
+            select(CatalogProductVariant.product_id).where(CatalogProductVariant.sku == sku)
+        )
+    ).scalars().first()
+    if variant_pgid:
+        catalog = await _load_catalog(db, variant_pgid)
+        if catalog:
+            return ResolvedLink(
+                catalog_product=catalog, unit_cost=_cost_for(None, catalog),
+                source="variation_variant_pg",
+            )
+    return None
+
+
 async def resolve_order_item_link(
     db: AsyncSession,
     *,
@@ -77,17 +129,28 @@ async def resolve_order_item_link(
     cmig_id: int | None = None,
     sku: str | None = None,
     dropshipper_id: int | None = None,
+    prefer_variation_sku: bool = False,
 ) -> ResolvedLink:
     """Resolve produto vinculado e custo unitário para um OrderItem.
 
     Os campos `ml_item_id` e `shopee_item_id` são mutuamente exclusivos: passa o
     que existir. Para Shopee converte para string (platform_item_id é VARCHAR).
+
+    `prefer_variation_sku=True` (Shopee): o SKU da variação (`model_sku`) manda — resolve o
+    produto ESPECÍFICO ANTES do `ProductListing` do item, que aponta só para uma variação. Opt-in
+    para não alterar o caminho ML (ADR-0020), que continua listing-first.
     """
     platform_item_id: str | None = None
     if ml_item_id:
         platform_item_id = str(ml_item_id)
     elif shopee_item_id is not None:
         platform_item_id = str(shopee_item_id)
+
+    # 0) Variação (Shopee): o SKU específico vence o listing do item_id.
+    if prefer_variation_sku and sku:
+        by_variation = await _resolve_by_sku(db, sku=sku, cmig_id=cmig_id)
+        if by_variation:
+            return by_variation
 
     # 1) ProductListing por (platform_item_id, account_id) — fonte canônica
     if platform_item_id and account_id:
