@@ -5,7 +5,7 @@
         <tr>
           <th class="metric-name">Métrica</th>
           <th v-for="w in windows" :key="w" class="text-end">
-            {{ windowLabels[w] }}
+            <span class="col-period" :title="titleFor(w)">{{ windowLabels[w] }}</span>
           </th>
         </tr>
       </thead>
@@ -32,14 +32,23 @@
 </template>
 
 <script setup>
-import { formatCurrency } from '@/utils/formatters'
+import { formatCurrency, formatDateTime } from '@/utils/formatters'
 
 const props = defineProps({
   windows: { type: Array, default: () => [] },
   windowLabels: { type: Object, default: () => ({}) },
+  windowRanges: { type: Object, default: () => ({}) },
   rowMeta: { type: Object, default: () => ({}) },
   rows: { type: Object, default: () => ({}) },
 })
+
+// Tooltip do título da coluna: período real filtrado no BD (horário de Brasília).
+// Fim exclusivo (até) — por isso "<" na descrição.
+function titleFor(w) {
+  const r = props.windowRanges?.[w]
+  if (!r || !r.from || !r.to) return props.windowLabels[w] || ''
+  return `Período filtrado (horário de Brasília):\nde ${formatDateTime(r.from)}\naté < ${formatDateTime(r.to)}`
+}
 
 const ICONS = {
   qtd_pedidos: 'fas fa-shopping-cart',
@@ -106,6 +115,11 @@ function deltaIcon(key, w) {
   border-bottom: 2px solid #dee2e6;
   font-weight: 600;
   white-space: nowrap;
+}
+/* afordância de que o título tem tooltip com o período */
+.col-period {
+  cursor: help;
+  border-bottom: 1px dotted #adb5bd;
 }
 .metric-name {
   font-weight: 600;

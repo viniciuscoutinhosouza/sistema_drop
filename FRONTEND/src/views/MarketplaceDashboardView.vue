@@ -110,6 +110,7 @@
           v-else
           :windows="windows"
           :window-labels="windowLabels"
+          :window-ranges="windowRanges"
           :row-meta="rowMeta"
           :rows="rows"
         />
@@ -166,6 +167,7 @@ const filters = reactive({ account_id: null, platform: null })
 
 const windows = ref([])
 const windowLabels = ref({})
+const windowRanges = ref({})
 const rowMeta = ref({})
 const rows = reactive({})
 const extras = reactive({})
@@ -200,6 +202,7 @@ async function load() {
     const { data } = await api.get('/dashboard/marketplace', { params })
     windows.value = data.windows
     windowLabels.value = data.window_labels
+    windowRanges.value = data.window_ranges || {}
     rowMeta.value = data.row_meta
     Object.assign(rows, data.rows)
     Object.assign(extras, data.extras)

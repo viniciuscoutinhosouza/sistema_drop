@@ -374,9 +374,21 @@ async def get_marketplace_dashboard(
         "ads_cost": {"label": "Gasto no ADS", "type": "money", "ml_only": True},
     }
 
+    # Intervalo real [de, até) de cada janela — em ISO UTC (contrato ADR-0013; o front
+    # converte p/ horário de Brasília). Alimenta o tooltip do título da coluna, deixando
+    # transparente o período exato filtrado no BD (fuso BRT).
+    window_ranges = {
+        w: {
+            "from": dt_windows[w][0].astimezone(UTC).isoformat(),
+            "to": dt_windows[w][1].astimezone(UTC).isoformat(),
+        }
+        for w in _WINDOWS
+    }
+
     return {
         "windows": _WINDOWS,
         "window_labels": _WINDOW_LABELS,
+        "window_ranges": window_ranges,
         "row_meta": row_meta,
         "rows": rows,
         "extras": extras,
