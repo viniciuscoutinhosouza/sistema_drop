@@ -203,6 +203,11 @@
                           :title="adjustmentTooltip(m)">
                       <i class="fas fa-tools mr-1"></i>{{ adjustmentLabel(m) }}
                     </span>
+                    <span v-else-if="m.source === 'inventory'"
+                          class="badge" style="background:#20c997;color:#fff"
+                          title="Contagem de inventário finalizada">
+                      <i class="fas fa-clipboard-check mr-1"></i>Inventário {{ m.inventory_mode === 'baseline' ? '(baseline)' : '(ajuste)' }}
+                    </span>
                     <template v-else>
                       <span v-if="m.order_platform === 'mercadolivre'"
                             class="d-inline-flex align-items-center">
@@ -279,9 +284,12 @@
                     <span v-if="m.item_sku && m.item_description"> - </span>
                     <span>{{ m.item_description || '' }}</span>
                   </td>
-                  <td class="text-right" :class="m.direction === 'in' ? 'text-success' : (m.source === 'adjustment' ? 'text-muted' : 'text-danger')">
+                  <td class="text-right" :class="m.source === 'inventory' ? 'text-muted' : (m.direction === 'in' ? 'text-success' : (m.source === 'adjustment' ? 'text-muted' : 'text-danger'))">
                     <span v-if="m.source === 'adjustment'" :title="'Ajuste informativo — cache foi sobrescrito de ' + m.adjustment_old + ' para ' + m.adjustment_new">
                       Δ{{ (m.adjustment_new - m.adjustment_old) >= 0 ? '+' : '' }}{{ m.adjustment_new - m.adjustment_old }}
+                    </span>
+                    <span v-else-if="m.source === 'inventory'" :title="'Inventário ' + (m.inventory_mode === 'baseline' ? 'baseline (reset p/ a contagem)' : 'ajuste (delta congelado)')">
+                      {{ m.inventory_mode === 'baseline' ? '=' + m.inventory_counted : ((m.inventory_delta >= 0 ? '+' : '') + m.inventory_delta) }}
                     </span>
                     <template v-else>
                       {{ m.direction === 'in' ? '+' : '−' }}{{ m.qty }}<span v-if="qtySplitAnnotation(m)" class="ml-1" :class="qtySplitClass" :title="qtySplitAnnotation(m, true)">({{ qtySplitAnnotation(m) }})</span>

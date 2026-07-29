@@ -383,10 +383,19 @@ async def replay_stock_events_for_cmig_product(
     current_nfe_balance = int(cmig_product.stock_quantity or 0)
     nfe_only_initial = _apply_split_replay(events, cmig_product, current_nfe_balance)
 
+    # Inventário (baseline/ajuste) — CANÔNICO: aplicado por calculate_cmig_product_stock; entra no
+    # replay cronológico para a razão/saldo corrido refletir o mesmo. Não passa pelo split (não é
+    # NFe/pedido). Sem isto, o inventário some da razão e o saldo corrido diverge do físico.
+    inv_events = await _fetch_inventory_events_for_product("cmig", cmig_product.id, db)
+    if inv_events:
+        events.extend(inv_events)
+
     # M5: ajustes manuais (informativo, não afetam o replay)
     adjustments = await _fetch_manual_adjustments("cmig", cmig_product.id, db)
     if adjustments:
         events.extend(adjustments)
+
+    if inv_events or adjustments:
         events.sort(key=lambda e: e.date)
 
     return events, nfe_only_initial
@@ -738,6 +747,10 @@ async def replay_stock_events_for_pg_product(
     for cp in linked_cmigs:
         events, _ = await replay_stock_events_for_cmig_product(cp, db)
         for e in events:
+            # Inventário do CMIG NÃO entra no PG: calculate_pg usa só o inventário do próprio PG
+            # (e re-replaya os CMIGs SEM inventário para o overflow). Deixar entrar dupla-contaria.
+            if e.source == "inventory":
+                continue
             if e.item_id is not None and e.item_id in seen_item_ids:
                 continue
             # No contexto PG, pedidos vindos via replay CMIG são "overflow"
@@ -776,6 +789,17 @@ async def replay_stock_events_for_pg_product(
         all_events.append(e)
         if e.item_id is not None:
             seen_order_item_ids.add(e.item_id)
+
+    # Inventário do PG — DIRETO (paridade com calculate_pg_product_stock, que usa só o inventário
+    # do próprio PG, nunca via CMIG). Dedup por inventory_id (esses eventos têm item_id=None, então
+    # o dedup por item_id acima não os cobre).
+    inv_events = await _fetch_inventory_events_for_product("pg", pg_product.id, db)
+    seen_inventory_ids: set[int] = set()
+    for e in inv_events:
+        if e.inventory_id in seen_inventory_ids:
+            continue
+        seen_inventory_ids.add(e.inventory_id)
+        all_events.append(e)
 
     # M5: Auditoria de ajustes manuais (informativo)
     adjustments = await _fetch_manual_adjustments("pg", pg_product.id, db)

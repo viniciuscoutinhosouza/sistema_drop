@@ -246,15 +246,29 @@ async def build_movements_response(
             elif e.is_definitive:
                 period_out_orders_definitive += oq
 
+    # Âncora de inventário (paridade com calculate_pg/cmig_product_stock): o baseline finalizado
+    # MAIS RECENTE vira um PISO — eventos anteriores ou na MESMA data são descartados e o saldo
+    # começa na contagem; ajustes somam o delta congelado. Pré-computado (não "resetar ao
+    # encontrar") para reproduzir o descarte estritamente-anterior do calculate_*.
+    _baseline_invs = [
+        e for e in events if e.source == "inventory" and e.inventory_mode == "baseline"
+    ]
+    _floor_ev = max(_baseline_invs, key=lambda e: e.date) if _baseline_invs else None
+    _floor_date = _floor_ev.date if _floor_ev else None
+
     # Walk cronológico para running_available + snapshots de período (M8)
     visible_events: list[dict] = []
-    running_nfe = nfe_only_initial
+    running_nfe = int(_floor_ev.inventory_counted or 0) if _floor_ev else nfe_only_initial
     running_pending = 0
     period_initial_available = None
     period_final_available = None
     last_adjustment_value = None
 
     for e in events:
+        # Descarta o que é anterior/na data do piso do baseline (a contagem já reflete). O próprio
+        # baseline-piso é processado (define o saldo inicial e vira linha na razão).
+        if _floor_date is not None and e.date <= _floor_date and e is not _floor_ev:
+            continue
         # Snapshot inicial antes de aplicar o primeiro evento do período
         if in_period(e.date) and period_initial_available is None:
             period_initial_available = (
@@ -271,6 +285,14 @@ async def build_movements_response(
             oq = order_qty_for(e)
             if oq > 0 and not e.order_invoice_finalized:
                 running_pending += oq
+        elif e.source == "inventory":
+            # baseline → reseta o físico corrido para a contagem (o piso já zera reservas
+            # anteriores); adjustment → soma o delta congelado (counted − system).
+            if e.inventory_mode == "baseline":
+                running_nfe = int(e.inventory_counted or 0)
+                running_pending = 0
+            else:
+                running_nfe += int(e.inventory_delta or 0)
         elif e.source == "adjustment":
             last_adjustment_value = e.adjustment_new
         # Filtra visibilidade

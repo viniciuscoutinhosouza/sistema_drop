@@ -83,6 +83,7 @@
         </div>
         <div class="card-body">
           <StockCards :card="ledger.groups.galpao_pg.card" />
+          <ReconcileNote :block="ledger.groups.galpao_pg" />
           <BaselineNote :block="ledger.groups.galpao_pg" :anchor="anchor" />
           <h6 class="text-muted mt-3 mb-2 small text-uppercase">Razão (NF-e · pedidos · inventário)</h6>
           <MovementsTable :movements="ledger.groups.galpao_pg.razao.movements" />
@@ -101,6 +102,7 @@
         </div>
         <div class="card-body">
           <StockCards :card="g.card" />
+          <ReconcileNote :block="g" />
           <BaselineNote :block="g" :anchor="anchor" />
           <h6 class="text-muted mt-3 mb-2 small text-uppercase">Razão (NF-e · pedidos · inventário)</h6>
           <MovementsTable :movements="g.razao.movements" />
@@ -301,6 +303,25 @@ const StockCards = {
         tile('Reservado', c.local_reserved, 'bg-warning text-dark', 'Reservado por pedidos a expedir'),
         tile('Disponível', c.local_available, 'bg-primary text-white', 'Físico − reservado'),
         ...extras,
+      ])
+    }
+  },
+}
+
+// Aviso de reconciliação: cache (stock_quantity) × recalculado a partir dos eventos.
+// Rede de segurança contra "falhar em silêncio" — se divergir, o dono vê e pode recalcular.
+const ReconcileNote = {
+  props: { block: { type: Object, required: true } },
+  setup(props) {
+    return () => {
+      const b = props.block
+      const cache = b?.card?.local_physical
+      const calc = b?.razao?.calculated_balance
+      if (cache == null || calc == null || cache === calc) return null
+      return h('div', { class: 'alert alert-warning py-2 small mb-2 mt-2' }, [
+        h('i', { class: 'fas fa-exclamation-triangle mr-1' }),
+        `Cache de estoque (${cache}) diverge do recalculado a partir dos eventos (${calc}). ` +
+        `Rode "Recalcular Estoque" para reconciliar.`,
       ])
     }
   },
