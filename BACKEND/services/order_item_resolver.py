@@ -12,6 +12,7 @@ Cascata (mesma de stock_calculator.affected_products_from_order):
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -26,6 +27,8 @@ from models.product import (
     DropshipperProduct,
     ProductListing,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -151,6 +154,13 @@ async def resolve_order_item_link(
         by_variation = await _resolve_by_sku(db, sku=sku, cmig_id=cmig_id)
         if by_variation:
             return by_variation
+        # Não achou a variação por SKU: cai no listing do item (que aponta p/ UMA variação) — pode
+        # voltar a baixar o produto errado. Loga p/ o dono corrigir o cadastro (SKU divergente
+        # entre Shopee e PG), em vez de falhar em silêncio.
+        logger.warning(
+            "[shopee] variação sku=%r não resolveu por SKU (cmig_id=%s) — usando fallback do "
+            "listing do item; confira o cadastro da variação no PG", sku, cmig_id,
+        )
 
     # 1) ProductListing por (platform_item_id, account_id) — fonte canônica
     if platform_item_id and account_id:
