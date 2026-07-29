@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-28 — feat(estoque): tela "Extrato de Movimentação por Produto" (razão por produto)
+
+**Pedido (dono):** tela onde se seleciona **um** produto (dropdown por SKU ou nome) e vê TODAS as movimentações agrupadas por domínio de estoque — entradas, saídas, ajustes de inventário, pedidos, devoluções, envios ao FULL — do início ou de um marco de inventário (baseline). Regras confirmadas: **PG só tem galpão; CMIG tem galpão E FULL; FULL nunca aparece sob o PG (sempre sob a CMIG, ADR-0010); TODOS os marketplaces têm FULL (não só ML)**.
+
+**Implementação (leitura, sem migration):**
+- **Backend** `services/stock_ledger.py` (novo) + `GET /stock/ledger/{product_type}/{product_id}` em `routers/stock.py`. Orquestra os builders existentes (sem reescrever saldo): resolve a **família** (PG↔CMIGs espelho via `pg_product_id`), agrupa em `galpao_pg` · `galpao_cmig[]` · `full[]` (por conta/marketplace) · ciclo operacional. Reusa `build_movements_response` (razão canônica), `load_full_per_account_map` (FULL por conta, agnóstico — ADR-0019/0020) e `stock_movements` (reservas/devoluções/variantes). **RBAC por bloco** (AC não vê PG nem CMIG de terceiros). Âncora `baseline` resolvida por bloco (`catalog_type` pg/cmig/full); FULL usa o baseline **mais antigo** entre contas (não esconde movimento). `full_migrate` exibe qty real (não "+0").
+- **Frontend** `views/stock/ProductLedgerView.vue` + `components/stock/MovementsTable.vue` (novos) + rota `/estoque/movimentacao` + item de menu. Typeahead por SKU/nome (reuso `/stock/summary`), toggle início|baseline, cards de saldo + tabelas de razão/FULL/operacional com badges por plataforma (ML/Shopee/genérico).
+
+**Governança:** pré-voo `consistency-auditor` (3 HIGH incorporados: RBAC por bloco, FULL por conta do FullStock não da trilha, variantes). Fechamento: `adr-consistency-checker` (aprovado), `quality-guardian` (1 HIGH gating de rota — corrigido), `consistency-auditor` (3 HIGH resolvidos), `debug-specialist` estoque/logística (0 CRITICAL; MEDs de full_migrate/baseline FULL/variante corrigidos). 168 testes passam; `npm run build` OK.
+
+**Limitações conhecidas:** venda por overflow (CMIG 0 → consome PG) fica invisível para o AC (não enxerga PG); performance para família muito grande (várias queries).
+
+---
+
 ## 2026-07-27 — fix(estoque): transmissão SEFAZ autorizada baixa estoque (NF-e não sumia do recálculo)
 
 **Sintoma (dono):** a NF-e de saída 478 foi gravada/autorizada, mas o recálculo de estoque (tanto o botão "Recalcular Estoque" da Nota quanto o "Recalcular Estoque (todos)" da página Controle de Estoque) **não considerava** a nota.

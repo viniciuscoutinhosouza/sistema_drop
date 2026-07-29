@@ -38,6 +38,7 @@ _FULL_MOVEMENT_LABELS = {
     "full_reserve": "Reserva FULL",
     "full_unreserve": "Reserva FULL liberada",
     "full_return_out": "Retorno do FULL",
+    "full_migrate": "Migração de saldo FULL (PG→CMIG)",
 }
 
 
@@ -94,7 +95,8 @@ async def _build_full_movements(
             "movement_type": m.movement_type,
             "label": _FULL_MOVEMENT_LABELS.get(m.movement_type, m.movement_type),
             "field_affected": m.field_affected,
-            "qty": abs(int(m.delta or 0)),
+            # qty real do movimento (não abs(delta)): full_migrate grava delta=0 mas qty>0.
+            "qty": int(m.qty or 0),
             "delta": int(m.delta or 0),
             "order_id": m.order_id,
             "order_platform": platform,

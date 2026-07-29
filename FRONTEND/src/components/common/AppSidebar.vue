@@ -157,6 +157,11 @@
                   <i class="nav-icon fas fa-boxes"></i><p>Controle de Estoque</p>
                 </RouterLink>
               </li>
+              <li v-if="canSee('estoque')" class="nav-item">
+                <RouterLink to="/estoque/movimentacao" class="nav-link" :class="{ active: route.path === '/estoque/movimentacao' }">
+                  <i class="nav-icon fas fa-stream"></i><p>Extrato de Movimentação</p>
+                </RouterLink>
+              </li>
             </ul>
           </li>
 

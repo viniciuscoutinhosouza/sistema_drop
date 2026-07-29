@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import date as _date
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -922,3 +923,29 @@ async def product_movements(
         "page": page,
         "page_size": page_size,
     }
+
+
+@router.get("/ledger/{product_type}/{product_id}")
+async def product_ledger(
+    product_type: str,
+    product_id: int,
+    anchor: str = Query("inicio", regex="^(inicio|baseline)$"),
+    start_date: _date | None = Query(None, description="Início do período (sobrepõe a âncora)"),
+    end_date: _date | None = Query(None, description="Fim do período (inclusivo)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Extrato de movimentação de UM produto e sua família, agrupado por domínio de estoque
+    (Galpão PG · Galpão CMIG · FULL por conta/marketplace · ciclo operacional).
+
+    Orquestra os builders existentes (razão canônica + FULL por conta). RBAC por bloco:
+    AC não enxerga o galpão PG nem CMIGs que não administra. Ver services/stock_ledger.py.
+    """
+    if product_type not in ("pg", "cmig"):
+        raise HTTPException(status_code=400, detail="product_type inválido (use pg|cmig)")
+    from services.stock_ledger import build_product_ledger
+
+    return await build_product_ledger(
+        db, current_user, product_type, product_id,
+        anchor=anchor, start_date=start_date, end_date=end_date,
+    )
