@@ -6,10 +6,11 @@
     <strong class="text-success amount">{{ formatCurrency(saleAmount) }}</strong>
     <span></span>
 
-    <!-- Frete pago pelo vendedor -->
-    <i class="fas fa-truck text-danger" :title="`Frete pago pelo vendedor (deduzido pelo ${marketplaceName})`"></i>
-    <span class="text-danger sign">{{ sellerShipping > 0 ? '−' : '' }}</span>
-    <span class="amount" :class="sellerShipping > 0 ? 'text-danger' : 'text-muted'">{{ formatCurrency(sellerShipping) }}</span>
+    <!-- Frete do vendedor: custo (positivo, vermelho) OU estorno/crédito (negativo, verde) -->
+    <i class="fas fa-truck" :class="sellerShipping < 0 ? 'text-success' : 'text-danger'"
+       :title="sellerShipping < 0 ? `Estorno de frete (${marketplaceName} credita o vendedor)` : `Frete pago pelo vendedor (deduzido pelo ${marketplaceName})`"></i>
+    <span class="sign" :class="sellerShipping < 0 ? 'text-success' : 'text-danger'">{{ sellerShipping < 0 ? '+' : (sellerShipping > 0 ? '−' : '') }}</span>
+    <span class="amount" :class="sellerShipping < 0 ? 'text-success' : (sellerShipping > 0 ? 'text-danger' : 'text-muted')">{{ formatCurrency(Math.abs(sellerShipping)) }}</span>
     <span></span>
 
     <!-- Tarifa ML -->

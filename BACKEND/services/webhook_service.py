@@ -54,6 +54,22 @@ def _apply_shipment_costs_to_order(order: Order, costs_data: dict) -> bool:
     """
     if not costs_data:
         return False
+
+    # FLEX: o vendedor faz a entrega e o ML paga o frete. Quando o comprador tem frete grátis
+    # subsidiado (receiver.cost=0 e o vendedor não pagou), o ML credita o gross_amount ao vendedor
+    # (o "estorno" que aparece no painel). Registramos como seller_shipping_cost NEGATIVO (crédito
+    # → aumenta o lucro), pois o campo "custo do frete do vendedor" não capta crédito de outro jeito.
+    # Confirmado com o dono + ao vivo (ex.: pedidos Flex com gross_amount=11, senders.cost=0).
+    if (order.shipping_mode or "") == "flex":
+        gross = float(costs_data.get("gross_amount") or 0)
+        buyer_paid_flex = float((costs_data.get("receiver") or {}).get("cost") or 0)
+        _senders = costs_data.get("senders") or []
+        seller_paid_flex = float(_senders[0].get("cost") or 0) if _senders else 0.0
+        if gross > 0 and buyer_paid_flex == 0 and seller_paid_flex == 0:
+            order.buyer_shipping_paid = Decimal("0")
+            order.seller_shipping_cost = Decimal(str(-round(gross, 2)))  # negativo = estorno/crédito
+            return True
+
     applied = False
     receiver = costs_data.get("receiver") or {}
     if receiver.get("cost") is not None:
