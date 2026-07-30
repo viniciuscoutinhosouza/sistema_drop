@@ -910,14 +910,16 @@ async def process_shopee_order(
     except Exception:
         pass
 
-    # Custos do pedido: taxa Shopee (comissão+service) + frete, via escrow. Guard em apply_escrow
-    # não sobrescreve com 0 se ainda não liquidou. Efeito colateral — nunca derruba o pedido.
-    try:
-        income = await shopee_service.get_escrow_detail(token, integration.shop_id, order_sn)
-        if shopee_service.apply_escrow_to_order(order, income):
-            await db.commit()
-    except Exception as exc:
-        logger.warning("shopee escrow order=%s: %s", order.id, exc)
+    # Custos do pedido: taxa Shopee (comissão+service) + frete, via escrow. Só busca quando há
+    # status de estoque real e não cancelado (UNPAID → escrow vazio → chamada desperdiçada). Guard
+    # em apply_escrow não sobrescreve com 0. Efeito colateral — nunca derruba o pedido.
+    if ship_status and not is_cancelled:
+        try:
+            income = await shopee_service.get_escrow_detail(token, integration.shop_id, order_sn)
+            if shopee_service.apply_escrow_to_order(order, income):
+                await db.commit()
+        except Exception as exc:
+            logger.warning("shopee escrow order=%s: %s", order.id, exc)
 
     await create_notification(
         db=db,
