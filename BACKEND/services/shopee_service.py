@@ -972,3 +972,30 @@ async def add_model(access_token: str, shop_id: int, item_id: int, model_list: l
     """Adiciona models a um item que já tem tier_variation."""
     body = {"item_id": item_id, "model_list": model_list}
     return await _shop_post("/product/add_model", access_token, shop_id, body)
+
+
+async def get_model_list(access_token: str, shop_id: int, item_id: int) -> dict:
+    """Variações (models) do item: tier_variation + model[] com price_info/stock POR model.
+    Necessário porque item com variação traz price_info=null no get_item_base_info (o preço
+    fica no model)."""
+    return await _shop_get("/product/get_model_list", access_token, shop_id, {"item_id": item_id})
+
+
+def representative_model_price(model_resp: dict, item_sku: str | None = None) -> float:
+    """Preço representativo de um item COM variações (o anúncio tem 1 preço, os models têm N):
+    usa o preço da variação cujo model_sku == item_sku (a 'principal'); senão o MENOR current_price
+    entre as variações. Retorna 0.0 se nenhum preço encontrado."""
+    prices: list[float] = []
+    matched: float | None = None
+    for m in (model_resp or {}).get("model") or []:
+        pinfo = (m.get("price_info") or [{}])[0] if m.get("price_info") else {}
+        cp = pinfo.get("current_price") or pinfo.get("original_price")
+        if not cp:
+            continue
+        cp = float(cp)
+        prices.append(cp)
+        if item_sku and str(m.get("model_sku") or "") == str(item_sku):
+            matched = cp
+    if matched is not None:
+        return round(matched, 2)
+    return round(min(prices), 2) if prices else 0.0

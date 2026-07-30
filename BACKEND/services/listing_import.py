@@ -75,6 +75,14 @@ async def _import_shopee(account, user, db) -> dict:
         title_sh = _trunc_bytes(name, 100)   # coluna 100 bytes (byte-safe)
         pinfo = (it.get("price_info") or [{}])[0] if it.get("price_info") else {}
         price = float(pinfo.get("current_price") or pinfo.get("original_price") or 0)
+        # Item COM variações: price_info vem null no get_item_base_info (o preço fica no model).
+        # Busca o preço representativo via get_model_list — senão o anúncio fica sem valor.
+        if price <= 0 and it.get("has_model"):
+            try:
+                ml = await shopee_service.get_model_list(token, account.shop_id, item_id)
+                price = shopee_service.representative_model_price(ml, it.get("item_sku"))
+            except Exception:
+                pass
         category = it.get("category_id")
         # Campos do anúncio pra a tela não ficar "sem informação". A Shopee às vezes devolve
         # weight/dimension como STRING → converter (coluna é Numeric; str quebra o bind Oracle).
