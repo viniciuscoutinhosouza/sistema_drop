@@ -34,6 +34,7 @@ from models.integration import MarketplaceAccount
 from models.product import ProductListing
 from services.ml_service import update_item_status as ml_update_status
 from services.ml_service import update_item_stock as ml_update_stock
+from services.shopee_service import unlist_item as shopee_unlist_item
 from services.shopee_service import update_item_stock as shopee_update_stock
 from tasks._job_wrapper import tracked_job
 
@@ -192,6 +193,9 @@ async def _sync(db: AsyncSyncSession, stats: dict) -> None:
                 listing.available_quantity = stock
                 listing.last_sync_at = datetime.now(UTC)
                 stats["listings_updated"] += 1
+                # Pausa/reativação automática por disponibilidade (ADR-0014) — ramo Shopee via
+                # unlist_item (equivalente a "pausar" no ML). Só quando há medida real de disponível.
+                await _apply_auto_pause_shopee(db, account, listing, shopee_token, disponivel, stats)
         except Exception as exc:
             stats["errors"] += 1
             logger.warning(
@@ -253,6 +257,51 @@ async def _apply_auto_pause(
             exc,
         )
         _append_error(stats, listing, str(exc), "Verifique manualmente o status do anúncio no Mercado Livre")
+
+
+async def _apply_auto_pause_shopee(
+    db: AsyncSyncSession,
+    account: MarketplaceAccount,
+    listing: ProductListing,
+    shopee_token: str,
+    disponivel: int | None,
+    stats: dict,
+) -> None:
+    """Pausa (unlist) o anúncio Shopee quando o disponível zera; reativa quando volta. Equivalente
+    ao _apply_auto_pause do ML, mas via product/unlist_item. Só flipa auto_paused/status APÓS a
+    Shopee confirmar (sem failure_list) — se o item falhar (ex.: deletado, error_not_found), o BD
+    NÃO fica dizendo 'pausado' sem a Shopee ter pausado. Nunca derruba o loop do job."""
+    if disponivel is None:
+        return
+    try:
+        if disponivel <= 0 and not listing.auto_paused:
+            res = await shopee_unlist_item(
+                shopee_token, account.shop_id, int(listing.platform_item_id), unlist=True)
+            if (res or {}).get("failure_list"):
+                raise RuntimeError(f"unlist falhou: {res.get('failure_list')}")
+            listing.auto_paused = True
+            listing.status = "paused"
+            stats["listings_auto_paused"] = stats.get("listings_auto_paused", 0) + 1
+            logger.info(
+                "sync_stock: [shopee] pausado por estoque zerado listing_id=%s item=%s",
+                listing.id, listing.platform_item_id)
+        elif disponivel > 0 and listing.auto_paused:
+            res = await shopee_unlist_item(
+                shopee_token, account.shop_id, int(listing.platform_item_id), unlist=False)
+            if (res or {}).get("failure_list"):
+                raise RuntimeError(f"reativação falhou: {res.get('failure_list')}")
+            listing.auto_paused = False
+            listing.status = "published"
+            stats["listings_auto_reactivated"] = stats.get("listings_auto_reactivated", 0) + 1
+            logger.info(
+                "sync_stock: [shopee] reativado (estoque voltou) listing_id=%s item=%s",
+                listing.id, listing.platform_item_id)
+    except Exception as exc:  # noqa: BLE001 — tolerância por anúncio; não flipa flag em falha
+        stats["errors"] += 1
+        logger.warning(
+            "sync_stock: [shopee] falha ao pausar/reativar listing_id=%s item=%s: %s",
+            listing.id, listing.platform_item_id, exc)
+        _append_error(stats, listing, str(exc), "Verifique o anúncio na Shopee (pode ter sido removido)")
 
 
 _MAX_ERROR_DETAILS = 20

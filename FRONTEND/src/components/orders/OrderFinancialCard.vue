@@ -7,13 +7,13 @@
     <span></span>
 
     <!-- Frete pago pelo vendedor -->
-    <i class="fas fa-truck text-danger" title="Frete pago pelo vendedor (deduzido pelo ML)"></i>
+    <i class="fas fa-truck text-danger" :title="`Frete pago pelo vendedor (deduzido pelo ${marketplaceName})`"></i>
     <span class="text-danger sign">{{ sellerShipping > 0 ? '−' : '' }}</span>
     <span class="amount" :class="sellerShipping > 0 ? 'text-danger' : 'text-muted'">{{ formatCurrency(sellerShipping) }}</span>
     <span></span>
 
     <!-- Tarifa ML -->
-    <i class="fas fa-percentage text-danger" title="Tarifa do Mercado Livre (comissão)"></i>
+    <i class="fas fa-percentage text-danger" :title="`Tarifa do ${marketplaceName} (comissão)`"></i>
     <span class="text-danger sign">{{ mlFee > 0 ? '−' : '' }}</span>
     <span class="text-danger amount">{{ formatCurrency(mlFee) }}</span>
     <small v-if="order.ml_fee_pct != null" class="pct">({{ formatPct(order.ml_fee_pct) }})</small>
@@ -47,6 +47,9 @@ const props = defineProps({
   order: { type: Object, required: true },
 })
 
+const marketplaceName = computed(() => (
+  { mercadolivre: 'Mercado Livre', shopee: 'Shopee' }[props.order.platform] || 'marketplace'
+))
 const saleAmount     = computed(() => Number(props.order.sale_amount ?? 0))
 const sellerShipping = computed(() => Number(props.order.seller_shipping_cost ?? 0))
 const mlFee          = computed(() => Number(props.order.ml_fee ?? props.order.platform_fee ?? 0))

@@ -910,6 +910,15 @@ async def process_shopee_order(
     except Exception:
         pass
 
+    # Custos do pedido: taxa Shopee (comissão+service) + frete, via escrow. Guard em apply_escrow
+    # não sobrescreve com 0 se ainda não liquidou. Efeito colateral — nunca derruba o pedido.
+    try:
+        income = await shopee_service.get_escrow_detail(token, integration.shop_id, order_sn)
+        if shopee_service.apply_escrow_to_order(order, income):
+            await db.commit()
+    except Exception as exc:
+        logger.warning("shopee escrow order=%s: %s", order.id, exc)
+
     await create_notification(
         db=db,
         dropshipper_id=integration.owner_id,
@@ -1014,3 +1023,17 @@ async def _update_shopee_order_stock(
         await recompute_after_order_change(order, db)
     except Exception as exc:
         logger.warning("shopee update stock order=%s: %s", order.id, exc)
+
+    # Custos (escrow): só na TRANSIÇÃO real (M1: não a cada sync → evita rate limit). Os valores
+    # refinam a cada transição e ficam definitivos em COMPLETED. Guard em apply_escrow evita zerar.
+    if changed and not is_cancelled:
+        try:
+            from services import shopee_service
+            from services.shopee_auth import get_valid_shopee_token
+            token = await get_valid_shopee_token(integration, db)
+            income = await shopee_service.get_escrow_detail(
+                token, integration.shop_id, order.platform_order_id)
+            if shopee_service.apply_escrow_to_order(order, income):
+                await db.commit()
+        except Exception as exc:
+            logger.warning("shopee escrow update order=%s: %s", order.id, exc)

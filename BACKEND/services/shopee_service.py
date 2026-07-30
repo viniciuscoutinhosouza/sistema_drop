@@ -774,6 +774,53 @@ def seller_platform_fee(order_income: dict) -> float:
     return round(total, 2)
 
 
+def shopee_shipping_costs(order_income: dict) -> tuple[float, float]:
+    """(frete pago pelo COMPRADOR, frete arcado pelo VENDEDOR) a partir do escrow.
+
+    Confirmado ao vivo (loja 141): o vendedor não paga frete quando o comprador paga OU a Shopee
+    subsidia (shopee_shipping_rebate). Fórmula:
+        seller = actual_shipping_fee − buyer_paid − shopee_rebate − 3pl_discount − seller_discount
+    Clamp em 0 (rebate/desconto podem superar o custo). Convenção de sinal validada no probe.
+    """
+    def g(k: str) -> float:
+        v = order_income.get(k)
+        return float(v) if isinstance(v, (int, float)) else 0.0
+    buyer_paid = g("buyer_paid_shipping_fee")
+    seller = (
+        g("actual_shipping_fee") - buyer_paid
+        - g("shopee_shipping_rebate")
+        - g("shipping_fee_discount_from_3pl")
+        - g("seller_shipping_discount")
+    )
+    return round(buyer_paid, 2), round(max(0.0, seller), 2)
+
+
+def apply_escrow_to_order(order, order_income: dict) -> bool:
+    """Preenche Order.platform_fee + frete (buyer_shipping_paid/seller_shipping_cost) a partir do
+    escrow. Fonte ÚNICA usada pelo sync automático E pelo endpoint manual /fees (evita divergência).
+
+    Guard (H5): só grava quando o escrow está LIQUIDADO (taxa do vendedor > 0). Escrow vazio
+    (pré-pagamento) → seller_platform_fee=0 → NÃO sobrescreve um valor bom com 0. Idempotente:
+    retorna True só se algo mudou. Valores refinam a cada transição até COMPLETED.
+    """
+    from decimal import Decimal
+    fee = seller_platform_fee(order_income) if order_income else 0.0
+    if not fee:
+        return False
+    changed = False
+    if float(order.platform_fee or 0) != fee:
+        order.platform_fee = Decimal(str(fee))
+        changed = True
+    buyer_paid, seller_cost = shopee_shipping_costs(order_income)
+    if float(order.buyer_shipping_paid or 0) != buyer_paid:
+        order.buyer_shipping_paid = Decimal(str(buyer_paid))
+        changed = True
+    if float(order.seller_shipping_cost or 0) != seller_cost:
+        order.seller_shipping_cost = Decimal(str(seller_cost))
+        changed = True
+    return changed
+
+
 # ─── Categorias / atributos / marcas (Fase 6) ───────────────────────────────────
 # Categoria FOLHA (has_children=false) é a única que aceita anúncio. Atributos vêm do
 # get_attribute_tree (get_attributes está api_suspended). Marca 0 = "Sem marca" (NoBrand).

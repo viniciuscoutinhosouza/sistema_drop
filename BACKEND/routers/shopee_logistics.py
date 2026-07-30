@@ -139,16 +139,18 @@ async def fees(
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Custos Shopee do pedido (escrow): comissão + taxas do vendedor. Atualiza Order.platform_fee."""
+    """Custos Shopee do pedido (escrow): comissão + taxas + FRETE. Grava platform_fee +
+    buyer_shipping_paid + seller_shipping_cost (mesmo helper do sync automático — sem divergência)."""
     order, account, token = await _shopee_order(order_id, current_user, db)
     income = await shopee_service.get_escrow_detail(token, account.shop_id, order.platform_order_id)
     fee = shopee_service.seller_platform_fee(income)
-    if fee and float(order.platform_fee or 0) != fee:
-        order.platform_fee = fee
+    if shopee_service.apply_escrow_to_order(order, income):
         await db.commit()
     return {
         "order_id": order.id,
         "platform_fee": fee,
+        "buyer_shipping_paid": order.buyer_shipping_paid,
+        "seller_shipping_cost": order.seller_shipping_cost,
         "commission_fee": income.get("commission_fee"),
         "service_fee": income.get("service_fee"),
         "seller_transaction_fee": income.get("seller_transaction_fee"),
