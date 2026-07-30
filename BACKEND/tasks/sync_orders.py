@@ -142,14 +142,17 @@ async def sync_ml_integration(
             if not order_id:
                 continue
 
-            event_id = f"poll:{integration.platform_user_id}:{order_id}"
             ml_status = order_data.get("status", "")
+            # event_id CONSCIENTE DE STATUS: sem isto, um pedido processado cedo (ex.: antes de
+            # `paid`) nunca re-processava → sale_fee/taxa e shipment_status ficavam presos no estado
+            # antigo. Com o status na chave, cada transição re-processa UMA vez (o get_order fresco
+            # abaixo traz sale_fee e _apply_fees_to_order grava platform_fee). process_ml_order é
+            # idempotente (upsert por order_id). Chave antiga (sem status) tratada como "novo".
+            event_id = f"poll:{integration.platform_user_id}:{order_id}:{ml_status}"
             already_processed = await webhook_service.is_already_processed(
                 db, "mercadolivre", event_id
             )
-
-            # Cancelled orders: always re-process to sync status even if already imported
-            if already_processed and ml_status != "cancelled":
+            if already_processed:
                 continue
 
             try:
