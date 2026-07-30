@@ -412,8 +412,14 @@
                         <span>Taxa fixa:</span>
                         <span>−{{ formatCurrency(pricingCalc(a).fixed_fee) }}</span>
                       </div>
+                      <!-- Shopee: frete só é conhecido no pedido (escrow) — decisão do dono -->
+                      <div v-if="selectedAccount?.platform === 'shopee'"
+                           class="d-flex justify-content-between text-muted">
+                        <span>Frete:</span>
+                        <span class="small" title="O frete real da Shopee aparece no pedido (escrow)">só no pedido</span>
+                      </div>
                       <!-- Frete pago pelo vendedor (free_shipping / Full) -->
-                      <div v-if="a.free_shipping || a.is_full"
+                      <div v-else-if="a.free_shipping || a.is_full"
                            class="d-flex justify-content-between" style="color:#d97706">
                         <span>Frete (vendedor):</span>
                         <span v-if="pricingCalc(a).shipping_cost > 0">−{{ formatCurrency(pricingCalc(a).shipping_cost) }}</span>
@@ -3902,7 +3908,23 @@ function pricingCalc(listing) {
     }
   }
 
-  // Estimativa estática enquanto dados não chegaram
+  // Estimativa estática enquanto dados não chegaram.
+  // Shopee: taxa por FAIXA (tabela CNPJ) — NUNCA aplicar as taxas do ML a um anúncio Shopee.
+  if (selectedAccount.value?.platform === 'shopee') {
+    const fee = shopeeCommissionEstimate(price)
+    return {
+      rate:            price > 0 ? Number((fee / price * 100).toFixed(2)) : 0,
+      fee:             fee.toFixed(2),
+      financing_fee:   0,
+      fixed_fee:       0,
+      shipping_cost:   null,            // frete Shopee só é conhecido no pedido (escrow)
+      shipping_detail: 'só no pedido',
+      product_cost:    productCost,
+      ..._net(price - fee),
+      isReal:          false,
+      estimate:        true,
+    }
+  }
   const rate = _ML_FEES[listing.listing_type] ?? 11
   const fee = price * rate / 100
   return {
@@ -3916,6 +3938,16 @@ function pricingCalc(listing) {
     ..._net(price - fee),
     isReal:          false,
   }
+}
+
+// Comissão Shopee CNPJ por faixa de preço (espelha _SHOPEE_COMMISSION_TIERS_CNPJ do backend).
+// Subsídio Pix NÃO entra (só no escrow real). % + valor fixo.
+function shopeeCommissionEstimate(price) {
+  const p = Number(price) || 0
+  if (p <= 0) return 0
+  const tiers = [[79.99, 0.20, 4], [99.99, 0.14, 16], [199.99, 0.14, 20], [499.99, 0.14, 26], [Infinity, 0.14, 26]]
+  for (const [ceil, pct, fixed] of tiers) if (p <= ceil) return p * pct + fixed
+  return 0
 }
 
 function billableWeight(listing) {

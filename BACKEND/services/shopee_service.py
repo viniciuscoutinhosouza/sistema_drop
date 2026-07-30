@@ -750,6 +750,34 @@ async def get_channel_list(access_token: str, shop_id: int) -> list:
     return r.get("logistics_channel_list", []) or []
 
 
+# ─── Estimativa de comissão no ANÚNCIO (pré-pedido) ─────────────────────────────
+# A API da Shopee NÃO expõe a % de comissão por categoria (confirmado). A comissão CNPJ BR é por
+# FAIXA de preço: % + valor fixo (tabela do Seller Center, informada pelo dono 2026-07). Subsídio
+# Pix NÃO entra na estimativa (só aparece liquidado no escrow do pedido). Editável aqui; futuro:
+# override por marketplace_settings['shopee']['commission_tiers'] sem deploy.
+# (teto_inclusive, percentual, valor_fixo)
+_SHOPEE_COMMISSION_TIERS_CNPJ = [
+    (79.99, 0.20, 4.0),
+    (99.99, 0.14, 16.0),
+    (199.99, 0.14, 20.0),
+    (499.99, 0.14, 26.0),
+    (float("inf"), 0.14, 26.0),
+]
+
+
+def estimate_shopee_commission(price, tiers=None) -> tuple[float, float]:
+    """(comissão R$, % efetivo) estimada de um anúncio Shopee CNPJ: preço×% + valor_fixo da faixa.
+    NÃO inclui o Subsídio Pix (benefício só de venda via Pix — aparece no escrow real)."""
+    p = float(price or 0)
+    if p <= 0:
+        return 0.0, 0.0
+    for ceil, pct, fixed in (tiers or _SHOPEE_COMMISSION_TIERS_CNPJ):
+        if p <= ceil:
+            amount = p * pct + fixed
+            return round(amount, 2), round(amount / p * 100, 2)
+    return 0.0, 0.0
+
+
 # ─── Custos / comissão (Fase 7) ─────────────────────────────────────────────────
 # Taxas cobradas do VENDEDOR pela Shopee (para Order.platform_fee): comissão + service fee +
 # transaction fee do vendedor (+ campaign). São valores REAIS liquidados no escrow.

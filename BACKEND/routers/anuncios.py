@@ -1906,8 +1906,15 @@ async def refresh_listing_costs(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Recalcula custos ML + promoção e salva no BD."""
+    """Recalcula custos + promoção e salva no BD (ML via API; Shopee estimativa por tabela)."""
     listing = await _get_listing_or_404(listing_id, current_user, db)
+    # Shopee ANTES do token ML (H2/H3): estimativa por tabela, sem token/API do ML.
+    if listing.account.platform == "shopee":
+        await _cache_shopee_listing_costs(listing, db)
+        return {
+            "ok": True,
+            "costs_cached_at": listing.costs_cached_at.isoformat() if listing.costs_cached_at else None,
+        }
     access_token = await _get_valid_token(listing.account, db)
     seller_id = listing.account.platform_user_id or ""
     await _cache_costs(listing, access_token, seller_id, db)
@@ -6064,14 +6071,45 @@ async def delete_anuncio_marketplace(
     await db.commit()
 
 
+async def _cache_shopee_listing_costs(listing, db) -> dict:
+    """Estimativa de custos de um anúncio Shopee (sem API): taxa por faixa (tabela CNPJ) + frete
+    'só no pedido'. Grava nas colunas agnósticas de cache. net_revenue = preço − comissão (SEM o
+    custo do produto — o front subtrai isso no _net(), H4). Reusado por /costs e /refresh-costs."""
+    from services import shopee_service
+    price = float(listing.sale_price or 0)
+    amount, pct = shopee_service.estimate_shopee_commission(price)
+    listing.commission_pct = pct
+    listing.commission_amount = amount
+    listing.shipping_cost = None       # frete Shopee só é conhecido no pedido (escrow)
+    listing.net_revenue = round(price - amount, 2) if price else None
+    listing.margin_pct = None
+    listing.costs_cached_at = datetime.now(UTC)
+    await db.commit()
+    return {
+        "commission_pct": pct,
+        "commission_amount": amount,
+        "shipping_cost": None,
+        "shipping_source": "shopee_estimate",
+        "net_revenue": listing.net_revenue,
+        "margin_pct": None,
+        "estimate": True,
+        "costs_cached_at": listing.costs_cached_at.isoformat(),
+    }
+
+
 @router.get("/{listing_id}/costs")
 async def get_anuncio_costs(
     listing_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Retorna custos reais (comissão ML + frete) de um anúncio consultando a API do Mercado Livre."""
+    """Retorna custos do anúncio. ML: comissão+frete reais via API. Shopee: taxa ESTIMADA por faixa
+    (tabela CNPJ); frete só é conhecido no pedido (escrow) → 'só no pedido'."""
     listing = await _get_listing_or_404(listing_id, current_user, db)
+
+    # Shopee entra ANTES do token ML (H3): a estimativa é por tabela, sem chamada de API.
+    if listing.account.platform == "shopee":
+        return await _cache_shopee_listing_costs(listing, db)
 
     if listing.account.platform != "mercadolivre":
         raise HTTPException(
