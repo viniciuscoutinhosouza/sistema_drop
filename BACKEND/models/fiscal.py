@@ -199,6 +199,12 @@ class Invoice(Base):
     sefaz_xmotivo = Column(String(255))     # último xMotivo
     environment = Column(String(12))        # ambiente fixado na emissão: homolog | production
     emission_provider = Column(String(10), default="focus")  # focus | sefaz
+    # Origem da nota (migration 136): 'ml_faturador' (emitida pelo Faturador ML) | 'fiscal_own'
+    # (emissão própria SEFAZ/Focus). NULL = legado → tratar como própria.
+    source = Column(String(20))
+    # Cancelamento refletido na própria linha (dedup por chave = upsert de status).
+    cancel_protocol = Column(String(50))
+    cancelled_at = Column(TIMESTAMP(timezone=True))
 
     # Arquivos
     xml_url = Column(String(1000))
@@ -359,6 +365,28 @@ class InvoiceSefazLog(Base):
     xmotivo = Column(String(255))
     payload_request = Column(Text)
     payload_response = Column(Text)
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+
+
+class NfeInutilizacao(Base):
+    """Faixa de numeração de NF-e INUTILIZADA (migration 136).
+
+    Número inutilizado é furo LEGÍTIMO na sequência (declarado à SEFAZ que não virou nota). A
+    reconciliação cruza com esta tabela para NÃO reportar número inutilizado como furo. Fonte:
+    'sefaz_own' (inutilização própria) ou 'manual' (registrado pelo operador para o que o ML
+    inutilizou e não expõe pela API)."""
+
+    __tablename__ = "nfe_inutilizacoes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cmig_id = Column(Integer, ForeignKey("cmigs.id"), nullable=False)
+    serie = Column(Integer, nullable=False)
+    nro_ini = Column(Integer, nullable=False)
+    nro_fim = Column(Integer, nullable=False)
+    justificativa = Column(String(255))
+    protocol = Column(String(50))
+    inut_date = Column(TIMESTAMP(timezone=True))
+    source = Column(String(20), default="sefaz_own")  # sefaz_own | manual
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
 
 
