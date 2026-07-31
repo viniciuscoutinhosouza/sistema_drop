@@ -2800,7 +2800,16 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
     start = f"{year}{month:02d}01"
     last = _cal.monthrange(year, month)[1]
     end = f"{year}{month:02d}{last:02d}"
-    entries = await _ml.download_invoices_batch(token, seller_id, start, end)
+    try:
+        entries = await _ml.download_invoices_batch(token, seller_id, start, end)
+    except _ml.MLInvoiceBatchError as exc:
+        # Falha de fetch (429/5xx/rede após retries): o mês fica INCOMPLETO. NÃO processa nem roda
+        # detecção de furos (reportaria furos FALSOS). Sinaliza p/ re-tentar depois (falhar alto).
+        logger.warning(
+            "[fiscal] batch %s-%02d conta %s FALHOU (mês incompleto, não reconciliar): %s",
+            year, month, account_id, exc)
+        return {"account_id": account_id, "created": 0, "skipped": 0, "full_moved": 0,
+                "fetch_failed": True, "gaps": {}}
 
     created = skipped = full_moved = simbolicas = 0
     seq: dict[int, set[int]] = {}  # série → números de NF-e vistos no lote (p/ furos)

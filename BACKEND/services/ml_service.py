@@ -2888,18 +2888,24 @@ async def get_invoices_by_order(access_token: str, seller_id: str, order_id: str
     return {}
 
 
+class MLInvoiceBatchError(Exception):
+    """Falha ao baixar o lote de NF-e do Faturador ML (rede/429/5xx após retries). PROPAGADA de
+    propósito: o chamador NÃO deve tratar como 'mês vazio' — o mês fica INCOMPLETO (falhar alto)."""
+
+
 async def download_invoices_batch(
     access_token: str, seller_id: str, start: str, end: str
 ) -> list[tuple[str, str, bytes]]:
     """Baixa TODAS as NF-e do vendedor no período (todos os tipos) via batch do
     Faturador ML e devolve [(categoria, nome_no_zip, xml_bytes)].
 
-    `categoria` é o 1º segmento da pasta no zip (o ML agrupa por tipo:
-    sale/return/full/others); fica "" se o zip for plano.
+    `categoria` é o 1º segmento da pasta no zip; start/end no formato YYYYMMDD.
+    Inclui venda, devolução, retorno e as notas de FULL — que NÃO vêm pelo fluxo por pedido.
 
-    start/end no formato YYYYMMDD. Inclui venda, devolução, retorno, e as notas
-    de FULL (inbound/symbolic/removal) — que NÃO vêm pelo fluxo por pedido.
-    Retorna [] em erro (tolerante)."""
+    Retry com backoff em 429/5xx/rede (o batch é instável sob carga — ADR-0008). Em falha
+    DEFINITIVA levanta MLInvoiceBatchError (NÃO devolve [] silencioso — antes, um mês inteiro
+    sumia em silêncio no 429). Zip válido vazio → [] (mês sem notas, legítimo)."""
+    import asyncio as _aio
     import io as _io
     import zipfile as _zip
 
@@ -2916,27 +2922,38 @@ async def download_invoices_batch(
         "others": "all",
         "file_types": "xml",
     }
-    try:
-        async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
-            resp = await client.get(
-                url, headers={"Authorization": f"Bearer {access_token}"}, params=params
-            )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[ML] batch invoices erro de rede: %s", e)
-        return []
-    if resp.status_code != 200:
-        logger.warning("[ML] batch invoices status=%s: %s", resp.status_code, resp.text[:200])
-        return []
-    out: list[tuple[str, str, bytes]] = []
-    try:
-        with _zip.ZipFile(_io.BytesIO(resp.content)) as zf:
-            for name in zf.namelist():
-                if name.lower().endswith(".xml"):
-                    category = name.split("/")[0].lower() if "/" in name else ""
-                    out.append((category, name, zf.read(name)))
-    except _zip.BadZipFile:
-        logger.warning("[ML] batch invoices: resposta não é um zip válido (%s bytes)", len(resp.content))
-    return out
+    last_err = "?"
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+                resp = await client.get(
+                    url, headers={"Authorization": f"Bearer {access_token}"}, params=params
+                )
+        except Exception as e:  # noqa: BLE001
+            last_err = f"rede: {e}"
+        else:
+            if resp.status_code == 200:
+                try:
+                    with _zip.ZipFile(_io.BytesIO(resp.content)) as zf:
+                        out: list[tuple[str, str, bytes]] = []
+                        for name in zf.namelist():
+                            if name.lower().endswith(".xml"):
+                                category = name.split("/")[0].lower() if "/" in name else ""
+                                out.append((category, name, zf.read(name)))
+                        return out
+                except _zip.BadZipFile:
+                    # 200 mas não é zip: pode ser corpo de erro. Tolerante (não invento nota),
+                    # mas retenta — se persistir, é falha, não "mês vazio".
+                    last_err = f"zip inválido ({len(resp.content)} bytes)"
+            elif resp.status_code in (429, 500, 502, 503, 504):
+                last_err = f"status {resp.status_code}"
+            else:
+                # 4xx não-retentável (400/401/403) → falha definitiva imediata.
+                raise MLInvoiceBatchError(
+                    f"batch invoices status={resp.status_code}: {resp.text[:200]}")
+        if attempt < 2:
+            await _aio.sleep(3 * (2 ** attempt))  # 3s, 6s
+    raise MLInvoiceBatchError(f"batch invoices falhou após 3 tentativas ({last_err})")
 
 
 async def get_invoice_by_id(access_token: str, seller_id: str, invoice_id: str) -> dict:
