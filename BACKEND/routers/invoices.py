@@ -11,15 +11,15 @@ from pathlib import Path as _Path
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db, task_db
-from dependencies import get_current_user, require_menu_permission
+from dependencies import get_current_user, require_menu_permission, require_role
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
-from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem
+from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem, NfeInutilizacao
 from models.integration import MarketplaceAccount
 from models.order import Order
 from models.person import Person
@@ -419,6 +419,33 @@ def _ml_invoice_id_from_order(order: Order) -> str | None:
     return None
 
 
+def _invoice_outbound_filters(stmt, cmig_ids, status, date_from, date_to, search):
+    """Aplica os filtros comuns da fonte fiscal (Invoice direction='out') a um SELECT.
+    Compartilhado entre a listagem paginada, o COUNT e o resumo por CMIG (Fase 3b)."""
+    stmt = stmt.where(and_(Invoice.direction == "out", Invoice.cmig_id.in_(cmig_ids)))
+    if status:
+        stmt = stmt.where(Invoice.status == status)
+    if date_from:
+        stmt = stmt.where(Invoice.issue_date >= date_from)
+    if date_to:
+        # Fim do dia (23:59:59) — senão nota emitida após 00:00 de date_to é excluída
+        # (bind de `date` = meia-noite). Espelha a fonte ML, que já inclui o dia inteiro.
+        stmt = stmt.where(
+            Invoice.issue_date <= datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59)
+        )
+    if search:
+        s = f"%{search.strip()}%"
+        digits = "".join(c for c in search if c.isdigit())
+        conds = [Invoice.access_key.like(s)]
+        if digits:
+            try:
+                conds.append(Invoice.nfe_number == int(digits))
+            except ValueError:
+                pass
+        stmt = stmt.where(or_(*conds))
+    return stmt
+
+
 async def _collect_outbound_rows(
     db: AsyncSession,
     accessible: list[int],
@@ -428,10 +455,18 @@ async def _collect_outbound_rows(
     date_from: date | None,
     date_to: date | None,
     search: str | None,
+    invoice_limit: int | None = None,
+    sort_by: str | None = None,
+    sort_dir: str = "desc",
 ) -> list[dict]:
     """Monta a lista unificada de NF-e de saída: Invoices do módulo fiscal +
-    NF-e do Faturador ML (a partir de orders.nfe_*). Linhas normalizadas, sem
-    paginação, ordenadas por data de emissão desc."""
+    NF-e do Faturador ML (a partir de orders.nfe_*). Ordenada por emissão desc.
+
+    Fase 3b — memória limitada: a fonte fiscal (Invoice), que cresce com a captura
+    de TODAS as notas, é limitada em SQL ao `invoice_limit` (= page*page_size) já
+    ordenada por emissão desc; a fonte ML só traz pedidos AINDA NÃO virados Invoice
+    (`NOT EXISTS`), conjunto que encolhe a ~0 após o backfill. Assim o `[offset:...]`
+    do chamador é correto sem materializar milhares de linhas."""
     cmig_ids = [cmig_id] if cmig_id is not None else accessible
 
     cmig_rows = (
@@ -443,23 +478,21 @@ async def _collect_outbound_rows(
 
     # ── Fonte 1: módulo fiscal (Invoice direction='out') ──────────────────────
     if source in (None, "", "all", "fiscal"):
-        stmt = select(Invoice).where(
-            and_(Invoice.direction == "out", Invoice.cmig_id.in_(cmig_ids))
-        )
-        if date_from:
-            stmt = stmt.where(Invoice.issue_date >= date_from)
-        if date_to:
-            stmt = stmt.where(Invoice.issue_date <= date_to)
-        if search:
-            s = f"%{search.strip()}%"
-            digits = "".join(c for c in search if c.isdigit())
-            conds = [Invoice.access_key.like(s)]
-            if digits:
-                try:
-                    conds.append(Invoice.nfe_number == int(digits))
-                except ValueError:
-                    pass
-            stmt = stmt.where(or_(*conds))
+        # A ordenação do LIMIT tem de alinhar com o sort pedido, senão o topN vem errado
+        # para esse sort (proxy de coluna p/ cmig/tipo — a reordenação exata é feita em
+        # Python sobre o conjunto já reduzido).
+        _sort_col = {
+            "numero": Invoice.nfe_number,
+            "cmig": Invoice.cmig_id,
+            "tipo": Invoice.purpose,
+            "emissao": Invoice.issue_date,
+        }.get(sort_by, Invoice.issue_date)
+        _order = _sort_col.asc().nullslast() if sort_dir == "asc" else _sort_col.desc().nullslast()
+        stmt = _invoice_outbound_filters(
+            select(Invoice), cmig_ids, status, date_from, date_to, search
+        ).order_by(_order)
+        if invoice_limit:
+            stmt = stmt.limit(invoice_limit)
         invs = (await db.execute(stmt)).scalars().all()
 
         person_ids = {i.person_id for i in invs if i.person_id}
@@ -468,8 +501,32 @@ async def _collect_outbound_rows(
             ps = (await db.execute(select(Person).where(Person.id.in_(person_ids)))).scalars().all()
             persons = {p.id: p for p in ps}
 
+        # Notas do Faturador ML (source='ml_faturador', Fase 3c) não guardam XML local:
+        # o XML/DANFE baixa do ML pelo invoice_id do pedido vinculado. Batch-load dos
+        # pedidos p/ preservar o botão de download (evita a regressão da Fase 3b).
+        ml_fat_order_ids = {
+            inv.order_id for inv in invs if inv.source == "ml_faturador" and inv.order_id
+        }
+        ml_fat_orders: dict[int, Order] = {}
+        if ml_fat_order_ids:
+            ords = (
+                await db.execute(select(Order).where(Order.id.in_(ml_fat_order_ids)))
+            ).scalars().all()
+            ml_fat_orders = {o.id: o for o in ords}
+
         for inv in invs:
             p = persons.get(inv.person_id)
+            # Download: NF-e própria (SEFAZ) tem XML local; ml_faturador baixa do ML.
+            ml_inv_id = None
+            xml_avail = bool(inv.xml_url) or (inv.status == "authorized" and bool(inv.xml_local_path))
+            danfe_avail = bool(inv.danfe_url) or (inv.status == "authorized" and bool(inv.xml_local_path))
+            if inv.source == "ml_faturador":
+                _o = ml_fat_orders.get(inv.order_id)
+                if _o is not None:
+                    ml_inv_id = _ml_invoice_id_from_order(_o)
+                    _ok = _o.nfe_status == "authorized" and bool(ml_inv_id)
+                    xml_avail = _ok
+                    danfe_avail = _ok
             rows.append(
                 {
                     "source": "fiscal",
@@ -488,13 +545,18 @@ async def _collect_outbound_rows(
                     "status": inv.status,
                     "nfe_type": inv.purpose,
                     "nfe_type_label": _PURPOSE_LABELS.get(inv.purpose, inv.purpose or "—"),
+                    # Sinal de revisão (Fase 3c): saída ml_faturador sem pedido casado.
+                    "needs_review": bool(
+                        inv.source == "ml_faturador" and inv.direction == "out" and not inv.order_id
+                    ),
+                    "review_note": inv.fiscal_info if inv.source == "ml_faturador" else None,
                     "xml_url": inv.xml_url,
                     "danfe_url": inv.danfe_url,
-                    "ml_invoice_id": None,
+                    "ml_invoice_id": ml_inv_id,
                     # NF-e própria (SEFAZ) guarda o XML local → baixa pelos endpoints
                     # /invoices/{id}/xml|danfe (não por URL). Disponível quando autorizada.
-                    "xml_available": bool(inv.xml_url) or (inv.status == "authorized" and bool(inv.xml_local_path)),
-                    "danfe_available": bool(inv.danfe_url) or (inv.status == "authorized" and bool(inv.xml_local_path)),
+                    "xml_available": xml_avail,
+                    "danfe_available": danfe_avail,
                     # PRÉVIA (marca d'água "SEM VALOR FISCAL") p/ nota não autorizada. Flag
                     # separado de danfe_available de propósito: o export ZIP contábil filtra
                     # por danfe_available e NÃO pode misturar prévias com DANFEs reais.
@@ -508,11 +570,17 @@ async def _collect_outbound_rows(
     # pedidos Full — fica cacheada em orders.nfe_invoices_json. Caímos no
     # registro único derivado de orders.nfe_* só quando esse cache não existe.
     if source in (None, "", "all", "ml"):
+        # NOT EXISTS: só pedidos cuja NF-e de venda AINDA NÃO virou Invoice (Fase 3b).
+        # Depois do backfill (Fase 4), toda venda é Invoice → esta fonte esvazia e a
+        # listagem passa a ser servida só pela fonte fiscal (paginada em SQL).
         stmt = select(Order).where(
             and_(
                 Order.cmig_id.in_(cmig_ids),
                 Order.platform == "mercadolivre",
                 Order.nfe_status.isnot(None),
+                ~exists().where(
+                    and_(Invoice.access_key == Order.nfe_key, Invoice.direction == "out")
+                ),
             )
         )
         if date_from:
@@ -607,6 +675,12 @@ async def _collect_outbound_rows(
     if status:
         rows = [r for r in rows if r["status"] == status]
 
+    # Paridade de contrato: as linhas ML não trazem os campos de revisão (só a fonte
+    # fiscal). Garante shape uniforme para o frontend (default falso/None).
+    for r in rows:
+        r.setdefault("needs_review", False)
+        r.setdefault("review_note", None)
+
     rows.sort(key=lambda r: r["issue_date"] or "", reverse=True)
     return rows
 
@@ -633,13 +707,28 @@ async def list_outbound_invoices(
     if cmig_id is not None and cmig_id not in accessible:
         raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
 
+    # Fase 3b — memória limitada: pede à fonte fiscal só o topN (offset+page_size) já
+    # ordenado em SQL; a fonte ML (uncovered) vem completa (encolhe pós-backfill). O
+    # slice [start:start+page_size] sobre o merge ordenado é correto porque o topN
+    # global cabe na união (topN fiscal + todas as ML uncovered).
+    start = (page - 1) * page_size
+    invoice_limit = start + page_size
     rows = await _collect_outbound_rows(
-        db, accessible, cmig_id, source, status, date_from, date_to, search
+        db, accessible, cmig_id, source, status, date_from, date_to, search,
+        invoice_limit=invoice_limit, sort_by=sort_by, sort_dir=sort_dir,
     )
 
-    # Dedup por chave de acesso: a NF-e pode vir tanto como Invoice (source=fiscal,
-    # ex.: criada pelo sync de todas as NF-e) quanto do cache de pedido (source=ml).
-    # A linha 'fiscal' tem prioridade. Linhas sem chave (rascunhos) são mantidas.
+    # Dedup por chave de acesso: a NF-e pode vir como Invoice (source=fiscal — inclui as
+    # notas do Faturador ML capturadas na Fase 3c) e/ou do cache de pedido (source=ml).
+    # A linha 'fiscal' tem prioridade MAS herda o download da linha 'ml' quando não tem
+    # arquivo próprio (nota ml_faturador não guarda XML local → o botão viria do ML).
+    def _merge_download(winner: dict, loser: dict) -> dict:
+        if winner.get("source") == "fiscal" and not winner.get("xml_available") and not winner.get("danfe_available"):
+            for k in ("xml_available", "danfe_available", "ml_invoice_id"):
+                if loser.get(k):
+                    winner[k] = loser[k]
+        return winner
+
     seen: dict[str, int] = {}
     deduped: list[dict] = []
     for r in rows:
@@ -648,26 +737,15 @@ async def list_outbound_invoices(
             if ak not in seen:
                 seen[ak] = len(deduped)
                 deduped.append(r)
-            elif r.get("source") == "fiscal" and deduped[seen[ak]].get("source") != "fiscal":
-                deduped[seen[ak]] = r
+            else:
+                cur = deduped[seen[ak]]
+                if r.get("source") == "fiscal" and cur.get("source") != "fiscal":
+                    deduped[seen[ak]] = _merge_download(r, cur)
+                elif cur.get("source") == "fiscal" and r.get("source") != "fiscal":
+                    deduped[seen[ak]] = _merge_download(cur, r)
         else:
             deduped.append(r)
     rows = deduped
-
-    # Resumo por CMIG sobre o conjunto filtrado completo
-    by_cmig: dict[int, dict] = {}
-    for r in rows:
-        b = by_cmig.setdefault(
-            r["cmig_id"],
-            {
-                "cmig_id": r["cmig_id"],
-                "cmig_name": r["cmig_name"],
-                "count": 0,
-                "total": 0.0,
-            },
-        )
-        b["count"] += 1
-        b["total"] += r["total"] or 0.0
 
     def _num(v):
         try:
@@ -675,24 +753,59 @@ async def list_outbound_invoices(
         except (TypeError, ValueError):
             return 0
 
+    # As chaves de ordenação Python ESPELHAM a coluna-proxy do LIMIT SQL (cmig→cmig_id,
+    # tipo→nfe_type) — senão o topN truncado no SQL diverge do sort final e linhas somem
+    # da página. (Agrupa por CMIG/tipo de forma consistente; não é alfabético pelo rótulo.)
     _SORT_KEYS = {
-        "cmig": lambda r: (r.get("cmig_name") or "").lower(),
+        "cmig": lambda r: _num(r.get("cmig_id")),
         "numero": lambda r: _num(r.get("nfe_number")),
-        "tipo": lambda r: (r.get("nfe_type_label") or "").lower(),
+        "tipo": lambda r: (r.get("nfe_type") or ""),
         "emissao": lambda r: str(r.get("issue_date") or ""),
     }
-    keyfn = _SORT_KEYS.get(sort_by)
-    if keyfn:
-        rows.sort(key=keyfn, reverse=(sort_dir == "desc"))
+    keyfn = _SORT_KEYS.get(sort_by) or (lambda r: str(r.get("issue_date") or ""))
+    rows.sort(key=keyfn, reverse=(sort_dir == "desc"))
 
-    total = len(rows)
-    start = (page - 1) * page_size
+    # ── Total + resumo por CMIG via SQL (não materializa a tabela inteira) ──────
+    cmig_ids = [cmig_id] if cmig_id is not None else accessible
+    # Fonte fiscal: COUNT + SUM(total) por CMIG.
+    inv_count = 0
+    by_cmig: dict[int, dict] = {}
+    cmig_names = dict(
+        (await db.execute(select(CMIG.id, CMIG.company_name).where(CMIG.id.in_(cmig_ids)))).all()
+    )
+    if source in (None, "", "all", "fiscal"):
+        agg = (
+            await db.execute(
+                _invoice_outbound_filters(
+                    select(Invoice.cmig_id, func.count(), func.coalesce(func.sum(Invoice.total_invoice), 0)),
+                    cmig_ids, status, date_from, date_to, search,
+                ).group_by(Invoice.cmig_id)
+            )
+        ).all()
+        for cid, cnt, tot in agg:
+            inv_count += int(cnt or 0)
+            by_cmig[cid] = {"cmig_id": cid, "cmig_name": cmig_names.get(cid),
+                            "count": int(cnt or 0), "total": float(tot or 0)}
+    # Fonte ML (uncovered) já está materializada e completa em `rows` — soma de lá,
+    # evitando recontar o que virou Invoice.
+    ml_count = 0
+    for r in rows:
+        if r.get("source") == "ml":
+            ml_count += 1
+            b = by_cmig.setdefault(
+                r["cmig_id"],
+                {"cmig_id": r["cmig_id"], "cmig_name": r.get("cmig_name"), "count": 0, "total": 0.0},
+            )
+            b["count"] += 1
+            b["total"] += r.get("total") or 0.0
+
+    total = inv_count + ml_count
     return {
         "items": rows[start : start + page_size],
         "total": total,
         "page": page,
         "page_size": page_size,
-        "by_cmig": sorted(by_cmig.values(), key=lambda x: x["cmig_name"] or ""),
+        "by_cmig": sorted(by_cmig.values(), key=lambda x: (x.get("cmig_name") or "")),
     }
 
 
@@ -715,12 +828,15 @@ async def export_outbound_invoices(
     if cmig_id is not None and cmig_id not in accessible:
         raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
 
+    MAX = 400
+    # Limite generoso na fonte fiscal (memória) — mais recentes primeiro; o corte final
+    # é MAX após filtrar por disponibilidade de documento.
     rows = await _collect_outbound_rows(
-        db, accessible, cmig_id, source, status, date_from, date_to, search
+        db, accessible, cmig_id, source, status, date_from, date_to, search,
+        invoice_limit=MAX * 5,
     )
     avail_key = "xml_available" if kind == "xml" else "danfe_available"
     rows = [r for r in rows if r.get(avail_key)]
-    MAX = 400
     capped = len(rows) > MAX
     rows = rows[:MAX]
     if not rows:
@@ -729,8 +845,9 @@ async def export_outbound_invoices(
             detail="Nenhuma NF-e com documento disponível no filtro atual",
         )
 
-    # Tokens ML necessários para baixar XML/DANFE do Faturador
-    ml_order_ids = [r["order_id"] for r in rows if r["source"] == "ml"]
+    # Tokens ML necessários para baixar XML/DANFE do Faturador — inclui as notas
+    # ml_faturador (source='fiscal' mas com invoice_id do pedido vinculado, Fase 3c).
+    ml_order_ids = [r["order_id"] for r in rows if r.get("ml_invoice_id") and r.get("order_id")]
     accounts_by_order: dict[int, MarketplaceAccount] = {}
     if ml_order_ids:
         o_rows = (
@@ -761,7 +878,7 @@ async def export_outbound_invoices(
             for r in rows:
                 label = f"NFe {r['nfe_number'] or r['access_key'] or r['id']}"
                 try:
-                    if r["source"] == "fiscal":
+                    if r["source"] == "fiscal" and not r.get("ml_invoice_id"):
                         # NF-e própria (SEFAZ): XML autorizado é local; DANFE é gerado.
                         finv = (
                             await db.execute(select(Invoice).where(Invoice.id == r["id"]))
@@ -2772,10 +2889,106 @@ async def import_xml_saida(
     }
 
 
+# ── Reconciliação da sequência de NF-e emitidas (Fase 3d) ────────────────────
+
+
+async def _compute_sequence_report(
+    db: AsyncSession, cmig_id: int, serie: int | None = None, missing_cap: int = 500
+) -> dict:
+    """Reconstrói a sequência de NF-e EMITIDAS pela CMIG (por série) a partir do que
+    está persistido, e aponta os FUROS reais.
+
+    Base da sequência = notas da CMIG com número/série, EXCETO devolução (emitida por
+    terceiro — não pertence à numeração da CMIG). Um número ausente no intervalo
+    [min,max] só é FURO se NÃO estiver coberto por uma inutilização registrada
+    (`nfe_inutilizacoes`). Cancelada/denegada CONSOME número (fica presente, com status).
+
+    Furo = ALERTA, não prova de erro: pode ser inutilização feita no próprio ML (a API
+    não expõe) ou nota de outro mês ainda não sincronizada. Read-only, reutilizável
+    (job de sync + rota /outbound/sequence-report)."""
+    # Base da sequência = notas NUMERADAS pela CMIG. Exclui SÓ a devolução de ENTRADA
+    # de terceiro capturada do Faturador ML (número pertence à série do cliente). A
+    # devolução emitida pela PRÓPRIA CMIG (emissão própria / saída) numera na série da
+    # CMIG e DEVE entrar — senão vira furo falso (A1). Discriminador = direction+source,
+    # não `purpose`.
+    q = select(Invoice.serie, Invoice.nfe_number, Invoice.status).where(
+        Invoice.cmig_id == cmig_id,
+        Invoice.nfe_number.isnot(None),
+        Invoice.serie.isnot(None),
+        ~and_(
+            Invoice.purpose == "devolucao",
+            Invoice.direction == "in",
+            func.coalesce(Invoice.source, "") == "ml_faturador",
+        ),
+    )
+    if serie is not None:
+        q = q.where(Invoice.serie == serie)
+    present: dict[int, dict[int, str]] = {}
+    for s, n, st in (await db.execute(q)).all():
+        present.setdefault(int(s), {})[int(n)] = st
+
+    inut_q = select(
+        NfeInutilizacao.serie, NfeInutilizacao.nro_ini, NfeInutilizacao.nro_fim
+    ).where(NfeInutilizacao.cmig_id == cmig_id)
+    if serie is not None:
+        inut_q = inut_q.where(NfeInutilizacao.serie == serie)
+    inut: dict[int, set[int]] = {}
+    for s, a, b in (await db.execute(inut_q)).all():
+        rng = inut.setdefault(int(s), set())
+        rng.update(range(int(a), int(b) + 1))
+
+    _CANCELLED = {"cancelled", "cancelada", "canceled", "denegada", "denied"}
+    series_out = []
+    for s in sorted(set(present) | set(inut)):
+        nums = present.get(s, {})
+        inut_s = inut.get(s, set())
+        allnums = set(nums) | inut_s
+        if not allnums:
+            continue
+        lo, hi = min(allnums), max(allnums)
+        # Guard: um número outlier (parse anômalo / série renumerada) não pode materializar
+        # um range de milhões. Acima do teto, reporta a anomalia sem expandir.
+        _RANGE_CAP = 200_000
+        if hi - lo > _RANGE_CAP:
+            series_out.append(
+                {
+                    "serie": s, "count": len(nums), "min": lo, "max": hi,
+                    "expected": hi - lo + 1, "missing_count": -1, "missing": [],
+                    "missing_truncated": True, "inutilized_count": len(inut_s),
+                    "inutilized": [], "cancelled_count": 0, "cancelled": [],
+                    "anomaly": "intervalo de numeração acima do teto — verifique número atípico",
+                }
+            )
+            continue
+        missing = [n for n in range(lo, hi + 1) if n not in nums and n not in inut_s]
+        cancelled = sorted(n for n, st in nums.items() if (st or "").lower() in _CANCELLED)
+        series_out.append(
+            {
+                "serie": s,
+                "count": len(nums),
+                "min": lo,
+                "max": hi,
+                "expected": hi - lo + 1,
+                "missing_count": len(missing),
+                "missing": missing[:missing_cap],
+                "missing_truncated": len(missing) > missing_cap,
+                "inutilized_count": len(inut_s),
+                "inutilized": sorted(inut_s)[:missing_cap],
+                "cancelled_count": len(cancelled),
+                "cancelled": cancelled[:missing_cap],
+            }
+        )
+    return {
+        "cmig_id": cmig_id,
+        "series": series_out,
+        "total_missing": sum(x["missing_count"] for x in series_out),
+    }
+
+
 # ── Sincronização de TODAS as NF-e do mês (batch do Faturador ML) ─────────────
-# Fecha a sequência (todas as notas viram registro) e move estoque das notas de
-# FULL: remessa (LOCAL↓+FULL↑) e retorno/retirada (LOCAL↑+FULL↓). Venda/devolução/
-# CC-e/CT-e são só registradas (venda já baixa pelo pedido; devolução = Fase B).
+# Fecha a sequência (todas as notas viram registro — Fase 3c) e move estoque APENAS
+# das notas de FULL: remessa (LOCAL↓+FULL↑) e retorno/retirada (LOCAL↑+FULL↓). Venda
+# casada / saída-sem-pedido / devolução são fiscal-only (não mexem estoque).
 
 
 async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, month: int, user_id: int) -> dict:
@@ -2812,11 +3025,20 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                 "fetch_failed": True, "gaps": {}}
 
     created = skipped = full_moved = simbolicas = 0
+    vendas_casadas = saidas_sem_pedido = devolucoes = descartadas = errored = 0
     seq: dict[int, set[int]] = {}  # série → números de NF-e vistos no lote (p/ furos)
     # O zip do ML não separa por tipo (vem tudo em "emitidas_mercado_livre/"), então
-    # classificamos pela própria nota: o sinal confiável é o CNPJ FULL (destinatário =
-    # remessa para o FULL; emitente = retorno/retirada do FULL). Notas NÃO-FULL são
-    # puladas (venda já vem pelo cache de pedido; devolução é a Fase B).
+    # classificamos pela própria nota, em BALDES (Fase 3c — guardar TODAS p/ fechar a
+    # sequência sem furo falso). O estoque é movido APENAS pelo balde FULL:
+    #   • FULL (dest/emit = CNPJ FULL): remessa (LOCAL↓+FULL↑) / retorno (LOCAL↑+FULL↓) — MOVE estoque.
+    #   • Venda casada (saída não-FULL cuja chave = Order.nfe_key): fiscal-only, order_id setado,
+    #     NÃO move estoque (o pedido já debitou o LOCAL — ADR-0019).
+    #   • Saída sem pedido (saída não-FULL sem pedido casado): registra e SINALIZA (order_id NULL +
+    #     fiscal_info), NÃO move estoque (bonificação/brinde/comodato a revisar).
+    #   • Devolução (entrada não-FULL, CFOP 1/2/3): fiscal-only (ADR-0009 — contadores de inspeção
+    #     são a fonte canônica), NÃO move estoque.
+    # Modelo ≠ 55/65 (CT-e 57 / MDF-e 58) é descartado. Eventos (CC-e/cancelamento) são
+    # procEventoNFe → parse_nfe_xml levanta ValueError e caem no except (pulados).
     for _category, _name, xml_bytes in entries:
         try:
             parsed = parse_nfe_xml(xml_bytes)
@@ -2832,35 +3054,120 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                 seq.setdefault(int(_s), set()).add(int(_n))
             except (TypeError, ValueError):
                 pass
+        # Só NF-e/NFC-e (modelo 55/65). CT-e (57)/MDF-e (58)/outros: descartar (fora do lote fiscal).
+        model = str(parsed.get("model") or "55")
+        if model not in ("55", "65"):
+            descartadas += 1
+            continue
         try:
             async with task_db() as db:
                 dest = parsed.get("dest", {}) or {}
                 emit = parsed.get("emit", {}) or {}
-                full_dest = await is_full_cnpj(db, dest.get("document") or "", cmig_id)
-                full_emit = await is_full_cnpj(db, emit.get("document") or "", cmig_id)
-                full = full_dest or full_emit
-                if not full:
-                    skipped += 1  # não-FULL: venda (cache) / devolução (Fase B) / outros
-                    continue
 
-                exists = (
-                    await db.execute(select(Invoice.id).where(Invoice.access_key == access_key))
+                # Dedup por chave — agora vale p/ TODAS as notas (não só FULL). Idempotente:
+                # re-sincronizar o mês não duplica nada. (Upsert de cancelamento fica p/ quando
+                # houver fonte confiável do status — o lote de NF-e não expõe cancelamento.)
+                existing = (
+                    await db.execute(
+                        select(Invoice).where(Invoice.access_key == access_key)
+                    )
                 ).scalar_one_or_none()
-                if exists:
+                if existing:
+                    # Religa órfão: se a nota de venda foi capturada ANTES de o pedido gravar
+                    # Order.nfe_key, ficou com order_id NULL. Agora que o pedido existe, vincula
+                    # (fiscal-only — não mexe em estoque). Evita órfão permanente (M2).
+                    if (
+                        existing.order_id is None
+                        and existing.source == "ml_faturador"
+                        and existing.direction == "out"
+                        and existing.purpose == "venda"
+                    ):
+                        mo = (
+                            await db.execute(
+                                select(Order.id).where(
+                                    and_(Order.nfe_key == access_key, Order.cmig_id == cmig_id)
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if mo:
+                            existing.order_id = mo
+                            existing.fiscal_info = None  # deixa de ser "saída sem pedido"
+                            await db.commit()
                     skipped += 1
                     continue
 
-                # Direção pela CFOP (não pela posição do CNPJ): 1/2/3 = entrada (retorno
-                # do FULL → LOCAL↑+FULL↓); 5/6/7 = saída (remessa p/ FULL → LOCAL↓+FULL↑).
+                # Direção pela CFOP do 1º item (não pela posição do CNPJ):
+                # 1/2/3 = entrada; 5/6/7 = saída.
                 first_cfop = next(
                     (str(it.get("cfop") or "") for it in parsed.get("items", []) if it.get("cfop")),
                     "",
                 )
-                full_account_id = full.marketplace_account_id
-                if first_cfop[:1] in ("1", "2", "3"):
-                    direction, purpose, party, move = "in", "retorno", emit, "full_in"
+                # Direção: tpNF (canônico — MOC B11: 0=entrada, 1=saída) é a fonte primária;
+                # CFOP do 1º item é reforço. Sem nenhum dos dois, NÃO assumir (falhar alto).
+                tp_nf = parsed.get("tp_nf")
+                if tp_nf == 0:
+                    is_inbound = True
+                elif tp_nf == 1:
+                    is_inbound = False
+                elif first_cfop[:1] in ("1", "2", "3"):
+                    is_inbound = True
+                elif first_cfop[:1] in ("5", "6", "7"):
+                    is_inbound = False
                 else:
-                    direction, purpose, party, move = "out", "remessa", dest, "full_out"
+                    logger.warning(
+                        "[sync-ml-fiscal] nota ...%s sem tpNF/CFOP p/ definir direção — pulada",
+                        access_key[-6:],
+                    )
+                    skipped += 1
+                    continue
+
+                full_dest = await is_full_cnpj(db, dest.get("document") or "", cmig_id)
+                full_emit = await is_full_cnpj(db, emit.get("document") or "", cmig_id)
+                full = full_dest or full_emit
+
+                # ── Classificação em baldes ─────────────────────────────────────
+                review_note = None
+                matched_order_id = None
+                if full:
+                    # BALDE FULL (comportamento inalterado): move estoque LOCAL⇄FULL.
+                    # NB: `move="full_out"/"full_in"` aqui = remessa/retorno que CREDITA/DEBITA
+                    # o FULL via NF-e. NÃO confundir com o débito de venda do FULL da ADR-0019
+                    # (dirigido pelo PEDIDO em recompute_full_stock) — este código não o emite.
+                    if is_inbound:
+                        direction, purpose, party, move = "in", "retorno", emit, "full_in"
+                    else:
+                        direction, purpose, party, move = "out", "remessa", dest, "full_out"
+                elif is_inbound:
+                    # BALDE DEVOLUÇÃO (não-FULL, entrada): fiscal-only, NÃO move estoque (ADR-0009).
+                    direction, purpose, party, move = "in", "devolucao", emit, "none"
+                    for rk in parsed.get("referenced_keys", []):
+                        mo = (
+                            await db.execute(
+                                select(Order.id).where(
+                                    and_(Order.nfe_key == rk, Order.cmig_id == cmig_id)
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if mo:
+                            matched_order_id = mo
+                            break
+                else:
+                    # Saída não-FULL: venda casada com pedido OU saída sem pedido (SINALIZAR).
+                    direction, purpose, party, move = "out", "venda", dest, "none"
+                    matched_order_id = (
+                        await db.execute(
+                            select(Order.id).where(
+                                and_(Order.nfe_key == access_key, Order.cmig_id == cmig_id)
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if not matched_order_id:
+                        # BALDE SAÍDA-SEM-PEDIDO: registra e SINALIZA (order_id NULL + fiscal_info).
+                        # NÃO debita estoque (bonificação/brinde/comodato/amostra a revisar).
+                        review_note = (
+                            "Saída do Faturador ML sem pedido casado — revisar "
+                            "(bonificação/brinde/comodato/amostra?)."
+                        )
 
                 person = (
                     await _upsert_recipient(party, cmig_id, db)
@@ -2873,19 +3180,22 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                     cmig_id=cmig_id,
                     direction=direction,
                     purpose=purpose,
-                    model=parsed.get("model") or "55",
+                    model=model,
                     serie=parsed.get("serie"),
                     nfe_number=parsed.get("nfe_number"),
                     access_key=access_key,
                     person_id=person.id,
+                    order_id=matched_order_id,
                     natureza_operacao=parsed.get("natureza_operacao"),
                     issue_date=parsed.get("issue_date"),
                     exit_date=parsed.get("exit_date"),
                     status="authorized",
-                    inbound_source="xml_upload",
-                    manifestation="not_required",
+                    source="ml_faturador",
+                    inbound_source="xml_upload" if direction == "in" else None,
+                    manifestation="not_required" if direction == "in" else None,
                     freight_modality=transport.get("freight_modality"),
                     additional_info=parsed.get("additional_info") or None,
+                    fiscal_info=review_note,
                     total_products=totals.get("total_products") or Decimal("0"),
                     total_freight=totals.get("total_freight") or Decimal("0"),
                     total_insurance=totals.get("total_insurance") or Decimal("0"),
@@ -2907,87 +3217,75 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                     await db.flush()
                     await _resolve_item_match(item, cmig_id, db)
 
+                # ── Estoque: SOMENTE o balde FULL move (stock_updated fica False nos demais) ──
                 if _is_simbolica(inv.natureza_operacao):
-                    # Nota simbólica: registra (mantém a sequência fiscal) mas NÃO
-                    # movimenta estoque — stock_updated fica False (fora do recompute).
+                    # Simbólica: registra (mantém a sequência) mas NÃO move estoque.
                     simbolicas += 1
                 elif move == "full_out":
                     await _apply_stock_movement(inv, db)
-                    await apply_nfe_saida_to_full(db, inv, full_account_id)
+                    await apply_nfe_saida_to_full(db, inv, full.marketplace_account_id)
                     full_moved += 1
-                else:  # full_in
+                elif move == "full_in":
                     await _apply_stock_movement(inv, db)
-                    await apply_nfe_entrada_from_full(db, inv, full_account_id)
+                    await apply_nfe_entrada_from_full(db, inv, full.marketplace_account_id)
                     full_moved += 1
+                elif direction == "in":
+                    devolucoes += 1  # fiscal-only
+                elif matched_order_id:
+                    vendas_casadas += 1  # fiscal-only (pedido já debitou)
+                else:
+                    saidas_sem_pedido += 1  # SINALIZADA (order_id NULL + fiscal_info)
 
                 await db.commit()
                 created += 1
         except Exception as e:  # noqa: BLE001
+            errored += 1  # nota problemática não some em silêncio — vai no resumo
             logger.warning("[sync-ml-fiscal] nota ...%s: %s", access_key[-6:], e)
 
-    # Furos de sequência (cross-mês): une os números vistos no lote com TODOS os já
-    # persistidos no DB para a mesma série/CMIG, e acha o que falta no [min,max] global.
-    # Assim um furo que pertence a outro mês também é detectado (sincronizar de novo).
+    # Furos de sequência (cross-mês): agora que TODAS as notas do lote foram persistidas
+    # (Fase 3c), a reconciliação sai do estado do BD via o helper reutilizável (Fase 3d),
+    # que já cruza inutilizações e ignora devolução. Reporta só as séries vistas no lote.
     gaps: dict[int, list[int]] = {}
+    seen_series = set(seq.keys())
     async with task_db() as db:
-        for serie, nums in seq.items():
-            db_nums = (
-                await db.execute(
-                    select(Invoice.nfe_number).where(
-                        Invoice.cmig_id == cmig_id,
-                        Invoice.serie == serie,
-                        Invoice.nfe_number.isnot(None),
-                    )
-                )
-            ).scalars().all()
-            allnums = set(nums) | {int(n) for n in db_nums if n is not None}
-            if len(allnums) < 2:
-                continue
-            lo, hi = min(allnums), max(allnums)
-            missing = [n for n in range(lo, hi + 1) if n not in allnums]
-            if missing:
-                gaps[serie] = missing[:200]
+        rep = await _compute_sequence_report(db, cmig_id, missing_cap=200)
+    for s in rep["series"]:
+        if s["serie"] in seen_series and s["missing"]:
+            gaps[s["serie"]] = s["missing"]
     if gaps:
         logger.warning(
             "[sync-ml-fiscal] conta %s %s/%s FUROS de sequência (sincronizar de novo): %s",
             account_id, month, year, gaps,
         )
     logger.info(
-        "[sync-ml-fiscal] conta %s %s/%s: criadas=%s puladas=%s full=%s simbolicas=%s furos=%s",
-        account_id, month, year, created, skipped, full_moved, simbolicas,
+        "[sync-ml-fiscal] conta %s %s/%s: criadas=%s (full=%s venda=%s s/pedido=%s devol=%s "
+        "simb=%s) puladas=%s descartadas=%s erros=%s furos=%s",
+        account_id, month, year, created, full_moved, vendas_casadas, saidas_sem_pedido,
+        devolucoes, simbolicas, skipped, descartadas, errored,
         sum(len(v) for v in gaps.values()),
     )
     return {
         "account_id": account_id,
         "created": created,
         "skipped": skipped,
+        "descartadas": descartadas,
+        "errored": errored,
         "full_moved": full_moved,
+        "vendas_casadas": vendas_casadas,
+        "saidas_sem_pedido": saidas_sem_pedido,
+        "devolucoes": devolucoes,
         "simbolicas": simbolicas,
         "gaps": gaps,
     }
 
 
-@router.post("/outbound/sync-ml-fiscal")
-async def sync_ml_fiscal(
-    period: str = Query(..., regex=r"^\d{6}$"),  # AAAAMM
-    cmig_id: int | None = Query(None),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Dispara (em background) a sincronização de TODAS as NF-e do mês das contas
-    ML da CMIG via batch do Faturador — incluindo as notas de remessa para o FULL
-    que o sync por pedido não enxerga. Frontend recarrega a lista após alguns segundos."""
-    accessible = await _accessible_cmig_ids(current_user, db)
-    if not accessible:
-        return {"started": 0, "accounts": 0, "period": period}
-    cmig_ids = [cmig_id] if cmig_id is not None else accessible
-    if cmig_id is not None and cmig_id not in accessible:
-        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
-
-    year, month = int(period[:4]), int(period[4:6])
-    if not (1 <= month <= 12):
-        raise HTTPException(status_code=422, detail="Período inválido (use AAAAMM).")
-
+async def _launch_ml_fiscal_sync(
+    db: AsyncSession, cmig_ids: list[int], periods: list[tuple[int, int]], uid: int
+) -> int:
+    """Resolve as contas ML ativas das CMIGs e dispara, em BACKGROUND, o sync fiscal do
+    batch do Faturador para cada (conta × período). Sequencial (o batch é sensível a 429).
+    Compartilhado por sync mensal e backfill (evita divergência de RBAC/duplicação). Retorna
+    o nº de contas."""
     accounts = (
         await db.execute(
             select(MarketplaceAccount).where(
@@ -3001,17 +3299,106 @@ async def sync_ml_fiscal(
     pairs = [(acc.id, acc.cmig_id) for acc in accounts]
 
     async def _run():
-        # Sequencial (não paralelo) — o batch do Faturador é sensível a rate limit (429).
         for acc_id, acc_cmig in pairs:
-            try:
-                await _sync_ml_fiscal_account(acc_id, acc_cmig, year, month, current_user.id)
-            except Exception as e:  # noqa: BLE001
-                logger.error("[sync-ml-fiscal] conta %s: %s", acc_id, e)
+            for (yy, mm) in periods:
+                try:
+                    await _sync_ml_fiscal_account(acc_id, acc_cmig, yy, mm, uid)
+                except Exception as e:  # noqa: BLE001
+                    logger.error("[ml-fiscal-sync] conta %s %s/%s: %s", acc_id, mm, yy, e)
 
     task = asyncio.create_task(_run())
     _BG_TASKS.add(task)  # retém referência (evita coleta pelo GC)
     task.add_done_callback(_BG_TASKS.discard)
-    return {"started": len(pairs), "accounts": len(pairs), "period": period}
+    return len(pairs)
+
+
+@router.post("/outbound/sync-ml-fiscal")
+async def sync_ml_fiscal(
+    period: str = Query(..., regex=r"^\d{6}$"),  # AAAAMM
+    cmig_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ac", "admin")),
+):
+    """Dispara (em background) a sincronização de TODAS as NF-e do mês das contas ML da
+    CMIG via batch do Faturador — grava a sequência completa e move estoque das notas FULL.
+    Restrito a ac/admin (escrita fiscal + movimento de estoque), como /inutilize."""
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if not accessible:
+        return {"started": 0, "accounts": 0, "period": period}
+    cmig_ids = [cmig_id] if cmig_id is not None else accessible
+    if cmig_id is not None and cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+
+    year, month = int(period[:4]), int(period[4:6])
+    if not (1 <= month <= 12):
+        raise HTTPException(status_code=422, detail="Período inválido (use AAAAMM).")
+
+    started = await _launch_ml_fiscal_sync(db, cmig_ids, [(year, month)], current_user.id)
+    return {"started": started, "accounts": started, "period": period}
+
+
+@router.post("/outbound/backfill-ml-fiscal")
+async def backfill_ml_fiscal(
+    cmig_id: int | None = Query(None),
+    months: int = Query(6, ge=1, le=24),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ac", "admin")),
+):
+    """Backfill (em background) de TODAS as NF-e dos últimos `months` meses das contas
+    ML da CMIG — varre mês a mês do mais recente ao mais antigo (Fase 4). Idempotente:
+    o dedup por chave da Fase 3c evita duplicar o que já foi capturado. Roda DEPOIS da
+    paginação (Fase 3b) já estar no ar, então o volume gerado não estoura a listagem.
+    Restrito a ac/admin (escrita fiscal + movimento de estoque), como o sync mensal."""
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if not accessible:
+        return {"started": 0, "accounts": 0, "months": months, "periods": []}
+    cmig_ids = [cmig_id] if cmig_id is not None else accessible
+    if cmig_id is not None and cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+
+    # Lista de (ano, mês) do mais recente p/ trás (datetime.now aqui, no request, é seguro).
+    from datetime import datetime as _dt
+    today = _dt.now()
+    periods: list[tuple[int, int]] = []
+    y, m = today.year, today.month
+    for _ in range(months):
+        periods.append((y, m))
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+
+    started = await _launch_ml_fiscal_sync(db, cmig_ids, periods, current_user.id)
+    return {"started": started, "accounts": started, "months": months,
+            "periods": [f"{yy}{mm:02d}" for yy, mm in periods]}
+
+
+@router.get("/outbound/sequence-report")
+async def outbound_sequence_report(
+    cmig_id: int | None = Query(None),
+    serie: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Relatório READ-ONLY da sequência de NF-e emitidas por CMIG (Fase 3d/4): por série,
+    total, faixa [min,max], furos reais (descontando inutilizações), inutilizados e
+    cancelados. Furo = ALERTA (pode ser inutilização feita no ML, que a API não expõe)."""
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if not accessible:
+        return {"items": []}
+    if cmig_id is not None and cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+    target = [cmig_id] if cmig_id is not None else accessible
+
+    cmig_names = dict(
+        (await db.execute(select(CMIG.id, CMIG.company_name).where(CMIG.id.in_(target)))).all()
+    )
+    items = []
+    for cid in target:
+        rep = await _compute_sequence_report(db, cid, serie=serie)
+        if rep["series"]:
+            items.append({"cmig_id": cid, "cmig_name": cmig_names.get(cid), **rep})
+    return {"items": items}
 
 
 # ── Geração de NFe a partir de Pedido (saída automática) ─────────────────────
@@ -3321,7 +3708,65 @@ async def inutilize_nfe_range(
             status_code=422,
             detail=f"SEFAZ não inutilizou (cStat {result.get('cstat')}): {result.get('motivo')}",
         )
+
+    # Persiste a faixa inutilizada para a reconciliação de sequência (Fase 3d) NÃO
+    # reportar esses números como furo. Sem este registro, todo número inutilizado
+    # apareceria como furo falso.
+    inut = NfeInutilizacao(
+        cmig_id=int(cmig_id),
+        serie=int(serie),
+        nro_ini=int(nro_ini),
+        nro_fim=int(nro_fim),
+        justificativa=justificativa,
+        protocol=result.get("protocolo"),
+        inut_date=datetime.utcnow(),
+        source="sefaz_own",
+    )
+    db.add(inut)
+    await db.commit()
     return {
         "detail": f"Numeração {nro_ini}-{nro_fim} (série {serie}/{ano}) inutilizada",
         "protocolo": result.get("protocolo"),
     }
+
+
+@router.post("/outbound/inutilizacao-manual")
+async def register_manual_inutilizacao(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ac", "admin")),
+):
+    """Registra uma faixa de numeração inutilizada FORA do sistema — tipicamente uma
+    inutilização feita no próprio Mercado Livre (a API do ML não a expõe), para a
+    reconciliação de sequência (Fase 3d) não reportar esses números como furo.
+
+    Body: cmig_id, serie, nro_ini, nro_fim, justificativa?  (source='manual')."""
+    cmig_id = body.get("cmig_id")
+    if not cmig_id:
+        raise HTTPException(status_code=422, detail="cmig_id obrigatório")
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+
+    try:
+        serie = int(body.get("serie", 1))
+        nro_ini = int(body.get("nro_ini"))
+        nro_fim = int(body.get("nro_fim") or nro_ini)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="serie/nro_ini/nro_fim inválidos")
+    if nro_fim < nro_ini:
+        raise HTTPException(status_code=422, detail="nro_fim deve ser >= nro_ini")
+
+    inut = NfeInutilizacao(
+        cmig_id=int(cmig_id),
+        serie=serie,
+        nro_ini=nro_ini,
+        nro_fim=nro_fim,
+        justificativa=(body.get("justificativa") or "Inutilização registrada manualmente").strip()[:255],
+        protocol=None,
+        inut_date=datetime.utcnow(),
+        source="manual",
+    )
+    db.add(inut)
+    await db.commit()
+    return {"detail": f"Faixa {nro_ini}-{nro_fim} (série {serie}) registrada como inutilizada"}

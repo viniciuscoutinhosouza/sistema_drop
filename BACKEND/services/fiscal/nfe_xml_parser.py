@@ -166,6 +166,7 @@ def parse_nfe_xml(xml_content: str | bytes) -> dict:
     return {
         "access_key": access_key,
         "model": str(ide.get("mod") or "55"),
+        "tp_nf": _to_int(ide.get("tpNF")),  # 0=entrada, 1=saída (canônico p/ direção — MOC B11)
         "serie": _to_int(ide.get("serie"), 1),
         "nfe_number": _to_int(ide.get("nNF")),
         "issue_date": _parse_dt(ide.get("dhEmi") or ide.get("dEmi")),

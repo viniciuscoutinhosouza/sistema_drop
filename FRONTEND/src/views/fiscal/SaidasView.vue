@@ -22,6 +22,18 @@
               <i class="fas mr-1" :class="syncing ? 'fa-spinner fa-spin' : 'fa-sync'"></i>
               {{ syncing ? `Sincronizando… (${syncProgress})` : 'Sincronizar NF-e do ML' }}
             </button>
+            <button class="btn btn-outline-dark mr-2" :disabled="backfilling || loading"
+                    title="Captura TODAS as NF-e dos últimos 6 meses (fecha a sequência histórica sem furo)"
+                    @click="doBackfill">
+              <i class="fas mr-1" :class="backfilling ? 'fa-spinner fa-spin' : 'fa-history'"></i>
+              {{ backfilling ? 'Backfill…' : 'Backfill (6 meses)' }}
+            </button>
+            <button class="btn btn-outline-warning mr-2" :disabled="seqLoading"
+                    title="Relatório da sequência de numeração: mostra os furos reais por série"
+                    @click="loadSequenceReport">
+              <i class="fas mr-1" :class="seqLoading ? 'fa-spinner fa-spin' : 'fa-list-ol'"></i>
+              Sequência
+            </button>
             <button class="btn btn-outline-secondary mr-2" :disabled="exporting" @click="doExport('xml')">
               <i class="fas mr-1" :class="exporting === 'xml' ? 'fa-spinner fa-spin' : 'fa-file-code'"></i>
               Exportar XMLs
@@ -103,6 +115,57 @@
           </div>
         </div>
 
+        <!-- Relatório de sequência (furos por série) -->
+        <div v-if="seqReport" class="card border-warning mb-3">
+          <div class="card-header d-flex justify-content-between align-items-center" style="background:#fff3cd">
+            <strong><i class="fas fa-list-ol mr-1"></i> Sequência de numeração — furos por série</strong>
+            <button class="btn btn-sm btn-outline-secondary" @click="seqReport = null">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+          <div class="card-body">
+            <p v-if="!seqReport.items || seqReport.items.length === 0" class="text-muted mb-0">
+              Nenhuma nota emitida encontrada para reconciliar. Rode o Backfill primeiro.
+            </p>
+            <div v-for="cm in (seqReport.items || [])" :key="cm.cmig_id" class="mb-3">
+              <h6 class="mb-2"><i class="fas fa-building text-muted mr-1"></i>{{ cm.cmig_name || ('CMIG #' + cm.cmig_id) }}</h6>
+              <table class="table table-sm table-bordered mb-0">
+                <thead class="thead-light">
+                  <tr>
+                    <th>Série</th><th class="text-right">Notas</th><th>Faixa</th>
+                    <th class="text-right">Furos</th><th class="text-right">Inutilizados</th>
+                    <th class="text-right">Cancelados</th><th>Números faltantes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="s in cm.series" :key="s.serie" :class="{ 'table-warning': s.missing_count > 0 }">
+                    <td><strong>{{ s.serie }}</strong></td>
+                    <td class="text-right">{{ s.count }}</td>
+                    <td>{{ s.min }}–{{ s.max }}</td>
+                    <td class="text-right" :class="s.missing_count ? 'text-danger font-weight-bold' : 'text-success'">
+                      {{ s.missing_count }}
+                    </td>
+                    <td class="text-right">{{ s.inutilized_count }}</td>
+                    <td class="text-right">{{ s.cancelled_count }}</td>
+                    <td style="max-width:340px;font-size:.8rem">
+                      <span v-if="s.missing_count === 0" class="text-success">— sequência completa</span>
+                      <span v-else class="text-danger">
+                        {{ s.missing.join(', ') }}<span v-if="s.missing_truncated">… (+{{ s.missing_count - s.missing.length }})</span>
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <small class="text-muted d-block mt-2">
+              <i class="fas fa-info-circle mr-1"></i>
+              Furo = número ausente que não está coberto por inutilização registrada. Pode ser
+              inutilização feita no próprio ML (a API não expõe) ou nota de outro mês ainda não
+              sincronizada — rode o Backfill e reveja.
+            </small>
+          </div>
+        </div>
+
         <!-- Tabela -->
         <div class="card">
           <div class="card-body p-0">
@@ -143,6 +206,8 @@
                   </td>
                   <td>
                     {{ inv.nfe_type_label }}
+                    <i v-if="inv.needs_review" class="fas fa-exclamation-triangle text-warning ml-1"
+                       :title="inv.review_note || 'Saída do Faturador ML sem pedido casado — revisar'"></i>
                   </td>
                   <td>{{ formatDate(inv.issue_date) }}</td>
                   <td>
@@ -332,6 +397,39 @@ async function syncAllNfe() {
   }
 }
 
+// Backfill: captura TODAS as NF-e dos últimos 6 meses (fecha a sequência histórica)
+const backfilling = ref(false)
+async function doBackfill() {
+  if (!confirm('Capturar TODAS as NF-e dos últimos 6 meses? Roda em segundo plano e pode levar alguns minutos.')) return
+  backfilling.value = true
+  try {
+    const params = { months: 6 }
+    if (filters.cmig_id) params.cmig_id = filters.cmig_id
+    const data = await fiscalStore.backfillMlFiscal(params)
+    toast.info(`Backfill iniciado para ${data.accounts} conta(s), ${data.months} meses. As notas aparecem aos poucos…`)
+    setTimeout(reload, 8000)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao iniciar o backfill')
+  } finally {
+    backfilling.value = false
+  }
+}
+
+// Relatório READ-ONLY da sequência (furos reais por série)
+const seqReport = ref(null)
+const seqLoading = ref(false)
+async function loadSequenceReport() {
+  seqLoading.value = true
+  try {
+    const params = filters.cmig_id ? { cmig_id: filters.cmig_id } : {}
+    seqReport.value = await fiscalStore.fetchSequenceReport(params)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao carregar o relatório de sequência')
+  } finally {
+    seqLoading.value = false
+  }
+}
+
 // Sincroniza as NF-e do Faturador ML em lotes até esgotar os pedidos pendentes
 async function syncMl() {
   syncing.value = true
@@ -379,8 +477,9 @@ async function viewDanfe(inv) {
   }
   docLoading.value[rowKey(inv)] = 'danfe'
   try {
-    // NF-e própria (SEFAZ): gera/baixa do backend; ML: via pedido.
-    const path = inv.source === 'fiscal'
+    // NF-e própria (SEFAZ): gera/baixa do backend. Faturador ML (inclui as notas
+    // ml_faturador, que têm source='fiscal' mas invoice_id do ML): baixa via pedido.
+    const path = (inv.source === 'fiscal' && !inv.ml_invoice_id)
       ? `/invoices/${inv.id}/danfe`
       : `/orders/${inv.order_id}/invoices/${inv.ml_invoice_id}/danfe`
     const resp = await api.get(path, { responseType: 'blob' })
@@ -397,7 +496,7 @@ async function downloadXml(inv) {
   if (!inv.xml_available) { toast.warning('XML não disponível para esta NF-e'); return }
   docLoading.value[rowKey(inv)] = 'xml'
   try {
-    const path = inv.source === 'fiscal'
+    const path = (inv.source === 'fiscal' && !inv.ml_invoice_id)
       ? `/invoices/${inv.id}/xml`
       : `/orders/${inv.order_id}/invoices/${inv.ml_invoice_id}/xml`
     const resp = await api.get(path, { responseType: 'blob' })

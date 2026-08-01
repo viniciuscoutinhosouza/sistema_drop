@@ -201,10 +201,9 @@ class Invoice(Base):
     emission_provider = Column(String(10), default="focus")  # focus | sefaz
     # Origem da nota (migration 136): 'ml_faturador' (emitida pelo Faturador ML) | 'fiscal_own'
     # (emissão própria SEFAZ/Focus). NULL = legado → tratar como própria.
+    # (cancel_protocol/cancelled_at já existem no bloco "Cancelamento" abaixo — o ADD da
+    #  migration 136 para esses dois é no-op idempotente; só `source` foi realmente novo.)
     source = Column(String(20))
-    # Cancelamento refletido na própria linha (dedup por chave = upsert de status).
-    cancel_protocol = Column(String(50))
-    cancelled_at = Column(TIMESTAMP(timezone=True))
 
     # Arquivos
     xml_url = Column(String(1000))

@@ -51,6 +51,18 @@ export const useFiscalStore = defineStore('fiscal', () => {
     return data
   }
 
+  // Backfill: captura TODAS as NF-e dos últimos N meses (fecha a sequência histórica)
+  async function backfillMlFiscal(params = {}) {
+    const { data } = await api.post('/invoices/outbound/backfill-ml-fiscal', null, { params })
+    return data
+  }
+
+  // Relatório READ-ONLY da sequência de NF-e emitidas (furos reais por série)
+  async function fetchSequenceReport(params = {}) {
+    const { data } = await api.get('/invoices/outbound/sequence-report', { params })
+    return data
+  }
+
   // Exporta um .zip com XMLs ou DANFEs das NF-e de saída filtradas
   async function exportOutbound(kind, filters = {}) {
     const { data, headers } = await api.get('/invoices/outbound/export', {
@@ -151,6 +163,7 @@ export const useFiscalStore = defineStore('fiscal', () => {
   return {
     invoices, total, loading, currentInvoice,
     fetchInvoices, fetchInvoice, fetchOutbound, exportOutbound, syncMlOutbound, syncMlFiscal,
+    backfillMlFiscal, fetchSequenceReport,
     createInvoice, updateInvoice, deleteInvoice,
     addItem, updateItem, deleteItem,
     calculateTaxes, transmit, finalizeNoSefaz, cancel, correctionLetter, sendEmail, refreshStatus,
