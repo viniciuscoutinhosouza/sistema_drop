@@ -9,6 +9,7 @@ Fluxo:
 """
 
 import logging
+import re
 
 from sqlalchemy import case, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,10 @@ from models.order import Order, OrderItem
 from models.stock_movement import StockMovement
 
 logger = logging.getLogger(__name__)
+
+
+def _cnpj_digits(cnpj: str | None) -> str:
+    return re.sub(r"\D", "", cnpj or "")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -336,18 +341,38 @@ async def available_to_push(db: AsyncSession, listing) -> int:
 
 
 async def is_full_cnpj(db: AsyncSession, cnpj: str, cmig_id: int) -> FullCnpj | None:
-    """Retorna o FullCnpj se o CNPJ está cadastrado como FULL para a CMIG."""
-    if not cnpj:
+    """Retorna o FullCnpj se o CNPJ está cadastrado como FULL para a CMIG.
+
+    O FULL do Mercado Livre (EBAZAR.COM.BR LTDA, raiz `03007331`) usa MUITAS filiais — uma por
+    armazém/região (`...002438`, `...007901`, `...022978`, …). Cadastrar cada uma é inviável e
+    novas surgem. Então:
+      1) match EXATO (14 dígitos);
+      2) se falhar, match pela RAIZ (8 primeiros dígitos) contra as filiais FULL JÁ cadastradas
+         nesta CMIG — reconhece TODAS as filiais de um provedor que o dono já declarou como FULL
+         (ao cadastrar ao menos uma filial daquela raiz). Sem isso, remessas às filiais não
+         cadastradas ficam fora do estoque FULL (bug observado: NF-e 2371 → filial `...022978`).
+    Normaliza dígitos (o `person.document` pode vir formatado) e é determinístico por
+    `marketplace_account_id` (evita escolher conta diferente entre real-time e recompute)."""
+    digits = _cnpj_digits(cnpj)
+    if not digits:
         return None
-    return (
+    actives = (
         await db.execute(
-            select(FullCnpj).where(
-                FullCnpj.cnpj == cnpj,
-                FullCnpj.cmig_id == cmig_id,
-                FullCnpj.is_active == 1,
-            )
+            select(FullCnpj)
+            .where(FullCnpj.cmig_id == cmig_id, FullCnpj.is_active == 1)
+            .order_by(FullCnpj.marketplace_account_id)
         )
-    ).scalar_one_or_none()
+    ).scalars().all()
+    for fc in actives:  # 1) match exato
+        if _cnpj_digits(fc.cnpj) == digits:
+            return fc
+    base = digits[:8]  # 2) match por raiz
+    if len(base) < 8:
+        return None
+    for fc in actives:
+        if _cnpj_digits(fc.cnpj)[:8] == base:
+            return fc
+    return None
 
 
 async def _load_items(db: AsyncSession, invoice_id: int) -> list:
