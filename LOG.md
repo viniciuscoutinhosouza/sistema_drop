@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-04 — fix(estoque): FULL reconhece filiais do fulfillment ML por raiz de CNPJ
+
+**Sintoma (dono):** a recontagem de estoque não considerava a **NF-e 2371** (envio para FULL).
+
+**Diagnóstico:** NF-e nº 2371 = invoice id 1995, natureza "Outras Saidas - Remessa para Deposito Temporario" (remessa ao FULL), destinatário **EBAZAR.COM.BR LTDA** (fulfillment do ML), CNPJ `03007331022978`. O `recompute_full_stock` credita o FULL para notas `out` a um CNPJ FULL, mas `is_full_cnpj` exigia **match exato dos 14 dígitos** na tabela `full_cnpjs`. O FULL do ML usa **muitas filiais** da mesma raiz `03007331` (uma por armazém/região); só **2** estavam cadastradas. As outras **~15 filiais** eram ignoradas — **centenas de remessas órfãs** (uma filial com 65 notas, outra com 58; a 2371 na filial `...022978`, não cadastrada). Resultado: FULL cronicamente subcontado (vendas FULL batiam no piso 0 do `max(0,...)`).
+
+**Correção (`services/full_stock_service.py`, commit d3a889d):** `is_full_cnpj` faz match exato e, se falhar, **match pela raiz (8 dígitos)** contra as filiais FULL **já cadastradas** na CMIG — reconhece todas as filiais de um provedor que o dono já declarou como FULL (ao cadastrar ≥1 filial). Normaliza dígitos (documento pode vir formatado) e é determinístico por `marketplace_account_id`. Vale p/ o recompute E o tempo real (`apply_nfe_*`), mantendo paridade. **Verificações de produção antes do fix:** todas as filiais EBAZAR cadastradas → mesma conta (2), sem ambiguidade; **0** saídas para EBAZAR casadas a pedido (sem risco de dupla contagem venda×remessa).
+
+**Backfill + verificação:** `recompute_full_stock(cmig_id=1)` (replay absoluto, idempotente, preserva `reserved_qty`). FULL dos produtos da 2371 subiu (CMIG 249: 97→262; 255: 94→274; 252: 92→243; 101: 30→81; 121: 30→70); **total FULL 1128 → 2314** (as remessas antes ignoradas). 27 produtos recomputados, 0 zerados. Auditado: consistency-auditor (pré, concerns de conta/idempotência/reserva resolvidos) + quality-guardian/adr-checker (fecho). `pytest tests/test_full_stock_cnpj.py` 3 passed.
+
+---
+
 ## 2026-07-29 — fix(shopee): pedido com variação baixa o produto certo (model_sku, não item_sku)
 
 **Sintoma (dono):** alguns pedidos Shopee (produtos com variação) não estavam sendo baixados do estoque.
