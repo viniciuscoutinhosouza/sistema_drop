@@ -238,6 +238,11 @@
                   <i class="nav-icon fas fa-address-book"></i><p>Pessoas</p>
                 </RouterLink>
               </li>
+              <li v-if="canSee('fiscal_entradas') || canSee('fiscal_saidas')" class="nav-item">
+                <RouterLink to="/fiscal/notas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/notas') }">
+                  <i class="nav-icon fas fa-file-invoice"></i><p>Notas Fiscais</p>
+                </RouterLink>
+              </li>
               <li v-if="canSee('fiscal_entradas')" class="nav-item">
                 <RouterLink to="/fiscal/entradas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/entradas') }">
                   <i class="nav-icon fas fa-arrow-down"></i><p>Entradas</p>

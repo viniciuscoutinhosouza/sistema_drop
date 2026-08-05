@@ -103,6 +103,7 @@ const NcmView = () => import('@/views/settings/NcmView.vue')
 // Fiscal (NF-e)
 const EntradasView      = () => import('@/views/fiscal/EntradasView.vue')
 const SaidasView        = () => import('@/views/fiscal/SaidasView.vue')
+const NotasFiscaisView  = () => import('@/views/fiscal/NotasFiscaisView.vue')
 const InvoiceFormView   = () => import('@/views/fiscal/InvoiceFormView.vue')
 const InvoiceDetailView = () => import('@/views/fiscal/InvoiceDetailView.vue')
 const CfopView                  = () => import('@/views/fiscal/CfopView.vue')
@@ -307,7 +308,8 @@ const routes = [
       // Monitoramento de Rotinas — UGO + GO + Admin (GO/Admin herdam pela lógica do guard)
       { path: 'monitoring/jobs', component: SchedulerMonitoringView, meta: { title: 'Monitoramento de Rotinas', role: 'ugo' } },
 
-      // Fiscal — Entradas / Saídas / Config
+      // Fiscal — Notas (unificada) / Entradas / Saídas / Config
+      { path: 'fiscal/notas',             component: NotasFiscaisView,  meta: { title: 'Notas Fiscais' } },
       { path: 'fiscal/entradas',          component: EntradasView,      meta: { title: 'Entradas (NF-e)' } },
       { path: 'fiscal/saidas',            component: SaidasView,        meta: { title: 'Saídas (NF-e)' } },
       { path: 'fiscal/invoices/new',      component: InvoiceFormView,   meta: { title: 'Nova NF-e' } },
