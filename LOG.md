@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-08-05 — fix(estoque): venda de pedido FULL baixa o galpão + bug Oracle `coalesce(col,'')` (achado sistêmico)
+
+Investigação da pendência "FULL por conta ML". **A pendência estava mal anotada:** não há ambiguidade de conta (cada CMIG tem UMA conta ML; MIG=conta#2, LPS=conta#21, e o split já ocorre). O problema é outro — e maior.
+
+**Bug provado (classe sistêmica):** em Oracle `''` **É NULL**, então `func.coalesce(col, "") != "x"` avalia NULL e **descarta a linha**. Medido: `full_stock_service.py:853` derrubava 693 pedidos FULL → **0**. Mesmo padrão em mais 6 lugares, hoje inócuos (medido: `Order.shipping_mode` NULL=0, `Invoice.purpose` NULL=0, `natureza_operacao` NULL=0), mas minas latentes: `full_stock_service:789`, `routers/stock.py:661`, `stock_history.py:47`, `stock_reservation_service.py:809/868/965`.
+
+**Modelo fiscal confirmado pelo dono (fonte de verdade, inverte a ADR-0019):** a venda FULL são **duas notas** — retorno simbólico (entrada: galpão+ / FULL−) e nota de venda (saída: galpão−); juntas representam a baixa. Retorno **sem** venda = produto voltou fisicamente ao galpão. **O pedido NÃO debita o FULL.** O bug da 853 estava, por acidente, produzindo esse comportamento — por isso a linha ganhou um alerta em vez de "correção" (corrigi-la sozinha criaria dupla baixa: FULL de +339 → ≈ −730).
+
+**Corrigido e no ar (`ab0e5c6`):** venda casada com pedido **FULL** passa a chamar `_apply_stock_movement` (ramo novo; venda não-FULL segue fiscal-only, pois o pedido já debitou). Docstring de `local_order_clause` corrigida (prometia tratar NULL como LOCAL; em Oracle descarta).
+
+**Prévia do backfill (read-only, dono pediu prévia antes de aplicar):** apenas **48 notas / 154 un / 4 produtos** — e **todos ficariam negativos** (estoque atual 0 → −127, −13, −10, −4). **Não aplicado.**
+
+**Números corrigidos (eu havia estimado alto):** o galpão da MIG está inflado em **~2108 un** (retorno +2262 creditado, venda −154 debitada; o par deveria ser neutro). O backfill fecha só 154. **Bloqueador real:** `Order.nfe_key` está vazio em **677 dos 779** pedidos FULL → **955 das 1245 notas de venda sem pedido casado**; sem o casamento não há como saber quais notas são de venda FULL, e debitar as não-casadas em bloco causaria dupla baixa nas vendas não-FULL (essas o pedido já debita).
+
+**Verificação:** ruff limpo; pytest 173 passed (2 falhas em `test_orders.py` são **pré-existentes** — confirmado com `git stash`); deploy `ab0e5c6` em produção, `/docs` 200, sem erro de import. Plano auditado ANTES de implementar pelo `consistency-auditor`, que **derrubou a v1** (premissa errada: eu supunha que a nota de venda já debitava o galpão) e apontou regressões evitadas: quebra de idempotência de `reconcile_full_dispatched` (loop de 693 pedidos a cada 15 min comendo reservas) e janela de até 30 dias de sobre-declaração de disponível.
+
+**Pendências abertas:** (1) popular `Order.nfe_key` das vendas FULL (bloqueador do casamento); (2) cadastrar CNPJs FULL da LPS + reprocessar as 70 notas dela (`stock_updated=0`) — aprovado pelo dono, não executado; (3) endurecer os 6 `coalesce` latentes + lição aprendida; (4) ADR-0021 (baixa do FULL dirigida pelo retorno simbólico, superseding o ponto da ADR-0019); (5) os 4 produtos que ficariam negativos indicam histórico incompleto → âncora de inventário FULL.
+
+---
+
 ## 2026-08-04 — feat(fiscal): tela Notas Fiscais — ajustes (11 itens do dono) + export XML/DANFE em lote por CMIG
 
 Refino da tela unificada `Fiscal > Notas` a partir dos 11 ajustes que o dono pediu (print). **No ar** — backend `de34fff`, frontend redeployado.
