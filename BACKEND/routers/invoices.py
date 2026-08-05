@@ -1262,10 +1262,22 @@ async def sync_ml_outbound_invoices(
     if cmig_id is not None and cmig_id not in accessible:
         raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
 
+    # CMIG do pedido: `Order.cmig_id` é NULL em boa parte dos pedidos (o vínculo real é a
+    # conta) → casar TAMBÉM pela conta, senão pedidos legítimos ficam de fora (medido: 61
+    # pedidos FULL da conta #2 com cmig_id NULL).
+    acct_of_cmigs = select(MarketplaceAccount.id).where(MarketplaceAccount.cmig_id.in_(cmig_ids))
     base_filter = and_(
-        Order.cmig_id.in_(cmig_ids),
+        or_(Order.cmig_id.in_(cmig_ids), Order.account_id.in_(acct_of_cmigs)),
         Order.platform == "mercadolivre",
-        Order.nfe_status.isnot(None),
+        # NÃO exigir `nfe_status` preenchido: no pedido FULL o ML emite a nota sozinho e o
+        # vendedor nunca clica em "Emitir NF-e", então `nfe_status` fica vazio — e quem o
+        # preenche é justamente `fetch_and_cache_order_invoices`. Exigi-lo aqui era um
+        # ovo-e-galinha que barrava 100% dos pedidos FULL (medido: 780 elegíveis → 0
+        # processáveis). Basta o pedido já ter sido despachado (aí a nota existe).
+        or_(
+            Order.nfe_status.isnot(None),
+            Order.shipment_status.in_(("shipped", "delivered")),
+        ),
         Order.nfe_invoices_json.is_(None),
     )
 
