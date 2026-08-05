@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-08-05 — fix(fiscal): sync de NF-e nunca alcançava pedido FULL + backfill da baixa do galpão (APLICADO)
+
+**Provocação do dono:** *"Todas as notas de vendas foram geradas a partir de um pedido de venda. Na tela de Gestão de pedidos vejo isso com clareza."* — estava certo, e eu tinha olhado a coluna errada (`Order.nfe_key`). O vínculo real está em `Order.nfe_invoices_json`.
+
+**Causa raiz (`25c30f6`):** `sync_ml_outbound_invoices` exigia `Order.nfe_status IS NOT NULL` para chamar `fetch_and_cache_order_invoices` — mas quem preenche `nfe_status` é **essa própria função**, e no pedido FULL o ML emite a nota sozinho (o vendedor nunca clica em "Emitir NF-e"), então o campo fica vazio. Ovo-e-galinha: **dos 780 pedidos FULL da conta #2, ZERO eram processáveis**; 678 nunca tiveram as notas buscadas. Segundo filtro: `Order.cmig_id` é NULL em 61 pedidos FULL (o vínculo real é a conta). Corrigido: "já despachado OU nfe_status conhecido" + casamento da CMIG também pela conta → 711 elegíveis.
+
+**Coleta executada em produção:** 687 pedidos, **0 erros**, 674 pares FULL. O ML confirma o modelo do dono de forma literal — pedido FULL retorna `transaction_type` **`sale`** + **`symbolic_inbound_return`**; pedido agência/flex retorna **só** `sale`. MIG: 697 vendas FULL ↔ 696 retornos simbólicos (par 1:1).
+
+**Prévia (transação + rollback) e depois APLICAÇÃO** — o dono pediu prévia primeiro e autorizou após conferir:
+- MIG: 689 notas de venda FULL marcadas, **−948 un** em 27 produtos **PG** (ex.: 5276 Kit Mini Bands 157→6; 5467 Foam Roller 314→206; 5465 161→48).
+- LPS: 27 notas, −34 un em 4 produtos.
+- Reversão: lista de invoice ids em `/home/ubuntu/backfill_venda_full_invoices.json`.
+
+**Correção de rota importante:** minha primeira prévia disse "todos os produtos ficariam negativos" — estava medindo o **pote errado** (resolvia para os espelhos CMIG, cujo `stock_quantity` é 0 por construção, ADR-0010). A baixa real cai no **PG**. A prévia honesta (ligando a flag em transação e recalculando pelos calculadores puros, com rollback) mostrou o cenário real: só 2 negativos pequenos.
+
+**Verificado pós-aplicação:** negativos PG = 8 (os 5 pré-existentes — 141, 232, 82, 233, 176 — mais os 3 previstos: 42 −8, 174 −2, 177 −1); CMIG = 2 (322 −14 previsto; 341 −40 **pré-existente**, não tocado pelo backfill). Soma do estoque PG = 2825. Resultado idêntico à prévia.
+
+**Pendente:** cadastrar CNPJs FULL da LPS (aprovado, não executado) + reprocessar as 70 notas dela; ADR-0021; endurecer os 6 `coalesce`; inventário para os produtos negativos.
+
+---
+
 ## 2026-08-05 — fix(estoque): venda de pedido FULL baixa o galpão + bug Oracle `coalesce(col,'')` (achado sistêmico)
 
 Investigação da pendência "FULL por conta ML". **A pendência estava mal anotada:** não há ambiguidade de conta (cada CMIG tem UMA conta ML; MIG=conta#2, LPS=conta#21, e o split já ocorre). O problema é outro — e maior.
