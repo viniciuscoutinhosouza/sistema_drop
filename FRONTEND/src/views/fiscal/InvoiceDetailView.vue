@@ -463,7 +463,10 @@ async function reopenInvoice() {
 
 const directionIcon = computed(() => invoice.value?.direction === 'in' ? 'fa-arrow-down text-warning' : 'fa-arrow-up text-success')
 const directionLabel = computed(() => invoice.value?.direction === 'in' ? 'Entrada' : 'Saída')
-const backUrl = computed(() => invoice.value?.direction === 'in' ? '/fiscal/entradas' : '/fiscal/saidas')
+const backUrl = computed(() => {
+  if (route.query.from === 'notas') return '/fiscal/notas'
+  return invoice.value?.direction === 'in' ? '/fiscal/entradas' : '/fiscal/saidas'
+})
 const canEdit = computed(() => invoice.value?.status === 'draft')
 const canDelete = computed(() => ['draft', 'finalized'].includes(invoice.value?.status))
 const deleteButtonLabel = computed(() =>

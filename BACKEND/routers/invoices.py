@@ -419,7 +419,15 @@ async def _build_notas_rows(db: AsyncSession, invs: list[Invoice], cmig_names: d
         platform_order_id = o.platform_order_id if o else None
         xml_avail = bool(inv.xml_url) or (inv.status == "authorized" and bool(inv.xml_local_path))
         danfe_avail = bool(inv.danfe_url) or (inv.status == "authorized" and bool(inv.xml_local_path))
+        # Faturador ML: sem XML local — baixa via pedido (/orders/{id}/invoices/{ml_invoice_id}/…).
+        ml_inv_id = None
+        if inv.source == "ml_faturador" and o is not None:
+            ml_inv_id = _ml_invoice_id_from_order(o)
+            _ok = o.nfe_status == "authorized" and bool(ml_inv_id)
+            xml_avail = _ok
+            danfe_avail = _ok
         rows.append({
+            "ml_invoice_id": ml_inv_id,
             "id": inv.id,
             "source": inv.source,
             "direction": inv.direction,
@@ -504,6 +512,134 @@ async def list_notas(
         "page": page,
         "page_size": page_size,
     }
+
+
+@router.get("/notas/export")
+async def export_notas(
+    kind: str = Query(..., regex="^(xml|danfe)$"),
+    direction: str = Query("all", regex="^(all|in|out)$"),
+    cmig_id: int | None = Query(None),
+    status: str | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    search: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Exporta um .zip com XMLs (ou DANFEs) das NF-e filtradas (entrada + saída), **agrupadas por
+    CMIG** (uma pasta por CMIG). Own SEFAZ lê o XML local; Faturador ML baixa do ML."""
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if not accessible:
+        raise HTTPException(status_code=404, detail="Nenhuma CMIG acessível")
+    if cmig_id is not None and cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+    cmig_ids = [cmig_id] if cmig_id is not None else accessible
+    MAX = 400
+    stmt = (await _notas_query(db, cmig_ids, direction, status, date_from, date_to, search)).order_by(
+        Invoice.serie.desc().nullslast(), Invoice.nfe_number.desc().nullslast()
+    ).limit(MAX * 5)
+    invs = (await db.execute(stmt)).scalars().all()
+    cmig_names = dict(
+        (await db.execute(select(CMIG.id, CMIG.company_name).where(CMIG.id.in_(cmig_ids)))).all()
+    )
+    rows = await _build_notas_rows(db, invs, cmig_names)
+    # `danfe_available`/`xml_available` só marca doc COM valor fiscal (autorizado ou XML local).
+    # Prévia de rascunho ("SEM VALOR FISCAL") é baixável individualmente, mas de propósito NÃO
+    # entra no lote — o zip é o que vai ao contador, não pode conter documento sem valor.
+    avail_key = "xml_available" if kind == "xml" else "danfe_available"
+    rows = [r for r in rows if r.get(avail_key)]
+    capped = len(rows) > MAX
+    rows = rows[:MAX]
+    if not rows:
+        raise HTTPException(status_code=404, detail="Nenhuma NF-e com documento disponível no filtro")
+
+    ml_order_ids = [r["order_id"] for r in rows if r.get("ml_invoice_id") and r.get("order_id")]
+    accounts_by_order: dict[int, MarketplaceAccount] = {}
+    if ml_order_ids:
+        o_rows = (
+            await db.execute(select(Order.id, Order.account_id).where(Order.id.in_(ml_order_ids)))
+        ).all()
+        acc_ids = {aid for _, aid in o_rows if aid}
+        accs = {}
+        if acc_ids:
+            accs = {
+                a.id: a
+                for a in (
+                    await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id.in_(acc_ids)))
+                ).scalars().all()
+            }
+        accounts_by_order = {oid: accs.get(aid) for oid, aid in o_rows}
+
+    ext = "xml" if kind == "xml" else "pdf"
+    errors: list[str] = []
+    used_names: set[str] = set()
+    buf = _io.BytesIO()
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
+        for r in rows:
+            label = f"NFe {r['nfe_number'] or r['access_key'] or r['id']}"
+            try:
+                # NF-e servida pelo backend (sefaz_own / manual-upload): sem ml_invoice_id.
+                # Faturador ML: ml_invoice_id preenchido → baixa do ML pelo pedido.
+                if not r.get("ml_invoice_id"):
+                    finv = (await db.execute(select(Invoice).where(Invoice.id == r["id"]))).scalar_one_or_none()
+                    if not finv or not finv.xml_local_path:
+                        errors.append(f"{label}: XML autorizado indisponível")
+                        continue
+                    try:
+                        xml_text = _read_authorized_xml(finv)
+                    except HTTPException:
+                        errors.append(f"{label}: arquivo XML não encontrado")
+                        continue
+                    if kind == "xml":
+                        content = xml_text.encode("utf-8")
+                    else:
+                        from services.fiscal.sefaz.danfe import DanfeError, gerar_danfe
+                        try:
+                            content = await asyncio.to_thread(gerar_danfe, xml_text)
+                        except DanfeError as e:
+                            errors.append(f"{label}: falha ao gerar DANFE ({e})")
+                            continue
+                else:
+                    acc = accounts_by_order.get(r["order_id"])
+                    inv_id = r["ml_invoice_id"]
+                    if not acc or not acc.access_token or not inv_id:
+                        errors.append(f"{label}: pedido ML sem conta válida ou invoice_id")
+                        continue
+                    if kind == "xml":
+                        path = f"/users/{acc.platform_user_id}/invoices/documents/xml/{inv_id}/authorized"
+                    else:
+                        path = f"/users/{acc.platform_user_id}/invoices/sites/MLB/documents/danfe/{inv_id}"
+                    content, _ = await _ml.fetch_invoice_file(acc.access_token, path)
+
+                folder = _re.sub(r"[^\w\- ]", "_", (r["cmig_name"] or f"CMIG_{r['cmig_id']}")).strip() or f"CMIG_{r['cmig_id']}"
+                base = _re.sub(r"[^\w\-.]", "_", str(r["access_key"] or f"{r['source']}_{r['id']}"))
+                name = f"{folder}/{base}.{ext}"
+                n = 1
+                while name in used_names:
+                    name = f"{folder}/{base}_{n}.{ext}"
+                    n += 1
+                used_names.add(name)
+                zf.writestr(name, content)
+            except HTTPException as e:
+                errors.append(f"{label}: {e.detail}")
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{label}: {e}")
+
+        notes = []
+        if capped:
+            notes.append(f"Exportação limitada a {MAX} NF-e. Refine os filtros para exportar o restante.")
+        if errors:
+            notes.append(f"{len(errors)} NF-e não puderam ser baixadas:\n" + "\n".join(errors))
+        if notes:
+            zf.writestr("_avisos.txt", "\n\n".join(notes))
+
+    buf.seek(0)
+    fname = f"notas_{kind}_{date.today().isoformat()}.zip"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 # ── Saídas unificadas (NF-e do módulo fiscal + Faturador ML) ──────────────────
