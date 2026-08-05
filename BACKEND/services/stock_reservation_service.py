@@ -15,7 +15,7 @@ available_quantity (computed) = stock_quantity - reserved_quantity
 
 import logging
 
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -806,7 +806,7 @@ async def recompute_reservations_from_movements(db) -> dict:
             StockMovement.movement_type == "reserve",
             StockMovement.product_type.in_(["pg", "cmig"]),
             StockMovement.order_id.is_not(None),
-            func.coalesce(Order.shipping_mode, "") != "full",
+            or_(Order.shipping_mode.is_(None), Order.shipping_mode != "full"),  # L-012: coalesce(x,"") descarta NULL no Oracle
             ~exists(
                 select(cancel.id).where(
                     cancel.order_id == StockMovement.order_id,
@@ -865,7 +865,7 @@ async def recompute_reservations_from_movements(db) -> dict:
             StockMovement.movement_type == "reserve",
             StockMovement.product_type.in_(["pg", "cmig"]),
             StockMovement.order_id.is_not(None),
-            func.coalesce(Order.shipping_mode, "") != "full",
+            or_(Order.shipping_mode.is_(None), Order.shipping_mode != "full"),  # L-012: coalesce(x,"") descarta NULL no Oracle
             ~exists(
                 select(cancel_v.id).where(
                     cancel_v.order_id == StockMovement.order_id,
@@ -962,7 +962,7 @@ async def backfill_orphan_reservations(
             StockMovement.movement_type == "reserve",
             StockMovement.product_type.in_(["pg", "cmig"]),
             StockMovement.order_id.is_not(None),
-            func.coalesce(Order.shipping_mode, "") != "full",
+            or_(Order.shipping_mode.is_(None), Order.shipping_mode != "full"),  # L-012: coalesce(x,"") descarta NULL no Oracle
             Order.status != "cancelled",
             func.coalesce(Order.shipment_status, "").in_(["shipped", "delivered"]),
             ~exists(

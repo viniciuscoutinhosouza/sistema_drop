@@ -365,12 +365,14 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0018](DOCs/decisions/ADR-0018-cmig-identidade-fiscal-mutavel.md) — Identidade fiscal da CMIG é **mutável por substituição** (converter CPF ⇆ CNPJ zera o documento anterior, mantém "exatamente um"); alterar o tipo exige `ac`/`admin`; CPF→CNPJ exige IE+IBGE; efeitos colaterais (regime `live` de pedidos pendentes, recadastro eShip) são **avisados, não bloqueados**; documentos emitidos ficam como snapshot
 - [ADR-0019](DOCs/decisions/ADR-0019-full-recomputavel-replay.md) — Estoque FULL **recomputável (replay)** a partir de 0 (como o local); débito de venda **dirigido pelo pedido** (não pela NF-e), uma única vez e só do FULL; reconciliação por inventário
 - [ADR-0020](DOCs/decisions/ADR-0020-paridade-shopee-por-costuras.md) — Paridade Shopee por **costuras agnósticas** (Fases 1-7) entrando SEMPRE por ramo/rota/função nova, **NUNCA** dentro de bloco `if platform == "mercadolivre"` (regra de ouro); rotas sob `/api/v1/shopee` + `shopee_service` + `listings.py` agnóstico; fiscal = **anexar** XML da emissão própria (ADR-0015/0017), não emitir pela Shopee; logística fora da separação (picking é só ML); superfície comum tocada só aditivamente
+- [ADR-0021](DOCs/decisions/ADR-0021-captura-completa-nfe-faturador-ml.md) — Captura completa das NF-e do Faturador ML (baldes por tipo de nota); **emendada** pela ADR-0022: a venda casada com pedido **FULL** deixou de ser fiscal-only e passa a baixar o galpão
+- [ADR-0022](DOCs/decisions/ADR-0022-baixa-full-dirigida-pelo-retorno-simbolico.md) — Baixa do FULL dirigida pelo **retorno simbólico** (o ML emite 2 notas por venda FULL: `sale` + `symbolic_inbound_return`); o pedido **não** debita o FULL; supersede o ponto correspondente da ADR-0019
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 
 ### Lições Aprendidas
 
-Ver `docs/lessons-learned.md` para armadilhas conhecidas documentadas (L-001 a L-011).
+Ver `docs/lessons-learned.md` para armadilhas conhecidas documentadas (L-001 a L-013).
 
 ---
 

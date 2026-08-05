@@ -4,6 +4,13 @@
 **Status:** Aceito (implementado)
 **Decisores:** Vinicius (proprietário)
 
+
+> **NOTA (2026-08-05, [ADR-0022](ADR-0022-baixa-full-dirigida-pelo-retorno-simbolico.md)):**
+> a afirmação "notas **simbólicas** não movem nada" tem **exceção para o ciclo FULL**. O
+> "Retorno Simbólico de Depósito Temporário" é o evento canônico de baixa do FULL (e de crédito
+> do galpão); o par remessa⇄retorno transfere estoque Galpão⇄FULL independente do rótulo
+> fiscal "simbólico". Simbólica **fora** do ciclo FULL segue inerte.
+
 ## Contexto
 
 O estoque FULL (`full_stock`, chave `(product_type, product_id, marketplace_account_id)`)

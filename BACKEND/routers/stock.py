@@ -652,13 +652,16 @@ async def recompute_all_stock_endpoint(
             # EXCLUI as notas que devem ficar inertes ao recompute (senão a flag em
             # massa as ressuscitaria): devolução (Fase B — fonte canônica é o Return)
             # e movimentação SIMBÓLICA (regra is_simbolica — não movimenta estoque).
-            _nat = func.lower(func.coalesce(Invoice.natureza_operacao, ""))
+            # ⚠ L-012: `coalesce(natureza,"")` devolve NULL no Oracle → o `notlike` abaixo
+            # avalia NULL e DESCARTA a nota. Sentinela NÃO-nula ('x') preserva a intenção
+            # (natureza NULL = não-simbólica = deve ser flagada), igual a fiscal_rules.is_simbolica.
+            _nat = func.lower(func.coalesce(Invoice.natureza_operacao, "x"))
             await db.execute(
                 update(Invoice)
                 .where(
                     Invoice.direction == "in",
                     Invoice.status.in_(("finalized", "authorized")),
-                    func.coalesce(Invoice.purpose, "") != "devolucao",
+                    or_(Invoice.purpose.is_(None), Invoice.purpose != "devolucao"),  # L-012
                     _nat.notlike("%simbolic%"),
                     _nat.notlike("%simbólic%"),
                 )

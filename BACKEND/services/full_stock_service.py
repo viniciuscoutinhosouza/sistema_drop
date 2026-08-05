@@ -763,8 +763,6 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
     sobrescrito pela gravação absoluta → o FULL fica transitoriamente alto e AUTO-CURA no
     próximo recompute (que vê o evento). Rodar em janela de baixo tráfego. Follow-up: cutoff
     por timestamp + reconciliação dos movimentos posteriores (ver ADR-0019)."""
-    from sqlalchemy import func
-
     from models.integration import MarketplaceAccount
     from models.person import Person
 
@@ -786,7 +784,7 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
     # (direction='in'). Mantém paridade replay↔recompute local, sem dupla contagem.
     inv_q = select(Invoice).where(
         Invoice.status.in_(("finalized", "authorized")),
-        func.coalesce(Invoice.purpose, "") != "devolucao",
+        or_(Invoice.purpose.is_(None), Invoice.purpose != "devolucao"),  # L-012
     )
     if cmig_id is not None:
         inv_q = inv_q.where(Invoice.cmig_id == cmig_id)
@@ -846,41 +844,27 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
             )
             scope_account_ids.add(full_account)
 
-    # ── ORDERS (débito de venda FULL) ───────────────────────────────────────────
-    # ⚠ NÃO "corrija" o coalesce abaixo isoladamente. Em Oracle `''` É NULL, então
-    # `coalesce(return_status,'') != 'returned'` avalia NULL e DESCARTA TODA linha com
-    # return_status NULL — que são ~99% dos pedidos (medido: 693 → 0 na conta #2). O efeito
-    # colateral é que o pedido FULL nunca debitou o FullStock, e isso coincide com o modelo
-    # fiscal correto confirmado pelo dono: quem baixa o FULL é o RETORNO SIMBÓLICO (o ML emite
-    # um por venda), não o pedido. Trocar por `or_(col.is_(None), col != 'returned')` aqui, sem
-    # antes remover este bloco de débito por pedido, cria DUPLA BAIXA (retorno −2262 E vendas
-    # −693 na MIG) e derruba o FULL de +339 para ≈ −730. Ver ADR-0021 / lessons-learned.
-    ord_q = select(Order).where(
-        Order.shipping_mode == "full",
-        Order.shipment_status.in_(("shipped", "delivered")),
-        func.coalesce(Order.return_status, "") != "returned",
-    )
-    if cmig_id is not None:
-        ord_q = ord_q.where(
-            Order.account_id.in_(
-                select(MarketplaceAccount.id).where(MarketplaceAccount.cmig_id == cmig_id)
-            )
-        )
-    orders = (await db.execute(ord_q)).scalars().all()
-    for order in orders:
-        if not order.account_id:
-            continue
-        ord_date = order.shipped_at or order.created_at
-        items = await _get_order_items(db, order.id)
-        for item in items:
-            ptype, pid = await resolve_full_product(db, order, item)
-            if ptype != "cmig" or pid is None:
-                continue
-            qty = int(item.quantity or 0)
-            order_events.append((pid, order.account_id, qty))
-            # Venda é DÉBITO → delta negativo no fluxo data-aware.
-            dated_by_key.setdefault((pid, order.account_id), []).append((ord_date, -qty))
-            scope_account_ids.add(order.account_id)
+    # ── ORDERS: o pedido NÃO debita o FULL (ADR-0022) ───────────────────────────
+    # A venda FULL é representada por DUAS notas que o próprio ML emite (verificado ao vivo no
+    # `nfe_invoices_json`): `sale` + `symbolic_inbound_return`. Quem baixa o FULL é o RETORNO
+    # SIMBÓLICO (já contado acima como invoice_event de entrada); a nota de venda baixa o galpão.
+    # Debitar TAMBÉM pelo pedido seria DUPLA BAIXA (na MIG: retorno −2262 e vendas −693 →
+    # FULL de +339 para ≈ −730).
+    #
+    # Este bloco existia (ADR-0019) mas nunca operou: o filtro era
+    # `func.coalesce(Order.return_status, "") != "returned"` e, em Oracle, `''` É NULL → o `!=`
+    # avalia NULL e descarta a linha (medido: 693 pedidos FULL → 0; lição L-012). A proteção,
+    # porém, era acidental — `return_status='awaiting_return'` NÃO é NULL e passaria no filtro,
+    # e `webhook_service` marca `awaiting_return` em qualquer cancelamento pós-despacho, sem
+    # olhar `shipping_mode`. O primeiro pedido FULL cancelado pós-envio cairia na dupla baixa,
+    # em silêncio. Por isso o bloco foi REMOVIDO, não "consertado".
+    #
+    # `order_events` permanece na assinatura de `_accumulate_full_balances` (sempre vazio aqui)
+    # para não quebrar os testes/uso legado dessa função pura.
+    #
+    # ⚠ Pendência (ADR-0022): `apply_full_order_shipped` (caminho INCREMENTAL) ainda debita o FULL
+    # no despacho e libera a reserva junto. Enquanto isso não migrar para o retorno simbólico,
+    # incremental e replay divergem — o replay "devolve" o que o incremental debitou.
 
     # Acumulado "normal" (Fase 1, sem âncora). É o resultado byte-a-byte da Fase 1.
     balances = _accumulate_full_balances(invoice_events, order_events)

@@ -1,8 +1,16 @@
 # ADR-0019 — Estoque FULL recomputável (replay) + débito de venda dirigido pelo pedido + reconciliação por inventário
 
 **Data:** 2026-07-17
-**Status:** ✅ Aceito — Fases 1, 2 e 3 entregues
+**Status:** ⚠️ Aceito, **parcialmente superado** — Fases 1, 2 e 3 entregues
 **Decisores:** Vinicius (proprietário)
+
+> **SUPERSEDIDO NO PONTO "débito de venda dirigido pelo pedido" por
+> [ADR-0022](ADR-0022-baixa-full-dirigida-pelo-retorno-simbolico.md) (2026-08-05).**
+> O ML emite **duas** notas por venda FULL (`sale` + `symbolic_inbound_return`) e quem baixa o
+> FULL é o **retorno simbólico**, não o pedido. O débito por pedido descrito abaixo nunca chegou
+> a operar: o filtro `coalesce(Order.return_status, "") != "returned"` descartava 100% das linhas
+> em Oracle (lição L-012). O restante desta ADR — FULL recomputável por replay e reconciliação
+> por inventário — **continua válido**.
 
 ## Contexto
 

@@ -4,6 +4,12 @@
 - **Data:** 2026-07-31
 - **Contexto ADR relacionadas:** revisa/atualiza [ADR-0008](ADR-0008-nfe-batch-mensal-e-anuncio-full-quando-local-zero.md) §"vendas são puladas"; nota cruzada com [ADR-0009](ADR-0009-devolucao-nfe-driven.md) e [ADR-0019](ADR-0019-full-recomputavel-replay.md).
 
+
+> **EMENDADA em 2026-08-05 por [ADR-0022](ADR-0022-baixa-full-dirigida-pelo-retorno-simbolico.md):**
+> na tabela de baldes, "venda casada → fiscal-only (o pedido já debitou o LOCAL)" vale só para
+> pedido **NÃO-FULL**. O pedido FULL é excluído do débito local por `local_order_clause()`, então
+> a **nota de venda de pedido FULL baixa o galpão** (fecha o par com o retorno simbólico).
+
 ## Contexto
 
 O `_sync_ml_fiscal_account` baixava o **lote mensal (batch) de NF-e do Faturador do Mercado Livre**

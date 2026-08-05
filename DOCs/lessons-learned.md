@@ -83,3 +83,34 @@ Contexto: Rodar FastAPI + asyncio no Windows.
 O que aconteceu: `asyncio` no Windows usa `ProactorEventLoop` por padrão, incompatível com algumas libs.  
 Lição: `WindowsSelectorEventLoopPolicy` deve estar configurado em `main.py`.  
 Como evitar: Não remover o bloco `if sys.platform == 'win32'` do `main.py`.
+
+---
+
+## Oracle / SQLAlchemy
+
+**L-012 | Em Oracle `''` É NULL: `coalesce(col, "") != "x"` descarta silenciosamente**
+Contexto: Filtros do tipo "tudo que NÃO é X, tratando NULL como não-X" no estoque/FULL.
+O que aconteceu: `func.coalesce(Order.return_status, "") != "returned"` em `recompute_full_stock`.
+Oracle trata string vazia como NULL, então o `coalesce` devolve NULL, o `!=` avalia NULL (nem
+verdadeiro nem falso) e a linha é **descartada**. Medição em produção: **693 pedidos FULL → 0**.
+O bug ficou invisível por meses porque a query "funcionava" — só retornava vazio. O mesmo padrão
+existia em mais 6 lugares (reservas, extrato local, replay de NF-e), inertes só porque aquelas
+colunas não tinham NULL.
+Lição: `coalesce(col, '')` NUNCA serve de sentinela em Oracle. Para "NULL conta como não-X",
+escrever explicitamente `or_(col.is_(None), col != "x")`. Em igualdade (`== "x"`) o padrão é
+inofensivo (descartar NULL é o desejado), mas prefira ser explícito.
+Como evitar: ao revisar filtro negativo sobre coluna anulável, **contar as linhas com e sem o
+filtro** antes de confiar. Ver ADR-0022.
+
+**L-013 | Prévia de mudança de estoque: medir o pote certo (PG vs espelho CMIG)**
+Contexto: Prever o efeito de um backfill no galpão antes de aplicar.
+O que aconteceu: a prévia resolveu os itens das notas para o `CMIGProduct` via
+`resolve_full_cmig_product` (a resolução do **FULL**) e concluiu que todos os produtos ficariam
+negativos. Errado: aqueles CMIGProducts são **espelhos** (`is_full_mirror`, ADR-0010) e têm
+`stock_quantity = 0` por construção — o estoque físico vive no `CatalogProduct` (PG). O efeito
+real era −948 com apenas 2 negativos.
+Lição: a baixa local não usa a resolução do FULL; ela liga `stock_updated` e **recomputa pelo
+replay**. Prever isso "à mão" reproduz a lógica errada.
+Como evitar: prévia honesta = abrir transação, aplicar a mudança de verdade (setar a flag),
+chamar os calculadores puros (`calculate_pg_product_stock` / `calculate_cmig_product_stock`),
+imprimir antes/depois e **dar `rollback`**. Nunca reimplementar o cálculo na prévia.
