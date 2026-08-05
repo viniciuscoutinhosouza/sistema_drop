@@ -2880,6 +2880,22 @@ async def fetch_and_cache_order_invoices(db, order: Order, account) -> list[dict
         snapshot = json.dumps(invoices, ensure_ascii=False) if invoices else None
         if snapshot != order.nfe_invoices_json:
             order.nfe_invoices_json = snapshot
+        # Agora que sabemos as chaves das NF-e deste pedido, amarra as Invoice já
+        # persistidas (Faturador ML) ao pedido — é o que faz a tela Fiscal>Notas
+        # mostrar o pedido de venda do marketplace. Sem isto, a nota importada antes
+        # de o pedido ter `nfe_key` em cache fica órfã para sempre.
+        # ⚠ Preenche APENAS `Invoice.order_id`. NUNCA `Order.invoice_id`: o replay de
+        # estoque deriva `invoice_linked_to_order` de `Order.invoice_id` e, se marcado,
+        # a NF-e de saída deixa de debitar o galpão (ADR-0022 / stock_history).
+        keys = [k for k in (i.get("invoice_key") for i in invoices) if k]
+        if keys:
+            from models.fiscal import Invoice as _Inv  # import local (padrão do módulo)
+
+            await db.execute(
+                sa_update(_Inv)
+                .where(_Inv.access_key.in_(keys), _Inv.order_id.is_(None))
+                .values(order_id=order.id)
+            )
         await db.commit()
     except Exception as e:
         print(f"[orders] failed to cache nfe invoices order={order.id}: {e}")
