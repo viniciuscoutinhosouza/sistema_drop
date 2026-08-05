@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-08-05 — ADR-0022 (baixa do FULL pelo retorno simbólico) + classe de bug L-012 do Oracle
+
+Fechamento dos itens que ficaram abertos. **No ar (`0c6e00a`).**
+
+**ADR-0022 — quem baixa o FULL é o retorno simbólico, não o pedido.** Supersede o ponto correspondente da ADR-0019. Base empírica: o `nfe_invoices_json` mostra que o ML emite **duas** notas por venda FULL (`sale` + `symbolic_inbound_return`) e **só uma** (`sale`) em agência/flex. Notas de emenda adicionadas na ADR-0010 (simbólica **do ciclo FULL** move estoque) e na ADR-0021-captura (venda casada de pedido FULL deixou de ser fiscal-only). A ADR-0021-captura, que nunca tinha sido indexada no CLAUDE.md, entrou — foi a causa da colisão de número que a auditoria pegou.
+
+**Bloco de débito por pedido REMOVIDO do `recompute_full_stock`.** Ele nunca operou (bug L-012 descartava 693→0), mas a proteção era **acidental**: `return_status='awaiting_return'` não é NULL e passaria no filtro, e `webhook_service` marca `awaiting_return` em qualquer cancelamento pós-despacho **sem olhar `shipping_mode`** — o primeiro pedido FULL nesse estado cairia em dupla baixa, em silêncio. Achado do quality-guardian.
+
+**L-012 endurecida em 6 pontos** (`coalesce(col,'') != x` → `or_(col.is_(None), col != x)`): `local_order_clause` (alimenta 5 call-sites do cálculo canônico), 3 sites de reserva, `stock.py` e `full_stock_service`. Impacto medido hoje: **0** (as colunas não têm NULL). Também corrigido o `_nat.notlike` do `stock.py`, que divergia de `fiscal_rules.is_simbolica`.
+
+**LPS:** 4 CNPJs do EBAZAR cadastrados; 69 notas reclassificadas (52 `devolucao`→`retorno`, 17 `venda`→`remessa`) — tinham sido importadas erradas porque **não havia FullCnpj cadastrado no momento da importação**, e o replay exclui `devolucao`. FULL da LPS: 112 → 310 → **230** após a reclassificação (real: 78). **Ainda incorreto** — ver pendências. Reversão em `/home/ubuntu/reclassify_lps_purpose.json`.
+
+**Reprocessamento local da LPS NÃO aplicado:** o dry-run mostrou o 5425 Stepper indo a **−101** (a LPS mandou ~93 un ao FULL sem histórico de entrada). Debitar sem as entradas fabrica negativo falso.
+
+**Verificado:** ruff limpo; pytest 173 passed (2 falhas pré-existentes em `test_orders.py`, confirmadas com `git stash`); deploy `0c6e00a` online, `/docs` 200. Auditado por quality-guardian + adr-consistency-checker, que **bloquearam a v1** (colisão de ADR + furo do `awaiting_return`) — ambos corrigidos antes do commit.
+
+**Pendências:** (1) `apply_full_order_shipped` (incremental) ainda debita o FULL no despacho e libera a reserva junto → diverge do replay; migrar a liberação para o retorno simbólico exige casamento FIFO por quantidade (o `InvoiceItem` não tem `order_id`) e novo marcador de idempotência para `reconcile_full_dispatched`. (2) FULL da LPS 230 vs 78 real e MIG 339 vs 305 → âncora de inventário FULL, precisa da contagem **por produto**. (3) Guarda para reclassificar notas de entrada quando um CNPJ vira `FullCnpj` depois da importação. (4) Pedido FULL faturado pela emissão própria (ADR-0015) não baixa o galpão — fronteira conhecida. (5) 8 produtos negativos no PG.
+
+---
+
 ## 2026-08-05 — fix(fiscal): sync de NF-e nunca alcançava pedido FULL + backfill da baixa do galpão (APLICADO)
 
 **Provocação do dono:** *"Todas as notas de vendas foram geradas a partir de um pedido de venda. Na tela de Gestão de pedidos vejo isso com clareza."* — estava certo, e eu tinha olhado a coluna errada (`Order.nfe_key`). O vínculo real está em `Order.nfe_invoices_json`.
