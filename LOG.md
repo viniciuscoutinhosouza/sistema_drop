@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-04 — feat(fiscal): tela Notas Fiscais — ajustes (11 itens do dono) + export XML/DANFE em lote por CMIG
+
+Refino da tela unificada `Fiscal > Notas` a partir dos 11 ajustes que o dono pediu (print). **No ar** — backend `de34fff`, frontend redeployado.
+
+**Backend (`routers/invoices.py`):**
+- Novo `GET /invoices/notas` (endpoint próprio, linhas ricas): identifica CMIG emitente, contraparte (destinatário) + documento, natureza + CFOP, origem + nº do pedido de marketplace com link, valor, status; ordenação por coluna server-side (`sort_by`/`sort_dir`). Reaproveita `_notas_query`/`_build_notas_rows` (agnóstico, filtra por `Invoice` — sem ramo por `platform`).
+- Novo `GET /invoices/notas/export?kind=xml|danfe`: **zip com as NF-e filtradas das DUAS direções (entrada+saída), agrupadas por pasta de CMIG** — own SEFAZ/upload lê XML local (`_read_authorized_xml`/`gerar_danfe`); Faturador ML baixa do ML. Erro por-nota vai para `_avisos.txt` (não derruba o zip); cap 400; prévia de rascunho (sem valor fiscal) fica **fora** do lote; basename sanitizado.
+- Discriminador own vs Faturador ML unificado em **`not ml_invoice_id`** (o `source` real varia: `sefaz_own`/`manual`/`ml_faturador`; as strings antigas `'fiscal'`/`'ml'` estavam erradas).
+
+**Frontend:** `NotasFiscaisView.vue` reescrita — colunas ricas, headers clicáveis (ordenação), download XML/DANFE por linha (own vs ML por `!ml_invoice_id`), botões **Exportar XMLs** e **Exportar PDFs** (lote por CMIG), **Sincronizar mês** (Faturador, todos os marketplaces); `openDetail` injeta `?from=notas`. `InvoiceDetailView.vue`: **"Voltar" honra `?from=notas`** → retorna a Fiscal > Notas (antes caía em Saídas/Entradas).
+
+**Verificação:** `ast.parse` + `ruff` limpos; `npm run build` OK; deploy (pull + `pm2 restart`, backend online em `de34fff`; dist redeployado no nginx). Smoke em produção: `/invoices/notas` e `/notas/export` respondem **401** sem token (rota registrada, não 404). **Download autenticado do zip depende do dono clicar** (não detenho o login). Auditado por quality-guardian (controle de acesso por CMIG OK), consistency-auditor e adr-consistency-checker — **sem CRITICAL/HIGH**, regra de ouro ADR-0020 preservada.
+
+**Débito técnico registrado (não-bloqueante, auditores):** (1) `export_notas` duplica ~120 linhas de `export_outbound_invoices` → extrair helper `_zip_invoice_docs` e unificar o discriminador em `not ml_invoice_id`. (2) `_notas_query` filtra `issue_date` (tz-aware) com `datetime.combine` naive — deveria converter dia BRT→UTC (ADR-0013); afeta `/notas` e `/notas/export`. (3) `fmtDate` deveria usar `utils/formatters.js`. Hook husky `pre-commit` chama `python -m ruff` da venv ativa (`.venv-camoufox`) — ruff instalado nela nesta sessão.
+
+---
+
 ## 2026-08-04 — feat(estoque/fiscal): ciclo FULL do ML (remessa⇄retorno), extrato enriquecido e tela de notas unificada
 
 Sessão longa cobrindo o estoque FULL do Mercado Livre e a gestão fiscal. **Contexto:** o dono viu que a NF-e 2371 (envio ao FULL) não entrava no recálculo, e que as remessas ao FULL debitavam o galpão mas os retornos não creditavam (galpão negativo).
