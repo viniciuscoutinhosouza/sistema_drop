@@ -31,7 +31,6 @@ from models.order import Order
 from models.product import CatalogProduct
 from models.stock_movement import StockMovement
 
-
 _FULL_MOVEMENT_LABELS = {
     "full_in": "Enviado ao FULL",
     "full_out": "Venda FULL",
@@ -256,6 +255,21 @@ async def build_movements_response(
     _floor_ev = max(_baseline_invs, key=lambda e: e.date) if _baseline_invs else None
     _floor_date = _floor_ev.date if _floor_ev else None
 
+    # NF de SAÍDA vinculada ao pedido — exibida NA LINHA do pedido (a NFe-out vinculada a pedido
+    # não vira evento próprio: invoice_linked_to_order a exclui do replay → sem duplicação).
+    _ord_ids = {e.order_id for e in events if e.source == "order" and e.order_id}
+    _ord_nfe: dict[int, tuple] = {}
+    if _ord_ids:
+        for oid, num, ser in (
+            await db.execute(
+                select(Invoice.order_id, Invoice.nfe_number, Invoice.serie).where(
+                    Invoice.order_id.in_(_ord_ids), Invoice.direction == "out"
+                )
+            )
+        ).all():
+            if oid and num and oid not in _ord_nfe:
+                _ord_nfe[oid] = (num, ser)
+
     # Walk cronológico para running_available + snapshots de período (M8)
     visible_events: list[dict] = []
     running_nfe = int(_floor_ev.inventory_counted or 0) if _floor_ev else nfe_only_initial
@@ -310,6 +324,8 @@ async def build_movements_response(
         if e.source == "order" and order_qty_for(e) <= 0:
             continue
         d = e.to_dict()
+        if e.source == "order" and e.order_id in _ord_nfe:
+            d["order_invoice_number"], d["order_invoice_serie"] = _ord_nfe[e.order_id]
         if e.source == "adjustment":
             d["running_balance"] = e.adjustment_new
             d["running_available"] = e.adjustment_new

@@ -64,6 +64,13 @@ class StockEvent:
     invoice_number: int | None = None
     invoice_serie: int | None = None
     invoice_status: str | None = None
+    cfop: str | None = None  # CFOP do item (nfe_in/nfe_out) — exibido no extrato
+    # source='order': modalidade de envio da venda (full | flex | agencia | correios…) e a NF de
+    # SAÍDA vinculada (para mostrar na MESMA linha do pedido, sem duplicar como evento separado —
+    # a NFe-out vinculada a pedido não gera evento próprio: invoice_linked_to_order a exclui).
+    order_shipping_mode: str | None = None
+    order_invoice_number: int | None = None
+    order_invoice_serie: int | None = None
     # True se essa NFe-out tem Order.invoice_id apontando pra ela.
     # No novo modelo, NFe-out vinculada a pedido NÃO debita estoque
     # (o pedido já contou). Default False = NFe-out autônoma.
@@ -188,6 +195,7 @@ async def _fetch_nfe_events_for_cmig_product(
                 invoice_number=inv.nfe_number,
                 invoice_serie=inv.serie,
                 invoice_status=inv.status,
+                cfop=item.cfop,
                 invoice_linked_to_order=(not is_in) and (inv.id in linked_invoice_ids),
                 person_name=person_name,
                 item_description=item.description,
@@ -275,6 +283,7 @@ async def _fetch_order_events_for_cmig_product(
                 order_platform=order.platform,
                 order_platform_id=order.platform_order_id,
                 order_shipment_status=shipment_status,
+                order_shipping_mode=order.shipping_mode,
                 order_has_invoice=has_invoice,
                 order_invoice_finalized=False,
                 is_reserved=shipment_status in RESERVED_STATUSES,
@@ -472,6 +481,7 @@ async def _fetch_direct_pg_events(
                 invoice_linked_to_order=(not is_in) and (inv.id in linked_invoice_ids),
                 invoice_serie=inv.serie,
                 invoice_status=inv.status,
+                cfop=item.cfop,
                 person_name=person_name,
                 item_description=item.description,
                 item_sku=item.sku,
@@ -544,6 +554,7 @@ async def _fetch_direct_pg_order_events(
                 order_platform=order.platform,
                 order_platform_id=order.platform_order_id,
                 order_shipment_status=shipment_status,
+                order_shipping_mode=order.shipping_mode,
                 order_has_invoice=bool(order.invoice_id),
                 order_invoice_finalized=False,
                 is_reserved=shipment_status in RESERVED_STATUSES,
@@ -614,6 +625,7 @@ async def _fetch_kit_component_events(
                 order_platform=order.platform,
                 order_platform_id=order.platform_order_id,
                 order_shipment_status=shipment_status,
+                order_shipping_mode=order.shipping_mode,
                 order_has_invoice=bool(order.invoice_id),
                 order_invoice_finalized=False,
                 is_reserved=shipment_status in RESERVED_STATUSES,
