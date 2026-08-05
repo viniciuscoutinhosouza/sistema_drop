@@ -3312,6 +3312,7 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
 
     created = skipped = full_moved = simbolicas = 0
     vendas_casadas = saidas_sem_pedido = devolucoes = descartadas = errored = 0
+    vendas_full_baixadas = 0  # vendas de pedido FULL que baixaram o galpão (par do retorno)
     seq: dict[int, set[int]] = {}  # série → números de NF-e vistos no lote (p/ furos)
     # O zip do ML não separa por tipo (vem tudo em "emitidas_mercado_livre/"), então
     # classificamos pela própria nota, em BALDES (Fase 3c — guardar TODAS p/ fechar a
@@ -3426,6 +3427,7 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                 # ── Classificação em baldes ─────────────────────────────────────
                 review_note = None
                 matched_order_id = None
+                matched_order_full = False
                 if full:
                     # BALDE FULL (comportamento inalterado): move estoque LOCAL⇄FULL.
                     # NB: `move="full_out"/"full_in"` aqui = remessa/retorno que CREDITA/DEBITA
@@ -3452,13 +3454,17 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                 else:
                     # Saída não-FULL: venda casada com pedido OU saída sem pedido (SINALIZAR).
                     direction, purpose, party, move = "out", "venda", dest, "none"
-                    matched_order_id = (
+                    _mo = (
                         await db.execute(
-                            select(Order.id).where(
+                            select(Order.id, Order.shipping_mode).where(
                                 and_(Order.nfe_key == access_key, Order.cmig_id == cmig_id)
                             )
                         )
-                    ).scalar_one_or_none()
+                    ).first()
+                    matched_order_id = _mo[0] if _mo else None
+                    # Modalidade do pedido casado: decide QUEM baixa o galpão nesta venda
+                    # (ver o ramo `elif matched_order_id:` mais abaixo).
+                    matched_order_full = bool(_mo) and (_mo[1] or "") == "full"
                     if not matched_order_id:
                         # BALDE SAÍDA-SEM-PEDIDO: registra e SINALIZA (order_id NULL + fiscal_info).
                         # NÃO debita estoque (bonificação/brinde/comodato/amostra a revisar).
@@ -3530,8 +3536,19 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                     full_moved += 1
                 elif direction == "in":
                     devolucoes += 1  # fiscal-only
+                elif matched_order_id and matched_order_full:
+                    # VENDA DE PEDIDO FULL: o par fiscal da venda FULL são DUAS notas —
+                    # o retorno simbólico (entrada, devolve ao galpão e debita o FULL) e
+                    # ESTA nota de venda, que dá a baixa FÍSICA do galpão. O PEDIDO FULL é
+                    # excluído do débito local de propósito (`local_order_clause`), então
+                    # sem esta baixa o crédito do retorno fica solto e infla o galpão.
+                    # `full_cycle=True`: participa do ciclo FULL como o retorno que a precede.
+                    await _apply_stock_movement(inv, db, full_cycle=True)
+                    vendas_full_baixadas += 1
                 elif matched_order_id:
-                    vendas_casadas += 1  # fiscal-only (pedido já debitou)
+                    # Venda NÃO-FULL: o pedido já debitou o galpão (local_order_clause inclui
+                    # o pedido não-FULL) → a nota é fiscal-only, senão haveria DUPLA baixa.
+                    vendas_casadas += 1
                 else:
                     saidas_sem_pedido += 1  # SINALIZADA (order_id NULL + fiscal_info)
 
@@ -3571,6 +3588,7 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
         "errored": errored,
         "full_moved": full_moved,
         "vendas_casadas": vendas_casadas,
+        "vendas_full_baixadas": vendas_full_baixadas,
         "saidas_sem_pedido": saidas_sem_pedido,
         "devolucoes": devolucoes,
         "simbolicas": simbolicas,

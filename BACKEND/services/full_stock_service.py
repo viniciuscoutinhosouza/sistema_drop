@@ -847,6 +847,14 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
             scope_account_ids.add(full_account)
 
     # ── ORDERS (débito de venda FULL) ───────────────────────────────────────────
+    # ⚠ NÃO "corrija" o coalesce abaixo isoladamente. Em Oracle `''` É NULL, então
+    # `coalesce(return_status,'') != 'returned'` avalia NULL e DESCARTA TODA linha com
+    # return_status NULL — que são ~99% dos pedidos (medido: 693 → 0 na conta #2). O efeito
+    # colateral é que o pedido FULL nunca debitou o FullStock, e isso coincide com o modelo
+    # fiscal correto confirmado pelo dono: quem baixa o FULL é o RETORNO SIMBÓLICO (o ML emite
+    # um por venda), não o pedido. Trocar por `or_(col.is_(None), col != 'returned')` aqui, sem
+    # antes remover este bloco de débito por pedido, cria DUPLA BAIXA (retorno −2262 E vendas
+    # −693 na MIG) e derruba o FULL de +339 para ≈ −730. Ver ADR-0021 / lessons-learned.
     ord_q = select(Order).where(
         Order.shipping_mode == "full",
         Order.shipment_status.in_(("shipped", "delivered")),

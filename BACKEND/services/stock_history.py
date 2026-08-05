@@ -36,13 +36,19 @@ def local_order_clause():
     """Predicado: pedido que debita o estoque LOCAL (galpão / PG / CMIG).
 
     Pedidos FULL (shipping_mode='full') NÃO debitam o galpão — o produto já saiu
-    do galpão na NF-e de transferência para o CNPJ FULL (evento nfe_out) e a venda
-    é baixada do FullStock por `full_stock_service.apply_full_order_shipped`. Contar
+    do galpão na NF-e de remessa para o CNPJ FULL (evento nfe_out). A venda FULL é
+    representada por DUAS notas (modelo confirmado pelo dono, ADR-0021): o retorno
+    simbólico (entrada: galpão+ / FULL−) e a nota de venda (saída: galpão−). Contar
     o pedido FULL aqui causaria DUPLA baixa do galpão.
 
-    NULL / 'desconhecido' são tratados como LOCAL (mantidos), pois só excluímos o
-    que sabemos ser FULL. Usado por todas as fontes de evento de pedido que
-    alimentam o cálculo canônico de estoque local.
+    ⚠ `coalesce(shipping_mode, "") != "full"`: em Oracle `''` É NULL, então um pedido
+    com shipping_mode NULL é DESCARTADO — o oposto do que a linha seguinte promete.
+    Hoje é inócuo (medido: 0 pedidos com shipping_mode NULL), mas é mina latente:
+    corrigir para `or_(col.is_(None), col != "full")` quando houver o quê testar.
+
+    NULL / 'desconhecido' DEVERIAM ser tratados como LOCAL (mantidos), pois só
+    excluímos o que sabemos ser FULL. Usado por todas as fontes de evento de pedido
+    que alimentam o cálculo canônico de estoque local.
     """
     return func.coalesce(Order.shipping_mode, "") != "full"
 
