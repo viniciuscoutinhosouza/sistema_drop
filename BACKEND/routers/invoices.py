@@ -1586,7 +1586,7 @@ async def transmit_invoice(
     return resp
 
 
-async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
+async def _apply_stock_movement(inv: Invoice, db: AsyncSession, *, full_cycle: bool = False) -> dict:
     """Recalcula estoque dos produtos afetados por esta NFe.
 
     No modelo canônico (event-sourced), `stock_quantity` é cache do resultado
@@ -1596,12 +1596,15 @@ async def _apply_stock_movement(inv: Invoice, db: AsyncSession) -> dict:
 
     `stock_updated=True` é apenas marker histórico de que essa NFe já passou
     por esse processamento (pra evitar reprocessar em loops).
+
+    `full_cycle=True` (remessa/retorno de/para o depósito do ML): MOVE estoque mesmo sendo
+    'simbólico' — o par remessa(galpão−)⇄retorno(galpão+) transfere estoque entre Galpão e FULL.
     """
     from services.fiscal.stock_calculator import recompute_after_invoice_change
 
-    # Guard central: NF-e simbólica não movimenta estoque (não seta stock_updated,
-    # logo fica inerte ao recompute event-sourced). Protege TODOS os call-sites.
-    if _is_simbolica(inv.natureza_operacao):
+    # Guard central: NF-e simbólica não movimenta estoque (não seta stock_updated, logo fica inerte
+    # ao recompute event-sourced). Protege TODOS os call-sites — EXCETO o ciclo FULL (full_cycle).
+    if _is_simbolica(inv.natureza_operacao) and not full_cycle:
         return {"cmig_ids": set(), "pg_ids": set(), "simbolica": True}
 
     if inv.stock_updated:
@@ -2997,6 +3000,7 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
     import calendar as _cal
 
     from services.full_stock_service import (
+        _is_deposito_cycle,
         apply_nfe_entrada_from_full,
         apply_nfe_saida_to_full,
         is_full_cnpj,
@@ -3124,6 +3128,18 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                 full_dest = await is_full_cnpj(db, dest.get("document") or "", cmig_id)
                 full_emit = await is_full_cnpj(db, emit.get("document") or "", cmig_id)
                 full = full_dest or full_emit
+                # Retorno de depósito é AUTO-EMITIDO pelo vendedor (a nota não traz o CNPJ do EBAZAR
+                # — emitente e destinatário são o próprio vendedor), então `is_full_cnpj` falha.
+                # Reconhece pela natureza de depósito e usa a conta FULL da CMIG.
+                if not full and _is_deposito_cycle(parsed.get("natureza_operacao")):
+                    from services.full_stock_service import FullCnpj
+                    full = (
+                        await db.execute(
+                            select(FullCnpj)
+                            .where(FullCnpj.cmig_id == cmig_id, FullCnpj.is_active == 1)
+                            .order_by(FullCnpj.marketplace_account_id)
+                        )
+                    ).scalars().first()
 
                 # ── Classificação em baldes ─────────────────────────────────────
                 review_note = None
@@ -3217,16 +3233,17 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                     await db.flush()
                     await _resolve_item_match(item, cmig_id, db)
 
-                # ── Estoque: SOMENTE o balde FULL move (stock_updated fica False nos demais) ──
-                if _is_simbolica(inv.natureza_operacao):
-                    # Simbólica: registra (mantém a sequência) mas NÃO move estoque.
+                # ── Estoque: o balde FULL move (inclui remessa/retorno SIMBÓLICO do ciclo FULL:
+                # o par transfere Galpão⇄FULL). Simbólica NÃO-FULL (`not full`) segue inerte. ──
+                if _is_simbolica(inv.natureza_operacao) and not full:
+                    # Simbólica não-FULL: registra (mantém a sequência) mas NÃO move estoque.
                     simbolicas += 1
                 elif move == "full_out":
-                    await _apply_stock_movement(inv, db)
+                    await _apply_stock_movement(inv, db, full_cycle=True)
                     await apply_nfe_saida_to_full(db, inv, full.marketplace_account_id)
                     full_moved += 1
                 elif move == "full_in":
-                    await _apply_stock_movement(inv, db)
+                    await _apply_stock_movement(inv, db, full_cycle=True)
                     await apply_nfe_entrada_from_full(db, inv, full.marketplace_account_id)
                     full_moved += 1
                 elif direction == "in":
