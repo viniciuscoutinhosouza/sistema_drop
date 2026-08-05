@@ -479,11 +479,11 @@ async def apply_nfe_saida_to_full(
 
     O decremento de galpão já é feito pelo stock_calculator via evento nfe_out.
     Idempotente: verifica stock_movements por invoice_id antes de agir.
-    """
-    from services.fiscal.fiscal_rules import is_simbolica
 
-    if is_simbolica(invoice.natureza_operacao):
-        return {"full_in_items": 0, "simbolica": True}
+    Sem guard de `is_simbolica`: esta função só é chamada para notas cuja contraparte é CNPJ FULL
+    (ciclo FULL), e a remessa "simbólica" para o depósito TAMBÉM credita o FULL — o par
+    remessa⇄retorno transfere estoque Galpão⇄FULL independente do rótulo fiscal 'simbólico'.
+    """
     if await _already_has_full_movement(db, invoice.id, "full_in"):
         return {"full_in_items": 0, "already_applied": True}
 
@@ -519,11 +519,10 @@ async def apply_nfe_entrada_from_full(
 
     O incremento de galpão já é feito pelo stock_calculator via evento nfe_in.
     Idempotente: verifica stock_movements por invoice_id antes de agir.
-    """
-    from services.fiscal.fiscal_rules import is_simbolica
 
-    if is_simbolica(invoice.natureza_operacao):
-        return {"full_return_items": 0, "simbolica": True}
+    Sem guard de `is_simbolica`: só é chamada para notas cuja contraparte é CNPJ FULL (ciclo FULL);
+    o "Retorno Simbólico de Depósito" TAMBÉM debita o FULL (mercadoria deixa o depósito do ML).
+    """
     if await _already_has_full_movement(db, invoice.id, "full_return_out"):
         return {"full_return_items": 0, "already_applied": True}
 
@@ -758,7 +757,6 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
 
     from models.integration import MarketplaceAccount
     from models.person import Person
-    from services.fiscal.fiscal_rules import is_simbolica
 
     invoice_events: list[tuple[int, int, int]] = []
     order_events: list[tuple[int, int, int]] = []
@@ -785,8 +783,6 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
     invoices = (await db.execute(inv_q)).scalars().all()
 
     for inv in invoices:
-        if is_simbolica(inv.natureza_operacao):
-            continue
         if not inv.person_id:
             continue
         person = (
@@ -797,6 +793,10 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
         full = await is_full_cnpj(db, person.document, inv.cmig_id)
         if not full:
             continue
+        # NÃO pula 'simbólico' aqui: a contraparte é CNPJ FULL (passou no is_full_cnpj), logo é nota
+        # do CICLO FULL (remessa/retorno de/para o depósito do ML) e MOVE estoque — o par
+        # remessa(+FULL)⇄retorno(−FULL) transfere Galpão⇄FULL. Simbólicas NÃO-FULL nem chegam aqui
+        # (falham no is_full_cnpj) e seguem excluídas. Débito de venda FULL é do pedido (ADR-0019).
         sign = 1 if inv.direction == "out" else -1
         # Data do evento p/ a âncora (remessa=saída→exit_date; retorno→issue_date).
         inv_date = inv.exit_date if inv.direction == "out" else inv.issue_date
