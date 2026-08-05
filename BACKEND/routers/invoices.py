@@ -360,6 +360,152 @@ async def list_invoices(
     }
 
 
+async def _notas_query(
+    db: AsyncSession, cmig_ids: list[int], direction: str, status, date_from, date_to, search,
+):
+    """SELECT base da tela unificada de Notas (Invoice, ambas direções)."""
+    stmt = select(Invoice).where(Invoice.cmig_id.in_(cmig_ids))
+    if direction in ("in", "out"):
+        stmt = stmt.where(Invoice.direction == direction)
+    if status:
+        stmt = stmt.where(Invoice.status == status)
+    if date_from:
+        stmt = stmt.where(Invoice.issue_date >= datetime.combine(date_from, datetime.min.time()))
+    if date_to:
+        stmt = stmt.where(Invoice.issue_date <= datetime.combine(date_to, datetime.max.time()))
+    if search:
+        s = search.strip()
+        conds = [Invoice.access_key.like(f"%{s}%"), Invoice.natureza_operacao.ilike(f"%{s}%")]
+        if s.isdigit():
+            conds.append(Invoice.nfe_number == int(s))
+        stmt = stmt.where(or_(*conds))
+    return stmt
+
+
+async def _build_notas_rows(db: AsyncSession, invs: list[Invoice], cmig_names: dict) -> list[dict]:
+    """Linhas ricas p/ a tela de Notas: contraparte, CMIG, natureza, CFOP, valor, pedido/plataforma
+    (link ao marketplace) e disponibilidade de XML/DANFE. Uniforme p/ entrada e saída."""
+    person_ids = {i.person_id for i in invs if i.person_id}
+    persons = {}
+    if person_ids:
+        persons = {
+            p.id: p
+            for p in (await db.execute(select(Person).where(Person.id.in_(person_ids)))).scalars().all()
+        }
+    order_ids = {i.order_id for i in invs if i.order_id}
+    orders: dict[int, Order] = {}
+    if order_ids:
+        orders = {
+            o.id: o
+            for o in (await db.execute(select(Order).where(Order.id.in_(order_ids)))).scalars().all()
+        }
+    inv_ids = [i.id for i in invs]
+    cfop_by_inv: dict[int, str] = {}
+    if inv_ids:
+        for iid, cfop in (
+            await db.execute(
+                select(InvoiceItem.invoice_id, InvoiceItem.cfop)
+                .where(InvoiceItem.invoice_id.in_(inv_ids), InvoiceItem.cfop.isnot(None))
+                .order_by(InvoiceItem.invoice_id, InvoiceItem.item_number)
+            )
+        ).all():
+            cfop_by_inv.setdefault(iid, cfop)
+
+    rows: list[dict] = []
+    for inv in invs:
+        p = persons.get(inv.person_id)
+        o = orders.get(inv.order_id)
+        platform = o.platform if o else None
+        platform_order_id = o.platform_order_id if o else None
+        xml_avail = bool(inv.xml_url) or (inv.status == "authorized" and bool(inv.xml_local_path))
+        danfe_avail = bool(inv.danfe_url) or (inv.status == "authorized" and bool(inv.xml_local_path))
+        rows.append({
+            "id": inv.id,
+            "source": inv.source,
+            "direction": inv.direction,
+            "cmig_id": inv.cmig_id,
+            "cmig_name": cmig_names.get(inv.cmig_id),
+            "nfe_number": inv.nfe_number,
+            "serie": inv.serie,
+            "access_key": inv.access_key,
+            "issue_date": inv.issue_date.isoformat() if inv.issue_date else None,
+            "counterparty": p.name if p else None,
+            "counterparty_document": p.document if p else None,
+            "natureza_operacao": inv.natureza_operacao,
+            "cfop": cfop_by_inv.get(inv.id),
+            "total": _f(inv.total_invoice),
+            "status": inv.status,
+            "nfe_type_label": _PURPOSE_LABELS.get(inv.purpose, inv.purpose or "—"),
+            "order_id": inv.order_id,
+            "platform": platform,
+            "platform_order_id": platform_order_id,
+            "marketplace_url": _marketplace_order_url(platform, platform_order_id),
+            "xml_available": xml_avail,
+            "danfe_available": danfe_avail,
+            "danfe_preview": inv.status in ("draft", "finalized"),
+        })
+    return rows
+
+
+def _marketplace_order_url(platform: str | None, platform_order_id: str | None) -> str | None:
+    if not platform_order_id:
+        return None
+    if platform == "mercadolivre":
+        return f"https://www.mercadolivre.com.br/vendas/{platform_order_id}/detalhe"
+    return None
+
+
+_NOTAS_SORT_COLS = {
+    "emissao": Invoice.issue_date,
+    "numero": Invoice.nfe_number,
+    "cmig": Invoice.cmig_id,
+    "direcao": Invoice.direction,
+    "valor": Invoice.total_invoice,
+    "status": Invoice.status,
+}
+
+
+@router.get("/notas")
+async def list_notas(
+    direction: str = Query("all", regex="^(all|in|out)$"),
+    cmig_id: int | None = Query(None),
+    status: str | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    search: str | None = Query(None),
+    sort_by: str = Query("emissao"),
+    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(30, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lista unificada de NF-e (entrada + saída) com linhas ricas e ordenação por coluna."""
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if not accessible:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+    if cmig_id is not None and cmig_id not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+    cmig_ids = [cmig_id] if cmig_id is not None else accessible
+    stmt = await _notas_query(db, cmig_ids, direction, status, date_from, date_to, search)
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0
+    col = _NOTAS_SORT_COLS.get(sort_by, Invoice.issue_date)
+    order = col.asc().nullslast() if sort_dir == "asc" else col.desc().nullslast()
+    stmt = stmt.order_by(
+        order, Invoice.serie.desc().nullslast(), Invoice.nfe_number.desc().nullslast()
+    ).offset((page - 1) * page_size).limit(page_size)
+    invs = (await db.execute(stmt)).scalars().all()
+    cmig_names = dict(
+        (await db.execute(select(CMIG.id, CMIG.company_name).where(CMIG.id.in_(cmig_ids)))).all()
+    )
+    return {
+        "items": await _build_notas_rows(db, invs, cmig_names),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
 # ── Saídas unificadas (NF-e do módulo fiscal + Faturador ML) ──────────────────
 
 # Status da order (Faturador ML) -> status normalizado usado na UI unificada
