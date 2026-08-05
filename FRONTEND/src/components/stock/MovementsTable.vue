@@ -6,13 +6,14 @@
           <th>Data</th>
           <th>Origem</th>
           <th>Referência</th>
+          <th>CFOP</th>
           <th class="text-right">Qtd</th>
           <th v-if="showRunning" class="text-right">Saldo disp.</th>
         </tr>
       </thead>
       <tbody>
         <tr v-if="!movements.length">
-          <td :colspan="showRunning ? 5 : 4" class="text-center text-muted py-3">
+          <td :colspan="showRunning ? 6 : 5" class="text-center text-muted py-3">
             <i class="fas fa-inbox mr-1"></i>{{ emptyText }}
           </td>
         </tr>
@@ -29,6 +30,8 @@
               <span v-else class="badge badge-secondary"><i class="fas fa-shopping-bag mr-1"></i>{{ m.order_platform || 'Pedido' }}</span>
               <span v-if="m.origin_kind === 'overflow_cmig'" class="badge badge-warning text-dark ml-1" style="font-size:10px" title="Consumiu PG por overflow do CMIG">Overflow</span>
               <span v-else-if="m.origin_kind === 'kit_component'" class="badge badge-secondary ml-1" style="font-size:10px" title="Componente de kit">Kit</span>
+              <span v-if="m.order_shipping_mode === 'full'" class="badge ml-1" style="background:#00a650;color:#fff;font-size:10px" title="Venda entregue pelo FULL (fulfillment do ML)">FULL</span>
+              <span v-else class="badge badge-info ml-1" style="font-size:10px" :title="'Venda entregue pelo galpão' + (m.order_shipping_mode ? ' (' + shipModeLabel(m.order_shipping_mode) + ')' : '')">GALPÃO<span v-if="m.order_shipping_mode"> · {{ shipModeLabel(m.order_shipping_mode) }}</span></span>
               <span v-if="m.is_reserved" class="badge badge-warning text-dark ml-1" style="font-size:10px" title="Pedido a expedir (handling/ready_to_ship)">reservado</span>
             </template>
           </td>
@@ -41,6 +44,7 @@
               <RouterLink :to="`/orders/${m.order_id}`" class="text-primary">#{{ m.order_platform_id || m.order_id }}</RouterLink>
               <a v-if="mktUrl(m)" :href="mktUrl(m)" target="_blank" rel="noopener" class="ml-1" title="Abrir venda no marketplace"><i class="fas fa-external-link-alt" style="font-size:10px"></i></a>
               <span v-if="m.order_shipment_status" class="text-muted ml-1">· {{ shipLabel(m.order_shipment_status) }}</span>
+              <span v-if="m.order_invoice_number" class="text-muted ml-1" title="NF-e de saída desta venda"><i class="fas fa-file-invoice mr-1"></i>NF #{{ m.order_invoice_number }}<span v-if="m.order_invoice_serie">/{{ m.order_invoice_serie }}</span></span>
             </span>
             <span v-else-if="m.source === 'inventory'" class="text-muted">Inventário #{{ m.inventory_number || m.inventory_id }}<span v-if="m.inventory_counted != null"> · contado {{ m.inventory_counted }}</span></span>
             <span v-else-if="m.source === 'adjustment'" class="text-muted">{{ m.adjustment_old }} → <strong>{{ m.adjustment_new }}</strong></span>
@@ -48,6 +52,7 @@
             <span v-if="m.person_name" class="text-muted ml-1">· {{ m.person_name }}</span>
             <span v-else-if="m.item_ml_item_id" class="text-muted ml-1">· <code>{{ m.item_ml_item_id }}</code></span>
           </td>
+          <td style="font-size:12px" class="text-muted">{{ m.cfop || '—' }}</td>
           <td class="text-right" :class="qtyClass(m)">
             <span v-if="m.source === 'adjustment'">Δ{{ (m.adjustment_new - m.adjustment_old) >= 0 ? '+' : '' }}{{ m.adjustment_new - m.adjustment_old }}</span>
             <span v-else-if="m.source === 'inventory'" :title="'Contagem: ' + m.inventory_counted">{{ m.inventory_mode === 'baseline' ? '=' + m.inventory_counted : ((m.inventory_delta >= 0 ? '+' : '') + m.inventory_delta) }}</span>
@@ -82,6 +87,10 @@ function adjLabel(m) {
 
 function shipLabel(s) {
   return ({ handling: 'em separação', ready_to_ship: 'pronto p/ envio', shipped: 'enviado', delivered: 'entregue', cancelled: 'cancelado' })[s] || s || ''
+}
+
+function shipModeLabel(mode) {
+  return ({ flex: 'Flex', agencia: 'Agência', correios: 'Correios', me1: 'Envios ML', me2: 'Envios ML', drop_off: 'Correios', xd_drop_off: 'Agência', self_service: 'Flex', custom: 'Combinado' })[mode] || mode || 'Envio'
 }
 
 function mktUrl(m) {
