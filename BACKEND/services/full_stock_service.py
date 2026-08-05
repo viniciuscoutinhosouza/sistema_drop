@@ -10,6 +10,7 @@ Fluxo:
 
 import logging
 import re
+import unicodedata
 
 from sqlalchemy import case, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +25,15 @@ logger = logging.getLogger(__name__)
 
 def _cnpj_digits(cnpj: str | None) -> str:
     return re.sub(r"\D", "", cnpj or "")
+
+
+def _is_deposito_cycle(natureza: str | None) -> bool:
+    """Natureza do ciclo FULL do ML: 'Remessa/Retorno de Depósito Temporário'. O RETORNO é
+    AUTO-EMITIDO pelo vendedor (a nota não carrega o CNPJ do EBAZAR — emitente e destinatário são
+    o próprio vendedor), então só a natureza o identifica como ciclo FULL. A remessa (saída) também
+    casa pelo CNPJ FULL do destinatário; esta função cobre o lado que não tem o CNPJ."""
+    n = unicodedata.normalize("NFKD", natureza or "").encode("ascii", "ignore").decode().lower()
+    return "deposito" in n
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -782,21 +792,34 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
         inv_q = inv_q.where(Invoice.cmig_id == cmig_id)
     invoices = (await db.execute(inv_q)).scalars().all()
 
+    # Conta FULL por CMIG (1 por CMIG, determinística) — usada quando a nota é do ciclo FULL mas
+    # NÃO traz o CNPJ do EBAZAR (caso do retorno de depósito, auto-emitido pelo vendedor).
+    full_acct_by_cmig: dict[int, int] = {}
+    for fc in (
+        await db.execute(
+            select(FullCnpj).where(FullCnpj.is_active == 1).order_by(FullCnpj.marketplace_account_id)
+        )
+    ).scalars().all():
+        full_acct_by_cmig.setdefault(fc.cmig_id, fc.marketplace_account_id)
+
     for inv in invoices:
-        if not inv.person_id:
+        # Conta FULL: (1) remessa → destinatário é CNPJ FULL (is_full_cnpj); (2) retorno →
+        # auto-emitido (sem CNPJ FULL na nota) → casa pela natureza de depósito e usa a conta da
+        # CMIG. Não pula 'simbólico' no ciclo FULL: o par remessa(+FULL)⇄retorno(−FULL) transfere
+        # Galpão⇄FULL. Débito de VENDA FULL é do pedido (ADR-0019) — unidades distintas do retorno.
+        full_account = None
+        if inv.person_id:
+            person = (
+                await db.execute(select(Person).where(Person.id == inv.person_id))
+            ).scalar_one_or_none()
+            if person:
+                f = await is_full_cnpj(db, person.document, inv.cmig_id)
+                if f:
+                    full_account = f.marketplace_account_id
+        if full_account is None and _is_deposito_cycle(inv.natureza_operacao):
+            full_account = full_acct_by_cmig.get(inv.cmig_id)
+        if full_account is None:
             continue
-        person = (
-            await db.execute(select(Person).where(Person.id == inv.person_id))
-        ).scalar_one_or_none()
-        if not person:
-            continue
-        full = await is_full_cnpj(db, person.document, inv.cmig_id)
-        if not full:
-            continue
-        # NÃO pula 'simbólico' aqui: a contraparte é CNPJ FULL (passou no is_full_cnpj), logo é nota
-        # do CICLO FULL (remessa/retorno de/para o depósito do ML) e MOVE estoque — o par
-        # remessa(+FULL)⇄retorno(−FULL) transfere Galpão⇄FULL. Simbólicas NÃO-FULL nem chegam aqui
-        # (falham no is_full_cnpj) e seguem excluídas. Débito de venda FULL é do pedido (ADR-0019).
         sign = 1 if inv.direction == "out" else -1
         # Data do evento p/ a âncora (remessa=saída→exit_date; retorno→issue_date).
         inv_date = inv.exit_date if inv.direction == "out" else inv.issue_date
@@ -817,11 +840,11 @@ async def recompute_full_stock(db: AsyncSession, *, cmig_id: int | None = None) 
             )
             if not cp:
                 continue
-            invoice_events.append((cp.id, full.marketplace_account_id, sign * qty))
-            dated_by_key.setdefault((cp.id, full.marketplace_account_id), []).append(
+            invoice_events.append((cp.id, full_account, sign * qty))
+            dated_by_key.setdefault((cp.id, full_account), []).append(
                 (inv_date, sign * qty)
             )
-            scope_account_ids.add(full.marketplace_account_id)
+            scope_account_ids.add(full_account)
 
     # ── ORDERS (débito de venda FULL) ───────────────────────────────────────────
     ord_q = select(Order).where(
