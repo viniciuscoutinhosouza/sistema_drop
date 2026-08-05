@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-08-04 — feat(estoque/fiscal): ciclo FULL do ML (remessa⇄retorno), extrato enriquecido e tela de notas unificada
+
+Sessão longa cobrindo o estoque FULL do Mercado Livre e a gestão fiscal. **Contexto:** o dono viu que a NF-e 2371 (envio ao FULL) não entrava no recálculo, e que as remessas ao FULL debitavam o galpão mas os retornos não creditavam (galpão negativo).
+
+**Modelo FULL confirmado (dono):** Remessa para Depósito (saída) = galpão−/FULL+; Retorno de Depósito (entrada, inclusive o "Simbólico") = galpão+/FULL−; venda FULL debita o FULL pelo PEDIDO (ADR-0019). Retorno e venda são unidades distintas → sem dupla baixa.
+
+**Correções (código, no ar):**
+- `is_full_cnpj`: match por **raiz de CNPJ** (o FULL do ML — EBAZAR, raiz 03007331 — usa muitas filiais; só 2 estavam cadastradas). +14 filiais cadastradas como `full_cnpjs`.
+- O **retorno de depósito é AUTO-EMITIDO pelo vendedor** (a nota não traz o CNPJ do EBAZAR) → reconhecido por **natureza** (`_is_deposito_cycle`) usando a conta FULL da CMIG. `recompute_full_stock` e a captura `sync-ml-fiscal` reconhecem os dois lados; o simbólico do ciclo FULL passa a mover estoque (`_apply_stock_movement(full_cycle=True)`, exceção aditiva ao guard de `is_simbolica` — simbólica não-FULL segue inerte).
+- **Extrato de movimentação** (`stock_history`/`stock_movements`/`MovementsTable.vue`): coluna **CFOP**, badge **FULL vs GALPÃO** (com modalidade flex/agência/correios) na linha do pedido, e a **NF de saída** vinculada (sem duplicar — a NFe-out vinculada a pedido não vira evento próprio).
+- **Tela unificada `Notas Fiscais`** (`/fiscal/notas`): filtro Direção (Todas/Entradas/Saídas), reaproveitando os endpoints existentes (saídas com merge Faturador ML; entradas; Todas = merge por série+número), download XML/DANFE por linha + export XML lote das saídas. Sem regressão (telas atuais mantidas).
+
+**Backfill/verificação:** filiais cadastradas + retornos reconhecidos → **negativos 29 → 5** (lacunas reais de dado: PG 141, 232, 82, 233, 176); NF-e 2371 aparece nas duas seções. **Frontend de produção estava parado em 1º/ago — rebuildado e redeployado** (todas as mudanças recentes de frontend foram ao ar). Auditado por consistency-auditor (design do ciclo FULL + tela). Commits d3a889d, 054b770, b2e6ec2, d6aacca, 718c02b, 4880f20, 1263ffa.
+
+**Pendências (dono ciente):** (1) **FULL por conta ML** — hoje o recompute joga tudo numa conta por CMIG; o real é MIG=305 + LPS=78 (=383) vs 451 calculado → separar por conta pelo anúncio/ProductListing. (2) **Export XML lote de "Todas"/Entradas** (hoje o lote é só saídas; por linha já cobre as duas). (3) Conferir os 5 negativos restantes.
+
+---
+
 ## 2026-08-04 — fix(estoque): FULL reconhece filiais do fulfillment ML por raiz de CNPJ
 
 **Sintoma (dono):** a recontagem de estoque não considerava a **NF-e 2371** (envio para FULL).
