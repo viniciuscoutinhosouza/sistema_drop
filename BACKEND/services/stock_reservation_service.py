@@ -163,6 +163,31 @@ async def _apply_full_reservation(
 
 # ─── Reserva ──────────────────────────────────────────────────────────────────
 
+async def _kit_components(db: AsyncSession, catalog_product_id: int, qty: int):
+    """Se o produto for COMPOSTO, devolve [(component_id, qtd_total), ...]; senão None.
+
+    ADR-0023: kit não tem estoque próprio. Reserva, liberação e baixa têm de atingir os
+    COMPONENTES — reservar no kit deixava o componente anunciando unidades já vendidas
+    (janela de oversell entre a venda e o despacho)."""
+    from models.product import CatalogProductComponent
+
+    prod = (
+        await db.execute(
+            select(CatalogProduct).where(CatalogProduct.id == catalog_product_id)
+        )
+    ).scalar_one_or_none()
+    if prod is None or not prod.is_composite:
+        return None
+    comps = (
+        await db.execute(
+            select(CatalogProductComponent).where(
+                CatalogProductComponent.composite_id == catalog_product_id
+            )
+        )
+    ).scalars().all()
+    return [(c.component_id, qty * max(int(c.quantity or 1), 1)) for c in comps if c.component_id]
+
+
 async def reserve_stock(db: AsyncSession, order: Order) -> None:
     """Pedido baixado (downloaded) → reserva o estoque dos produtos vinculados.
 
@@ -190,14 +215,17 @@ async def reserve_stock(db: AsyncSession, order: Order) -> None:
         reserved = False
 
         if item.catalog_product_id:
-            await db.execute(
-                update(CatalogProduct)
-                .where(CatalogProduct.id == item.catalog_product_id)
-                .values(reserved_quantity=CatalogProduct.reserved_quantity + qty)
-            )
-            _log(db, product_type="pg", product_id=item.catalog_product_id,
-                 order_id=order.id, movement_type="reserve", qty=qty,
-                 field="reserved_quantity", delta=qty)
+            kit = await _kit_components(db, item.catalog_product_id, qty)
+            alvos = kit if kit is not None else [(item.catalog_product_id, qty)]
+            for _pid, _q in alvos:
+                await db.execute(
+                    update(CatalogProduct)
+                    .where(CatalogProduct.id == _pid)
+                    .values(reserved_quantity=CatalogProduct.reserved_quantity + _q)
+                )
+                _log(db, product_type="pg", product_id=_pid,
+                     order_id=order.id, movement_type="reserve", qty=_q,
+                     field="reserved_quantity", delta=_q)
             reserved = True
 
             if item.catalog_variant_id and item.catalog_source == "pg":
@@ -262,14 +290,17 @@ async def release_reservation(db: AsyncSession, order: Order) -> None:
         released = False
 
         if item.catalog_product_id:
-            await db.execute(
-                update(CatalogProduct)
-                .where(CatalogProduct.id == item.catalog_product_id)
-                .values(reserved_quantity=CatalogProduct.reserved_quantity - qty)
-            )
-            _log(db, product_type="pg", product_id=item.catalog_product_id,
-                 order_id=order.id, movement_type="unreserve", qty=qty,
-                 field="reserved_quantity", delta=-qty)
+            kit = await _kit_components(db, item.catalog_product_id, qty)
+            alvos = kit if kit is not None else [(item.catalog_product_id, qty)]
+            for _pid, _q in alvos:
+                await db.execute(
+                    update(CatalogProduct)
+                    .where(CatalogProduct.id == _pid)
+                    .values(reserved_quantity=CatalogProduct.reserved_quantity - _q)
+                )
+                _log(db, product_type="pg", product_id=_pid,
+                     order_id=order.id, movement_type="unreserve", qty=_q,
+                     field="reserved_quantity", delta=-_q)
             released = True
 
             if item.catalog_variant_id and item.catalog_source == "pg":
@@ -374,18 +405,24 @@ async def confirm_dispatch(db: AsyncSession, order: Order) -> None:
         dispatched = False
 
         if item.catalog_product_id:
-            await db.execute(
-                update(CatalogProduct)
-                .where(CatalogProduct.id == item.catalog_product_id)
-                .values(
-                    stock_quantity=CatalogProduct.stock_quantity - qty,
-                    reserved_quantity=CatalogProduct.reserved_quantity - qty,
+            # Kit: baixa e libera reserva nos COMPONENTES (o kit não tem estoque próprio —
+            # debitar a coluna dele deixava-a negativa). O replay já debita o componente
+            # pelo `kit_usage`; este é o caminho incremental, que converge com ele.
+            kit = await _kit_components(db, item.catalog_product_id, qty)
+            alvos = kit if kit is not None else [(item.catalog_product_id, qty)]
+            for _pid, _q in alvos:
+                await db.execute(
+                    update(CatalogProduct)
+                    .where(CatalogProduct.id == _pid)
+                    .values(
+                        stock_quantity=CatalogProduct.stock_quantity - _q,
+                        reserved_quantity=CatalogProduct.reserved_quantity - _q,
+                    )
                 )
-            )
-            _log(db, product_type="pg", product_id=item.catalog_product_id,
-                 order_id=order.id, movement_type="dispatch", qty=qty,
-                 field="stock_quantity", delta=-qty)
-            _pg_ids.add(item.catalog_product_id)
+                _log(db, product_type="pg", product_id=_pid,
+                     order_id=order.id, movement_type="dispatch", qty=_q,
+                     field="stock_quantity", delta=-_q)
+                _pg_ids.add(_pid)
             dispatched = True
 
             if item.catalog_variant_id and item.catalog_source == "pg":
