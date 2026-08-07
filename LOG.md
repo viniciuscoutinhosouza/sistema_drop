@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-08-07 — fix(catálogo): kit sem estoque e sem publicar → ADR-0023 (composto é sempre derivado)
+
+**Sintoma do dono:** "em PG os produtos compostos aparecem com o estoque calculado corretamente, mas em catálogo não aparecem com estoque e não permitem publicar."
+
+**Causa:** kit não tem estoque próprio (o estoque vive nos componentes), então `stock_quantity` fica 0 e o disponível é derivado. A tela PG derivava; `catalog.py` devolvia a coluna crua, e como o `isSoldOut()` do frontend lê esse mesmo campo, o botão de publicar travava. Medido: 3 dos 6 kits ativos com coluna 0 e disponível real 25, 25 e 7.
+
+**A auditoria prévia evitou entregar pela metade:** corrigir só a vitrine deixaria o bug PIOR — ao publicar, `_refresh_product_stock` devolvia 0 e **gravava 0** no kit, `_build_ml_payload` fazia `available_quantity or 1` (kit iria ao ML com **1 unidade fantasma, em silêncio**) e o `available_to_push` o auto-pausaria em 30 min. O botão seria desbloqueado para publicar errado.
+
+**Entregue (`61c3ea3`, `f2d992a`, `9dc9ee3`, `bc5b722`):** ponto único `composite_stock` no `stock_calculator` (absorveu 4 cópias da fórmula); derivam agora catálogo (lista+detalhe), publicação, `available_to_push` (2 ramos PG + ramo CMIG), botão manual de sincronizar, card de estoque/extrato e tela de Anúncios; `_required_quantity` substitui o `or 1` (0 → 422, com queda para o FULL antes de recusar, ADR-0008 §2); kit excluído do snapshot contábil; **venda de kit passa a reservar/baixar os COMPONENTES** (fecha a janela de oversell entre venda e despacho); as 2 colunas materializadas remanescentes zeradas.
+
+**Regressões minhas, pegas na auditoria de fechamento e corrigidas:** dupla subtração do reservado (kit com 10 montáveis e 3 reservados publicaria 4 em vez de 7) e 422 indevido ao publicar produto com saldo no FULL.
+
+**Verificado em produção:** os 6 kits batem em calculado/catálogo/card/anúncio/publicar (KIT_501RD e KIT_501D = 25, KIT_5550 = 7, KIT_POLIA e KIT_5543 = 2, KIT_THBT0032 = 0 por componente zerado); prévia da migração de reservas mostrou 0 kits com reserva pendurada e 0 pedidos abertos; ruff limpo; pytest 173 passed (2 falhas de `test_orders.py` pré-existentes).
+
+**ADR-0023** registra a regra do dono. **Pendências:** `listings.py` publica com quantidade fixa 1 (ML e Shopee); `or 1` sobrevive nos caminhos de update; política de oversell kit ⇄ componente (ambos podem anunciar as mesmas unidades antes da venda).
+
+---
+
 ## 2026-08-05 — ADR-0022 (baixa do FULL pelo retorno simbólico) + classe de bug L-012 do Oracle
 
 Fechamento dos itens que ficaram abertos. **No ar (`0c6e00a`).**

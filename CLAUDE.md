@@ -368,6 +368,8 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0021](DOCs/decisions/ADR-0021-captura-completa-nfe-faturador-ml.md) — Captura completa das NF-e do Faturador ML (baldes por tipo de nota); **emendada** pela ADR-0022: a venda casada com pedido **FULL** deixou de ser fiscal-only e passa a baixar o galpão
 - [ADR-0022](DOCs/decisions/ADR-0022-baixa-full-dirigida-pelo-retorno-simbolico.md) — Baixa do FULL dirigida pelo **retorno simbólico** (o ML emite 2 notas por venda FULL: `sale` + `symbolic_inbound_return`); o pedido **não** debita o FULL; supersede o ponto correspondente da ADR-0019
 
+- [ADR-0023](DOCs/decisions/ADR-0023-estoque-composto-derivado.md) — Estoque de **produto composto (kit) é derivado** dos componentes em toda leitura, **nunca materializado** (`stock_quantity` do kit é sempre 0); ponto único `stock_calculator.composite_stock`; venda do kit reserva/baixa os **componentes**; kit fora do snapshot contábil
+
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 
 ### Lições Aprendidas

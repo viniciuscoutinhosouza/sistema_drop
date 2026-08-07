@@ -1,5 +1,17 @@
 
 
+Av. Tower Automotive, 300 - Galpão 21-A
+Bairro Laranja Azeda - Arujá - SP
+CEP. 07430-350
+CNPJ: 43.468.978/0001-95
+
+https://armazenaki.eship.com.br/
+Usuario: MIG@ARMAZENAKI
+Senha: Aki@2026
+apikey: 73f9748b33cdcfb6525e2d1758991088
+
+https://swagger.eship.com.br/
+
 
 
 Ordem
