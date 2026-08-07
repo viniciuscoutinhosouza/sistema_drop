@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from models.cmig import CMIGProduct
 from models.fiscal import Invoice, InvoiceItem
@@ -451,30 +450,13 @@ async def recompute_after_order_change(
     for pg_id in pg_ids:
         await recompute_pg_product_stock(pg_id, db)
 
-    # Atualiza estoque virtual de kits cujos componentes foram recomputados
-    kit_ids = (
-        await db.execute(
-            select(CatalogProductComponent.composite_id)
-            .where(CatalogProductComponent.component_id.in_(pg_ids))
-            .distinct()
-        )
-    ).scalars().all()
-    for kit_id in kit_ids:
-        kit = (
-            await db.execute(
-                select(CatalogProduct)
-                .options(
-                    selectinload(CatalogProduct.components).selectinload(
-                        CatalogProductComponent.component
-                    )
-                )
-                .where(CatalogProduct.id == kit_id)
-            )
-        ).scalar_one_or_none()
-        if kit and kit.components:
-            # Delega ao ponto único (clampa negativo e tolera FK pendurada — a lista por
-            # compreensão antiga estourava AttributeError se `comp.component` fosse None).
-            kit.stock_quantity = composite_stock(kit.components)
+    # ADR-0023: kit NÃO tem estoque materializado — o montável é derivado dos componentes
+    # em toda leitura (`composite_stock`). Aqui havia um laço que recarregava cada kit
+    # afetado só para gravar `kit.stock_quantity`; isso criava um segundo valor que
+    # envelhecia, discordava do calculado e entrava no snapshot contábil somando por cima
+    # dos próprios componentes. Recomputar o COMPONENTE (acima) já é suficiente: o kit
+    # acompanha sozinho. A propagação para os anúncios do kit continua em
+    # `stock_sync_service`, que expande componente → kits.
 
     return {"cmig_recomputed": len(cmig_ids), "pg_recomputed": len(pg_ids)}
 
@@ -511,21 +493,11 @@ async def trigger_stock_recompute_on_order_created(
                 .distinct()
             )
         ).scalars().all() if pg_ids else []
-        for kit_id in kit_ids:
-            kit = (
-                await db.execute(
-                    select(CatalogProduct)
-                    .options(
-                        selectinload(CatalogProduct.components).selectinload(
-                            CatalogProductComponent.component
-                        )
-                    )
-                    .where(CatalogProduct.id == kit_id)
-                )
-            ).scalar_one_or_none()
-            if kit and kit.components:
-                kit.stock_quantity = composite_stock(kit.components)  # ponto único
-                kits_recomputed += 1
+        # ADR-0023: kit não materializa estoque — não há o que recomputar/gravar nele; o
+        # montável é derivado dos componentes na leitura. `kits_recomputed` vira apenas
+        # quantos kits foram AFETADOS pela mudança dos componentes (o número que a
+        # propagação de anúncios em `stock_sync_service` vai processar).
+        kits_recomputed = len(kit_ids)
 
         await db.commit()
 

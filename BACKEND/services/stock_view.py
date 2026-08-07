@@ -15,7 +15,8 @@ gravados para compatibilidade com sync_stock e jobs antigos.
 
 from __future__ import annotations
 
-from typing import Iterable, Literal
+from collections.abc import Iterable
+from typing import Literal
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,8 +54,17 @@ def card_from_product(
     if product is None:
         return _empty_card()
 
-    physical = int(getattr(product, "stock_quantity", 0) or 0)
-    reserved = int(getattr(product, "reserved_quantity", 0) or 0)
+    # COMPOSTO (kit): não tem estoque próprio — o físico é o montável a partir dos
+    # componentes, SEMPRE calculado (ADR-0023). Ler `stock_quantity` aqui fazia o card e o
+    # extrato mostrarem 0 enquanto o Catálogo e o marketplace mostravam o valor real.
+    if getattr(product, "is_composite", False):
+        from services.fiscal.stock_calculator import composite_stock
+
+        physical = composite_stock(getattr(product, "components", None))
+        reserved = int(getattr(product, "reserved_quantity", 0) or 0)
+    else:
+        physical = int(getattr(product, "stock_quantity", 0) or 0)
+        reserved = int(getattr(product, "reserved_quantity", 0) or 0)
     available = max(0, physical - reserved)
 
     full_per_account = full_per_account or {}

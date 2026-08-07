@@ -827,6 +827,15 @@ async def _create_ml_item_with_retry(access_token: str, prod, ml_form: dict) -> 
     raise HTTPException(status_code=400, detail=f"Erro ao criar anúncio ML: {resp.text}")
 
 
+def _composite_or_column(p) -> int:
+    """Físico do produto: kit é SEMPRE calculado dos componentes (ADR-0023)."""
+    if getattr(p, "is_composite", False):
+        from services.fiscal.stock_calculator import composite_stock
+
+        return composite_stock(getattr(p, "components", None))
+    return int(getattr(p, "stock_quantity", 0) or 0)
+
+
 def _serialize_listing(
     listing: ProductListing,
     full_per_account_map: dict | None = None,
@@ -967,16 +976,24 @@ def _serialize_listing(
         "qty_local": listing.qty_local or 0,
         # Seller warehouse stock (live): físico, reservado e DISPONÍVEL.
         # Fonte da verdade: CMIGProduct/CatalogProduct vinculado.
-        **(lambda p: {
-            "local_stock_physical": int(p.stock_quantity or 0) if p else None,
-            "local_stock_reserved": int(p.reserved_quantity or 0) if p else None,
-            "local_stock_available": (
-                max(0, int(p.stock_quantity or 0) - int(p.reserved_quantity or 0))
-                if p else None
-            ),
-            # Alias legado mantido para compatibilidade com código antigo.
-            "product_stock": int(p.stock_quantity or 0) if p else None,
-        })(listing.cmig_product or listing.catalog_product),
+        **(lambda p: (
+            {
+                "local_stock_physical": None, "local_stock_reserved": None,
+                "local_stock_available": None, "product_stock": None,
+            } if p is None else
+            (lambda fisico, rsv: {
+                "local_stock_physical": fisico,
+                "local_stock_reserved": rsv,
+                "local_stock_available": max(0, fisico - rsv),
+                # Alias legado mantido para compatibilidade com código antigo.
+                "product_stock": fisico,
+            })(
+                # COMPOSTO: físico = montável a partir dos componentes, SEMPRE calculado
+                # (ADR-0023). Antes lia a coluna e a tela de Anúncios mostrava 0 enquanto
+                # o Catálogo e o marketplace mostravam o valor real.
+                _composite_or_column(p), int(p.reserved_quantity or 0),
+            )
+        ))(listing.cmig_product or listing.catalog_product),
         # FULL stock LIVE (Fase 1): físico, reservado e disponível no Fulfillment ML
         # para a CONTA deste listing. Fonte: FullStock (canônica). None quando
         # full_per_account_map não foi fornecido pelo caller.
