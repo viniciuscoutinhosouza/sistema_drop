@@ -51,4 +51,20 @@ Regra do dono, adotada como invariante:
 
 1. `listings.py` publica com `available_quantity: 1` / `seller_stock: [{"stock": 1}]` fixos (ML e Shopee). Se for caminho vivo, ainda cria anúncio fantasma — não deriva estoque nem falha alto.
 2. `or 1` sobrevive no form dos caminhos de **update** (`sync_listing_to_ml`): re-push de anúncio auto-pausado ainda pode mandar 1 ao ML.
-3. Política de oversell kit ⇄ componente (ver Consequências).
+3. ~~Política de oversell kit ⇄ componente~~ — **DECIDIDO pelo dono (2026-08-07): travar publicação simultânea.** Implementado em `services/composite_publish_guard.py`, em duas frentes com a MESMA regra de desempate (**quem publicou primeiro mantém**, `published_at` e `id` como critério estável):
+   - **Gate de publicação** (`anuncios.py`, junto do gate de estoque): 409 **antes** de criar o item no marketplace.
+   - **`available_to_push`**: o perdedor reporta 0 e a pausa automática da ADR-0014 o pausa / não o reativa. Fecha o buraco da reativação automática sem um segundo motor de decisão no `sync_stock`; a Shopee herda (número calculado antes de ramificar por plataforma).
+
+   Identidade **canonizada**: o mesmo estoque físico tem até 4 chaves (`catalog_product_id`, `cmig_product_id`, `product_id` via `DropshipperProduct`, espelho `CMIGProduct.pg_product_id`). Escopo **global** (todas as contas): kit numa conta e componente noutra são as mesmas unidades em duas vitrines; o caso legítimo seria **rateio**, que o modelo não suporta.
+
+   Verificado em produção contra o conflito real (KIT_5550 × componente 5550): publicar qualquer um dos dois é bloqueado, e os 2 anúncios do kit (07/08) perdem para o anúncio do componente (26/06), passando a reportar 0.
+
+### Ainda em aberto na trava
+
+4. **Caminhos sem gate:** `routers/listings.py` `/publish` e `/reactivate`; `anuncios.py` `publish-as-family` (precisa de pré-flight + erro por item, não `raise` no laço, senão abandona itens já criados no ML) e `publish-with-variations`; `/anuncios/{id}/reactivate`. O `available_to_push` cobre o lado automático desses, mas não o clique manual.
+5. **Anúncio com variações** guarda o vínculo em `variations_json`, não nas FKs — fica fora da varredura nos dois sentidos.
+6. **Importação de anúncios** (3 caminhos) pode criar conflito em silêncio: espelha o que já existe no marketplace, então não deve bloquear — mas precisa **detectar e sinalizar**.
+7. **Reativar pelo Seller Center** não passa pela trava. Ela é da nossa borda, nunca absoluta.
+8. **Kit aninhado**: `supplier_products`/`cmigs` aceitam componente composto sem validar, mas o cálculo não sustenta (kit vale 0 por definição). Fechar a porta na criação em vez de tornar a varredura recursiva.
+9. **Reserva de kit CMIG**: `_kit_components` só expande `catalog_product_id`. Do lado CMIG a janela de oversell pós-venda que esta ADR declara fechada **continua aberta**.
+10. **Frontend**: sem indicador de conflito, o usuário só descobre ao tomar 409. A resposta já devolve os conflitos estruturados (`describe_conflicts`) para a tela oferecer "pausar o conflitante e publicar".
