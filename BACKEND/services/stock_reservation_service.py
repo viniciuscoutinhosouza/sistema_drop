@@ -188,6 +188,34 @@ async def _kit_components(db: AsyncSession, catalog_product_id: int, qty: int):
     return [(c.component_id, qty * max(int(c.quantity or 1), 1)) for c in comps if c.component_id]
 
 
+async def _kit_components_cmig(db: AsyncSession, cmig_product_id: int, qty: int):
+    """Se o CMIGProduct for COMPOSTO, devolve [(tipo, id, qtd_total), ...] com tipo
+    'cmig' ou 'pg'; senão None. ADR-0023 — mesma razão do `_kit_components` do PG: sem
+    isto a venda de kit CMIG deixava os componentes anunciando unidades já vendidas."""
+    from models.cmig import CMIGProductComponent
+
+    prod = (
+        await db.execute(select(CMIGProduct).where(CMIGProduct.id == cmig_product_id))
+    ).scalar_one_or_none()
+    if prod is None or not prod.is_composite:
+        return None
+    comps = (
+        await db.execute(
+            select(CMIGProductComponent).where(
+                CMIGProductComponent.composite_id == cmig_product_id
+            )
+        )
+    ).scalars().all()
+    out = []
+    for c in comps:
+        fator = qty * max(int(c.quantity or 1), 1)
+        if c.cmig_product_id:
+            out.append(("cmig", c.cmig_product_id, fator))
+        elif c.catalog_product_id:
+            out.append(("pg", c.catalog_product_id, fator))
+    return out
+
+
 async def reserve_stock(db: AsyncSession, order: Order) -> None:
     """Pedido baixado (downloaded) → reserva o estoque dos produtos vinculados.
 
@@ -239,14 +267,17 @@ async def reserve_stock(db: AsyncSession, order: Order) -> None:
                      field="reserved_quantity", delta=qty)
 
         if item.cmig_product_id and not reserved:
-            await db.execute(
-                update(CMIGProduct)
-                .where(CMIGProduct.id == item.cmig_product_id)
-                .values(reserved_quantity=CMIGProduct.reserved_quantity + qty)
-            )
-            _log(db, product_type="cmig", product_id=item.cmig_product_id,
-                 order_id=order.id, movement_type="reserve", qty=qty,
-                 field="reserved_quantity", delta=qty)
+            _kit = await _kit_components_cmig(db, item.cmig_product_id, qty)
+            _alvos = _kit if _kit is not None else [("cmig", item.cmig_product_id, qty)]
+            for _tp, _pid, _q in _alvos:
+                _M = CMIGProduct if _tp == "cmig" else CatalogProduct
+                await db.execute(
+                    update(_M).where(_M.id == _pid)
+                    .values(reserved_quantity=_M.reserved_quantity + _q)
+                )
+                _log(db, product_type=_tp, product_id=_pid,
+                     order_id=order.id, movement_type="reserve", qty=_q,
+                     field="reserved_quantity", delta=_q)
 
             if item.catalog_variant_id and item.catalog_source == "cmig":
                 await db.execute(
@@ -314,14 +345,17 @@ async def release_reservation(db: AsyncSession, order: Order) -> None:
                      field="reserved_quantity", delta=-qty)
 
         if item.cmig_product_id and not released:
-            await db.execute(
-                update(CMIGProduct)
-                .where(CMIGProduct.id == item.cmig_product_id)
-                .values(reserved_quantity=CMIGProduct.reserved_quantity - qty)
-            )
-            _log(db, product_type="cmig", product_id=item.cmig_product_id,
-                 order_id=order.id, movement_type="unreserve", qty=qty,
-                 field="reserved_quantity", delta=-qty)
+            _kit = await _kit_components_cmig(db, item.cmig_product_id, qty)
+            _alvos = _kit if _kit is not None else [("cmig", item.cmig_product_id, qty)]
+            for _tp, _pid, _q in _alvos:
+                _M = CMIGProduct if _tp == "cmig" else CatalogProduct
+                await db.execute(
+                    update(_M).where(_M.id == _pid)
+                    .values(reserved_quantity=_M.reserved_quantity - _q)
+                )
+                _log(db, product_type=_tp, product_id=_pid,
+                     order_id=order.id, movement_type="unreserve", qty=_q,
+                     field="reserved_quantity", delta=-_q)
 
             if item.catalog_variant_id and item.catalog_source == "cmig":
                 await db.execute(
@@ -439,18 +473,21 @@ async def confirm_dispatch(db: AsyncSession, order: Order) -> None:
                      field="stock_quantity", delta=-qty)
 
         if item.cmig_product_id and not dispatched:
-            await db.execute(
-                update(CMIGProduct)
-                .where(CMIGProduct.id == item.cmig_product_id)
-                .values(
-                    stock_quantity=CMIGProduct.stock_quantity - qty,
-                    reserved_quantity=CMIGProduct.reserved_quantity - qty,
+            # Kit CMIG: baixa e libera nos COMPONENTES (o kit não tem estoque próprio).
+            _kit = await _kit_components_cmig(db, item.cmig_product_id, qty)
+            _alvos = _kit if _kit is not None else [("cmig", item.cmig_product_id, qty)]
+            for _tp, _pid, _q in _alvos:
+                _M = CMIGProduct if _tp == "cmig" else CatalogProduct
+                await db.execute(
+                    update(_M).where(_M.id == _pid).values(
+                        stock_quantity=_M.stock_quantity - _q,
+                        reserved_quantity=_M.reserved_quantity - _q,
+                    )
                 )
-            )
-            _log(db, product_type="cmig", product_id=item.cmig_product_id,
-                 order_id=order.id, movement_type="dispatch", qty=qty,
-                 field="stock_quantity", delta=-qty)
-            _cmig_ids.add(item.cmig_product_id)
+                _log(db, product_type=_tp, product_id=_pid,
+                     order_id=order.id, movement_type="dispatch", qty=_q,
+                     field="stock_quantity", delta=-_q)
+                (_cmig_ids if _tp == "cmig" else _pg_ids).add(_pid)
 
             if item.catalog_variant_id and item.catalog_source == "cmig":
                 await db.execute(

@@ -38,6 +38,32 @@ def _norm_cest(v):
     return v.replace(".", "").replace("-", "")[:7] or None
 
 
+async def _reject_nested_kit(db: AsyncSession, component_ids: list[int]) -> None:
+    """Kit dentro de kit não é suportado: o estoque do composto é DERIVADO dos componentes
+    e o kit vale 0 por definição (ADR-0023), então um kit usado como componente daria
+    sempre 0. Fecha a porta na origem em vez de fingir que funciona."""
+    ids = [i for i in component_ids if i]
+    if not ids:
+        return
+    aninhados = (
+        await db.execute(
+            select(CatalogProduct.sku).where(
+                CatalogProduct.id.in_(ids), CatalogProduct.is_composite == True  # noqa: E712
+            )
+        )
+    ).scalars().all()
+    if aninhados:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Produto composto não pode ser componente de outro composto: "
+                + ", ".join(aninhados)
+                + ". O estoque do kit é calculado a partir dos componentes, então um kit "
+                "dentro de outro resultaria sempre em zero."
+            ),
+        )
+
+
 def _calculate_pg_composite_stock(components) -> int:
     """Estoque montável do PG composto. Delega ao ponto único em
     `stock_calculator.composite_stock` (o catálogo e o push de anúncio usam o mesmo)."""
@@ -242,6 +268,7 @@ async def create_product(
             )
 
     if is_composite:
+        await _reject_nested_kit(db, [c.get("component_id") for c in body.get("components", [])])
         for comp in body.get("components", []):
             comp_id = comp.get("component_id")
             if not comp_id:
@@ -372,6 +399,7 @@ async def update_product(
 
     # Substituir componentes se produto composto e components fornecidos
     if product.is_composite and "components" in body:
+        await _reject_nested_kit(db, [c.get("component_id") for c in body["components"]])
         await db.execute(
             _sa_delete(CatalogProductComponent).where(
                 CatalogProductComponent.composite_id == product_id

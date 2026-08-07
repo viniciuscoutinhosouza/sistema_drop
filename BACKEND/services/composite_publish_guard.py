@@ -250,3 +250,39 @@ async def describe_conflicts(db: AsyncSession, listings: list) -> list[dict]:
             }
         )
     return out
+
+
+async def raise_if_conflict(
+    db: AsyncSession,
+    *,
+    catalog_product_id: int | None = None,
+    cmig_product_id: int | None = None,
+    exclude_listing_id: int | None = None,
+) -> None:
+    """Levanta 409 se publicar/reativar criaria conflito kit ⇄ componente.
+
+    Ponto único da recusa — usado pelos gates de publicação e reativação para que a
+    mensagem e a regra sejam as mesmas em todos os caminhos."""
+    from fastapi import HTTPException
+
+    conf = await conflicting_listings(
+        db,
+        catalog_product_id=catalog_product_id,
+        cmig_product_id=cmig_product_id,
+        exclude_listing_id=exclude_listing_id,
+    )
+    if not conf:
+        return
+    det = await describe_conflicts(db, conf)
+    txt = "; ".join(
+        f"{d['title'] or 'anúncio'} ({d['platform_item_id'] or 'sem id'}, conta #{d['account_id']})"
+        for d in det[:3]
+    )
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "Kit e componente não podem ser anunciados ao mesmo tempo — os dois usam as "
+            f"mesmas unidades em estoque. Já está anunciado: {txt}. "
+            "Pause esse anúncio para publicar/reativar este."
+        ),
+    )

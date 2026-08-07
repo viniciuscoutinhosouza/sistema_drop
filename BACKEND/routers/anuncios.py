@@ -5781,6 +5781,16 @@ async def reactivate_anuncio(
     if not listing.platform_item_id:
         raise HTTPException(status_code=400, detail="Anúncio sem ID de plataforma")
 
+    # TRAVA kit <-> componente (ADR-0023). Cobre também /reactivate-batch, que reusa esta função.
+    from services.composite_publish_guard import raise_if_conflict
+
+    await raise_if_conflict(
+        db,
+        catalog_product_id=listing.catalog_product_id,
+        cmig_product_id=listing.cmig_product_id,
+        exclude_listing_id=listing.id,
+    )
+
     access_token = await _get_valid_token(listing.account, db)
     quantity = listing.available_quantity or 1
     ml_item = await ml_service.reactivate_item(access_token, listing.platform_item_id, quantity)
