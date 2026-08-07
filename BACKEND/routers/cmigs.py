@@ -95,17 +95,11 @@ async def _check_cmig_access(cmig: CMIG, user: User, db: AsyncSession, require_o
 
 
 def _calculate_cmig_composite_stock(components) -> int:
-    """Retorna MIN(floor(estoque_comp / qtd)) para todos os componentes do composto."""
-    if not components:
-        return 0
-    stocks = []
-    for comp in components:
-        qty = max(comp.quantity, 1)
-        if comp.cmig_product_id and comp.cmig_product:
-            stocks.append(comp.cmig_product.stock_quantity // qty)
-        elif comp.catalog_product_id and comp.catalog_product:
-            stocks.append(comp.catalog_product.stock_quantity // qty)
-    return min(stocks) if stocks else 0
+    """Estoque montável do CMIG composto. Delega ao ponto único em
+    `stock_calculator.composite_stock` (resolve cmig_product ou catalog_product)."""
+    from services.fiscal.stock_calculator import composite_stock
+
+    return composite_stock(components)
 
 
 def _product_specs(src) -> dict:

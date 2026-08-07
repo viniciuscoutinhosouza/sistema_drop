@@ -440,6 +440,26 @@ def _collect_item_attributes(product, form: dict, *, include_seller_sku: bool = 
     return attributes
 
 
+def _required_quantity(form: dict) -> int:
+    """Quantidade a anunciar. Ausente → 1 (default de formulário). Presente porém <= 0 →
+    erro EXPLÍCITO: publicar com estoque zero criava anúncio fantasma de 1 unidade
+    (o `or 1` antigo mascarava exatamente isso, e todo kit caía nele)."""
+    raw = form.get("available_quantity")
+    if raw is None or raw == "":
+        return 1
+    try:
+        qty = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Quantidade inválida para publicação.")
+    if qty <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Sem estoque disponível para publicar (quantidade 0). "
+                   "Para produto composto, verifique o estoque dos componentes.",
+        )
+    return qty
+
+
 def _build_ml_payload(
     product, form: dict, *, use_family_name: bool = False, for_update: bool = False
 ) -> dict:
@@ -452,7 +472,10 @@ def _build_ml_payload(
     payload: dict = {
         "price": float(form["sale_price"]),
         "currency_id": "BRL",
-        "available_quantity": int(form.get("available_quantity") or 1),
+        # `or 1` mascarava estoque 0 → o anúncio ia ao ML com 1 unidade inexistente (era o que
+        # acontecia com todo kit, cujo estoque é derivado dos componentes). Ausente = 1 (default
+        # de formulário); explicitamente 0 = erro alto, nunca anúncio fantasma.
+        "available_quantity": _required_quantity(form),
         "buying_mode": "buy_it_now",
         "listing_type_id": form.get("listing_type") or "gold_special",
         "condition": form.get("item_condition") or "new",
@@ -2553,6 +2576,15 @@ async def _refresh_product_stock(prod, db: AsyncSession) -> int:
         recompute_cmig_product_stock,
         recompute_pg_product_stock,
     )
+
+    # Produto COMPOSTO (kit) não tem estoque próprio — quem tem são os componentes. O
+    # recompute devolveria 0 e, pior, GRAVARIA 0 no cache do kit. O disponível a anunciar é
+    # MIN(floor((estoque_comp − reservado_comp) / qtd)), descontando a reserva do próprio kit.
+    if getattr(prod, "is_composite", False):
+        from services.fiscal.stock_calculator import composite_stock
+
+        montavel = composite_stock(prod.components, discount_reserved=True)
+        return max(0, montavel - int(getattr(prod, "reserved_quantity", 0) or 0))
 
     if isinstance(prod, CMIGProduct):
         new_stock = await recompute_cmig_product_stock(prod.id, db)

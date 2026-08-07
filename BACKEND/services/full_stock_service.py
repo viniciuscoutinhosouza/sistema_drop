@@ -272,15 +272,21 @@ async def available_to_push(db: AsyncSession, listing) -> int:
     cat_pid = listing.catalog_product_id
 
     if listing.catalog_product_id and not listing.product_id:
-        row = (
+        pg_row = (
             await db.execute(
-                select(CatalogProduct.stock_quantity, CatalogProduct.reserved_quantity).where(
-                    CatalogProduct.id == listing.catalog_product_id
-                )
+                select(CatalogProduct).where(CatalogProduct.id == listing.catalog_product_id)
             )
-        ).one_or_none()
-        if row is not None:
-            local = max(0, int(row[0] or 0) - int(row[1] or 0))
+        ).scalar_one_or_none()
+        if pg_row is not None:
+            if pg_row.is_composite:
+                # Kit não tem estoque próprio (fica 0) — sem este ramo o anúncio de kit era
+                # empurrado com 0 e auto-pausado por indisponibilidade (ADR-0014).
+                from services.fiscal.stock_calculator import composite_stock
+
+                montavel = composite_stock(pg_row.components, discount_reserved=True)
+                local = max(0, montavel - int(pg_row.reserved_quantity or 0))
+            else:
+                local = max(0, int(pg_row.stock_quantity or 0) - int(pg_row.reserved_quantity or 0))
     elif listing.cmig_product_id and not listing.product_id:
         row = (
             await db.execute(
@@ -299,15 +305,19 @@ async def available_to_push(db: AsyncSession, listing) -> int:
         ).scalar_one_or_none()
         if dp and dp.catalog_product_id:
             cat_pid = dp.catalog_product_id
-            row = (
+            pg_row = (
                 await db.execute(
-                    select(CatalogProduct.stock_quantity, CatalogProduct.reserved_quantity).where(
-                        CatalogProduct.id == dp.catalog_product_id
-                    )
+                    select(CatalogProduct).where(CatalogProduct.id == dp.catalog_product_id)
                 )
-            ).one_or_none()
-            if row is not None:
-                local = max(0, int(row[0] or 0) - int(row[1] or 0))
+            ).scalar_one_or_none()
+            if pg_row is not None:
+                if pg_row.is_composite:  # ver comentário do ramo acima
+                    from services.fiscal.stock_calculator import composite_stock
+
+                    montavel = composite_stock(pg_row.components, discount_reserved=True)
+                    local = max(0, montavel - int(pg_row.reserved_quantity or 0))
+                else:
+                    local = max(0, int(pg_row.stock_quantity or 0) - int(pg_row.reserved_quantity or 0))
 
     if local > 0:
         return local

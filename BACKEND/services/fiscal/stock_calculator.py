@@ -575,3 +575,54 @@ async def recompute_all_stock(db: AsyncSession) -> dict:
         "cmig_recomputed": len(cmig_ids),
         "pg_recomputed": len(pg_ids),
     }
+
+
+# ── Produto COMPOSTO (kit) ─────────────────────────────────────────────────────
+#
+# Kit NÃO tem estoque próprio: quem tem estoque são os componentes (é o mesmo
+# modelo que `calculate_pg_product_stock` já assume ao debitar o COMPONENTE na
+# venda do kit — ver `kit_usage`). Por isso `stock_quantity` do kit fica 0 e o
+# disponível é DERIVADO na leitura. Este é o ponto único desse cálculo — antes
+# havia duas cópias (`supplier_products._calculate_pg_composite_stock` e
+# `cmigs._calculate_cmig_composite_stock`) e um terceiro leitor (`catalog.py`)
+# que não calculava nada, mostrava 0 e bloqueava a publicação do kit.
+
+
+def _component_qty(comp) -> tuple[int, int] | None:
+    """(estoque, reservado) do componente — resolve as duas formas de vínculo.
+
+    PG (`CatalogProductComponent`) aponta para `component`; CMIG
+    (`CMIGProductComponent`) aponta para `cmig_product` OU `catalog_product`.
+    Retorna None quando a FK está pendurada (componente apagado)."""
+    for attr in ("component", "cmig_product", "catalog_product"):
+        target = getattr(comp, attr, None)
+        if target is not None:
+            return (
+                int(getattr(target, "stock_quantity", 0) or 0),
+                int(getattr(target, "reserved_quantity", 0) or 0),
+            )
+    return None
+
+
+def composite_stock(components, *, discount_reserved: bool = False) -> int:
+    """Quantas unidades do kit dá para montar: MIN(floor(estoque_comp / qtd)).
+
+    `discount_reserved=True` usa (estoque − reservado) do componente — é o número
+    para ANUNCIAR (paridade com `stock - reserved` do produto simples). Sem a
+    flag, devolve o físico montável, que é o que as telas PG/CMIG já exibiam.
+
+    Clampa em 0: componente com estoque negativo (lacuna de dado) não deve virar
+    kit negativo. Componente sem FK resolvível é ignorado; se NENHUM resolver,
+    devolve 0 (não dá para afirmar que há kit montável)."""
+    if not components:
+        return 0
+    montaveis = []
+    for comp in components:
+        vals = _component_qty(comp)
+        if vals is None:
+            continue
+        estoque, reservado = vals
+        disponivel = estoque - reservado if discount_reserved else estoque
+        qty = max(int(getattr(comp, "quantity", 1) or 1), 1)
+        montaveis.append(max(0, disponivel) // qty)
+    return min(montaveis) if montaveis else 0

@@ -2,8 +2,6 @@ import os as _os
 import shutil as _shutil
 import uuid as _uuid
 from datetime import date as _date
-from datetime import datetime as _datetime
-from datetime import time as _time
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import and_, func, or_, select
@@ -24,7 +22,6 @@ from models.product import (
     ProductListing,
 )
 from models.user import User
-from services.stock_history import replay_stock_events_for_pg_product
 
 router = APIRouter()
 
@@ -42,15 +39,11 @@ def _norm_cest(v):
 
 
 def _calculate_pg_composite_stock(components) -> int:
-    """Retorna MIN(floor(estoque_comp / qtd)) para todos os componentes do PG composto."""
-    if not components:
-        return 0
-    stocks = []
-    for comp in components:
-        qty = max(comp.quantity, 1)
-        if comp.component:
-            stocks.append(comp.component.stock_quantity // qty)
-    return min(stocks) if stocks else 0
+    """Estoque montável do PG composto. Delega ao ponto único em
+    `stock_calculator.composite_stock` (o catálogo e o push de anúncio usam o mesmo)."""
+    from services.fiscal.stock_calculator import composite_stock
+
+    return composite_stock(components)
 
 
 def _serialize_product(p: CatalogProduct, include_components: bool = False) -> dict:

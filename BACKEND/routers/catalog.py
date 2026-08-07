@@ -12,6 +12,18 @@ from models.user import User
 router = APIRouter()
 
 
+def _pg_stock(p: CatalogProduct) -> int:
+    """Estoque a exibir/publicar. Produto COMPOSTO não tem estoque próprio: o disponível é
+    MIN(floor(estoque_componente / qtd)) — mesmo cálculo da tela PG e do push de anúncio
+    (`stock_calculator.composite_stock`). Sem isto o catálogo mostrava 0 no kit e o
+    `isSoldOut()` do frontend bloqueava a publicação."""
+    if getattr(p, "is_composite", False):
+        from services.fiscal.stock_calculator import composite_stock
+
+        return composite_stock(p.components)
+    return int(p.stock_quantity or 0)
+
+
 @router.get("/published")
 async def list_published_by_account(
     account_id: int,
@@ -93,7 +105,13 @@ async def list_catalog(
         query = query.where(CatalogProduct.category_id == category_id)
 
     # Estoque positivo primeiro, zerados por último (depois aplica o sort escolhido).
-    stock_order = case((CatalogProduct.stock_quantity > 0, 0), else_=1)
+    # Kit (is_composite) NUNCA tem stock_quantity > 0 — o estoque vive nos componentes e é
+    # derivado na leitura. Sem tratá-lo aqui, todo kit cairia no fim da lista como "esgotado".
+    stock_order = case(
+        (CatalogProduct.is_composite == True, 0),  # noqa: E712
+        (CatalogProduct.stock_quantity > 0, 0),
+        else_=1,
+    )
     if sort == "cheapest":
         query = query.order_by(stock_order, CatalogProduct.cost_price.asc())
     elif sort == "expensive":
@@ -124,7 +142,8 @@ async def list_catalog(
                 "title": p.title,
                 "cost_price": float(p.cost_price),
                 "suggested_price": float(p.suggested_price) if p.suggested_price else None,
-                "stock_quantity": p.stock_quantity,
+                "stock_quantity": _pg_stock(p),
+                "is_composite": p.is_composite,
                 "brand": p.brand,
                 "model": p.model,
                 "ean": p.ean,
@@ -271,6 +290,7 @@ async def get_catalog_product(product_id: int, db: AsyncSession = Depends(get_db
         "ncm": product.ncm,
         "brand": product.brand,
         "model": product.model,
-        "stock_quantity": product.stock_quantity,
+        "stock_quantity": _pg_stock(product),
+        "is_composite": product.is_composite,
         "images": images,
     }
