@@ -323,15 +323,6 @@ async def available_to_push(db: AsyncSession, listing) -> int:
                 else:
                     local = max(0, int(pg_row.stock_quantity or 0) - int(pg_row.reserved_quantity or 0))
 
-    # TRAVA kit ⇄ componente (ADR-0023): o lado que PERDE o desempate (quem publicou
-    # depois) reporta 0 e a pausa automática da ADR-0014 o pausa — ou deixa de reativar.
-    # É o que fecha o buraco da reativação automática sem um segundo motor de decisão no
-    # `sync_stock`, e vale para Shopee também (número calculado antes de ramificar).
-    from services.composite_publish_guard import loses_to_conflict
-
-    if await loses_to_conflict(db, listing):
-        return 0
-
     if local > 0:
         return local
 

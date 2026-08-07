@@ -265,15 +265,6 @@ async def publish_listing(
     product = product_result.scalar_one()
     mode = body.get("mode", "link")
 
-    # TRAVA kit <-> componente (ADR-0023): recusa ANTES de tocar o marketplace.
-    from services.composite_publish_guard import raise_if_conflict
-
-    await raise_if_conflict(
-        db,
-        catalog_product_id=product.catalog_product_id,
-        exclude_listing_id=listing.id,
-    )
-
     try:
         if mode == "link":
             platform_item_id = body.get("platform_item_id") or listing.platform_item_id
@@ -378,23 +369,6 @@ async def reactivate_listing(
         raise HTTPException(status_code=400, detail="Somente anúncios pausados podem ser reativados")
     if not listing.platform_item_id:
         raise HTTPException(status_code=400, detail="Anúncio sem ID no marketplace")
-
-    # TRAVA kit <-> componente (ADR-0023): reativar recria o conflito tanto quanto publicar.
-    from services.composite_publish_guard import raise_if_conflict
-
-    _dp = (
-        await db.execute(
-            select(DropshipperProduct.catalog_product_id).where(
-                DropshipperProduct.id == product_id
-            )
-        )
-    ).scalar_one_or_none()
-    await raise_if_conflict(
-        db,
-        catalog_product_id=listing.catalog_product_id or _dp,
-        cmig_product_id=listing.cmig_product_id,
-        exclude_listing_id=listing.id,
-    )
 
     try:
         if account.platform == "mercadolivre":

@@ -51,20 +51,13 @@ Regra do dono, adotada como invariante:
 
 1. `listings.py` publica com `available_quantity: 1` / `seller_stock: [{"stock": 1}]` fixos (ML e Shopee). Se for caminho vivo, ainda cria anúncio fantasma — não deriva estoque nem falha alto.
 2. `or 1` sobrevive no form dos caminhos de **update** (`sync_listing_to_ml`): re-push de anúncio auto-pausado ainda pode mandar 1 ao ML.
-3. ~~Política de oversell kit ⇄ componente~~ — **DECIDIDO pelo dono (2026-08-07): travar publicação simultânea.** Implementado em `services/composite_publish_guard.py`, em duas frentes com a MESMA regra de desempate (**quem publicou primeiro mantém**, `published_at` e `id` como critério estável):
-   - **Gate de publicação** (`anuncios.py`, junto do gate de estoque): 409 **antes** de criar o item no marketplace.
-   - **`available_to_push`**: o perdedor reporta 0 e a pausa automática da ADR-0014 o pausa / não o reativa. Fecha o buraco da reativação automática sem um segundo motor de decisão no `sync_stock`; a Shopee herda (número calculado antes de ramificar por plataforma).
+3. **Política de oversell kit ⇄ componente — REVERTIDA (2026-08-07).** A trava de publicação simultânea foi implementada e **removida no mesmo dia**, depois que a medição mostrou que ela contrariava o modelo do sistema.
 
-   Identidade **canonizada**: o mesmo estoque físico tem até 4 chaves (`catalog_product_id`, `cmig_product_id`, `product_id` via `DropshipperProduct`, espelho `CMIGProduct.pg_product_id`). Escopo **global** (todas as contas): kit numa conta e componente noutra são as mesmas unidades em duas vitrines; o caso legítimo seria **rateio**, que o modelo não suporta.
+   **O dado que derrubou a trava:** 36 dos 73 produtos PG com anúncio ativo **já estão anunciados por mais de uma conta** — metade do catálogo, em CMIGs diferentes vendendo do mesmo galpão (ex.: conta #2/MIG e #41/MBS). "As mesmas unidades em mais de uma vitrine" é a **operação normal**, não uma anomalia. Travar o par kit⇄componente aplicava ao kit uma regra que o sistema não aplica ao caso idêntico de dois vendedores anunciando o mesmo produto — e bloqueava operação rotineira (o dono bateu no 409 na prática).
 
-   Verificado em produção contra o conflito real (KIT_5550 × componente 5550): publicar qualquer um dos dois é bloqueado, e os 2 anúncios do kit (07/08) perdem para o anúncio do componente (26/06), passando a reportar 0.
+   **O que de fato distinguia o kit era o multiplicador** (kit vende 1, consome 2 do componente), e isso já foi resolvido: a venda do kit reserva e baixa os componentes na hora. Com isso o kit passa a se comportar como qualquer outra vitrine, e o risco residual (vender muito entre dois ciclos de sync) é **o mesmo** que já existe entre duas contas anunciando o mesmo produto.
 
-### Ainda em aberto na trava
+   **Decisão do dono:** remover a trava, **e recalcular o estoque do kit a cada movimentação de entrada ou saída de kit ou componente**. Como o kit é derivado, o *valor* já está sempre correto na leitura; o que faltava era a **propagação para os anúncios**: `reserve_stock` e `release_reservation` não disparavam `schedule_push` (só o despacho disparava), então reservar deixava o disponível defasado nos anúncios até o ciclo de 30 min. Agora os três caminhos coletam os ids tocados — **incluindo os componentes expandidos do kit** — e propagam na hora; o `stock_sync_service` expande componente → kits, então kit e componente são reavaliados juntos.
 
-4. ~~Caminhos sem gate~~ — **fechados** (`0e8d173`): `raise_if_conflict()` virou o ponto único da recusa (mesma regra e mesma mensagem em todo lugar) e foi ligado em `listings.py` `/publish` e `/reactivate` e em `anuncios.py` `/reactivate` (que cobre `/reactivate-batch` por reuso). **Continuam sem gate:** `publish-as-family` (precisa de pré-flight ANTES do laço + erro por item — um `raise` no meio abandonaria itens já criados no ML) e `publish-with-variations` (vínculo em `variations_json`, ver item 5).
-5. **Anúncio com variações** guarda o vínculo em `variations_json`, não nas FKs — fica fora da varredura nos dois sentidos.
-6. **Importação de anúncios** (3 caminhos) pode criar conflito em silêncio: espelha o que já existe no marketplace, então não deve bloquear — mas precisa **detectar e sinalizar**.
-7. **Reativar pelo Seller Center** não passa pela trava. Ela é da nossa borda, nunca absoluta.
-8. ~~Kit aninhado~~ — **fechado** (`0e8d173`): `_reject_nested_kit` rejeita com 422, na criação e na edição do PG. Medido antes: 0 kits aninhados no dado (PG e CMIG), então o guard não quebra nada existente. **Falta o equivalente no CMIG** (`cmigs.py`).
-9. ~~Reserva de kit CMIG~~ — **fechada** (`0e8d173`): `_kit_components_cmig` expande `CMIGProductComponent` (que aponta para `CMIGProduct` **ou** `CatalogProduct`) e reserva, liberação e despacho passam a atingir os componentes na tabela certa de cada um.
-10. **Frontend**: sem indicador de conflito, o usuário só descobre ao tomar 409. A resposta já devolve os conflitos estruturados (`describe_conflicts`) para a tela oferecer "pausar o conflitante e publicar".
+   Se um dia for preciso limitar de fato quanto cada vitrine pode vender, o mecanismo correto já existe e não é uma trava: **estoque fixo como teto** (ADR-0014, `min(fixo, disponível)`) — rateio explícito por anúncio.
+

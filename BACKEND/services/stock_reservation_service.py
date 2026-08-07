@@ -238,6 +238,12 @@ async def reserve_stock(db: AsyncSession, order: Order) -> None:
         return
 
     items = await _get_order_items(db, order)
+    # Ids tocados — inclui os COMPONENTES quando o item é kit. Alimenta o push de estoque
+    # no fim: reservar muda o disponível (estoque − reservado), então os anúncios do
+    # componente E dos kits que o usam têm de ser reavaliados na hora, não só no ciclo
+    # de 30 min (regra do dono: recalcular a cada movimentação).
+    _pg_ids: set[int] = set()
+    _cmig_ids: set[int] = set()
     for item in items:
         qty = item.quantity or 1
         reserved = False
@@ -254,6 +260,7 @@ async def reserve_stock(db: AsyncSession, order: Order) -> None:
                 _log(db, product_type="pg", product_id=_pid,
                      order_id=order.id, movement_type="reserve", qty=_q,
                      field="reserved_quantity", delta=_q)
+                _pg_ids.add(_pid)
             reserved = True
 
             if item.catalog_variant_id and item.catalog_source == "pg":
@@ -278,6 +285,7 @@ async def reserve_stock(db: AsyncSession, order: Order) -> None:
                 _log(db, product_type=_tp, product_id=_pid,
                      order_id=order.id, movement_type="reserve", qty=_q,
                      field="reserved_quantity", delta=_q)
+                (_cmig_ids if _tp == "cmig" else _pg_ids).add(_pid)
 
             if item.catalog_variant_id and item.catalog_source == "cmig":
                 await db.execute(
@@ -291,6 +299,14 @@ async def reserve_stock(db: AsyncSession, order: Order) -> None:
 
     try:
         await db.commit()
+        # Propaga na hora: reservar/liberar muda o DISPONÍVEL (estoque − reservado), e o
+        # `stock_sync_service` expande componente → kits, então o anúncio do kit e o do
+        # componente são reavaliados juntos. Sem isto a mudança só apareceria no ciclo de
+        # 30 min (regra do dono: recalcular a cada movimentação de kit ou componente).
+        if _pg_ids or _cmig_ids:
+            from services.stock_sync_service import schedule_push
+
+            schedule_push(_cmig_ids, _pg_ids)
     except Exception as exc:
         logger.error("reserve_stock order=%s: %s", order.id, exc)
 
@@ -316,6 +332,8 @@ async def release_reservation(db: AsyncSession, order: Order) -> None:
         return
 
     items = await _get_order_items(db, order)
+    _pg_ids: set[int] = set()
+    _cmig_ids: set[int] = set()
     for item in items:
         qty = item.quantity or 1
         released = False
@@ -332,6 +350,7 @@ async def release_reservation(db: AsyncSession, order: Order) -> None:
                 _log(db, product_type="pg", product_id=_pid,
                      order_id=order.id, movement_type="unreserve", qty=_q,
                      field="reserved_quantity", delta=-_q)
+                _pg_ids.add(_pid)
             released = True
 
             if item.catalog_variant_id and item.catalog_source == "pg":
@@ -356,6 +375,7 @@ async def release_reservation(db: AsyncSession, order: Order) -> None:
                 _log(db, product_type=_tp, product_id=_pid,
                      order_id=order.id, movement_type="unreserve", qty=_q,
                      field="reserved_quantity", delta=-_q)
+                (_cmig_ids if _tp == "cmig" else _pg_ids).add(_pid)
 
             if item.catalog_variant_id and item.catalog_source == "cmig":
                 await db.execute(
@@ -369,6 +389,14 @@ async def release_reservation(db: AsyncSession, order: Order) -> None:
 
     try:
         await db.commit()
+        # Propaga na hora: reservar/liberar muda o DISPONÍVEL (estoque − reservado), e o
+        # `stock_sync_service` expande componente → kits, então o anúncio do kit e o do
+        # componente são reavaliados juntos. Sem isto a mudança só apareceria no ciclo de
+        # 30 min (regra do dono: recalcular a cada movimentação de kit ou componente).
+        if _pg_ids or _cmig_ids:
+            from services.stock_sync_service import schedule_push
+
+            schedule_push(_cmig_ids, _pg_ids)
     except Exception as exc:
         logger.error("release_reservation order=%s: %s", order.id, exc)
 
