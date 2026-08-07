@@ -3898,6 +3898,32 @@ async def publish_anuncio(
     stock_mode = body.get("stock_mode") or "product"
     fixed_quantity = int(body.get("fixed_quantity") or 1)
     keep_stock_fixed = bool(body.get("keep_stock_fixed", False))
+    # TRAVA kit ⇄ componente (ADR-0023): os dois são lastreados nas MESMAS unidades
+    # físicas; anunciar ambos vende o que não existe. Recusa AQUI — antes de criar o item
+    # no marketplace — senão o 409 viria depois de o anúncio já estar vendendo lá fora.
+    if mode == "create" and prod is not None:
+        from services.composite_publish_guard import conflicting_listings, describe_conflicts
+
+        _conf = await conflicting_listings(
+            db,
+            catalog_product_id=prod.id if isinstance(prod, CatalogProduct) else None,
+            cmig_product_id=prod.id if isinstance(prod, CMIGProduct) else None,
+        )
+        if _conf:
+            _det = await describe_conflicts(db, _conf)
+            _txt = "; ".join(
+                f"{d['title'] or 'anúncio'} ({d['platform_item_id'] or 'sem id'}, conta #{d['account_id']})"
+                for d in _det[:3]
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Kit e componente não podem ser anunciados ao mesmo tempo — os dois usam "
+                    f"as mesmas unidades em estoque. Já está anunciado: {_txt}. "
+                    "Pause esse anúncio para publicar este."
+                ),
+            )
+
     if stock_mode == "product":
         # Recalcula antes de publicar — o cache pode estar stale (pedido recente,
         # NFe finalizada não propagada). Publicar com estoque desatualizado pode
