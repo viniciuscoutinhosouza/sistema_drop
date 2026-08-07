@@ -61,10 +61,10 @@ Regra do dono, adotada como invariante:
 
 ### Ainda em aberto na trava
 
-4. **Caminhos sem gate:** `routers/listings.py` `/publish` e `/reactivate`; `anuncios.py` `publish-as-family` (precisa de pré-flight + erro por item, não `raise` no laço, senão abandona itens já criados no ML) e `publish-with-variations`; `/anuncios/{id}/reactivate`. O `available_to_push` cobre o lado automático desses, mas não o clique manual.
+4. ~~Caminhos sem gate~~ — **fechados** (`0e8d173`): `raise_if_conflict()` virou o ponto único da recusa (mesma regra e mesma mensagem em todo lugar) e foi ligado em `listings.py` `/publish` e `/reactivate` e em `anuncios.py` `/reactivate` (que cobre `/reactivate-batch` por reuso). **Continuam sem gate:** `publish-as-family` (precisa de pré-flight ANTES do laço + erro por item — um `raise` no meio abandonaria itens já criados no ML) e `publish-with-variations` (vínculo em `variations_json`, ver item 5).
 5. **Anúncio com variações** guarda o vínculo em `variations_json`, não nas FKs — fica fora da varredura nos dois sentidos.
 6. **Importação de anúncios** (3 caminhos) pode criar conflito em silêncio: espelha o que já existe no marketplace, então não deve bloquear — mas precisa **detectar e sinalizar**.
 7. **Reativar pelo Seller Center** não passa pela trava. Ela é da nossa borda, nunca absoluta.
-8. **Kit aninhado**: `supplier_products`/`cmigs` aceitam componente composto sem validar, mas o cálculo não sustenta (kit vale 0 por definição). Fechar a porta na criação em vez de tornar a varredura recursiva.
-9. **Reserva de kit CMIG**: `_kit_components` só expande `catalog_product_id`. Do lado CMIG a janela de oversell pós-venda que esta ADR declara fechada **continua aberta**.
+8. ~~Kit aninhado~~ — **fechado** (`0e8d173`): `_reject_nested_kit` rejeita com 422, na criação e na edição do PG. Medido antes: 0 kits aninhados no dado (PG e CMIG), então o guard não quebra nada existente. **Falta o equivalente no CMIG** (`cmigs.py`).
+9. ~~Reserva de kit CMIG~~ — **fechada** (`0e8d173`): `_kit_components_cmig` expande `CMIGProductComponent` (que aponta para `CMIGProduct` **ou** `CatalogProduct`) e reserva, liberação e despacho passam a atingir os componentes na tabela certa de cada um.
 10. **Frontend**: sem indicador de conflito, o usuário só descobre ao tomar 409. A resposta já devolve os conflitos estruturados (`describe_conflicts`) para a tela oferecer "pausar o conflitante e publicar".
