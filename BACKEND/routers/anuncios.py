@@ -454,8 +454,8 @@ def _required_quantity(form: dict) -> int:
     if qty <= 0:
         raise HTTPException(
             status_code=422,
-            detail="Sem estoque disponível para publicar (quantidade 0). "
-                   "Para produto composto, verifique o estoque dos componentes.",
+            detail="Sem estoque disponível para publicar (quantidade 0) — nem no galpão "
+                   "nem no FULL. Se for produto composto, verifique o estoque dos componentes.",
         )
     return qty
 
@@ -2583,8 +2583,10 @@ async def _refresh_product_stock(prod, db: AsyncSession) -> int:
     if getattr(prod, "is_composite", False):
         from services.fiscal.stock_calculator import composite_stock
 
-        montavel = composite_stock(prod.components, discount_reserved=True)
-        return max(0, montavel - int(getattr(prod, "reserved_quantity", 0) or 0))
+        # PARIDADE com o ramo simples abaixo: devolve o FÍSICO (montável), SEM descontar
+        # reservado — quem desconta é o chamador (ramo de estoque fixo). Descontar aqui
+        # causava DUPLA subtração e o kit era publicado a menos.
+        return composite_stock(prod.components)
 
     if isinstance(prod, CMIGProduct):
         new_stock = await recompute_cmig_product_stock(prod.id, db)
@@ -3884,6 +3886,19 @@ async def publish_anuncio(
         # NFe finalizada não propagada). Publicar com estoque desatualizado pode
         # gerar vendas que o vendedor não consegue entregar.
         available_quantity = await _refresh_product_stock(prod, db)
+        if available_quantity <= 0 and prod is not None:
+            # LOCAL zerado NÃO significa sem estoque: após a remessa ao FULL o saldo fica lá,
+            # e o anúncio não-FULL anuncia o FULL quando o LOCAL = 0 (ADR-0008 §2 — mesma regra
+            # de `available_to_push`). Sem esta queda, publicar um produto que está todo no FULL
+            # passaria a falhar com "sem estoque".
+            from services.full_stock_service import available_for_product
+
+            available_quantity = await available_for_product(
+                db,
+                account_id,
+                cmig_product_id=getattr(prod, "id", None) if isinstance(prod, CMIGProduct) else None,
+                catalog_product_id=getattr(prod, "id", None) if isinstance(prod, CatalogProduct) else None,
+            )
     else:
         # Estoque fixo é TETO (ADR-0014): não anuncia mais do que o disponível LOCAL.
         # Se LOCAL=0, mantém o fixo aqui e deixa o sync_stock (que enxerga o FULL) ajustar/pausar
@@ -6414,10 +6429,18 @@ async def sync_stock_to_marketplace(
             continue
 
         stock = None
-        if lst.cmig_product_id and lst.cmig_product:
-            stock = int(lst.cmig_product.stock_quantity or 0)
-        elif lst.catalog_product_id and lst.catalog_product:
-            stock = int(lst.catalog_product.stock_quantity or 0)
+        _p = lst.cmig_product if lst.cmig_product_id else (
+            lst.catalog_product if lst.catalog_product_id else None
+        )
+        if _p is not None:
+            if getattr(_p, "is_composite", False):
+                # Kit não tem estoque próprio. Sem este ramo, o clique manual empurrava a
+                # coluna (0) e DESFAZIA o valor correto que o job `sync_stock` já enviara.
+                from services.fiscal.stock_calculator import composite_stock
+
+                stock = composite_stock(_p.components, discount_reserved=True)
+            else:
+                stock = int(_p.stock_quantity or 0)
 
         if stock is None:
             skipped += 1

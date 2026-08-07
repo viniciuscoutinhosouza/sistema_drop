@@ -472,12 +472,9 @@ async def recompute_after_order_change(
             )
         ).scalar_one_or_none()
         if kit and kit.components:
-            stocks = [
-                (comp.component.stock_quantity or 0) // comp.quantity
-                for comp in kit.components
-                if comp.quantity
-            ]
-            kit.stock_quantity = min(stocks) if stocks else 0
+            # Delega ao ponto único (clampa negativo e tolera FK pendurada — a lista por
+            # compreensão antiga estourava AttributeError se `comp.component` fosse None).
+            kit.stock_quantity = composite_stock(kit.components)
 
     return {"cmig_recomputed": len(cmig_ids), "pg_recomputed": len(pg_ids)}
 
@@ -527,12 +524,7 @@ async def trigger_stock_recompute_on_order_created(
                 )
             ).scalar_one_or_none()
             if kit and kit.components:
-                stocks = [
-                    (comp.component.stock_quantity or 0) // comp.quantity
-                    for comp in kit.components
-                    if comp.quantity
-                ]
-                kit.stock_quantity = min(stocks) if stocks else 0
+                kit.stock_quantity = composite_stock(kit.components)  # ponto único
                 kits_recomputed += 1
 
         await db.commit()

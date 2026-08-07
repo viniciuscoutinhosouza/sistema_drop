@@ -288,15 +288,19 @@ async def available_to_push(db: AsyncSession, listing) -> int:
             else:
                 local = max(0, int(pg_row.stock_quantity or 0) - int(pg_row.reserved_quantity or 0))
     elif listing.cmig_product_id and not listing.product_id:
-        row = (
-            await db.execute(
-                select(CMIGProduct.stock_quantity, CMIGProduct.reserved_quantity).where(
-                    CMIGProduct.id == listing.cmig_product_id
-                )
-            )
-        ).one_or_none()
-        if row is not None:
-            local = max(0, int(row[0] or 0) - int(row[1] or 0))
+        cm_row = (
+            await db.execute(select(CMIGProduct).where(CMIGProduct.id == listing.cmig_product_id))
+        ).scalar_one_or_none()
+        if cm_row is not None:
+            if getattr(cm_row, "is_composite", False):
+                # CMIGProduct também pode ser kit — sem este ramo o kit CMIG publicava com N e
+                # era auto-pausado com 0 no ciclo seguinte (mesmo bug do PG).
+                from services.fiscal.stock_calculator import composite_stock
+
+                montavel = composite_stock(cm_row.components, discount_reserved=True)
+                local = max(0, montavel - int(cm_row.reserved_quantity or 0))
+            else:
+                local = max(0, int(cm_row.stock_quantity or 0) - int(cm_row.reserved_quantity or 0))
     elif listing.product_id:
         dp = (
             await db.execute(
