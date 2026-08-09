@@ -52,24 +52,80 @@
             <div v-if="(attrSchemas[cat.id] || []).length === 0" class="text-muted small">
               Esta categoria não retornou atributos do marketplace.
             </div>
-            <div v-else class="row">
+            <!-- Marca Shopee (conceito separado do atributo; obrigatória quando is_mandatory) -->
+            <div v-if="isShopee(cat)" class="form-group mb-2">
+              <label class="small mb-1">
+                Marca
+                <span v-if="(brandInfo[cat.id] || {}).is_mandatory" class="text-danger">*</span>
+              </label>
+              <select :value="(brandSel[cat.id] || {}).brand_id ?? ''"
+                      @change="setBrand(cat.id, $event.target.value)"
+                      class="form-control form-control-sm">
+                <option value="">— Selecione a marca —</option>
+                <option v-for="b in (brandInfo[cat.id] || {}).brands || []" :key="b.brand_id" :value="b.brand_id">
+                  {{ b.name }}
+                </option>
+              </select>
+            </div>
+
+            <div class="row">
               <div v-for="attr in attrSchemas[cat.id]" :key="attr.id" class="col-md-4 form-group mb-2">
                 <label class="small mb-1">
                   {{ attr.name }}
                   <span v-if="attr.is_required" class="text-danger">*</span>
                   <span v-else-if="attr.is_recommended" class="text-muted" style="font-size:10px">(rec.)</span>
+                  <span v-if="attr.input_kind === 'multi'" class="text-muted" style="font-size:10px">
+                    (até {{ attr.max_value_count }})
+                  </span>
                 </label>
-                <select v-if="attr.values && attr.values.length > 0"
-                        :value="getAttrValue(cat.id, attr.id)"
-                        @change="setAttrValue(cat.id, attr.id, attr.name, $event.target.value)"
-                        class="form-control form-control-sm">
-                  <option value="">— Selecione —</option>
-                  <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
-                </select>
-                <input v-else
-                       :value="getAttrValue(cat.id, attr.id)"
-                       @input="setAttrValue(cat.id, attr.id, attr.name, $event.target.value)"
-                       class="form-control form-control-sm" :placeholder="attr.name" />
+
+                <!-- ── Ramo Mercado Livre (inalterado) ── -->
+                <template v-if="!isShopee(cat)">
+                  <select v-if="attr.values && attr.values.length > 0"
+                          :value="getAttrValue(cat.id, attr.id)"
+                          @change="setAttrValue(cat.id, attr.id, attr.name, $event.target.value)"
+                          class="form-control form-control-sm">
+                    <option value="">— Selecione —</option>
+                    <option v-for="v in attr.values" :key="v.id" :value="v.name">{{ v.name }}</option>
+                  </select>
+                  <input v-else
+                         :value="getAttrValue(cat.id, attr.id)"
+                         @input="setAttrValue(cat.id, attr.id, attr.name, $event.target.value)"
+                         class="form-control form-control-sm" :placeholder="attr.name" />
+                </template>
+
+                <!-- ── Ramo Shopee (por input_kind; guarda value_id) ── -->
+                <template v-else>
+                  <select v-if="attr.input_kind === 'multi'" multiple size="4"
+                          @change="setMultiValue(cat.id, attr, $event)"
+                          class="form-control form-control-sm">
+                    <option v-for="v in attr.values" :key="v.id" :value="v.id"
+                            :selected="getMultiValue(cat.id, attr.id).includes(v.id)">{{ v.name }}</option>
+                  </select>
+                  <div v-else-if="attr.input_kind === 'quantitative'" class="input-group input-group-sm">
+                    <input type="number" class="form-control form-control-sm" :placeholder="attr.name"
+                           :value="getQtyValue(cat.id, attr.id).value"
+                           @input="setQtyValue(cat.id, attr, 'value', $event.target.value)" />
+                    <select v-if="attr.allowed_units && attr.allowed_units.length"
+                            class="form-control form-control-sm" style="max-width:90px"
+                            :value="getQtyValue(cat.id, attr.id).unit"
+                            @change="setQtyValue(cat.id, attr, 'unit', $event.target.value)">
+                      <option value="">un.</option>
+                      <option v-for="u in attr.allowed_units" :key="u" :value="u">{{ u }}</option>
+                    </select>
+                  </div>
+                  <select v-else-if="attr.values && attr.values.length > 0"
+                          :value="getAttrValue(cat.id, attr.id)"
+                          @change="setShopeeSingle(cat.id, attr, $event.target.value)"
+                          class="form-control form-control-sm">
+                    <option value="">— Selecione —</option>
+                    <option v-for="v in attr.values" :key="v.id" :value="v.id">{{ v.name }}</option>
+                  </select>
+                  <input v-else
+                         :value="getAttrValue(cat.id, attr.id)"
+                         @input="setShopeeText(cat.id, attr, $event.target.value)"
+                         class="form-control form-control-sm" :placeholder="attr.name" />
+                </template>
               </div>
             </div>
             <div class="text-right">
@@ -88,10 +144,15 @@
         <div class="card-body py-2">
           <div class="form-group mb-2">
             <label class="small mb-1">Marketplace</label>
-            <select v-model="newCat.marketplace" class="form-control form-control-sm">
+            <select v-model="newCat.marketplace" class="form-control form-control-sm" @change="onMarketplaceChange">
               <option value="mercado_livre">Mercado Livre</option>
-              <!-- Shopee virá depois -->
+              <option value="shopee">Shopee</option>
             </select>
+          </div>
+
+          <div v-if="newCat.marketplace === 'shopee' && shopeeAccountError"
+               class="alert alert-warning py-2 small mb-2">
+            <i class="fas fa-exclamation-triangle mr-1"></i>{{ shopeeAccountError }}
           </div>
 
           <div class="form-group mb-2">
@@ -172,6 +233,42 @@ const attrValues = reactive({})    // { pmcId: { attrId: 'value_name' } }
 const loadingAttrs = reactive({})
 const saving = reactive({})
 
+// ── Shopee (Fase 1): conta shop-scoped + marca (conceito separado do atributo) ──
+const shopeeAccountId = ref(null)
+const shopeeAccountError = ref('')
+const brandInfo = reactive({})  // { pmcId: {is_mandatory, brands:[{brand_id,name}], ...} }
+const brandSel = reactive({})   // { pmcId: {brand_id, name} }
+
+function isShopee(cat) { return cat?.marketplace === 'shopee' }
+
+async function resolveShopeeAccount() {
+  if (shopeeAccountId.value) return shopeeAccountId.value
+  try {
+    const { data } = await api.get('/shopee/default-account')
+    if (!data.account_id) {
+      shopeeAccountError.value = data.detail ||
+        'Nenhuma conta Shopee conectada. Conecte uma loja Shopee para cadastrar categorias Shopee.'
+      return null
+    }
+    shopeeAccountId.value = data.account_id
+    shopeeAccountError.value = ''
+    return data.account_id
+  } catch {
+    shopeeAccountError.value = 'Erro ao resolver a conta Shopee.'
+    return null
+  }
+}
+
+async function onMarketplaceChange() {
+  searchResults.value = []
+  searchQuery.value = ''
+  newCat.category_id = ''
+  newCat.category_name = ''
+  newCat.category_path_json = null
+  if (newCat.marketplace === 'shopee') await resolveShopeeAccount()
+  else shopeeAccountError.value = ''
+}
+
 const addMode = ref(false)
 const addLoading = ref(false)
 const newCat = reactive({
@@ -242,7 +339,19 @@ function hydrateValuesFromSaved(cat) {
   try {
     const saved = JSON.parse(cat.attributes_json || '[]')
     for (const a of saved) {
-      if (a.id) attrValues[cat.id][a.id] = a.value_name ?? a.value ?? ''
+      if (a.id === '__SHOPEE_BRAND__') {
+        brandSel[cat.id] = { brand_id: a.value_id, name: a.name }
+        continue
+      }
+      if (!a.id) continue
+      if (isShopee(cat)) {
+        if (a.kind === 'multi') attrValues[cat.id][a.id] = a.value_ids || []
+        else if (a.kind === 'quantitative') attrValues[cat.id][a.id] = { value: a.value_name ?? '', unit: a.value_unit ?? '' }
+        else if (a.kind === 'single') attrValues[cat.id][a.id] = a.value_id
+        else attrValues[cat.id][a.id] = a.value_name ?? ''
+      } else {
+        attrValues[cat.id][a.id] = a.value_name ?? a.value ?? ''
+      }
     }
   } catch { /* ignore */ }
 }
@@ -259,14 +368,64 @@ async function fetchAttrSchema(pmcId) {
   if (!cat) return
   loadingAttrs[pmcId] = true
   try {
-    const { data } = await api.get(`/anuncios/categories/${cat.category_id}/attributes`)
-    attrSchemas[pmcId] = Array.isArray(data) ? data : []
+    if (isShopee(cat)) {
+      const acc = await resolveShopeeAccount()
+      if (!acc) { attrSchemas[pmcId] = []; return }
+      const { data } = await api.get(`/shopee/categories/${cat.category_id}/attributes`,
+                                     { params: { account_id: acc } })
+      attrSchemas[pmcId] = Array.isArray(data) ? data : []
+      await fetchBrands(pmcId, cat, acc)
+    } else {
+      const { data } = await api.get(`/anuncios/categories/${cat.category_id}/attributes`)
+      attrSchemas[pmcId] = Array.isArray(data) ? data : []
+    }
   } catch (err) {
     attrSchemas[pmcId] = []
     toast.error('Erro ao carregar atributos da categoria')
   } finally {
     loadingAttrs[pmcId] = false
   }
+}
+
+// ── Shopee: marca da categoria + getters/setters por input_kind ──
+async function fetchBrands(pmcId, cat, acc) {
+  try {
+    const { data } = await api.get(`/shopee/categories/${cat.category_id}/brands`,
+                                   { params: { account_id: acc } })
+    brandInfo[pmcId] = data
+  } catch { brandInfo[pmcId] = { is_mandatory: false, brands: [] } }
+}
+
+function setBrand(pmcId, brandId) {
+  const info = brandInfo[pmcId] || { brands: [] }
+  const b = (info.brands || []).find(x => String(x.brand_id) === String(brandId))
+  brandSel[pmcId] = b ? { brand_id: b.brand_id, name: b.name } : null
+}
+
+function getMultiValue(pmcId, attrId) {
+  const v = (attrValues[pmcId] || {})[attrId]
+  return Array.isArray(v) ? v : []
+}
+function setMultiValue(pmcId, attr, event) {
+  const ids = Array.from(event.target.selectedOptions).map(o => Number(o.value))
+  if (!attrValues[pmcId]) attrValues[pmcId] = {}
+  attrValues[pmcId][attr.id] = ids.slice(0, attr.max_value_count || ids.length)
+}
+function getQtyValue(pmcId, attrId) {
+  const v = (attrValues[pmcId] || {})[attrId]
+  return (v && typeof v === 'object' && !Array.isArray(v)) ? v : { value: '', unit: '' }
+}
+function setQtyValue(pmcId, attr, field, val) {
+  if (!attrValues[pmcId]) attrValues[pmcId] = {}
+  attrValues[pmcId][attr.id] = { ...getQtyValue(pmcId, attr.id), [field]: val }
+}
+function setShopeeSingle(pmcId, attr, valueId) {
+  if (!attrValues[pmcId]) attrValues[pmcId] = {}
+  attrValues[pmcId][attr.id] = valueId
+}
+function setShopeeText(pmcId, attr, text) {
+  if (!attrValues[pmcId]) attrValues[pmcId] = {}
+  attrValues[pmcId][attr.id] = text
 }
 
 function getAttrValue(pmcId, attrId) {
@@ -284,12 +443,59 @@ function setAttrValue(pmcId, attrId, attrName, value) {
   }
 }
 
+function hasValue(v) {
+  if (v == null || v === '') return false
+  if (Array.isArray(v)) return v.length > 0
+  if (typeof v === 'object') return v.value !== '' && v.value != null  // quantitativo: 0 é válido
+  return true
+}
+
+function buildShopeePayload(cat, schema, values) {
+  const out = []
+  for (const a of schema) {
+    const v = values[a.id]
+    if (!hasValue(v)) continue
+    if (a.input_kind === 'multi') {
+      const names = v.map(id => (a.values.find(x => x.id === id) || {}).name)
+      out.push({ id: a.id, name: a.name, kind: 'multi', value_ids: v, value_names: names })
+    } else if (a.input_kind === 'quantitative') {
+      out.push({ id: a.id, name: a.name, kind: 'quantitative',
+                 value_id: 0, value_name: String(v.value), value_unit: v.unit || '' })
+    } else if (a.values && a.values.length) {
+      const vid = Number(v)
+      out.push({ id: a.id, name: a.name, kind: 'single',
+                 value_id: vid, value_name: (a.values.find(x => x.id === vid) || {}).name })
+    } else {
+      out.push({ id: a.id, name: a.name, kind: 'text', value_id: 0, value_name: String(v) })
+    }
+  }
+  const b = brandSel[cat.id]
+  if (b && b.brand_id != null) {
+    out.push({ id: '__SHOPEE_BRAND__', name: b.name, kind: 'brand', value_id: b.brand_id, value_name: b.name })
+  }
+  return out
+}
+
 async function saveCategoryAttrs(cat) {
   const schema = attrSchemas[cat.id] || []
   const values = attrValues[cat.id] || {}
-  const attrsPayload = schema
-    .filter(a => values[a.id] !== '' && values[a.id] != null)
-    .map(a => ({ id: a.id, name: a.name, value_name: values[a.id] }))
+  let attrsPayload
+  if (isShopee(cat)) {
+    // Falhar alto: obrigatórios (mandatory) + marca (quando is_mandatory) antes de salvar.
+    const missing = schema.filter(a => a.is_required && !hasValue(values[a.id])).map(a => a.name)
+    if ((brandInfo[cat.id] || {}).is_mandatory && !((brandSel[cat.id] || {}).brand_id != null)) {
+      missing.push('Marca')
+    }
+    if (missing.length) {
+      toast.warning('Preencha os campos obrigatórios da Shopee: ' + missing.join(', '))
+      return
+    }
+    attrsPayload = buildShopeePayload(cat, schema, values)
+  } else {
+    attrsPayload = schema
+      .filter(a => values[a.id] !== '' && values[a.id] != null)
+      .map(a => ({ id: a.id, name: a.name, value_name: values[a.id] }))
+  }
 
   saving[cat.id] = true
   try {
@@ -331,7 +537,15 @@ async function runSearch() {
   }
   searchLoading.value = true
   try {
-    const { data } = await api.get(`/anuncios/categories/search?q=${encodeURIComponent(searchQuery.value)}`)
+    let data
+    if (newCat.marketplace === 'shopee') {
+      const acc = await resolveShopeeAccount()
+      if (!acc) { searchResults.value = []; return }
+      ;({ data } = await api.get('/shopee/categories/search',
+                                 { params: { account_id: acc, q: searchQuery.value } }))
+    } else {
+      ;({ data } = await api.get(`/anuncios/categories/search?q=${encodeURIComponent(searchQuery.value)}`))
+    }
     searchResults.value = Array.isArray(data) ? data : []
   } catch {
     searchResults.value = []
@@ -341,8 +555,14 @@ async function runSearch() {
 }
 
 function selectSearchResult(r) {
+  // Shopee: só categoria FOLHA publica.
+  if (newCat.marketplace === 'shopee' && r.is_leaf === false) {
+    toast.warning('Na Shopee só é possível publicar em categoria FOLHA (sem subcategorias). Escolha uma folha.')
+    return
+  }
   newCat.category_id = r.id
-  newCat.category_name = r.name
+  newCat.category_name = r.name || (r.path_from_root && r.path_from_root.length
+    ? r.path_from_root[r.path_from_root.length - 1].name : '')
   newCat.category_path_json = r.path_from_root ? JSON.stringify(r.path_from_root) : null
   searchResults.value = []
 }

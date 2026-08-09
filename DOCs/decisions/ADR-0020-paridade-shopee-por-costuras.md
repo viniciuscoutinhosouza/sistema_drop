@@ -95,3 +95,25 @@ Concretamente:
 - `BACKEND/routers/separation.py` — filtro protetor excluindo Shopee do picking ML.
 - `FRONTEND` — ListingManager (reativar/preview/toasts) + botões de Custos, ramificados por `v-if`.
 - Migrations aditivas: `135_orders_shopee_invoice_status.sql` (e coluna de custo via `Order.platform_fee`).
+
+## Convenção de dados — `attributes_json` da Shopee (categoria no Produto PG)
+
+O cadastro de categoria Shopee no Produto PG reusa a coluna compartilhada
+`ProductMarketplaceCategory.attributes_json` de forma **aditiva** (o ML lê só `value_name` e ignora
+os campos extras). As entradas Shopee carregam `kind` (para reconstruir o valor sem o schema) e o
+**`value_id`** exigido pelo `add_item`. Três lugares precisam concordar sobre este shape:
+escrita `buildShopeePayload` (`MarketplaceCategoriesCard.vue`), releitura `hydrateValuesFromSaved`
+(mesmo arquivo) e leitura-p/-publicar `_build_shopee_attributes` (`listings.py`).
+
+| `kind` | Campos | Vira no `add_item.attribute_list` |
+|---|---|---|
+| `single` | `value_id`, `value_name` | `{value_id, "", ""}` |
+| `multi` | `value_ids[]`, `value_names[]` | vários `{value_id, "", ""}` no mesmo `attribute_value_list` (≤ `max_value_count`) |
+| `quantitative` | `value_id:0`, `value_name`(número), `value_unit` | `{0, value_name, value_unit}` |
+| `text` | `value_id:0`, `value_name` | `{0, value_name, ""}` |
+| **marca** | `id:"__SHOPEE_BRAND__"`, `value_id`(brand_id) | vai em `brand.brand_id` (sentinela, NÃO em `attribute_list`) |
+
+Enums do `get_attribute_tree` (em `attribute_info`, confirmados ao vivo): `input_type` 1=drop-down /
+2=combo (single) / 3=texto livre / 4-5=multi; `format_type` 2 = quantitativo (número + unidade de
+`attribute_unit_list`). A normalização para o shape do front vive em `shopee_catalog.py`
+(`_normalize_attr`/`_derive_kind`). Categoria da Shopee só publica em **folha** (`has_children=false`).

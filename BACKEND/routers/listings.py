@@ -3,19 +3,25 @@ Gerenciamento de anúncios (ProductListings) por CONTA de marketplace.
 Um AC pode ter anúncios de uma mesma CONTA publicados em marketplace.
 """
 
+import json
 import logging
 from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user
 from models.integration import MarketplaceAccount
-from models.product import CatalogProduct, DropshipperProduct, ProductListing
+from models.product import (
+    CatalogProduct,
+    DropshipperProduct,
+    ProductListing,
+    ProductMarketplaceCategory,
+)
 from models.user import AccountAdministrator, User
 from services import ml_service, shopee_service
 from services.content_declaration import (
@@ -294,6 +300,11 @@ async def publish_listing(
                 result = await ml_service.create_item(account.access_token, item_data)
                 listing.platform_item_id = result["id"]
             elif account.platform == "shopee":
+                # Falhar alto: reexecuta os bloqueios ANTES do add_item (o preview pode ter sido
+                # pulado). Aborta com a lista clara apontando o cadastro, em vez do erro cru da Shopee.
+                bloqueios = await _shopee_publish_bloqueios(product, listing, account, db)
+                if bloqueios:
+                    raise HTTPException(status_code=400, detail={"bloqueios": bloqueios})
                 item_data = await _build_shopee_item(product, listing, account, db)
                 token = await get_valid_shopee_token(account, db)
                 item_id = await shopee_service.add_item(token, account.shop_id, item_data)
@@ -408,6 +419,63 @@ def _build_ml_item(product: DropshipperProduct, listing: ProductListing) -> dict
     }
 
 
+async def _shopee_pmc(product: DropshipperProduct, listing: ProductListing, db: AsyncSession):
+    """Categoria+atributos da Shopee CADASTRADOS na aba de categorias do Produto PG. Só usa se a
+    categoria cadastrada bate com a do anúncio (evita mandar atributos de outra categoria)."""
+    cpid = getattr(product, "catalog_product_id", None)
+    if not cpid:
+        return None
+    pmc = (await db.execute(select(ProductMarketplaceCategory).where(and_(
+        ProductMarketplaceCategory.catalog_product_id == cpid,
+        ProductMarketplaceCategory.marketplace == "shopee",
+    )))).scalars().first()
+    if not pmc:
+        return None
+    if listing.category_id and str(pmc.category_id) != str(listing.category_id):
+        return None  # categoria cadastrada ≠ categoria do anúncio → revalidar/recadastrar
+    return pmc
+
+
+def _build_shopee_attributes(attrs_raw: str | None) -> tuple[list, int | None, set]:
+    """Do `attributes_json` (cadastro) → `attribute_list` do add_item + brand_id + ids salvos.
+    Formato confirmado ao vivo: value_id da lista (original_value_name/value_unit vazios);
+    value_id=0 + original_value_name p/ quantitativo/texto; value_unit só no quantitativo;
+    multi = vários itens no mesmo attribute_value_list."""
+    try:
+        entries = json.loads(attrs_raw or "[]")
+    except (ValueError, TypeError):
+        entries = []
+    attribute_list: list = []
+    brand_id: int | None = None
+    saved_ids: set = set()
+    for e in entries:
+        if e.get("id") == "__SHOPEE_BRAND__":
+            brand_id = e.get("value_id")
+            continue
+        try:
+            aid = int(e.get("id"))
+        except (TypeError, ValueError):
+            continue  # id não-numérico não é atributo Shopee
+        kind = e.get("kind")
+        if kind == "multi":
+            vals = [{"value_id": int(v), "original_value_name": "", "value_unit": ""}
+                    for v in (e.get("value_ids") or []) if v is not None]
+        elif kind == "quantitative":
+            vals = [{"value_id": 0, "original_value_name": str(e.get("value_name") or ""),
+                     "value_unit": e.get("value_unit") or ""}]
+        elif kind == "single":
+            try:
+                vals = [{"value_id": int(e.get("value_id")), "original_value_name": "", "value_unit": ""}]
+            except (TypeError, ValueError):
+                vals = []
+        else:  # text (ou legado)
+            vals = [{"value_id": 0, "original_value_name": str(e.get("value_name") or ""), "value_unit": ""}]
+        if vals:
+            saved_ids.add(aid)
+            attribute_list.append({"attribute_id": aid, "attribute_value_list": vals})
+    return attribute_list, brand_id, saved_ids
+
+
 async def _shopee_publish_bloqueios(
     product: DropshipperProduct, listing: ProductListing,
     account: MarketplaceAccount, db: AsyncSession,
@@ -439,18 +507,28 @@ async def _shopee_publish_bloqueios(
         if not any(c.get("enabled") for c in channels):
             b.append("Nenhum canal de logística habilitado na loja Shopee.")
         if listing.category_id:
+            # Bloqueio DINÂMICO: só bloqueia se o obrigatório NÃO estiver cadastrado na aba de
+            # categorias do Produto PG (Fase 2). Revalida na loja-ALVO do anúncio (não a de navegação).
+            pmc = await _shopee_pmc(product, listing, db)
+            _, saved_brand, saved_ids = _build_shopee_attributes(
+                pmc.attributes_json if pmc else None)
             br = await shopee_service.get_brand_list(token, account.shop_id, int(listing.category_id))
-            if br.get("is_mandatory"):
-                b.append("Esta categoria EXIGE marca, e o sistema publica como 'Sem marca' — "
-                         "escolha uma categoria sem marca obrigatória (por ora).")
+            if br.get("is_mandatory") and (saved_brand is None or saved_brand == 0):
+                b.append("Esta categoria EXIGE marca — cadastre a marca da Shopee na aba de "
+                         "categorias do produto (o sistema publicaria como 'Sem marca').")
             attrs = await shopee_service.get_attribute_tree(token, account.shop_id, int(listing.category_id))
-            mand = [a.get("name") for a in attrs if a.get("mandatory")]
-            if mand:
-                b.append(f"Categoria exige atributo(s) obrigatório(s) ainda não suportado(s): {', '.join(mand[:5])}.")
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 — falha ao consultar a Shopee vira aviso, não quebra o preview
-        b.append(f"Não foi possível validar categoria/canais na Shopee agora: {exc}")
+            faltam = [a.get("name") for a in attrs
+                      if a.get("mandatory") and int(a.get("attribute_id", 0)) not in saved_ids]
+            if faltam:
+                b.append("Categoria exige atributo(s) obrigatório(s) não cadastrado(s): "
+                         f"{', '.join(faltam[:5])}. Preencha na aba de categorias do produto.")
+    except Exception as exc:  # noqa: BLE001 — falha ao consultar a Shopee vira aviso (não quebra o preview)
+        # Inclui HTTPException de token vencido / loja desconectada / erro de API Shopee: viram
+        # bloqueio textual amigável, não 5xx. Detalhe cru fica no log (não vaza para o front).
+        logger.warning("[shopee] falha ao validar categoria/canais (conta %s): %s",
+                       account.id, exc, exc_info=True)
+        b.append("Não foi possível validar categoria/marca/canais na Shopee agora "
+                 "(conta pode estar desconectada — reconecte). Tente novamente.")
     return b
 
 
@@ -533,8 +611,16 @@ async def _build_shopee_item(
     if not image_ids:
         raise HTTPException(status_code=400, detail="Nenhuma imagem válida do produto para a Shopee (add_item exige imagem).")
 
+    # Atributos + marca cadastrados na aba de categorias do Produto PG (Fase 2).
+    pmc = await _shopee_pmc(product, listing, db)
+    attribute_list, brand_id, _ = _build_shopee_attributes(pmc.attributes_json if pmc else None)
+    try:
+        brand_id_int = int(brand_id) if brand_id is not None else 0
+    except (TypeError, ValueError):
+        brand_id_int = 0  # legado/manual não-numérico → "Sem marca" (não estoura o add_item)
+
     name = (product.title_shopee or listing.title_override or product.title or "")[:100]
-    return {
+    item = {
         "item_name": name,
         "description": (product.description or name)[:3000],
         "category_id": int(listing.category_id),
@@ -545,7 +631,11 @@ async def _build_shopee_item(
                       "package_height": int(height)},
         "logistic_info": logistic_info,
         "image": {"image_id_list": image_ids},
-        "brand": {"brand_id": 0},          # 0 = "Sem marca" (NoBrand); ajustar se categoria exigir
+        # Marca cadastrada, ou 0 = "Sem marca" (NoBrand) quando não exigida/não escolhida.
+        "brand": {"brand_id": brand_id_int},
         "condition": "NEW",
         "item_status": "NORMAL",
     }
+    if attribute_list:
+        item["attribute_list"] = attribute_list
+    return item
