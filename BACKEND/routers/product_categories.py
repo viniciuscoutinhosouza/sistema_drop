@@ -114,7 +114,9 @@ def _validate_body(body: dict) -> tuple[int | None, int | None, str, str]:
             status_code=400,
             detail=f"marketplace deve ser um de: {', '.join(ALLOWED_MARKETPLACES)}",
         )
-    category_id = (body.get("category_id") or "").strip()
+    # category_id é String(100) no banco: ML manda "MLB123" (str); Shopee manda numérico (int).
+    # Coage a string p/ aceitar os dois sem quebrar (`int` não tem .strip()).
+    category_id = str(body.get("category_id") or "").strip()
     if not category_id:
         raise HTTPException(status_code=400, detail="category_id é obrigatório")
     return catalog_id, cmig_id, marketplace, category_id
