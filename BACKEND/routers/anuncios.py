@@ -10,7 +10,7 @@ import shutil as _shutil
 import uuid as _uuid_mod
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -2030,13 +2030,40 @@ async def get_anuncio_sale_price(
     return await ml_service.get_sale_price_info(access_token, listing.platform_item_id)
 
 
+def _suggest_cap(q: str | None) -> int:
+    """Sem busca, a lista é uma SUGESTÃO (5 basta). Com busca, é um SELETOR — precisa
+    alcançar o produto certo, que pode estar longe no ranking de similaridade."""
+    return 50 if (q or "").strip() else 5
+
+
+def _filter_by_query(products: list, q: str | None, *, sku_attr: str) -> list:
+    """Filtra por título OU SKU (case-insensitive, substring). Sem `q`, devolve tudo."""
+    termo = (q or "").strip().lower()
+    if not termo:
+        return products
+    return [
+        p
+        for p in products
+        if termo in (getattr(p, "title", "") or "").lower()
+        or termo in (getattr(p, sku_attr, "") or "").lower()
+    ]
+
+
 @router.get("/{listing_id}/suggest")
 async def suggest_products(
     listing_id: int,
+    q: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Retorna top 5 sugestões de CMIGProduct e CatalogProduct por similaridade de título."""
+    """Sugestões de CMIGProduct e CatalogProduct para vincular ao anúncio.
+
+    - **Sem `q`**: top 5 por similaridade de título (sugestão automática).
+    - **Com `q`**: BUSCA por título ou SKU entre TODOS os candidatos, até 50 resultados.
+
+    O `q` existe porque a lista de sugestão é curta por natureza: o produto certo pode estar
+    fora do top 5 (caso real: SKU 320R era o 12º de 112 candidatos e não havia como
+    alcançá-lo, já que a tela filtrava apenas os 5 que o backend devolvia)."""
     listing = await _get_listing_or_404(listing_id, current_user, db)
     title = listing.title_override or ""
 
@@ -2050,6 +2077,7 @@ async def suggest_products(
             )
         )
         products = cp_result.scalars().all()
+        products = _filter_by_query(products, q, sku_attr="sku_cmig")
         scored = sorted(products, key=lambda p: _title_similarity(title, p.title), reverse=True)
         cmig_suggestions = [
             {
@@ -2058,7 +2086,7 @@ async def suggest_products(
                 "title": p.title,
                 "similarity": round(_title_similarity(title, p.title), 2),
             }
-            for p in scored[:5]
+            for p in scored[: _suggest_cap(q)]
         ]
 
     # CatalogProducts do galpão: usa o warehouse do usuário (UGO) OU, se ele não tiver (admin/AC/
@@ -2079,7 +2107,7 @@ async def suggest_products(
                 CatalogProduct.is_active == True,
             )
         )
-        pg_products = pg_result.scalars().all()
+        pg_products = _filter_by_query(pg_result.scalars().all(), q, sku_attr="sku")
         pg_scored = sorted(
             pg_products, key=lambda p: _title_similarity(title, p.title), reverse=True
         )
@@ -2090,7 +2118,7 @@ async def suggest_products(
                 "title": p.title,
                 "similarity": round(_title_similarity(title, p.title), 2),
             }
-            for p in pg_scored[:5]
+            for p in pg_scored[: _suggest_cap(q)]
         ]
 
     return {"cmig_suggestions": cmig_suggestions, "pg_suggestions": pg_suggestions}

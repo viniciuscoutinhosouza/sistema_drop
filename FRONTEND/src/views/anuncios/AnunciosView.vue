@@ -3219,24 +3219,27 @@ function setFilter(f) { filterVinculo.value = f }
 async function openLinkModal(listing) {
   linkModal.value = { show: true, listing, loading: true, cmig_suggestions: [], pg_suggestions: [] }
   linkSearch.value = ''
-  await loadSuggestions()
+  await fetchSuggestions()  // direto: abrir o modal não passa pelo debounce
 }
 
-async function loadSuggestions() {
+let _suggestTimer = null
+function loadSuggestions() {
+  // Debounce: o input dispara a cada tecla e a busca agora vai ao servidor.
+  clearTimeout(_suggestTimer)
+  _suggestTimer = setTimeout(fetchSuggestions, 300)
+}
+
+async function fetchSuggestions() {
   if (!linkModal.value.listing) return
   linkModal.value.loading = true
   try {
-    const { data } = await api.get(`/anuncios/${linkModal.value.listing.id}/suggest`)
-    let cmigSugg = data.cmig_suggestions || []
-    let pgSugg = data.pg_suggestions || []
-    if (linkSearch.value) {
-      const q = linkSearch.value.toLowerCase()
-      const matches = p => (p.title || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q)
-      cmigSugg = cmigSugg.filter(matches)
-      pgSugg = pgSugg.filter(matches)
-    }
-    linkModal.value.cmig_suggestions = cmigSugg
-    linkModal.value.pg_suggestions = pgSugg
+    // A busca é SERVER-SIDE: filtrar no cliente só alcançava os 5 itens que o backend
+    // devolvia, então um produto fora do top-5 de similaridade era inatingível.
+    const params = {}
+    if (linkSearch.value) params.q = linkSearch.value
+    const { data } = await api.get(`/anuncios/${linkModal.value.listing.id}/suggest`, { params })
+    linkModal.value.cmig_suggestions = data.cmig_suggestions || []
+    linkModal.value.pg_suggestions = data.pg_suggestions || []
   } catch {
     toast.error('Erro ao buscar sugestões')
   } finally {
