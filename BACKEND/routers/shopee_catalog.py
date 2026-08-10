@@ -246,6 +246,30 @@ async def categories_search(
     return out[:50]
 
 
+@router.get("/categories/children")
+async def categories_children(
+    account_id: int,
+    category_id: int = Query(..., description="Categoria-pai; 0 lista as raízes"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Filhos diretos de uma categoria → mesma forma de `/categories/search`.
+
+    Existe para a tela poder NAVEGAR: na Shopee só folha publica, e a busca por nome
+    devolve nós intermediários que o usuário não pode escolher. Em vez de recusar o
+    clique, a tela desce um nível usando este endpoint até chegar na folha."""
+    acc, token = await _shopee_account(account_id, current_user, db)
+    cats, index = await _get_tree(acc, token)
+    out = []
+    for c in cats:
+        if _as_int(c.get("parent_category_id")) == category_id:
+            r = _cat_result(index, c.get("category_id"))
+            if r:
+                out.append(r)
+    out.sort(key=lambda r: (not r["is_leaf"], r["name"]))  # folhas primeiro
+    return out
+
+
 @router.get("/categories/recommend")
 async def categories_recommend(
     account_id: int,

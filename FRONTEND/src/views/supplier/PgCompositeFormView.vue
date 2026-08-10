@@ -96,6 +96,10 @@
 
                 <ProductDimensionsFields :form="form" />
                 <ProductFiscalFields :form="form" />
+
+                <!-- Categorias de marketplace: o KIT publica como qualquer outro produto,
+                     então precisa de categoria (ML/Shopee) igual ao PG simples. -->
+                <MarketplaceCategoriesCard owner-type="catalog" :owner-id="isEdit ? Number(route.params.id) : null" />
               </div>
             </div>
 
@@ -268,6 +272,7 @@ import ProductDimensionsFields from '@/components/products/ProductDimensionsFiel
 import { useClipboard } from '@/composables/useClipboard'
 import ProductFiscalFields from '@/components/products/ProductFiscalFields.vue'
 import CategoryPickerWithModal from '@/components/products/CategoryPickerWithModal.vue'
+import MarketplaceCategoriesCard from '@/components/products/MarketplaceCategoriesCard.vue'
 
 const route  = useRoute()
 const router = useRouter()

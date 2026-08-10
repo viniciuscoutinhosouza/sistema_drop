@@ -167,10 +167,29 @@
                 </button>
               </div>
             </div>
+            <!-- Trilha da navegação por subcategorias (Shopee) -->
+            <div v-if="drillPath.length" class="small mt-2 mb-1">
+              <a href="#" class="text-primary" @click.prevent="drillUp(-1)">
+                <i class="fas fa-search mr-1"></i>Resultados da busca
+              </a>
+              <template v-for="(p, i) in drillPath" :key="p.id">
+                <i class="fas fa-angle-right mx-1 text-muted" style="font-size:9px"></i>
+                <a v-if="i < drillPath.length - 1" href="#" class="text-primary" @click.prevent="drillUp(i)">{{ p.name }}</a>
+                <span v-else class="font-weight-bold">{{ p.name }}</span>
+              </template>
+            </div>
+            <div v-if="newCat.marketplace === 'shopee' && searchResults.length > 0" class="small text-muted mb-1">
+              <i class="fas fa-info-circle mr-1"></i>Só categoria <strong>folha</strong> publica na Shopee.
+              Clique numa categoria com <i class="fas fa-angle-right"></i> para ver as subcategorias.
+            </div>
             <div v-if="searchResults.length > 0" class="list-group mt-2" style="max-height:180px;overflow-y:auto">
               <a v-for="r in searchResults" :key="r.id"
                  class="list-group-item list-group-item-action py-1 small"
                  href="#" @click.prevent="selectSearchResult(r)">
+                <span v-if="newCat.marketplace === 'shopee'" class="mr-1">
+                  <i v-if="r.is_leaf" class="fas fa-check-circle text-success" title="Folha — pode publicar"></i>
+                  <i v-else class="fas fa-angle-right text-primary" title="Tem subcategorias — clique para abrir"></i>
+                </span>
                 <code class="text-primary" style="font-size:11px">{{ r.id }}</code>
                 <span class="text-muted mx-2">-</span>
                 <template v-if="r.path_from_root && r.path_from_root.length">
@@ -531,6 +550,7 @@ function debouncedSearch() {
 }
 
 async function runSearch() {
+  drillPath.value = []
   if (!searchQuery.value || searchQuery.value.length < 2) {
     searchResults.value = []
     return
@@ -554,10 +574,11 @@ async function runSearch() {
   }
 }
 
-function selectSearchResult(r) {
-  // Shopee: só categoria FOLHA publica.
+async function selectSearchResult(r) {
+  // Shopee: só categoria FOLHA publica. Em vez de recusar o clique num nó intermediário,
+  // DESCE um nível e mostra as subcategorias — o usuário navega até a folha.
   if (newCat.marketplace === 'shopee' && r.is_leaf === false) {
-    toast.warning('Na Shopee só é possível publicar em categoria FOLHA (sem subcategorias). Escolha uma folha.')
+    await drillDown(r)
     return
   }
   newCat.category_id = r.id
@@ -565,6 +586,42 @@ function selectSearchResult(r) {
     ? r.path_from_root[r.path_from_root.length - 1].name : '')
   newCat.category_path_json = r.path_from_root ? JSON.stringify(r.path_from_root) : null
   searchResults.value = []
+}
+
+// Trilha da navegação por subcategorias (Shopee). Vazia = mostrando o resultado da busca.
+const drillPath = ref([])
+
+async function drillDown(cat) {
+  const acc = await resolveShopeeAccount()
+  if (!acc) return
+  searchLoading.value = true
+  try {
+    const { data } = await api.get('/shopee/categories/children',
+                                   { params: { account_id: acc, category_id: cat.id } })
+    const filhos = Array.isArray(data) ? data : []
+    if (!filhos.length) {
+      toast.warning('Esta categoria não tem subcategorias e também não aceita anúncio.')
+      return
+    }
+    drillPath.value = [...drillPath.value, { id: cat.id, name: cat.name }]
+    searchResults.value = filhos
+  } catch {
+    toast.error('Erro ao abrir subcategorias')
+  } finally {
+    searchLoading.value = false
+  }
+}
+
+async function drillUp(idx) {
+  // idx = -1 volta para o resultado da busca; senão volta ao nível clicado na trilha.
+  if (idx < 0) {
+    drillPath.value = []
+    await runSearch()
+    return
+  }
+  const alvo = drillPath.value[idx]
+  drillPath.value = drillPath.value.slice(0, idx)
+  await drillDown(alvo)
 }
 
 function cancelAdd() {
