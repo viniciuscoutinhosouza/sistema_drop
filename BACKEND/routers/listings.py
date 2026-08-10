@@ -3,7 +3,6 @@ Gerenciamento de anúncios (ProductListings) por CONTA de marketplace.
 Um AC pode ter anúncios de uma mesma CONTA publicados em marketplace.
 """
 
-import json
 import logging
 from datetime import UTC, datetime
 
@@ -437,43 +436,10 @@ async def _shopee_pmc(product: DropshipperProduct, listing: ProductListing, db: 
 
 
 def _build_shopee_attributes(attrs_raw: str | None) -> tuple[list, int | None, set]:
-    """Do `attributes_json` (cadastro) → `attribute_list` do add_item + brand_id + ids salvos.
-    Formato confirmado ao vivo: value_id da lista (original_value_name/value_unit vazios);
-    value_id=0 + original_value_name p/ quantitativo/texto; value_unit só no quantitativo;
-    multi = vários itens no mesmo attribute_value_list."""
-    try:
-        entries = json.loads(attrs_raw or "[]")
-    except (ValueError, TypeError):
-        entries = []
-    attribute_list: list = []
-    brand_id: int | None = None
-    saved_ids: set = set()
-    for e in entries:
-        if e.get("id") == "__SHOPEE_BRAND__":
-            brand_id = e.get("value_id")
-            continue
-        try:
-            aid = int(e.get("id"))
-        except (TypeError, ValueError):
-            continue  # id não-numérico não é atributo Shopee
-        kind = e.get("kind")
-        if kind == "multi":
-            vals = [{"value_id": int(v), "original_value_name": "", "value_unit": ""}
-                    for v in (e.get("value_ids") or []) if v is not None]
-        elif kind == "quantitative":
-            vals = [{"value_id": 0, "original_value_name": str(e.get("value_name") or ""),
-                     "value_unit": e.get("value_unit") or ""}]
-        elif kind == "single":
-            try:
-                vals = [{"value_id": int(e.get("value_id")), "original_value_name": "", "value_unit": ""}]
-            except (TypeError, ValueError):
-                vals = []
-        else:  # text (ou legado)
-            vals = [{"value_id": 0, "original_value_name": str(e.get("value_name") or ""), "value_unit": ""}]
-        if vals:
-            saved_ids.add(aid)
-            attribute_list.append({"attribute_id": aid, "attribute_value_list": vals})
-    return attribute_list, brand_id, saved_ids
+    """Delega ao ponto único (`services.shopee_publish`) — ver ADR-0020."""
+    from services.shopee_publish import build_shopee_attributes
+
+    return build_shopee_attributes(attrs_raw)
 
 
 async def _shopee_publish_bloqueios(
