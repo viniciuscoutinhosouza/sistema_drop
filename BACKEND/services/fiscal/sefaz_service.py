@@ -200,12 +200,18 @@ def build_nota_emissao(
     pagamentos: tuple[Pagamento, ...] = ()
     if forma_pag:
         valor_pag = Decimal("0.00") if forma_pag == "90" else _dec(inv.total_invoice)
-        pagamentos = (Pagamento(forma_pag=forma_pag, valor=valor_pag, ind_pag=0),)
+        # ind_pag persistido (migration 100) ou default histórico 0 (à vista).
+        ind_pag = inv.ind_pag if inv.ind_pag is not None else 0
+        pagamentos = (Pagamento(forma_pag=forma_pag, valor=valor_pag, ind_pag=ind_pag),)
 
     return NotaEmissao(
         modelo=55, serie=serie, numero=numero, ambiente=ambiente, chave=chave, c_nf=c_nf,
         dh_emi=dh, natureza_operacao=inv.natureza_operacao or "Venda de mercadoria",
-        finalidade=finalidade, ind_presenca=9, ind_intermed=0, ind_final=ind_final,
+        finalidade=finalidade,
+        # Indicadores persistidos (migration 100) com fallback ao default histórico.
+        ind_presenca=inv.ind_presenca if inv.ind_presenca is not None else 9,
+        ind_intermed=inv.ind_intermed if inv.ind_intermed is not None else 0,
+        ind_final=ind_final,
         emitente=emit, destinatario=dest, itens=itens, pagamentos=pagamentos,
         transporte_modalidade=int(inv.freight_modality) if inv.freight_modality is not None else 9,
         info_complementar=(inv.additional_info or None), info_fisco=(inv.fiscal_info or None),

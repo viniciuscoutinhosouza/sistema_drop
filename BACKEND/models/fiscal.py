@@ -230,6 +230,11 @@ class Invoice(Base):
     # Pagamento
     payment_method = Column(String(2))
     payment_terms_json = Column(Text)
+    # Indicadores da NF-e persistidos (migration 100) — editáveis no rascunho. NULL = default
+    # histórico na emissão (ver sefaz_service): ind_presenca 9, ind_intermed 0, ind_pag 0.
+    ind_presenca = Column(Integer)   # 0 n/a | 1 presencial | 2 internet | 9 não presencial (default)
+    ind_intermed = Column(Integer)   # 0 sem intermediador (default) | 1 marketplace
+    ind_pag = Column(Integer)        # detPag: 0 à vista (default) | 1 a prazo
 
     # Adicionais
     additional_info = Column(String(2000))

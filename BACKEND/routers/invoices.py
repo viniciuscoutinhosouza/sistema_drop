@@ -151,6 +151,17 @@ def _serialize_item(it: InvoiceItem) -> dict:
         "cofins_cst": it.cofins_cst,
         "cofins_aliquota": _f(it.cofins_aliquota),
         "cofins_value": _f(it.cofins_value),
+        # DIFAL (migration 97) e IBS/CBS/IS (migration 98) — calculados; expostos p/ a tela
+        # exibir (read-only). Antes não chegavam ao frontend.
+        "difal_base": _f(it.difal_base),
+        "difal_aliquota_orig": _f(it.difal_aliquota_orig),
+        "difal_aliquota_dest": _f(it.difal_aliquota_dest),
+        "difal_value": _f(it.difal_value),
+        "difal_fcp_aliquota": _f(it.difal_fcp_aliquota),
+        "difal_fcp_value": _f(it.difal_fcp_value),
+        "cbs_cst": it.cbs_cst,
+        "cbs_aliquota": _f(it.cbs_aliquota),
+        "cbs_base": _f(it.cbs_base),
         "additional_info": it.additional_info,
     }
 
@@ -216,6 +227,16 @@ def _serialize(
         "carrier_person_id": inv.carrier_person_id,
         "payment_method": inv.payment_method,
         "payment_terms_json": inv.payment_terms_json,
+        # Indicadores da NF-e (migration 100): valor persistido OU o default histórico usado
+        # na emissão, para a tela mostrar o que de fato vai ao XML.
+        "ind_presenca": inv.ind_presenca if inv.ind_presenca is not None else 9,
+        "ind_intermed": inv.ind_intermed if inv.ind_intermed is not None else 0,
+        "ind_pag": inv.ind_pag if inv.ind_pag is not None else 0,
+        # vPag DERIVADO (read-only na tela): tPag=90 → 0.00; senão o total da nota. Espelha
+        # exatamente a regra de sefaz_service para o dono ver o valor que a SEFAZ recebe.
+        "payment_value": 0.0 if (inv.payment_method == "90"
+                                 or (not inv.payment_method and inv.purpose == "devolucao"))
+        else _f(inv.total_invoice),
         "additional_info": inv.additional_info,
         "fiscal_info": inv.fiscal_info,
         "cancelled_at": inv.cancelled_at.isoformat() if inv.cancelled_at else None,
@@ -1471,6 +1492,10 @@ async def update_invoice(
         "exit_date",
         "issue_date",
         "inbound_invoice_id",
+        # Indicadores da NF-e persistidos (migration 100) — editáveis no rascunho.
+        "ind_presenca",
+        "ind_intermed",
+        "ind_pag",
     }
     for k, v in body.items():
         if k in editable:
