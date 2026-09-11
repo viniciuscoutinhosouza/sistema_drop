@@ -183,6 +183,17 @@ def _serialize_event(ev: InvoiceEvent) -> dict:
     }
 
 
+def _indicador_ie(person: Person) -> int:
+    """indIEDest da NF-e derivado do cadastro (espelha sefaz_service._cliente):
+    PJ com IE → 1 (contribuinte); PJ isento → 2; PF ou PJ sem IE → 9 (não-contribuinte)."""
+    doc = "".join(ch for ch in (person.document or "") if ch.isdigit())
+    if len(doc) == 14:  # PJ
+        if getattr(person, "ie_isento", False):
+            return 2
+        return 1 if person.ie else 9
+    return 9  # PF
+
+
 def _serialize(
     inv: Invoice, with_items: bool = False, with_events: bool = False,
     person: Person | None = None, carrier: Person | None = None,
@@ -256,7 +267,9 @@ def _serialize(
             "person_type": person.person_type,
             "city": person.city,
             "state": person.state,
-            "indicador_ie": person.indicador_ie,  # p/ a tela derivar o indFinal
+            # indIEDest DERIVADO (mesma regra de sefaz_service._cliente): PJ com IE=1
+            # contribuinte, PJ isento=2, PF/PJ sem IE=9 não-contribuinte. Não é coluna do Person.
+            "indicador_ie": _indicador_ie(person),
         }
     if carrier is not None:
         out["carrier"] = {"id": carrier.id, "name": carrier.name, "document": carrier.document}
