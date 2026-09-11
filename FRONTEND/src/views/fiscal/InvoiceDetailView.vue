@@ -192,15 +192,6 @@
                         :disabled="downloading" @click="baixar('danfe')">
                   <i class="fas fa-file-pdf mr-1"></i> Baixar DANFE
                 </button>
-                <!-- Anexar XML: para nota autorizada cujo XML se perdeu (a SEFAZ não deixa o
-                     emitente rebaixar o próprio — cStat 641). O contador tem o arquivo. -->
-                <button v-if="invoice.status === 'authorized'" class="btn btn-outline-secondary mr-2 mb-2"
-                        :disabled="attaching" title="Subir o XML autorizado (do contador/portal SEFAZ) para gerar a DANFE"
-                        @click="$refs.xmlInput.click()">
-                  <i class="fas mr-1" :class="attaching ? 'fa-spinner fa-spin' : 'fa-file-upload'"></i>
-                  {{ attaching ? 'Anexando...' : 'Anexar XML' }}
-                </button>
-                <input ref="xmlInput" type="file" accept=".xml,text/xml" class="d-none" @change="anexarXml">
 
                 <!-- Nota SEM autorização (rascunho / finalizada sem SEFAZ): imprime a PRÉVIA,
                      mesmo layout do DANFE com a marca d'água "SEM VALOR FISCAL". -->
@@ -447,26 +438,6 @@ async function baixar(kind) {
     toast.error((await blobErrorDetail(e)) || `Erro ao baixar ${kind.toUpperCase()}`)
   } finally {
     downloading.value = false
-  }
-}
-
-const attaching = ref(false)
-async function anexarXml(ev) {
-  const file = ev.target.files?.[0]
-  ev.target.value = ''  // permite reanexar o mesmo arquivo
-  if (!file || !invoice.value) return
-  attaching.value = true
-  try {
-    const fd = new FormData()
-    fd.append('xml_file', file)
-    const { data } = await api.post(`/invoices/${invoice.value.id}/attach-xml`, fd,
-      { headers: { 'Content-Type': 'multipart/form-data' } })
-    toast.success(data.message || 'XML anexado')
-    await load()  // recarrega para habilitar a DANFE
-  } catch (e) {
-    toast.error(e.response?.data?.detail || 'Erro ao anexar o XML')
-  } finally {
-    attaching.value = false
   }
 }
 
