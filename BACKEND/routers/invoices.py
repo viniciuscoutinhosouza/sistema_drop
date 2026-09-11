@@ -2567,6 +2567,56 @@ async def download_danfe(
     )
 
 
+@router.post("/{invoice_id}/attach-xml")
+async def attach_authorized_xml(
+    invoice_id: int,
+    xml_file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Anexa o XML autorizado a uma nota autorizada que está SEM XML local (ex.: recuperada
+    de cStat 539, cuja emissão original se perdeu). O emitente não pode rebaixar o próprio XML
+    da SEFAZ (cStat 641) — mas o contador tem o arquivo. Aqui ele sobe o XML, o sistema VALIDA
+    que a chave bate com a nota e que é um documento autorizado, e passa a gerar a DANFE dele."""
+    inv = (
+        await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    ).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="NFe não encontrada")
+    await _check_cmig_access(inv.cmig_id, current_user, db)
+    if inv.status != "authorized" or not inv.access_key:
+        raise HTTPException(status_code=400, detail="Só para nota autorizada com chave de acesso.")
+
+    content = await xml_file.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="Arquivo XML vazio.")
+    try:
+        text_xml = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text_xml = content.decode("latin-1", errors="replace")
+
+    # Validação fiscal: a chave do XML tem de ser EXATAMENTE a desta nota (não anexar o
+    # documento de outra nota) e precisa ser um XML autorizado (procNFe com protocolo).
+    if inv.access_key not in text_xml:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A chave do XML enviado não confere com a desta nota ({inv.access_key}).",
+        )
+    if "protNFe" not in text_xml or "infNFe" not in text_xml:
+        raise HTTPException(
+            status_code=422,
+            detail="O arquivo não parece um XML autorizado (procNFe com protocolo). Envie o XML "
+                   "autorizado da SEFAZ, não a nota sem protocolo.",
+        )
+
+    try:
+        inv.xml_local_path = sefaz_service._store_xml(inv.cmig_id, inv.access_key, text_xml)
+    except OSError:
+        raise HTTPException(status_code=500, detail="Falha ao gravar o XML no servidor.")
+    await db.commit()
+    return {"ok": True, "invoice_id": inv.id, "message": "XML autorizado anexado — a DANFE já pode ser baixada."}
+
+
 @router.post("/{invoice_id}/email")
 async def email_invoice(
     invoice_id: int,
