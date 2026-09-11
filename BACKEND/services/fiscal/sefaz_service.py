@@ -260,6 +260,53 @@ async def _log(db: AsyncSession, *, invoice_id, cmig_id, operation, cstat, xmoti
     ))
 
 
+async def recuperar_xml_por_chave(
+    db: AsyncSession, inv: Invoice, cmig: CMIG, cfg: CMIGFiscalConfig
+) -> bool:
+    """Baixa o XML autorizado (procNFe) de uma nota pela chave, via Distribuição DFe
+    (consChNFe), e grava em `inv.xml_local_path`. Para notas autorizadas na SEFAZ mas sem
+    XML local — ex.: recuperadas de cStat 539. Retorna True se gravou. Read-only na SEFAZ."""
+    from services.fiscal.sefaz.distribuicao import consultar_dfe_por_chave
+
+    if not inv.access_key or inv.status != "authorized":
+        return False
+    settings = get_settings()
+    environment = inv.environment or cfg.environment or "homolog"
+    ambiente = _AMB.get(environment, "homologacao")
+    pfx_path, senha = resolve_cert(cfg)
+    try:
+        ret = await asyncio.to_thread(
+            consultar_dfe_por_chave,
+            chave=inv.access_key, cnpj=_digits(cmig.cnpj), c_uf=codigo_uf(cmig.state or "SP"),
+            ambiente="producao" if ambiente == "producao" else "homologacao",
+            pfx_path=pfx_path, pfx_password=senha,
+            timeout=int(settings.NFE_SEFAZ_TIMEOUT), verify_ssl=_verify_ssl(environment),
+            runtime_dir=_runtime_dir(),
+        )
+    except Exception:  # noqa: BLE001 — falha de rede/DFe não derruba o download
+        logger.warning("[nfe] recuperar_xml_por_chave: DFe falhou (nota %s)", inv.id, exc_info=True)
+        return False
+    await _log(
+        db, invoice_id=inv.id, cmig_id=cmig.id, operation="dfe_chave",
+        cstat=ret.cstat, xmotivo=ret.motivo, req=None, resp=getattr(ret.response, "body", None),
+    )
+    # docZip com o procNFe (schema procNFe_v4.00). Pega o doc cuja chave bate.
+    xml_proc = next(
+        (d.xml for d in ret.docs if inv.access_key in (d.xml or "") and "infNFe" in (d.xml or "")),
+        None,
+    )
+    if not xml_proc:
+        return False
+    try:
+        inv.xml_local_path = _store_xml(cmig.id, inv.access_key, xml_proc)
+    except OSError:
+        logger.warning("[nfe] recuperar_xml_por_chave: falha ao gravar XML (nota %s)", inv.id, exc_info=True)
+        return False
+    await db.commit()
+    logger.info("[nfe] XML recuperado por chave: nota %s", inv.id)
+    return True
+
+
 def _store_xml(cmig_id: int, chave: str, xml_proc: str) -> str:
     """Grava o XML autorizado (procNFe) em diretório restrito FORA de static/.
 

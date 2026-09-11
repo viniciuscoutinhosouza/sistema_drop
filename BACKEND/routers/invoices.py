@@ -2433,6 +2433,20 @@ def _read_authorized_xml(inv: Invoice) -> str:
     return p.read_text(encoding="utf-8")
 
 
+async def _ensure_authorized_xml(inv: Invoice, db: AsyncSession) -> str:
+    """XML autorizado, com fallback: se a nota está autorizada mas sem XML local (ex.:
+    recuperada de cStat 539), baixa da SEFAZ pela chave (Distribuição DFe) e grava. Só então
+    falha alto se ainda não houver — em vez do "XML não encontrado" seco."""
+    if (not inv.xml_local_path or not _Path(inv.xml_local_path).exists()) and (
+        inv.status == "authorized" and inv.access_key
+    ):
+        cfg = await _get_fiscal_config(inv.cmig_id, db)
+        cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
+        if await sefaz_service.recuperar_xml_por_chave(db, inv, cmig, cfg):
+            await db.refresh(inv)
+    return _read_authorized_xml(inv)
+
+
 def _invoice_download_name(inv, tipo: str, ext: str) -> str:
     """Nome do arquivo da NF-e: usa o pedido vinculado (venda + cliente) quando existe;
     senão (NF-e de entrada, sem pedido) cai para a chave/número da nota."""
@@ -2457,7 +2471,7 @@ async def download_xml(
     if not inv:
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, current_user, db)
-    xml = _read_authorized_xml(inv)
+    xml = await _ensure_authorized_xml(inv, db)
     fname = _invoice_download_name(inv, TIPO_NFE, "xml")
     return Response(
         content=xml.encode("utf-8"), media_type="application/xml",
@@ -2492,7 +2506,7 @@ async def download_danfe(
     await _check_cmig_access(inv.cmig_id, current_user, db)
 
     if inv.status == "authorized":
-        xml = _read_authorized_xml(inv)
+        xml = await _ensure_authorized_xml(inv, db)
         try:
             pdf = await asyncio.to_thread(gerar_danfe, xml)
         except DanfeError as e:

@@ -115,6 +115,18 @@ def _build_dist_dfe_int(cnpj: str, c_uf: str, ambiente: str, ult_nsu: str) -> st
     )
 
 
+def _build_dist_dfe_int_chave(cnpj: str, c_uf: str, ambiente: str, chave: str) -> str:
+    """distDFeInt no modo consChNFe — baixa o docZip (procNFe completo) de UMA nota pela
+    chave. Só retorna se o CNPJ for emitente/destinatário/interessado da NF-e."""
+    tp_amb = "2" if ambiente == "homologacao" else "1"
+    return (
+        f'<distDFeInt xmlns="{NFE_NAMESPACE}" versao="1.01">'
+        f"<tpAmb>{tp_amb}</tpAmb><cUFAutor>{c_uf}</cUFAutor><CNPJ>{cnpj}</CNPJ>"
+        f"<consChNFe><chNFe>{chave}</chNFe></consChNFe>"
+        "</distDFeInt>"
+    )
+
+
 def _envelope_distribuicao(inner: str) -> str:
     return (
         '<?xml version="1.0" encoding="utf-8"?>'
@@ -182,6 +194,39 @@ def consultar_dfe(
     """Uma chamada de distribuição a partir de `ult_nsu`. SefazError em falha de rede."""
     url = endpoint_url or SEFAZ_DFE_AN[ambiente]
     inner = _build_dist_dfe_int(cnpj, c_uf, ambiente, ult_nsu)
+    envelope = _envelope_distribuicao(inner)
+    cert_pem, key_pem = extract_cert_pem(pfx_path, pfx_password, runtime_dir=runtime_dir)
+    try:
+        response = post_sefaz(url, envelope, cert_pem, key_pem, timeout=timeout, verify_ssl=verify_ssl)
+    finally:
+        Path(cert_pem).unlink(missing_ok=True)
+        Path(key_pem).unlink(missing_ok=True)
+    ret = _parse_ret(response.body)
+    return RetornoDistribuicao(
+        cstat=ret.cstat, motivo=ret.motivo, ult_nsu=ret.ult_nsu, max_nsu=ret.max_nsu,
+        docs=ret.docs, response=response,
+    )
+
+
+def consultar_dfe_por_chave(
+    *,
+    chave: str,
+    cnpj: str,
+    c_uf: str,
+    ambiente: Literal["homologacao", "producao"],
+    pfx_path: str | Path,
+    pfx_password: str,
+    timeout: int = 60,
+    verify_ssl: bool = True,
+    endpoint_url: str | None = None,
+    runtime_dir: str | Path | None = None,
+) -> RetornoDistribuicao:
+    """Baixa o procNFe (XML autorizado completo) de UMA nota pela chave (consChNFe).
+
+    Usado para recuperar o XML de nota autorizada na SEFAZ mas sem XML local (ex.: nota
+    recuperada de cStat 539). cStat 138 = documento localizado; os docs vêm no `docZip`."""
+    url = endpoint_url or SEFAZ_DFE_AN[ambiente]
+    inner = _build_dist_dfe_int_chave(cnpj, c_uf, ambiente, chave)
     envelope = _envelope_distribuicao(inner)
     cert_pem, key_pem = extract_cert_pem(pfx_path, pfx_password, runtime_dir=runtime_dir)
     try:
