@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-22 — fix+feat(fiscal): pagamento na devolução + tela de emissão em cards recolhíveis
+
+**Bug (dono):** emitir devolução pela SEFAZ dava "Forma de Pagamento deve ser Sem Pagamento"; ao marcar 90, virava "Informado indevidamente valor de pagamento". Mesmo bug encadeado: `sefaz_service` mandava sempre `vPag=total`. A NT 2016.002 exige `tPag=90 → vPag=0.00`, e devolução exige tPag=90.
+
+**Correção (`37e99a5`):** devolução sem forma defaulta para 90; tPag=90 zera o vPag. Caminho de venda intacto.
+
+**Refactor da tela (matriz por campo, decisão do dono):** a tela de emissão passou a mostrar TODOS os campos da NF-e em cards recolhíveis, editáveis-onde-seguro. A auditoria prévia derrubou "tudo editável" (risco fiscal: impostos/totais são calculados; série/número reservados na emissão; indFinal casa com indIEDest). Ficou: **editável** natureza/CFOP/pagamento+indPag/frete/transportadora/indPresença/indIntermed/info; **read-only** impostos, totais, série/número, indFinal, vPag.
+- Migration 100: colunas `ind_presenca/ind_intermed/ind_pag` (NULL = default histórico 9/0/0 na emissão — notas antigas idênticas). Aplicada em produção.
+- `_serialize_item` passou a expor DIFAL/CBS; `_serialize` expõe indicadores + `payment_value` derivado + `carrier`.
+- `CollapsibleCard.vue` novo; `InvoiceFormView` reorganizado em cards (Pagamento com vPag read-only, Transporte, Indicadores, Info, Totais).
+
+**Verificação:** ruff limpo; pytest 196 passed (2 falhas de test_orders.py pré-existentes); build OK; deploy `4d4bf49`. Auditado por quality-guardian — 1 HIGH corrigido (indicadores descartados no create) + carrier validado na CMIG. **Falta o dono exercitar em produção:** transmitir a devolução real (cStat 100) e conferir os cards.
+
 ## 2026-08-07 — fix(catálogo): kit sem estoque e sem publicar → ADR-0023 (composto é sempre derivado)
 
 **Sintoma do dono:** "em PG os produtos compostos aparecem com o estoque calculado corretamente, mas em catálogo não aparecem com estoque e não permitem publicar."
