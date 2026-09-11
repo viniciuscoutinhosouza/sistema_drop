@@ -184,7 +184,8 @@ def _serialize_event(ev: InvoiceEvent) -> dict:
 
 
 def _serialize(
-    inv: Invoice, with_items: bool = False, with_events: bool = False, person: Person | None = None
+    inv: Invoice, with_items: bool = False, with_events: bool = False,
+    person: Person | None = None, carrier: Person | None = None,
 ) -> dict:
     out = {
         "id": inv.id,
@@ -255,7 +256,10 @@ def _serialize(
             "person_type": person.person_type,
             "city": person.city,
             "state": person.state,
+            "indicador_ie": person.indicador_ie,  # p/ a tela derivar o indFinal
         }
+    if carrier is not None:
+        out["carrier"] = {"id": carrier.id, "name": carrier.name, "document": carrier.document}
     if with_items:
         out["items"] = [_serialize_item(it) for it in (inv.items or [])]
     if with_events:
@@ -1380,8 +1384,13 @@ async def get_invoice(
         person = (
             await db.execute(select(Person).where(Person.id == inv.person_id))
         ).scalar_one_or_none()
+    carrier = None
+    if inv.carrier_person_id:
+        carrier = (
+            await db.execute(select(Person).where(Person.id == inv.carrier_person_id))
+        ).scalar_one_or_none()
 
-    return _serialize(inv, with_items=True, with_events=True, person=person)
+    return _serialize(inv, with_items=True, with_events=True, person=person, carrier=carrier)
 
 
 @router.post("", status_code=201)
@@ -1423,6 +1432,16 @@ async def create_invoice(
         if not p:
             raise HTTPException(status_code=404, detail="Pessoa não encontrada nesta CMIG")
 
+    carrier_id = body.get("carrier_person_id")
+    if carrier_id:
+        c = (
+            await db.execute(
+                select(Person.id).where(and_(Person.id == carrier_id, Person.cmig_id == cmig_id))
+            )
+        ).scalar_one_or_none()
+        if not c:
+            raise HTTPException(status_code=404, detail="Transportadora não encontrada nesta CMIG")
+
     issue_date = body.get("issue_date")
     if issue_date and isinstance(issue_date, str):
         try:
@@ -1442,6 +1461,11 @@ async def create_invoice(
         freight_modality=body.get("freight_modality"),
         carrier_person_id=body.get("carrier_person_id"),
         payment_method=body.get("payment_method"),
+        # Indicadores da NF-e (migration 100) — a tela já os envia na criação; sem isto
+        # o ajuste do usuário no rascunho novo seria descartado em silêncio.
+        ind_presenca=body.get("ind_presenca"),
+        ind_intermed=body.get("ind_intermed"),
+        ind_pag=body.get("ind_pag"),
         additional_info=body.get("additional_info"),
         fiscal_info=body.get("fiscal_info"),
         created_by_user_id=current_user.id,

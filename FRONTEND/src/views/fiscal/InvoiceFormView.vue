@@ -80,43 +80,119 @@
               </div>
             </div>
 
-            <div class="row mt-3">
-              <div class="col-md-3">
-                <label class="small mb-1">Modalidade do frete</label>
-                <select v-model.number="form.freight_modality" class="form-control" :disabled="!editable">
-                  <option :value="null">—</option>
-                  <option :value="0">0 — Por conta do emitente</option>
-                  <option :value="1">1 — Por conta do destinatário</option>
-                  <option :value="2">2 — Por conta de terceiros</option>
-                  <option :value="9">9 — Sem ocorrência de transporte</option>
-                </select>
-              </div>
-              <div class="col-md-3">
-                <label class="small mb-1">Forma de pagamento</label>
-                <select v-model="form.payment_method" class="form-control" :disabled="!editable">
-                  <option value="">—</option>
-                  <option value="01">01 — Dinheiro</option>
-                  <option value="03">03 — Cartão de crédito</option>
-                  <option value="04">04 — Cartão de débito</option>
-                  <option value="15">15 — Boleto</option>
-                  <option value="17">17 — PIX</option>
-                  <option value="90">90 — Sem pagamento</option>
-                  <option value="99">99 — Outros</option>
-                </select>
-              </div>
-              <div class="col-md-6">
-                <label class="small mb-1">Informações adicionais</label>
-                <input v-model="form.additional_info" class="form-control" :disabled="!editable">
-              </div>
-            </div>
+          </div>
+        </div>
 
-            <div class="text-right mt-3" v-if="editable">
-              <button class="btn btn-primary" :disabled="saving" @click="saveHeader">
-                <i class="fas" :class="saving ? 'fa-spinner fa-spin' : 'fa-save'"></i>
-                {{ saving ? 'Salvando...' : (isNew ? 'Criar Rascunho' : 'Salvar Cabeçalho') }}
-              </button>
+        <!-- Pagamento (grupo `pag` do XML) -->
+        <CollapsibleCard title="Pagamento" icon="fa-money-bill-wave" color="success" default-open>
+          <div class="row">
+            <div class="col-md-4">
+              <label class="small mb-1">Forma de pagamento (tPag)</label>
+              <select v-model="form.payment_method" class="form-control" :disabled="!editable">
+                <option value="">—</option>
+                <option value="01">01 — Dinheiro</option>
+                <option value="03">03 — Cartão de crédito</option>
+                <option value="04">04 — Cartão de débito</option>
+                <option value="15">15 — Boleto</option>
+                <option value="17">17 — PIX</option>
+                <option value="90">90 — Sem pagamento</option>
+                <option value="99">99 — Outros</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="small mb-1">Valor do pagamento (vPag)</label>
+              <input :value="paymentValueDisplay" class="form-control" readonly>
+              <small class="text-muted">
+                {{ isSemPagamento ? 'Sem pagamento → 0,00 (obrigatório pela SEFAZ).' : 'Calculado = total da nota.' }}
+              </small>
+            </div>
+            <div class="col-md-4">
+              <label class="small mb-1">Indicador de pagamento (indPag)</label>
+              <select v-model.number="form.ind_pag" class="form-control" :disabled="!editable || isSemPagamento">
+                <option :value="0">0 — À vista</option>
+                <option :value="1">1 — A prazo</option>
+              </select>
             </div>
           </div>
+        </CollapsibleCard>
+
+        <!-- Transporte (grupo `transp`) -->
+        <CollapsibleCard title="Transporte" icon="fa-truck" color="info">
+          <div class="row">
+            <div class="col-md-4">
+              <label class="small mb-1">Modalidade do frete (modFrete)</label>
+              <select v-model.number="form.freight_modality" class="form-control" :disabled="!editable">
+                <option :value="null">—</option>
+                <option :value="0">0 — Por conta do emitente</option>
+                <option :value="1">1 — Por conta do destinatário</option>
+                <option :value="2">2 — Por conta de terceiros</option>
+                <option :value="9">9 — Sem ocorrência de transporte</option>
+              </select>
+            </div>
+            <div class="col-md-8">
+              <label class="small mb-1">Transportadora</label>
+              <div class="input-group">
+                <input :value="carrierLabel" class="form-control" readonly placeholder="Nenhuma">
+                <div class="input-group-append" v-if="editable">
+                  <button class="btn btn-outline-info" type="button" @click="openCarrierPicker">
+                    <i class="fas fa-search mr-1"></i> Selecionar
+                  </button>
+                  <button v-if="form.carrier_person_id" class="btn btn-outline-secondary" type="button" @click="form.carrier_person_id = null">
+                    <i class="fas fa-times"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </CollapsibleCard>
+
+        <!-- Indicadores fiscais (parte do grupo `ide`) -->
+        <CollapsibleCard title="Indicadores fiscais" icon="fa-tags" color="secondary">
+          <div class="row">
+            <div class="col-md-4">
+              <label class="small mb-1">Indicador de presença (indPresenca)</label>
+              <select v-model.number="form.ind_presenca" class="form-control" :disabled="!editable">
+                <option :value="0">0 — Não se aplica</option>
+                <option :value="1">1 — Presencial</option>
+                <option :value="2">2 — Internet</option>
+                <option :value="3">3 — Teleatendimento</option>
+                <option :value="9">9 — Não presencial / outros</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="small mb-1">Intermediador (indIntermed)</label>
+              <select v-model.number="form.ind_intermed" class="form-control" :disabled="!editable">
+                <option :value="0">0 — Sem intermediador</option>
+                <option :value="1">1 — Marketplace / plataforma de terceiro</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="small mb-1">Consumidor final (indFinal)</label>
+              <input :value="indFinalDisplay" class="form-control" readonly>
+              <small class="text-muted">Derivado do destinatário (a SEFAZ exige casar com o indicador de IE).</small>
+            </div>
+          </div>
+        </CollapsibleCard>
+
+        <!-- Informações adicionais (grupo `infAdic`) -->
+        <CollapsibleCard title="Informações adicionais" icon="fa-comment-dots" color="secondary">
+          <div class="row">
+            <div class="col-md-6">
+              <label class="small mb-1">Complementar ao contribuinte (infCpl)</label>
+              <textarea v-model="form.additional_info" class="form-control" rows="2" :disabled="!editable"></textarea>
+            </div>
+            <div class="col-md-6">
+              <label class="small mb-1">Informações ao fisco (infAdFisco)</label>
+              <textarea v-model="form.fiscal_info" class="form-control" rows="2" :disabled="!editable"></textarea>
+            </div>
+          </div>
+        </CollapsibleCard>
+
+        <div class="text-right mb-3" v-if="editable">
+          <button class="btn btn-primary" :disabled="saving" @click="saveHeader">
+            <i class="fas" :class="saving ? 'fa-spinner fa-spin' : 'fa-save'"></i>
+            {{ saving ? 'Salvando...' : (isNew ? 'Criar Rascunho' : 'Salvar Cabeçalho') }}
+          </button>
         </div>
 
         <!-- Itens (apenas após criar a invoice) -->
@@ -185,6 +261,24 @@
           </div>
         </div>
 
+        <!-- Totais (grupo `total`) — calculados dos itens, read-only mesmo no rascunho -->
+        <CollapsibleCard v-if="!isNew" title="Totais da nota" icon="fa-calculator" color="secondary">
+          <div class="row text-sm">
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">Produtos</label><div>{{ formatCurrency(form.total_products) }}</div></div>
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">Frete</label><div>{{ formatCurrency(form.total_freight) }}</div></div>
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">Seguro</label><div>{{ formatCurrency(form.total_insurance) }}</div></div>
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">Desconto</label><div>{{ formatCurrency(form.total_discount) }}</div></div>
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">Outras despesas</label><div>{{ formatCurrency(form.total_other) }}</div></div>
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">ICMS</label><div>{{ formatCurrency(form.total_icms) }}</div></div>
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">ICMS-ST</label><div>{{ formatCurrency(form.total_icms_st) }}</div></div>
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">IPI</label><div>{{ formatCurrency(form.total_ipi) }}</div></div>
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">PIS</label><div>{{ formatCurrency(form.total_pis) }}</div></div>
+            <div class="col-md-3 mb-2"><label class="small mb-0 text-muted">COFINS</label><div>{{ formatCurrency(form.total_cofins) }}</div></div>
+            <div class="col-md-6 mb-2"><label class="small mb-0"><strong>Total da NFe</strong></label><div class="h5 mb-0"><strong>{{ formatCurrency(form.total_invoice) }}</strong></div></div>
+          </div>
+          <small class="text-muted"><i class="fas fa-info-circle mr-1"></i>Calculado dos itens. Use "Calcular Impostos" para atualizar os tributos.</small>
+        </CollapsibleCard>
+
         <!-- Botões finais -->
         <div v-if="!isNew && editable" class="text-right mb-4">
           <button class="btn btn-outline-secondary mr-2" :disabled="printingPreview || !form.items?.length"
@@ -216,7 +310,7 @@
       <div class="modal-dialog modal-lg">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title">Selecionar {{ form.direction === 'in' ? 'Fornecedor' : 'Destinatário' }}</h5>
+            <h5 class="modal-title">Selecionar {{ personPickerTarget === 'carrier' ? 'Transportadora' : (form.direction === 'in' ? 'Fornecedor' : 'Destinatário') }}</h5>
             <button type="button" class="close" @click="showPersonPicker = false"><span>&times;</span></button>
           </div>
           <div class="modal-body">
@@ -600,6 +694,7 @@ import { useCfopStore } from '@/stores/cfop'
 import { useToast } from '@/composables/useToast'
 import { fmt } from '@/views/fiscal/_helpers'
 import api from '@/composables/useApi'
+import CollapsibleCard from '@/components/common/CollapsibleCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -627,6 +722,8 @@ const personSearch = ref('')
 const loadingPeople = ref(false)
 const peopleList = ref([])
 const selectedPerson = ref(null)
+const carrierPerson = ref(null)
+const personPickerTarget = ref('dest')  // 'dest' | 'carrier'
 const savingPerson = ref(false)
 const lookingUpCnpj = ref(false)
 
@@ -671,8 +768,24 @@ const form = reactive({
   issue_date: null,
   exit_date: null,
   freight_modality: null,
+  carrier_person_id: null,
   payment_method: '',
+  payment_value: 0,          // vPag DERIVADO (read-only) — vem do backend
+  ind_presenca: 9,
+  ind_intermed: 0,
+  ind_pag: 0,
   additional_info: '',
+  fiscal_info: '',
+  total_products: 0,
+  total_freight: 0,
+  total_insurance: 0,
+  total_discount: 0,
+  total_other: 0,
+  total_icms: 0,
+  total_icms_st: 0,
+  total_ipi: 0,
+  total_pis: 0,
+  total_cofins: 0,
   total_invoice: 0,
   items: [],
 })
@@ -737,6 +850,26 @@ const selectedPersonLabel = computed(() => {
   if (!selectedPerson.value) return ''
   const p = selectedPerson.value
   return `${p.name} — ${p.document}`
+})
+
+const carrierLabel = computed(() => {
+  const p = carrierPerson.value
+  return p ? `${p.name} — ${p.document}` : ''
+})
+
+// Pagamento: "Sem pagamento" = 90 explícito OU devolução sem forma (o backend defaulta p/ 90).
+const isSemPagamento = computed(() =>
+  form.payment_method === '90' || (!form.payment_method && form.purpose === 'devolucao')
+)
+// vPag mostrado = espelho da regra do backend (tPag=90 → 0; senão total). Read-only.
+const paymentValueDisplay = computed(() =>
+  fmt.currency(isSemPagamento.value ? 0 : (form.total_invoice || 0))
+)
+// indFinal derivado do destinatário (indIEDest=9 não-contribuinte → consumidor final).
+const indFinalDisplay = computed(() => {
+  const ie = selectedPerson.value?.indicador_ie
+  if (ie == null) return '—'
+  return ie === 9 ? '1 — Consumidor final' : '0 — Normal'
 })
 
 const selectedCmig = computed(() => cmigs.value.find(c => c.id === form.cmig_id) || null)
@@ -867,6 +1000,14 @@ async function reloadPeople(query = '') {
 }
 
 function openPersonPicker() {
+  personPickerTarget.value = 'dest'
+  showPersonPicker.value = true
+  personSearch.value = ''
+  reloadPeople()
+}
+
+function openCarrierPicker() {
+  personPickerTarget.value = 'carrier'
   showPersonPicker.value = true
   personSearch.value = ''
   reloadPeople()
@@ -879,8 +1020,13 @@ function searchPeople() {
 }
 
 function selectPerson(p) {
-  selectedPerson.value = p
-  form.person_id = p.id
+  if (personPickerTarget.value === 'carrier') {
+    carrierPerson.value = p
+    form.carrier_person_id = p.id
+  } else {
+    selectedPerson.value = p
+    form.person_id = p.id
+  }
   showPersonPicker.value = false
 }
 
@@ -993,12 +1139,29 @@ async function loadInvoice() {
       issue_date: data.issue_date,
       exit_date: data.exit_date,
       freight_modality: data.freight_modality,
+      carrier_person_id: data.carrier_person_id,
       payment_method: data.payment_method || '',
+      payment_value: data.payment_value || 0,
+      ind_presenca: data.ind_presenca ?? 9,
+      ind_intermed: data.ind_intermed ?? 0,
+      ind_pag: data.ind_pag ?? 0,
       additional_info: data.additional_info || '',
+      fiscal_info: data.fiscal_info || '',
+      total_products: data.total_products || 0,
+      total_freight: data.total_freight || 0,
+      total_insurance: data.total_insurance || 0,
+      total_discount: data.total_discount || 0,
+      total_other: data.total_other || 0,
+      total_icms: data.total_icms || 0,
+      total_icms_st: data.total_icms_st || 0,
+      total_ipi: data.total_ipi || 0,
+      total_pis: data.total_pis || 0,
+      total_cofins: data.total_cofins || 0,
       total_invoice: data.total_invoice || 0,
       items: data.items || [],
     })
     selectedPerson.value = data.person ? { ...data.person } : null
+    carrierPerson.value = data.carrier ? { ...data.carrier } : null
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao carregar NFe')
     router.push(backUrl.value)
@@ -1017,8 +1180,13 @@ async function saveHeader({ silent = false } = {}) {
       issue_date: form.issue_date,
       exit_date: form.exit_date,
       freight_modality: form.freight_modality,
+      carrier_person_id: form.carrier_person_id,
       payment_method: form.payment_method || null,
+      ind_presenca: form.ind_presenca,
+      ind_intermed: form.ind_intermed,
+      ind_pag: form.ind_pag,
       additional_info: form.additional_info,
+      fiscal_info: form.fiscal_info,
     }
     if (isNew.value) {
       const created = await fiscalStore.createInvoice(payload)
