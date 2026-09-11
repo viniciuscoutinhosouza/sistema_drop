@@ -192,9 +192,15 @@ def build_nota_emissao(
     # obrigatoriamente consumidor final, senão a SEFAZ rejeita (cStat 696 "Operação com não
     # contribuinte deve indicar operação com consumidor final"). Contribuinte (1) / isento (2) → 0.
     ind_final = 1 if dest.indicador_ie == 9 else 0
+    # Grupo `pag` (obrigatório na NF-e 4.00). Regras da SEFAZ que causavam rejeição:
+    #  1) Devolução não tem liquidação financeira → exige tPag=90 "Sem Pagamento". Sem forma
+    #     definida, o default do xml_builder era tPag=01/valor cheio → "deve ser Sem Pagamento".
+    #  2) tPag=90 exige vPag=0.00; qualquer valor > 0 → "Informado indevidamente valor de pagamento".
+    forma_pag = inv.payment_method or ("90" if inv.purpose == "devolucao" else None)
     pagamentos: tuple[Pagamento, ...] = ()
-    if inv.payment_method:
-        pagamentos = (Pagamento(forma_pag=inv.payment_method, valor=_dec(inv.total_invoice), ind_pag=0),)
+    if forma_pag:
+        valor_pag = Decimal("0.00") if forma_pag == "90" else _dec(inv.total_invoice)
+        pagamentos = (Pagamento(forma_pag=forma_pag, valor=valor_pag, ind_pag=0),)
 
     return NotaEmissao(
         modelo=55, serie=serie, numero=numero, ambiente=ambiente, chave=chave, c_nf=c_nf,
