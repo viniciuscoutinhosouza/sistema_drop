@@ -2434,16 +2434,29 @@ def _read_authorized_xml(inv: Invoice) -> str:
 
 
 async def _ensure_authorized_xml(inv: Invoice, db: AsyncSession) -> str:
-    """XML autorizado, com fallback: se a nota está autorizada mas sem XML local (ex.:
-    recuperada de cStat 539), baixa da SEFAZ pela chave (Distribuição DFe) e grava. Só então
-    falha alto se ainda não houver — em vez do "XML não encontrado" seco."""
-    if (not inv.xml_local_path or not _Path(inv.xml_local_path).exists()) and (
-        inv.status == "authorized" and inv.access_key
-    ):
+    """XML autorizado, com fallback: se a nota está autorizada mas sem XML local, tenta baixar
+    da SEFAZ pela chave (Distribuição DFe consChNFe). Funciona para notas RECEBIDAS (a CMIG é
+    destinatária); a SEFAZ recusa o emitente rebaixar a PRÓPRIA nota (cStat 641). Sem
+    recuperação, falha alto com mensagem acionável — não "XML não encontrado" seco."""
+    tem_xml = inv.xml_local_path and _Path(inv.xml_local_path).exists()
+    if not tem_xml and inv.status == "authorized" and inv.access_key:
         cfg = await _get_fiscal_config(inv.cmig_id, db)
         cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
         if await sefaz_service.recuperar_xml_por_chave(db, inv, cmig, cfg):
             await db.refresh(inv)
+            tem_xml = inv.xml_local_path and _Path(inv.xml_local_path).exists()
+    if not tem_xml and inv.status == "authorized":
+        # Autorizada, mas o XML não está no sistema e não é recuperável automaticamente
+        # (a SEFAZ não deixa o emitente rebaixar o próprio XML — cStat 641).
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Esta NF-e está autorizada na SEFAZ (chave {inv.access_key}, protocolo "
+                f"{inv.auth_protocol or '—'}), mas o XML autorizado não está guardado no sistema "
+                "e a SEFAZ não permite ao emitente rebaixá-lo. Obtenha o XML com o contador ou "
+                "no portal da SEFAZ (Consulta Completa pela chave de acesso)."
+            ),
+        )
     return _read_authorized_xml(inv)
 
 
