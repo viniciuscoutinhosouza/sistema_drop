@@ -416,6 +416,17 @@ async def emitir(
             inv.xml_local_path = _store_xml(cmig.id, nota.chave, xml_proc)
         except OSError:
             logger.warning("[nfe] falha ao gravar XML da nota %s", inv.id, exc_info=True)
+    elif retorno.cstat_final == "539":
+        # cStat 539 "Duplicidade de NF-e com diferença na Chave de Acesso": a SEFAZ JÁ tem
+        # essa série+número autorizados com OUTRA chave (a nossa nota queimou o número ao
+        # reemitir com cNF novo). A mensagem traz a chNFe autorizada — consultamos e, se
+        # autorizada, RECUPERAMOS a nota em vez de deixá-la rejeitada e reemitir de novo
+        # (o que só queima mais números). O XML autorizado vem depois pela Distribuição DFe.
+        recuperada = await _tentar_recuperar_539(
+            db, inv, cmig, retorno.motivo_final, ambiente, environment, pfx_path, senha, settings
+        )
+        if not recuperada:
+            inv.status = "rejected"
     else:
         inv.status = "rejected"
 
@@ -428,6 +439,78 @@ async def emitir(
         "chave": nota.chave,
         "status": inv.status,
     }
+
+
+def _mesma_identidade_fiscal(chave_a: str, chave_b: str | None) -> bool:
+    """True se as duas chaves são a MESMA nota fiscal (mesmo cUF/CNPJ/modelo/série/número),
+    diferindo só no cNF+DV. Impede vincular a nota à chave de OUTRO documento na recuperação
+    do 539 — a mensagem da SEFAZ é texto e não pode ser fonte de verdade sem esta trava."""
+    from services.fiscal.sefaz.chave import parse_chave
+
+    if not chave_b:
+        return False
+    try:
+        a, b = parse_chave(chave_a), parse_chave(chave_b)
+    except Exception:  # noqa: BLE001
+        return False
+    return all(a[k] == b[k] for k in ("c_uf", "cnpj", "modelo", "serie", "n_nf"))
+
+
+async def _tentar_recuperar_539(
+    db: AsyncSession, inv: Invoice, cmig: CMIG, motivo: str | None,
+    ambiente: str, environment: str, pfx_path, senha, settings,
+) -> bool:
+    """Recupera uma nota que caiu em cStat 539: extrai a chNFe autorizada da mensagem da
+    SEFAZ, VALIDA que é a gêmea desta nota (mesma série/número/CNPJ) e o DV, consulta a
+    situação e, se autorizada (100/150) COM protocolo, aponta a nota para essa chave e marca
+    autorizada. Read-only na SEFAZ. Retorna True se recuperou.
+
+    Não grava XML aqui (a consulta não devolve a NFe completa) — fica pendente para a
+    Distribuição DFe, que baixa a nota própria."""
+    from services.fiscal.sefaz.chave import validar_chave
+    from services.fiscal.sefaz.consulta import consultar_nfe
+
+    # chNFe de 44 dígitos NÃO grudada em sequência maior (boundary); a mensagem pode citar 2
+    # chaves — filtramos pela que é a gêmea desta nota (a nossa chave rejeitada tem a mesma
+    # série/número/CNPJ, só muda o cNF).
+    candidatas = re.findall(r"(?<!\d)(\d{44})(?!\d)", motivo or "")
+    chave_autorizada = next(
+        (c for c in candidatas if validar_chave(c) and _mesma_identidade_fiscal(c, inv.access_key)),
+        None,
+    )
+    if not chave_autorizada:
+        logger.warning("[nfe] 539 nota %s: nenhuma chNFe gêmea válida na mensagem", inv.id)
+        return False
+    try:
+        r = await asyncio.to_thread(
+            consultar_nfe, chave_autorizada,
+            ambiente="producao" if ambiente == "producao" else "homologacao",
+            uf=(cmig.state or "SP").upper(),
+            pfx_path=pfx_path, pfx_password=senha,
+            timeout=int(settings.NFE_SEFAZ_TIMEOUT), verify_ssl=_verify_ssl(environment),
+            runtime_dir=_runtime_dir(),
+        )
+    except Exception:  # noqa: BLE001 — consulta falhou: mantém rejeitada, usuário reprocessa
+        logger.warning("[nfe] 539: consulta da chave %s falhou (nota %s)", chave_autorizada, inv.id,
+                       exc_info=True)
+        return False
+    # Trilha de auditoria da consulta (por que a nota foi vinculada a esta chave).
+    await _log(
+        db, invoice_id=inv.id, cmig_id=cmig.id, operation="consulta",
+        cstat=r.cstat, xmotivo=r.motivo, req=None, resp=getattr(r.response, "body", None),
+    )
+    # 100 = autorizada; 150 = autorizada fora de prazo — ambas válidas (paridade com
+    # RetornoConsulta.autorizada). Exige protocolo: "autorizada sem nProt" é estado inválido.
+    if not r.autorizada or not r.nprot:
+        return False
+    inv.access_key = chave_autorizada
+    inv.auth_protocol = r.nprot
+    inv.status = "authorized"
+    inv.sefaz_cstat = r.cstat
+    inv.sefaz_xmotivo = "Autorizado o uso da NF-e (recuperado por consulta — cStat 539)"
+    logger.info("[nfe] 539 recuperado: nota %s → autorizada, chave %s prot %s",
+                inv.id, chave_autorizada, r.nprot)
+    return True
 
 
 # ── Eventos ───────────────────────────────────────────────────────────────────
