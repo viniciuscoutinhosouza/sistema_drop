@@ -347,8 +347,27 @@ def _addr_text(v) -> str:
     return s.strip()
 
 
+# Nome do estado → UF. A Shopee manda o estado por EXTENSO ("Rio Grande do Sul"), enquanto o
+# eShip exige a sigla de 2 letras. O ML já vinha como `{id:'BR-SP'}` ou "SP".
+_UF_POR_NOME = {
+    "acre": "AC", "alagoas": "AL", "amapa": "AP", "amazonas": "AM", "bahia": "BA",
+    "ceara": "CE", "distrito federal": "DF", "espirito santo": "ES", "goias": "GO",
+    "maranhao": "MA", "mato grosso": "MT", "mato grosso do sul": "MS", "minas gerais": "MG",
+    "para": "PA", "paraiba": "PB", "parana": "PR", "pernambuco": "PE", "piaui": "PI",
+    "rio de janeiro": "RJ", "rio grande do norte": "RN", "rio grande do sul": "RS",
+    "rondonia": "RO", "roraima": "RR", "santa catarina": "SC", "sao paulo": "SP",
+    "sergipe": "SE", "tocantins": "TO",
+}
+
+
+def _norm_uf(s: str) -> str:
+    import unicodedata
+
+    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().strip().lower()
+
+
 def _uf_sigla(v) -> str:
-    """UF (2 letras) do estado do ML: `{id:'BR-SP'}` → 'SP'; senão nome/sigla."""
+    """UF (2 letras): `{id:'BR-SP'}` → 'SP' (ML); "Rio Grande do Sul" → 'RS' (Shopee); "SP" → 'SP'."""
     raw_id = v.get("id") if isinstance(v, dict) else ""
     raw_id = str(raw_id or "")
     if "-" in raw_id:
@@ -356,7 +375,9 @@ def _uf_sigla(v) -> str:
         if len(cand) == 2:
             return cand.upper()
     name = _addr_text(v)
-    return name.upper() if len(name) == 2 else name
+    if len(name) == 2:
+        return name.upper()
+    return _UF_POR_NOME.get(_norm_uf(name), name)  # nome por extenso → sigla; senão devolve como veio
 
 
 def _parse_address(order: Order) -> dict:
@@ -392,14 +413,17 @@ def _parse_address(order: Order) -> dict:
     if not any(ch.isdigit() for ch in telefone):
         telefone = ""
 
+    # Aliases Shopee (recipient_address): logradouro vem no `full_address` (a Shopee não
+    # separa rua/número — número/complemento ficam vazios, que o eShip aceita), bairro em
+    # `district`, município em `city`, CEP em `zipcode`, estado por extenso em `state`.
     return {
-        "logradouro": g("street", "logradouro", "address_line"),
+        "logradouro": g("street", "logradouro", "address_line", "full_address"),
         "numero": g("number", "numero", "street_number"),
         "complemento": g("complement", "complemento", "comment"),
-        "bairro": g("neighborhood", "bairro"),
-        "municipio": g("city", "municipio", "cidade"),
+        "bairro": g("neighborhood", "bairro", "district"),
+        "municipio": g("city", "municipio", "cidade", "town"),
         "estado": _uf_sigla(gv("state", "estado", "uf", "state_id")),
-        "cep": g("zip_code", "cep", "zip", "zip_code_str"),
+        "cep": g("zip_code", "cep", "zip", "zip_code_str", "zipcode", "postal_code"),
         "telefone": telefone,
     }
 
@@ -509,7 +533,13 @@ _TRANSPORTE_CODIGO_INTERIM = "01"
 
 
 def transporte_code_for_order(order: Order) -> str | None:
-    """codigoTransporte do eShip para o pedido (aplicado via PutOrdem). Interim: "01" p/ todos."""
+    """codigoTransporte do eShip para o pedido (aplicado via PutOrdem). Interim ML: "01" (Correios).
+
+    Shopee: o frete é da rede logística da Shopee (Shopee Xpress/parceiros), NÃO Correios —
+    aplicar "01" gravaria transportadora errada no WMS. Devolve None (o transporte fica como o
+    WMS resolver pela etiqueta/XML) até o dono cadastrar a transportadora Shopee no eShip."""
+    if order.platform == "shopee":
+        return None
     return _TRANSPORTE_CODIGO_INTERIM
 
 
@@ -662,8 +692,9 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
         )
     if not order.eship_nfe_attached and not await resolve_nfe_xml(db, order):
         avisos.append("NF-e ainda não autorizada — a ordem irá ao WMS SEM o XML da nota.")
-    if not order.eship_label_attached and not (await _resolve_labels(db, order))[0]:
-        avisos.append("Etiqueta ainda não liberada pelo Mercado Livre — a ordem irá SEM etiqueta.")
+    if not order.eship_label_attached and not (await _resolve_labels_for(db, order))[0]:
+        _origem = "Shopee" if order.platform == "shopee" else "Mercado Livre"
+        avisos.append(f"Etiqueta ainda não liberada pela {_origem} — a ordem irá SEM etiqueta.")
 
     url = f"{(creds.base_url or '').rstrip('/')}/?api&funcao={FUNC_POST_ORDEM}"
     body_json = json.dumps(body, ensure_ascii=False)
@@ -826,9 +857,15 @@ async def push_order(db: AsyncSession, order: Order) -> dict:
     # CPF/CNPJ do destinatário é OBRIGATÓRIO no eShip. Falha aqui, com motivo claro, em vez de
     # deixar o WMS recusar uma ordem incompleta.
     if not await ensure_buyer_document(db, order):
+        origem = (
+            "A Shopee só fornece o CPF/CNPJ quando o comprador solicita a nota (invoice) — "
+            "emita e valide a NF-e na Shopee antes de enviar ao WMS."
+            if order.platform == "shopee"
+            else "O Mercado Livre só o fornece após o pagamento aprovado (billing_info)."
+        )
         raise EShipError(
             "CPF/CNPJ do comprador indisponível — o eShip exige o documento do destinatário. "
-            "O Mercado Livre só o fornece após o pagamento aprovado (billing_info)."
+            + origem
         )
 
     for item in order.items or []:
@@ -1138,6 +1175,18 @@ def _zpl_do_zip(raw: bytes) -> bytes | None:
     return None
 
 
+async def _resolve_labels_for(db: AsyncSession, order: Order) -> tuple[bytes | None, bytes | None]:
+    """Despacha a resolução da etiqueta por plataforma (regra de ouro ADR-0020: ramo por
+    função, nunca `if platform == "mercadolivre"` embutido no fluxo ML).
+
+    Shopee: a etiqueta (PDF, geração assíncrona via `shopee_service`) entra na Fase 2 — por ora
+    devolve `(None, None)`, e o `send_order_full` trata como pendência recuperável (a ordem vai
+    ao WMS sem etiqueta e o reenvio a completa). ML: baixa do próprio ML."""
+    if order.platform == "shopee":
+        return None, None
+    return await _resolve_labels(db, order)
+
+
 async def _resolve_labels(db: AsyncSession, order: Order) -> tuple[bytes | None, bytes | None]:
     """Baixa a etiqueta do ML. Retorna `(pdf, zpl)` — cada um `None` se indisponível.
 
@@ -1341,7 +1390,7 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
 
         # --- PDFs: etiqueta + DANFE (mesma categoria no WMS, `documentosItPop`) ---
         pdfs_no_wms = no_wms.get("documentosItPop", 0)
-        etiqueta_pdf, zpl = await _resolve_labels(db, order)
+        etiqueta_pdf, zpl = await _resolve_labels_for(db, order)
 
         if pdfs_no_wms >= 2:
             result["etiquetas"] = [{"status": "already"}]
