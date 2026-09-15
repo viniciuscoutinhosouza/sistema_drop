@@ -8,7 +8,6 @@ Ramo 100% Shopee (não toca o ML). Anexa, NÃO emite (emissão é o fluxo fiscal
 """
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,10 +26,6 @@ from services.shopee_auth import get_valid_shopee_token
 router = APIRouter()
 
 
-def _digits(v) -> str:
-    return re.sub(r"\D", "", str(v or ""))
-
-
 async def _shopee_order(order_id: int, user: User, db: AsyncSession):
     """Resolve o pedido Shopee + conta (RBAC owner/admin) + token válido. 400 se não for Shopee."""
     order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
@@ -41,21 +36,6 @@ async def _shopee_order(order_id: int, user: User, db: AsyncSession):
     account = await _assert_owner_or_admin(order.account_id, user, db)
     token = await get_valid_shopee_token(account, db)
     return order, account, token
-
-
-def _parse_buyer_invoice(info: dict) -> dict | None:
-    """Extrai (documento, tipo, nome, razão social) de um item de get_buyer_invoice_info."""
-    if not isinstance(info, dict) or info.get("error"):
-        return None
-    detail = info.get("invoice_detail") or {}
-    is_company = (info.get("invoice_type") or "").lower() == "company"
-    if is_company:
-        doc = _digits(detail.get("company_tax_id"))
-        return {"document": doc, "type": "CNPJ" if len(doc) == 14 else None,
-                "business_name": detail.get("company_name"), "name": detail.get("company_name")}
-    doc = _digits(detail.get("tax_id"))
-    return {"document": doc, "type": "CPF" if len(doc) == 11 else None,
-            "business_name": None, "name": detail.get("name")}
 
 
 @router.get("/orders/pending-invoice")
@@ -108,7 +88,7 @@ async def populate_buyer_fiscal(
     """
     order, account, token = await _shopee_order(order_id, current_user, db)
     infos = await shopee_service.get_buyer_invoice_info(token, account.shop_id, [order.platform_order_id])
-    parsed = _parse_buyer_invoice(infos[0]) if infos else None
+    parsed = shopee_service.parse_buyer_invoice(infos[0]) if infos else None
     if not parsed or not parsed["document"]:
         raise HTTPException(
             status_code=400,

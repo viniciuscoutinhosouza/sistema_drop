@@ -733,3 +733,81 @@ async def test_resolve_label_pdf_levanta_em_failed(monkeypatch):
 
     with pytest.raises(HTTPException):
         await ss.resolve_label_pdf("t", 1, "SN-1", tries=2, delay=0)
+
+
+@pytest.mark.asyncio
+async def test_ensure_buyer_document_shopee_busca_no_get_buyer_invoice_info(monkeypatch):
+    """Shopee tem fonte fiscal PRÓPRIA — o documento vem de get_buyer_invoice_info (o comprador
+    pediu a nota), nunca do billing_info do ML."""
+    from models.order import Order
+
+    class FakeAcc:
+        id = 1
+        shop_id = 123
+
+    class FakeScalar:
+        def scalar_one_or_none(self):
+            return FakeAcc()
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            return FakeScalar()
+
+        async def commit(self):
+            return None
+
+    async def fake_token(acc, db, **_kw):
+        return "t"
+
+    async def fake_invoice_info(token, shop_id, order_sns):
+        return [{"invoice_type": "company",
+                 "invoice_detail": {"company_tax_id": "67.763.215/0001-35",
+                                    "company_name": "ACME LTDA"}}]
+
+    # O ML NUNCA deve ser chamado para um pedido Shopee.
+    async def nunca_ml(*_a, **_kw):
+        raise AssertionError("billing_info do ML não deveria ser chamado para pedido Shopee")
+
+    monkeypatch.setattr(service, "get_valid_shopee_token", fake_token)
+    monkeypatch.setattr(service.shopee_service, "get_buyer_invoice_info", fake_invoice_info)
+    monkeypatch.setattr(service._ml, "get_order_billing_info", nunca_ml)
+
+    o = Order(id=1, platform="shopee", platform_order_id="SN-9", account_id=1)
+    doc = await service.ensure_buyer_document(FakeDB(), o)
+    assert doc == "67763215000135"
+    assert o.buyer_document_type == "CNPJ"
+    assert o.buyer_business_name == "ACME LTDA"   # razaoSocialDestinatario exigido pelo eShip (PJ)
+
+
+@pytest.mark.asyncio
+async def test_ensure_buyer_document_shopee_sem_nota_devolve_vazio(monkeypatch):
+    """Comprador não pediu nota → sem documento fiscal. Devolve '' (a prévia denuncia; não inventa)."""
+    from models.order import Order
+
+    class FakeAcc:
+        id = 1
+        shop_id = 123
+
+    class FakeScalar:
+        def scalar_one_or_none(self):
+            return FakeAcc()
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            return FakeScalar()
+
+        async def commit(self):
+            raise AssertionError("não deveria commitar sem documento")
+
+    async def fake_token(acc, db, **_kw):
+        return "t"
+
+    async def fake_invoice_info(token, shop_id, order_sns):
+        return [{"error": "buyer did not request invoice"}]
+
+    monkeypatch.setattr(service, "get_valid_shopee_token", fake_token)
+    monkeypatch.setattr(service.shopee_service, "get_buyer_invoice_info", fake_invoice_info)
+
+    o = Order(id=1, platform="shopee", platform_order_id="SN-9", account_id=1)
+    assert await service.ensure_buyer_document(FakeDB(), o) == ""
+    assert o.buyer_document is None

@@ -480,6 +480,10 @@ async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
     need_razao = is_pj and not (order.buyer_business_name or "").strip()
     if have_doc and not need_razao:
         return doc  # já temos tudo que o eShip precisa
+    # Shopee tem fonte fiscal PRÓPRIA (o comprador pede a nota) — nunca o billing_info do ML.
+    # Ramo por plataforma (regra de ouro ADR-0020), nunca dentro do bloco ML.
+    if order.platform == "shopee":
+        return await _ensure_buyer_document_shopee(db, order)
     if order.platform != "mercadolivre" or not order.platform_order_id:
         return doc
 
@@ -513,6 +517,46 @@ async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
     # Razão social do PJ: o eShip exige `razaoSocialDestinatario` p/ CNPJ ainda não cadastrado.
     # `billing_info.name` é o nome fiscal (razão social do PJ). Guardamos sempre que vier.
     razao = (billing.get("name") or "").strip()
+    if razao and razao != (order.buyer_business_name or ""):
+        order.buyer_business_name = razao[:255]
+        changed = True
+    if changed:
+        await db.commit()
+    return doc
+
+
+async def _ensure_buyer_document_shopee(db: AsyncSession, order: Order) -> str:
+    """CPF/CNPJ do comprador Shopee para o eShip. A Shopee NÃO devolve o documento no detalhe do
+    pedido (privacidade) — ele só existe quando o COMPRADOR pede a nota (`get_buyer_invoice_info`).
+
+    Espelha o `populate_buyer_fiscal` (fiscal Shopee): mesmo ponto único de parse
+    (`shopee_service.parse_buyer_invoice`), captura razão social do PJ (`razaoSocialDestinatario`
+    exigido pelo eShip). Comprador que não pediu nota → documento indisponível: devolve '' e a prévia
+    denuncia (falhar alto). Nunca toca o billing_info do ML."""
+    doc = _digits(order.buyer_document)
+    if not order.platform_order_id:
+        return doc
+    acc = (
+        await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+    ).scalar_one_or_none()
+    if not acc or not acc.shop_id:
+        return doc
+    try:
+        token = await get_valid_shopee_token(acc, db)
+        infos = await shopee_service.get_buyer_invoice_info(token, acc.shop_id, [order.platform_order_id])
+    except Exception as exc:  # noqa: BLE001 — comprador sem nota / conta desconectada → indisponível
+        logger.warning("[eShip] documento Shopee pedido=%s: %s", order.id, exc)
+        return doc
+    parsed = shopee_service.parse_buyer_invoice(infos[0]) if infos else None
+    if not parsed or not parsed["document"]:
+        return doc  # comprador não pediu nota — sem documento fiscal
+    changed = False
+    if parsed["document"] != doc:
+        order.buyer_document = parsed["document"]
+        order.buyer_document_type = parsed["type"]
+        doc = parsed["document"]
+        changed = True
+    razao = (parsed.get("business_name") or "").strip()
     if razao and razao != (order.buyer_business_name or ""):
         order.buyer_business_name = razao[:255]
         changed = True
@@ -664,20 +708,32 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
     # A prévia PRECISA denunciar o que falta — antes ela apenas omitia o campo em silêncio, e o
     # erro só aparecia lá no WMS. Cada bloqueio vira um aviso explícito na tela.
     dest = body.get("cadastroDestinatario") or {}
+    is_shopee = order.platform == "shopee"
+    # Origem do documento fiscal por plataforma (o eShip é agnóstico; a mensagem precisa dizer a
+    # verdade para o dono não achar que um pedido Shopee está sendo tratado como ML).
+    _origem_doc = (
+        "A Shopee só fornece o CPF/CNPJ quando o COMPRADOR solicita a nota no pedido — sem isso o "
+        "documento não existe. Confirme se o comprador pediu nota (Fiscal Shopee)."
+        if is_shopee else
+        "O documento vem do Mercado Livre (billing_info) e só existe após o pagamento aprovado — se "
+        "o pedido já está pago, verifique se a conta ML está conectada (Integrações)."
+    )
+    _origem_razao = (
+        "A razão social vem da nota que o comprador pediu na Shopee (get_buyer_invoice_info)."
+        if is_shopee else
+        "A razão social vem do Mercado Livre (billing_info) e só existe após o pagamento aprovado; "
+        "confirme se a conta ML está conectada (Integrações)."
+    )
     bloqueios: list[str] = []
     if not (dest.get("cpfDestinatario") or dest.get("cnpjDestinatario")):
         bloqueios.append(
-            "Falta o CPF/CNPJ do destinatário (obrigatório no eShip). O documento vem do Mercado "
-            "Livre (billing_info) e só existe após o pagamento aprovado — se o pedido já está pago, "
-            "verifique se a conta ML está conectada (Integrações)."
+            f"Falta o CPF/CNPJ do destinatário (obrigatório no eShip). {_origem_doc}"
         )
     # Destinatário PJ sem razão social: o eShip recusa (MCA9102) ao criar o cadastro do CNPJ.
     if dest.get("cnpjDestinatario") and not (dest.get("razaoSocialDestinatario") or "").strip():
         bloqueios.append(
             "Destinatário é CNPJ (PJ) mas falta a razão social (razaoSocialDestinatario) — o eShip "
-            "recusa (MCA9102) ao cadastrar o CNPJ. A razão social vem do Mercado Livre "
-            "(billing_info) e só existe após o pagamento aprovado; confirme se a conta ML está "
-            "conectada (Integrações)."
+            f"recusa (MCA9102) ao cadastrar o CNPJ. {_origem_razao}"
         )
     if not creds.warehouse_code:
         bloqueios.append("Falta o código do armazém (codigoArmazemOrigem) na configuração da CMIG.")

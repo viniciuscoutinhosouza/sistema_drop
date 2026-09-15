@@ -7,6 +7,7 @@ Docs: https://open.shopee.com/developer-guide/4
 import hashlib
 import hmac
 import logging
+import re
 import time
 from urllib.parse import quote
 
@@ -515,6 +516,25 @@ async def get_buyer_invoice_info(access_token: str, shop_id: int, order_sn_list)
     if data.get("error"):
         raise HTTPException(status_code=502, detail=f"Shopee buyer_invoice_info: {data.get('message')}")
     return (data.get("response", {}) or {}).get("invoice_info_list", []) or []
+
+
+def parse_buyer_invoice(info: dict) -> dict | None:
+    """Extrai (documento, tipo, nome, razão social) de um item de `get_buyer_invoice_info`.
+
+    Ponto ÚNICO do parse fiscal do comprador Shopee (usado pelo fiscal e pelo envio ao eShip).
+    PJ (`company`): documento = `company_tax_id` (CNPJ), razão social = `company_name`.
+    PF: documento = `tax_id` (CPF), sem razão social. Retorna None em item com erro/vazio."""
+    if not isinstance(info, dict) or info.get("error"):
+        return None
+    detail = info.get("invoice_detail") or {}
+    is_company = (info.get("invoice_type") or "").lower() == "company"
+    if is_company:
+        doc = re.sub(r"\D", "", str(detail.get("company_tax_id") or ""))
+        return {"document": doc, "type": "CNPJ" if len(doc) == 14 else None,
+                "business_name": detail.get("company_name"), "name": detail.get("company_name")}
+    doc = re.sub(r"\D", "", str(detail.get("tax_id") or ""))
+    return {"document": doc, "type": "CPF" if len(doc) == 11 else None,
+            "business_name": None, "name": detail.get("name")}
 
 
 async def upload_invoice_doc(
