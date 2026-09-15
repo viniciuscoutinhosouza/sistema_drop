@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-09-15 — fix(eship): documento do comprador Shopee (não o billing_info do ML)
+
+**Sintoma do dono:** na prévia do envio ao eShip de um pedido **Shopee**, o bloqueio dizia "Falta o CPF/CNPJ… o documento vem do Mercado Livre (billing_info)…" — mensagem do ML num pedido Shopee, dando a impressão de que o sistema tratava o pedido Shopee como ML.
+
+**Causa (`34406b8`):** `ensure_buyer_document` retornava cedo para não-ML (`if order.platform != "mercadolivre"`), então nunca buscava o documento na fonte Shopee (`get_buyer_invoice_info`); e as mensagens de bloqueio do `preview_ordem` eram hard-coded para ML.
+
+**Correção:** ramo Shopee novo `_ensure_buyer_document_shopee` (busca via `get_buyer_invoice_info`, popula CPF/CNPJ + razão social do PJ; sem tocar o bloco ML — ADR-0020); `parse_buyer_invoice` centralizado em `shopee_service` (reuso router fiscal + eShip, removida a duplicata); mensagens de bloqueio do documento/razão social agnósticas (Shopee → "vem da Shopee, só existe quando o comprador solicita a nota"). 2 testes novos; 32 passam.
+
+**Verificado ao vivo em produção** (pedido real #2609165GQXA4E4): a mensagem agora é Shopee-correta e o sistema busca na fonte certa. O teste revelou a **realidade do pedido**: `get_pending_buyer_invoice_order_list` da loja retorna **0** — o comprador NÃO pediu nota, então não há CPF/CNPJ (Shopee responde `Region is invalid` para invoice sem solicitação, tratado como indisponível). **Constatação operacional:** o eShip exige o documento; pedido Shopee cujo comprador não pediu nota não tem documento a enviar — o sistema agora bloqueia com mensagem clara em vez de fingir ML.
+
 ## 2026-09-15 — feat(eship): pedido Shopee ao WMS com todos os documentos (Fases 1-2)
 
 **Pedido do dono:** "os pedidos da Shopee… preciso que sejam enviados para o eSHIP, da mesma forma como é feito com os pedidos do ML, com todos os documentos exigidos."
