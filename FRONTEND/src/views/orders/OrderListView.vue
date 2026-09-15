@@ -564,9 +564,10 @@
               title="Ver detalhes do pedido"
             ><i class="fas fa-eye"></i></RouterLink>
 
-            <!-- eShip (WMS): enviar/sincronizar — só se há galpão eShip ativo e não é Full/manual -->
+            <!-- eShip (WMS): enviar/sincronizar — só se há galpão eShip ativo e não é Full/manual.
+                 Shopee incluído (Fases 1-2): pedido Shopee vai ao WMS com endereço + NF-e + etiqueta. -->
             <OrderEShipActions
-              v-if="eshipEnabled && !isFullOrder(order) && order.platform !== 'manual' && order.platform !== 'shopee'"
+              v-if="eshipEnabled && !isFullOrder(order) && order.platform !== 'manual'"
               :order="order"
               @updated="loadOrders"
             />
