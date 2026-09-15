@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-09-15 — feat(eship): pedido Shopee sem nota vai ao WMS como consumidor não identificado
+
+**Decisão do dono (opção 1):** permitir enviar ao eShip o pedido Shopee cujo comprador NÃO pediu nota (sem CPF/CNPJ), como "consumidor não identificado".
+
+**Verificação prévia (eship-especialista, OpenAPI oficial):** `cpfDestinatario`/`cnpjDestinatario` **não são obrigatórios** no `webServicePostOrdem` — o único obrigatório do destinatário é o `endereco` (município/estado/bairro/logradouro/CEP). A obrigatoriedade que o Drop impunha era suposição do doc interno, não do schema.
+
+**Entregue (`cfe977e`):** `push_order` — o gate de documento passa a valer só p/ ML (o billing_info é a base da NF-e); Shopee sem documento segue. `preview_ordem` — Shopee sem documento vira **AVISO** ("CONSUMIDOR NÃO IDENTIFICADO — nome e endereço reais, sem documento"), não bloqueio; ML mantém o bloqueio. `build_ordem_payload` já omitia o documento quando ausente (sem mudança). Ramo por plataforma (ADR-0020). 2 testes novos; 34 passam.
+
+**Verificado ao vivo** (pedido real #2609165GQXA4E4, produção): prévia **sem bloqueios**, com o aviso de consumidor não identificado; payload sem cpf/cnpj, `nomeDestinatario`=nome real, endereço completo. **Falta a prova final de aceite do WMS:** o POST real (create) — confirmado no 1º "Enviar mesmo assim" do dono, ou via teste controlado create+delete. O schema garante que o campo é opcional; o comportamento observável (aceita com cadastro anônimo × recusa com código) sai desse POST.
+
 ## 2026-09-15 — fix(eship): documento do comprador Shopee (não o billing_info do ML)
 
 **Sintoma do dono:** na prévia do envio ao eShip de um pedido **Shopee**, o bloqueio dizia "Falta o CPF/CNPJ… o documento vem do Mercado Livre (billing_info)…" — mensagem do ML num pedido Shopee, dando a impressão de que o sistema tratava o pedido Shopee como ML.
