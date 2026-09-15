@@ -811,3 +811,97 @@ async def test_ensure_buyer_document_shopee_sem_nota_devolve_vazio(monkeypatch):
     o = Order(id=1, platform="shopee", platform_order_id="SN-9", account_id=1)
     assert await service.ensure_buyer_document(FakeDB(), o) == ""
     assert o.buyer_document is None
+
+
+def _shopee_order_com_endereco(**extra):
+    from models.order import Order, OrderItem
+    o = Order(platform="shopee", platform_order_id="SN-1", buyer_name="Giovanna", **extra)
+    o.shipping_address = json.dumps({
+        "name": "Giovanna", "full_address": "Rua X, 100", "district": "Centro",
+        "city": "Patos de Minas", "state": "Minas Gerais", "zipcode": "38706303",
+    }, ensure_ascii=False)
+    o.items = [OrderItem(sku="ZLQ-1kg", quantity=2, unit_price=0)]
+    return o
+
+
+@pytest.mark.asyncio
+async def test_preview_shopee_sem_documento_vira_aviso_nao_bloqueio(monkeypatch):
+    """Consumidor não identificado: pedido Shopee sem CPF/CNPJ NÃO é bloqueado — o eShip não exige
+    documento (schema). Vira AVISO, e a mensagem não fala em Mercado Livre."""
+    creds = _creds_teste()
+
+    async def fake_creds(db, order):
+        return creds, None
+
+    async def fake_doc(db, order):
+        return ""   # comprador não pediu nota
+
+    async def fake_muni(order):
+        return None
+
+    async def fake_nfe(db, order):
+        return None                # sem NF-e (irá com aviso próprio)
+
+    async def fake_labels(db, order):
+        return None, None          # etiqueta não liberada (aviso próprio)
+
+    monkeypatch.setattr(service, "_creds_for_order", fake_creds)
+    monkeypatch.setattr(service, "ensure_buyer_document", fake_doc)
+    monkeypatch.setattr(service, "resolve_municipio_ordem", fake_muni)
+    monkeypatch.setattr(service, "resolve_nfe_xml", fake_nfe)
+    monkeypatch.setattr(service, "_resolve_labels_for", fake_labels)
+
+    prev = await service.preview_ordem(None, _shopee_order_com_endereco())
+    doc_bloqueios = [b for b in prev["bloqueios"] if "CPF/CNPJ" in b]
+    assert doc_bloqueios == []                                   # NÃO bloqueia
+    assert any("CONSUMIDOR NÃO IDENTIFICADO" in a for a in prev["avisos"])
+    assert not any("Mercado Livre" in a for a in prev["avisos"])  # nada de ML num pedido Shopee
+    dest = prev["body"]["cadastroDestinatario"]
+    assert "cpfDestinatario" not in dest and "cnpjDestinatario" not in dest
+    assert dest["nomeDestinatario"] == "Giovanna"                # nome real p/ a entrega
+
+
+@pytest.mark.asyncio
+async def test_push_order_shopee_sem_documento_nao_bloqueia(monkeypatch):
+    """O gate de documento no envio real só vale p/ ML. Shopee sem documento SEGUE (consumidor não
+    identificado) — antes levantava EShipError e travava o envio."""
+    from integrations.eship.config import EShipCreds
+    creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="1")
+    chamou_post = []
+
+    async def fake_creds(db, order):
+        return creds, None
+
+    async def fake_doc(db, order):
+        return ""   # sem documento
+
+    async def fake_muni(order):
+        return None
+
+    async def fake_upsert(*_a, **_kw):
+        return None
+
+    async def fake_ean(db, item):
+        return None
+
+    async def fake_call(_creds, funcao, _payload):
+        chamou_post.append(funcao)
+        return {"corpo": {"body": {"dados": {"ordem": {"id": 5001}}}}}
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            raise AssertionError("não deveria consultar o banco aqui")
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(service, "_creds_for_order", fake_creds)
+    monkeypatch.setattr(service, "ensure_buyer_document", fake_doc)
+    monkeypatch.setattr(service, "resolve_municipio_ordem", fake_muni)
+    monkeypatch.setattr(service, "upsert_produto", fake_upsert)
+    monkeypatch.setattr(service, "_resolve_item_ean", fake_ean)
+    monkeypatch.setattr(service.client, "call", fake_call)
+
+    res = await service.push_order(FakeDB(), _shopee_order_com_endereco())
+    assert service.FUNC_POST_ORDEM in chamou_post   # chegou a criar a ordem (não bloqueou antes)
+    assert res["eship_order_id"] == "5001"

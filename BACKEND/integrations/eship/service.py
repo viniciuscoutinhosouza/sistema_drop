@@ -725,10 +725,20 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
         "confirme se a conta ML está conectada (Integrações)."
     )
     bloqueios: list[str] = []
+    avisos: list[str] = []
     if not (dest.get("cpfDestinatario") or dest.get("cnpjDestinatario")):
-        bloqueios.append(
-            f"Falta o CPF/CNPJ do destinatário (obrigatório no eShip). {_origem_doc}"
-        )
+        if is_shopee:
+            # O eShip NÃO exige documento (schema: só endereço é obrigatório no destinatário —
+            # verificado no OpenAPI). Comprador Shopee sem nota → segue como consumidor não
+            # identificado (nome + endereço reais, sem CPF/CNPJ). Aviso, não bloqueio.
+            avisos.append(
+                "Sem CPF/CNPJ do destinatário — o comprador não pediu nota na Shopee. A ordem irá "
+                "ao WMS como CONSUMIDOR NÃO IDENTIFICADO (nome e endereço reais, sem documento)."
+            )
+        else:
+            bloqueios.append(
+                f"Falta o CPF/CNPJ do destinatário (obrigatório no eShip). {_origem_doc}"
+            )
     # Destinatário PJ sem razão social: o eShip recusa (MCA9102) ao criar o cadastro do CNPJ.
     if dest.get("cnpjDestinatario") and not (dest.get("razaoSocialDestinatario") or "").strip():
         bloqueios.append(
@@ -743,7 +753,6 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
     # AVISOS (não impedem, mas exigem confirmação): a Ordem pode ser criada sem NF-e/etiqueta, e
     # foi o que aconteceu — pedidos foram parar no WMS sem documento nem etiqueta. Usa as MESMAS
     # funções do envio real, então o que a prévia diz é o que o envio faria, não um palpite.
-    avisos: list[str] = []
     _ml_city = (_parse_address(order).get("municipio") or "").strip()
     if municipio and _ml_city and municipio.strip().lower() != _ml_city.lower():
         avisos.append(
@@ -913,18 +922,15 @@ async def push_order(db: AsyncSession, order: Order) -> dict:
     if not creds.warehouse_code:
         raise EShipError("Configure o código do armazém (codigoArmazemOrigem) na CMIG antes de enviar.")
 
-    # CPF/CNPJ do destinatário é OBRIGATÓRIO no eShip. Falha aqui, com motivo claro, em vez de
-    # deixar o WMS recusar uma ordem incompleta.
-    if not await ensure_buyer_document(db, order):
-        origem = (
-            "A Shopee só fornece o CPF/CNPJ quando o comprador solicita a nota (invoice) — "
-            "emita e valide a NF-e na Shopee antes de enviar ao WMS."
-            if order.platform == "shopee"
-            else "O Mercado Livre só o fornece após o pagamento aprovado (billing_info)."
-        )
+    # CPF/CNPJ do destinatário: o eShip NÃO o exige no schema (só o endereço é obrigatório —
+    # verificado no OpenAPI). No ML o documento vem do billing_info e é a base da NF-e, então a
+    # ausência é sinal de problema e bloqueia com motivo claro. Na Shopee, quando o comprador não
+    # pede nota, o documento não existe — segue como CONSUMIDOR NÃO IDENTIFICADO (nome + endereço
+    # reais). Ramo por plataforma (ADR-0020), nunca dentro de bloco `if platform == "mercadolivre"`.
+    if not await ensure_buyer_document(db, order) and order.platform != "shopee":
         raise EShipError(
             "CPF/CNPJ do comprador indisponível — o eShip exige o documento do destinatário. "
-            + origem
+            "O Mercado Livre só o fornece após o pagamento aprovado (billing_info)."
         )
 
     for item in order.items or []:
