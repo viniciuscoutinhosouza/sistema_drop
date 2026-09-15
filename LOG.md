@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-09-15 — feat(eship): pedido Shopee ao WMS com todos os documentos (Fases 1-2)
+
+**Pedido do dono:** "os pedidos da Shopee… preciso que sejam enviados para o eSHIP, da mesma forma como é feito com os pedidos do ML, com todos os documentos exigidos."
+
+**Fase 1 (`567a18d`, `e42e675`) — parsing agnóstico do endereço + transporte.** O eShip exige bairro/CEP/logradouro/UF; a Shopee manda o estado **por extenso** e as chaves com nomes diferentes (`full_address`/`district`/`town`/`zipcode`). `_uf_sigla` ganhou `_UF_POR_NOME` (27 estados, NFKD) → "Rio Grande do Sul"→"RS"; `_parse_address` ganhou aliases Shopee (chaves ML primeiro → sem regressão); `transporte_code_for_order`/`_resolve_labels_for` entram por ramo novo (regra de ouro ADR-0020). Verificado com 3 pedidos Shopee reais em produção.
+
+**Fase 2 (`a122fa0`) — etiqueta (PDF) da Shopee anexada no WMS.** Espelha o anexo de etiqueta do ML. `shopee_service.resolve_label_pdf` vira o **ponto único** create→poll(READY)→download (None em PROCESSING = pendência recuperável; HTTPException em FAILED). `eship._resolve_labels_shopee` reusa o cache `private_labels/shopee_{id}.pdf` do endpoint de logística (guarda `size>0` contra PDF vazio de write interrompido), senão chama o ponto único; devolve `(pdf, None)` — a Shopee não tem ZPL. Dispatcher `_resolve_labels_for` passa a chamar o ramo Shopee; mensagem de "etiqueta não liberada" ficou agnóstica (Shopee/ML). 5 testes novos (dispatcher + os 3 estados de `resolve_label_pdf`); 30 do test_eship passam.
+
+**Verificação:** ruff limpo; 30 testes; deploy `a122fa0` em produção (PM2 restart, `/docs`→200, startup sem erro de import). **Exercitado contra a API real da Shopee** com 8 pedidos Shopee de produção: a costura chega ao `create_shipping_document`, a Shopee recusa (`batch_api_all_failed` — etiqueta só é gerável após o `ship_order`/arranjo de canal, ação do dono) e o resolvedor **degrada corretamente** (loga o motivo, devolve None, não trava o envio). Auditado por quality-guardian (sem CRITICAL/HIGH; guard de PDF vazio aplicado) + consistency-auditor (duplicação do `label()` inline vs. ponto único marcada como follow-up). **Falta o dono exercitar:** com um pedido Shopee em `READY_TO_SHIP` + `ship_order` feito (pós-NF-e) + Push Key LIVE, anexar a etiqueta real no eShip.
+
 ## 2026-08-22 — fix+feat(fiscal): pagamento na devolução + tela de emissão em cards recolhíveis
 
 **Bug (dono):** emitir devolução pela SEFAZ dava "Forma de Pagamento deve ser Sem Pagamento"; ao marcar 90, virava "Informado indevidamente valor de pagamento". Mesmo bug encadeado: `sefaz_service` mandava sempre `vPag=total`. A NT 2016.002 exige `tPag=90 → vPag=0.00`, e devolução exige tPag=90.
