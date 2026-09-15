@@ -1,4 +1,6 @@
 """Testes do módulo isolado eShip — funções puras (sem rede/DB)."""
+import json
+
 import pytest
 
 from integrations.eship import service
@@ -54,8 +56,8 @@ def test_extract_status_envelope():
 
 
 def test_build_ordem_payload():
-    from models.order import Order, OrderItem
     from integrations.eship.config import EShipCreds
+    from models.order import Order, OrderItem
 
     o = Order(platform_order_id="ML-1", platform="mercadolivre", buyer_name="Fulano")
     o.items = [OrderItem(sku="SKU1", quantity=2), OrderItem(sku="SKU2", quantity=1)]
@@ -103,8 +105,8 @@ def test_order_was_pushed_guard():
 async def test_send_order_full_nao_deixa_pedido_preso_em_sending(monkeypatch):
     """O bug do dono: a Ordem falhava, o `return` pulava o `except`, e o pedido ficava eternamente
     em 'sending' - todo clique seguinte era recusado com "envio ja em andamento"."""
-    from models.order import Order
     from integrations.eship.client import EShipError
+    from models.order import Order
 
     class FakeResult:
         rowcount = 1
@@ -245,9 +247,9 @@ def test_ja_cadastrada_reconhece_mor8003():
 async def test_push_order_recupera_ordem_existente_no_mor8003(monkeypatch):
     """Ordem ja existe no WMS: nao e falha. Recupera o id e segue para os anexos - antes isso
     abortava o envio, e a NF-e emitida depois nunca era anexada."""
-    from models.order import Order
     from integrations.eship.client import EShipError
     from integrations.eship.config import EShipCreds
+    from models.order import Order
 
     class FakeDB:
         async def execute(self, *_a, **_kw):
@@ -292,8 +294,8 @@ async def test_push_order_recupera_ordem_existente_no_mor8003(monkeypatch):
 async def test_cancel_order_devolve_o_status_ao_que_o_ml_diz(monkeypatch):
     """Cancelou a ordem no WMS -> o "Em Preparacao" (que veio do eShip) vira mentira. O status volta
     a ser o do marketplace ("Pronto p/ Envio"), perguntado ao ML, nao um valor chutado."""
-    from models.order import Order
     from integrations.eship.config import EShipCreds
+    from models.order import Order
 
     class FakeAcc:
         id = 1
@@ -353,9 +355,9 @@ async def test_mor8003_com_ordem_cancelada_nao_finge_sucesso(monkeypatch):
     """O eShip NAO libera o numeroOrigem apos o cancelamento: o reenvio bate em MOR8003 e nada e
     criado. Reaproveitar o id da ordem cancelada faria o sistema mostrar sucesso apontando para uma
     ordem morta - foi o que aconteceu com o pedido 2000017373745064 (ordem 3098258, status 10)."""
-    from models.order import Order
     from integrations.eship.client import EShipError
     from integrations.eship.config import EShipCreds
+    from models.order import Order
 
     class FakeDB:
         async def execute(self, *_a, **_kw):
@@ -406,9 +408,9 @@ def test_eship_cancelada_reconhece_status_10():
 async def test_cancel_order_cancela_antes_se_o_delete_for_recusado(monkeypatch):
     """Se o WMS recusar o DELETE direto, cancela e repete o DELETE - o numeroOrigem PRECISA ser
     liberado, senao o reenvio bate em MOR8003 para sempre."""
-    from models.order import Order
     from integrations.eship.client import EShipError
     from integrations.eship.config import EShipCreds
+    from models.order import Order
 
     class FakeDB:
         async def execute(self, *_a, **_kw):
@@ -453,9 +455,9 @@ async def test_cancel_order_cancela_antes_se_o_delete_for_recusado(monkeypatch):
 async def test_touch_order_carimba_a_data_de_atualizacao(monkeypatch):
     """Sem o PUT, a grade do eShip mostra "Sem data de atualizacao registrada". O WMS exige a chave
     `id` (nao aceita `ordem`/`numeroOrigem`) e carimba a hora DELE."""
-    from models.order import Order
-    from integrations.eship.config import EShipCreds
     from integrations.eship.client import EShipError
+    from integrations.eship.config import EShipCreds
+    from models.order import Order
 
     creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="1")
     chamadas = []
@@ -484,7 +486,8 @@ async def test_touch_order_carimba_a_data_de_atualizacao(monkeypatch):
 def test_zpl_do_zip_extrai_a_etiqueta_de_verdade():
     """O ML entrega o "zpl2" como ZIP (Etiqueta de envio.txt + Controle.pdf), nao como ZPL. Anexar
     o ZIP cru mandava lixo ao WMS."""
-    import io, zipfile
+    import io
+    import zipfile
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
@@ -500,8 +503,8 @@ def test_zpl_do_zip_extrai_a_etiqueta_de_verdade():
 @pytest.mark.asyncio
 async def test_attach_manda_idtipoanexo_inteiro(monkeypatch):
     """Sem idTipoAnexo o WMS RECUSA o ZPL (MIT5002). 7=ZPL, 2=PDF - e precisa ser INTEIRO."""
-    from models.order import Order
     from integrations.eship.config import EShipCreds
+    from models.order import Order
 
     creds = EShipCreds(base_url="https://x/v3", api_key="k", warehouse_code="2", cnpj="1")
     enviados = []
@@ -581,3 +584,60 @@ async def test_nao_reanexa_o_que_o_wms_ja_tem(monkeypatch):
     assert res["zpl"]["status"] == "already"
     assert not res["erros"]
     assert o.eship_dispatch_status == "sent"
+
+
+# ── Fase 1: pedido Shopee ao WMS (parsing agnóstico) ───────────────────────────
+
+def test_uf_sigla_nome_por_extenso_shopee():
+    """Shopee manda o estado por extenso; o eShip exige a sigla de 2 letras."""
+    assert service._uf_sigla("Rio Grande do Sul") == "RS"
+    assert service._uf_sigla("São Paulo") == "SP"
+    assert service._uf_sigla("Paraná") == "PR"
+
+
+def test_uf_sigla_ml_intacto():
+    """ML: {id:'BR-SP'} e 'SP' continuam resolvendo — sem regressão."""
+    assert service._uf_sigla({"id": "BR-SP", "name": "São Paulo"}) == "SP"
+    assert service._uf_sigla("SP") == "SP"
+
+
+def test_parse_address_shopee_recipient_address():
+    """recipient_address da Shopee (full_address/district/city/zipcode/estado por extenso)
+    parseia todos os obrigatórios do eShip."""
+    from models.order import Order
+    o = Order(platform="shopee", shipping_address=json.dumps({
+        "name": "Ana", "full_address": "Rua Salgado Filho, 1276, Casa",
+        "district": "Centro", "city": "Canoas", "town": "",
+        "state": "Rio Grande do Sul", "zipcode": "92310150", "phone": "51999",
+    }, ensure_ascii=False))
+    a = service._parse_address(o)
+    assert a["bairro"] == "Centro"
+    assert a["municipio"] == "Canoas"
+    assert a["estado"] == "RS"
+    assert a["cep"] == "92310150"
+    assert "Salgado Filho" in a["logradouro"]
+
+
+def test_parse_address_ml_sem_regressao():
+    """ML (receiver_address com {id,name} e chaves próprias) parseia como antes — os aliases
+    Shopee só disparam quando as chaves ML estão ausentes."""
+    from models.order import Order
+    o = Order(platform="mercadolivre", shipping_address=json.dumps({
+        "street": "Av Paulista", "number": "1000",
+        "neighborhood": "Bela Vista", "city": {"id": "x", "name": "São Paulo"},
+        "state": {"id": "BR-SP", "name": "São Paulo"}, "zip_code": "01310100",
+    }, ensure_ascii=False))
+    a = service._parse_address(o)
+    assert a["logradouro"] == "Av Paulista"
+    assert a["numero"] == "1000"
+    assert a["bairro"] == "Bela Vista"
+    assert a["municipio"] == "São Paulo"
+    assert a["estado"] == "SP"
+    assert a["cep"] == "01310100"
+
+
+def test_transporte_none_para_shopee():
+    """Shopee: sem código de transporte fixo (não é Correios); ML mantém o interim."""
+    from models.order import Order
+    assert service.transporte_code_for_order(Order(platform="shopee")) is None
+    assert service.transporte_code_for_order(Order(platform="mercadolivre")) == "01"
