@@ -641,3 +641,95 @@ def test_transporte_none_para_shopee():
     from models.order import Order
     assert service.transporte_code_for_order(Order(platform="shopee")) is None
     assert service.transporte_code_for_order(Order(platform="mercadolivre")) == "01"
+
+
+# ── Fase 2: etiqueta Shopee para o WMS (PDF, geração assíncrona) ────────────────
+
+@pytest.mark.asyncio
+async def test_resolve_labels_for_despacha_shopee(monkeypatch):
+    """`_resolve_labels_for` chama o ramo Shopee (nunca `_resolve_labels`, que é do ML)."""
+    from models.order import Order
+
+    async def fake_shopee(db, order):
+        return b"%PDF-shopee", None
+
+    async def nunca_ml(db, order):
+        raise AssertionError("ML não deveria ser chamado para pedido Shopee")
+
+    monkeypatch.setattr(service, "_resolve_labels_shopee", fake_shopee)
+    monkeypatch.setattr(service, "_resolve_labels", nunca_ml)
+
+    pdf, zpl = await service._resolve_labels_for(None, Order(platform="shopee"))
+    assert pdf == b"%PDF-shopee" and zpl is None   # Shopee só entrega PDF (sem ZPL)
+
+
+@pytest.mark.asyncio
+async def test_resolve_label_pdf_none_enquanto_processa(monkeypatch):
+    """Etiqueta ainda em geração (PROCESSING) → None: pendência recuperável, não erro."""
+    from services import shopee_service as ss
+
+    async def fake_create(*_a, **_kw):
+        return {}
+
+    async def fake_result(*_a, **_kw):
+        return {"result_list": [{"status": "PROCESSING"}]}
+
+    async def fake_pkg(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr(ss, "create_shipping_document", fake_create)
+    monkeypatch.setattr(ss, "get_shipping_document_result", fake_result)
+    monkeypatch.setattr(ss, "_package_number_for", fake_pkg)
+
+    pdf = await ss.resolve_label_pdf("t", 1, "SN-1", tries=2, delay=0)
+    assert pdf is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_label_pdf_baixa_quando_ready(monkeypatch):
+    """READY → baixa e devolve os bytes do PDF."""
+    from services import shopee_service as ss
+
+    async def fake_create(*_a, **_kw):
+        return {}
+
+    async def fake_result(*_a, **_kw):
+        return {"result_list": [{"status": "READY"}]}
+
+    async def fake_download(*_a, **_kw):
+        return b"%PDF-ready"
+
+    async def fake_pkg(*_a, **_kw):
+        return "PKG1"
+
+    monkeypatch.setattr(ss, "create_shipping_document", fake_create)
+    monkeypatch.setattr(ss, "get_shipping_document_result", fake_result)
+    monkeypatch.setattr(ss, "download_shipping_document", fake_download)
+    monkeypatch.setattr(ss, "_package_number_for", fake_pkg)
+
+    pdf = await ss.resolve_label_pdf("t", 1, "SN-1", tries=2, delay=0)
+    assert pdf == b"%PDF-ready"
+
+
+@pytest.mark.asyncio
+async def test_resolve_label_pdf_levanta_em_failed(monkeypatch):
+    """FAILED → HTTPException (não engole a falha da Shopee)."""
+    from fastapi import HTTPException
+
+    from services import shopee_service as ss
+
+    async def fake_create(*_a, **_kw):
+        return {}
+
+    async def fake_result(*_a, **_kw):
+        return {"result_list": [{"status": "FAILED", "fail_message": "sem etiqueta"}]}
+
+    async def fake_pkg(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr(ss, "create_shipping_document", fake_create)
+    monkeypatch.setattr(ss, "get_shipping_document_result", fake_result)
+    monkeypatch.setattr(ss, "_package_number_for", fake_pkg)
+
+    with pytest.raises(HTTPException):
+        await ss.resolve_label_pdf("t", 1, "SN-1", tries=2, delay=0)

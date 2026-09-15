@@ -726,6 +726,46 @@ async def download_shipping_document(access_token: str, shop_id: int, order_sn: 
     return resp.content  # PDF binário
 
 
+async def _package_number_for(access_token: str, shop_id: int, order_sn: str) -> str | None:
+    """package_number do pedido (obrigatório em multipacote; None p/ pacote único)."""
+    dets = await get_order_detail(access_token, shop_id, [order_sn],
+                                  optional_fields="package_list,order_status")
+    pkgs = (dets[0].get("package_list") if dets else None) or []
+    return (pkgs[0].get("package_number") if pkgs else None) or None
+
+
+async def resolve_label_pdf(access_token: str, shop_id: int, order_sn: str, *,
+                            package_number: str | None = None,
+                            tries: int = 4, delay: float = 1.5) -> bytes | None:
+    """Resolve a etiqueta (PDF) de um pedido Shopee: create → poll(READY) → download.
+
+    Ponto ÚNICO desse fluxo — reusado pelo endpoint de logística e pelo envio ao eShip.
+    Retorna os bytes do PDF; **None** se ainda em geração (PROCESSING) — pendência recuperável.
+    Levanta HTTPException em FAILED. Resolve o package_number sozinho se não vier."""
+    import asyncio
+
+    if package_number is None:
+        package_number = await _package_number_for(access_token, shop_id, order_sn)
+    await create_shipping_document(access_token, shop_id, order_sn, package_number=package_number)
+    for _ in range(tries):
+        res = await get_shipping_document_result(access_token, shop_id, order_sn,
+                                                 package_number=package_number)
+        rows = res.get("result_list") or []
+        status = (rows[0].get("status") if rows else None) or ""
+        if status == "READY":
+            return await download_shipping_document(access_token, shop_id, order_sn,
+                                                    package_number=package_number)
+        if status == "FAILED":
+            row = rows[0] if rows else {}
+            raise HTTPException(
+                status_code=400,
+                detail=f"Shopee falhou ao gerar a etiqueta: "
+                       f"{row.get('fail_message') or row.get('fail_error')}",
+            )
+        await asyncio.sleep(delay)
+    return None  # ainda em geração
+
+
 async def get_tracking_number(access_token: str, shop_id: int, order_sn: str,
                               package_number: str | None = None) -> dict:
     """Código de rastreio do pedido (disponível após o ship_order em canal integrado)."""

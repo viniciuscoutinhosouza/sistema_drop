@@ -16,6 +16,7 @@ import re
 import time
 import zipfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, or_, select
@@ -27,9 +28,11 @@ from models.cmig import CMIG
 from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
 from services import ml_service as _ml
+from services import shopee_service
 from services.datetime_br import iso_utc
 from services.fiscal.order_docs import resolve_nfe_xml
 from services.ml_auth import get_valid_token
+from services.shopee_auth import get_valid_shopee_token
 
 from . import client
 from .client import EShipError
@@ -1177,14 +1180,52 @@ def _zpl_do_zip(raw: bytes) -> bytes | None:
 
 async def _resolve_labels_for(db: AsyncSession, order: Order) -> tuple[bytes | None, bytes | None]:
     """Despacha a resolução da etiqueta por plataforma (regra de ouro ADR-0020: ramo por
-    função, nunca `if platform == "mercadolivre"` embutido no fluxo ML).
-
-    Shopee: a etiqueta (PDF, geração assíncrona via `shopee_service`) entra na Fase 2 — por ora
-    devolve `(None, None)`, e o `send_order_full` trata como pendência recuperável (a ordem vai
-    ao WMS sem etiqueta e o reenvio a completa). ML: baixa do próprio ML."""
+    função, nunca `if platform == "mercadolivre"` embutido no fluxo ML). ML → `_resolve_labels`."""
     if order.platform == "shopee":
-        return None, None
+        return await _resolve_labels_shopee(db, order)
     return await _resolve_labels(db, order)
+
+
+# Cache local da etiqueta Shopee (mesmo diretório do endpoint de logística — PII, fora de static/).
+_SHOPEE_LABELS_DIR = Path(__file__).resolve().parents[2] / "private_labels"
+
+
+async def _resolve_labels_shopee(db: AsyncSession, order: Order) -> tuple[bytes | None, bytes | None]:
+    """Etiqueta Shopee para o eShip. Retorna `(pdf, None)` — a Shopee só entrega PDF (sem ZPL).
+
+    Reusa o cache local do endpoint de logística (`private_labels/shopee_{id}.pdf`) e, se ausente,
+    o ponto único `shopee_service.resolve_label_pdf` (create→poll→download). Etiqueta ainda em
+    geração ou não liberada (pré-`ship_order`) → `(None, None)`: pendência recuperável, a ordem
+    vai ao WMS sem etiqueta e o reenvio a completa."""
+    cache = _SHOPEE_LABELS_DIR / f"shopee_{order.id}.pdf"
+    # size>0: um write interrompido (disco cheio/crash) deixaria um .pdf de 0 bytes com o selo já
+    # gravado, e o WMS receberia etiqueta vazia. Cache vazio/ilegível → regera pela Shopee.
+    if cache.exists() and order.label_cached_at:
+        try:
+            if cache.stat().st_size > 0:
+                return cache.read_bytes(), None
+        except OSError:
+            pass
+    acc = (
+        await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+    ).scalar_one_or_none()
+    if not acc or not acc.shop_id or not order.platform_order_id:
+        return None, None
+    try:
+        token = await get_valid_shopee_token(acc, db)
+        pdf = await shopee_service.resolve_label_pdf(token, acc.shop_id, order.platform_order_id)
+    except Exception as exc:  # noqa: BLE001 — etiqueta indisponível/falha Shopee → pendência
+        logger.warning("[eShip] etiqueta Shopee pedido=%s: %s", order.id, exc)
+        return None, None
+    if pdf:
+        try:
+            _SHOPEE_LABELS_DIR.mkdir(parents=True, exist_ok=True)
+            cache.write_bytes(pdf)
+            order.label_cached_at = datetime.now(UTC)
+            await db.commit()
+        except OSError:
+            logger.warning("[eShip] falha ao cachear etiqueta Shopee pedido=%s", order.id, exc_info=True)
+    return pdf, None
 
 
 async def _resolve_labels(db: AsyncSession, order: Order) -> tuple[bytes | None, bytes | None]:
@@ -1415,9 +1456,10 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
                     result["erros"].append({"etapa": etapa, "erro": str(e)})
             order.eship_label_attached = 1 if anexados else 0
             if not etiqueta_pdf:
+                origem = "pela Shopee" if order.platform == "shopee" else "pelo Mercado Livre"
                 result["erros"].append({
                     "etapa": "etiqueta",
-                    "erro": "Etiqueta ainda não liberada pelo Mercado Livre.",
+                    "erro": f"Etiqueta ainda não liberada {origem}.",
                 })
 
         # --- ZPL da etiqueta (categoria própria no WMS) ---
