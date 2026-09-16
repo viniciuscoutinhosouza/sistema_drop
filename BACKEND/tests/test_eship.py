@@ -857,10 +857,48 @@ async def test_preview_shopee_sem_documento_vira_aviso_nao_bloqueio(monkeypatch)
     assert any("CONSUMIDOR NÃO IDENTIFICADO" in a for a in prev["avisos"])
     assert not any("Mercado Livre" in a for a in prev["avisos"])  # nada de ML num pedido Shopee
     dest = prev["body"]["cadastroDestinatario"]
-    # eShip exige documento (MCA9101) → CPF sentinela; sem CNPJ (não é a MIG); nome real.
-    assert dest["cpfDestinatario"] == service._CPF_CONSUMIDOR_NAO_IDENTIFICADO
+    # eShip exige documento (MCA9101) → CPF sentinela ÚNICO por pedido; sem CNPJ; nome real.
+    assert dest["cpfDestinatario"] == service._cpf_consumidor_para(_shopee_order_com_endereco())
     assert "cnpjDestinatario" not in dest
     assert dest["nomeDestinatario"] == "Giovanna"                # nome real p/ a entrega
+
+
+def _cpf_valido(cpf: str) -> bool:
+    """Valida um CPF pelo dígito verificador (independente da implementação do service)."""
+    cpf = "".join(ch for ch in cpf if ch.isdigit())
+    if len(cpf) != 11 or cpf == cpf[0] * 11:
+        return False
+    for tam in (9, 10):
+        s = sum(int(cpf[i]) * ((tam + 1) - i) for i in range(tam))
+        r = s % 11
+        dv = 0 if r < 2 else 11 - r
+        if dv != int(cpf[tam]):
+            return False
+    return True
+
+
+def test_cpf_consumidor_unico_por_pedido_e_valido():
+    """O bug do dono: CPF sentinela FIXO fazia um envio sobrescrever o nome do cadastro do outro no
+    WMS (o eShip usa o CPF como chave do cadastro). Agora é ÚNICO por pedido, determinístico e com
+    DV válido (o eShip valida o dígito)."""
+    from models.order import Order
+
+    cpf_a = service._cpf_consumidor_para(Order(id=4062, platform="shopee"))
+    cpf_b = service._cpf_consumidor_para(Order(id=4069, platform="shopee"))
+    assert cpf_a != cpf_b                                  # pedidos distintos → CPFs distintos
+    assert service._cpf_consumidor_para(Order(id=4062)) == cpf_a   # determinístico (reenvio reusa)
+    assert _cpf_valido(cpf_a) and _cpf_valido(cpf_b)       # passam no DV (eShip valida)
+    # O CPF-teste canônico antigo confirma que o algoritmo de DV está correto.
+    assert service._cpf_dv("111444777") == "35"
+
+
+def test_is_consumidor_nao_identificado():
+    from models.order import Order
+    assert service._is_consumidor_nao_identificado(Order(platform="shopee")) is True
+    assert service._is_consumidor_nao_identificado(
+        Order(platform="shopee", buyer_document="25598286858")) is False   # tem CPF real
+    assert service._is_consumidor_nao_identificado(
+        Order(platform="mercadolivre")) is False                            # ML nunca é sentinela
 
 
 @pytest.mark.asyncio

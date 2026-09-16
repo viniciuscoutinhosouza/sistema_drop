@@ -582,10 +582,37 @@ _TRANSPORTE_CODIGO_INTERIM = "01"
 # (MCA9101), mas a Shopee em modo Invoice Issuer NÃO fornece o CPF do comprador por API. A NF-e
 # real (que tem o CPF) é emitida pela Shopee e acompanha a carga; a ordem do WMS é só logística.
 # NÃO usar o CNPJ da MIG aqui — falsificaria o recebedor (parecer fiscal).
-# ATENÇÃO: o eShip **valida o dígito verificador** do CPF — um sentinela "fácil" (11111111111,
-# 00000000000) é recusado e crasha o cadastro (MSG0001 `Cadastro::setNome(null)`). Usa-se o CPF-teste
-# canônico `111.444.777-35`, que passa no algoritmo. Provado ao vivo: ordem criada (eship 4222229).
-_CPF_CONSUMIDOR_NAO_IDENTIFICADO = "11144477735"
+#
+# O CPF sentinela precisa ser ÚNICO POR PEDIDO. O eShip usa o CPF como CHAVE do cadastro do
+# destinatário (verificado ao vivo: pedidos com o mesmo CPF caem no mesmo `cadastro_id`) — um CPF
+# FIXO compartilhado fazia cada envio SOBRESCREVER o nome do cadastro dos pedidos anteriores (bug do
+# dono: nome de um pedido aparecia no outro). Derivamos o CPF do `order.id` (determinístico → o
+# reenvio do mesmo pedido reusa o MESMO cadastro, sem duplicar) com dígito verificador válido — o
+# eShip valida o DV (um "fácil" como 00000000000/11111111111 é recusado, MSG0001).
+
+
+def _cpf_dv(base9: str) -> str:
+    """Os 2 dígitos verificadores de um CPF a partir da base de 9 dígitos (algoritmo da RFB)."""
+    def _dv(nums: str, peso_ini: int) -> str:
+        s = sum(int(d) * (peso_ini - i) for i, d in enumerate(nums))
+        r = s % 11
+        return "0" if r < 2 else str(11 - r)
+    d1 = _dv(base9, 10)
+    return d1 + _dv(base9 + d1, 11)
+
+
+def _cpf_consumidor_para(order: Order) -> str:
+    """CPF sentinela ÚNICO por pedido p/ 'consumidor não identificado' (Shopee sem CPF do comprador).
+
+    Único por pedido (chave do cadastro no WMS — ver nota acima), determinístico (reenvio não
+    duplica) e com DV válido. Base = `9` + 8 dígitos do `order.id` → 9 dígitos; + DV."""
+    base = f"9{(order.id or 0) % 100_000_000:08d}"
+    return base + _cpf_dv(base)
+
+
+def _is_consumidor_nao_identificado(order: Order) -> bool:
+    """Pedido Shopee sem CPF/CNPJ real do comprador → vai ao WMS como consumidor não identificado."""
+    return order.platform == "shopee" and len(_digits(order.buyer_document)) not in (11, 14)
 
 
 def transporte_code_for_order(order: Order) -> str | None:
@@ -632,8 +659,10 @@ def build_ordem_payload(
         dest["cpfDestinatario"] = doc
     elif order.platform == "shopee":
         # Shopee (Invoice Issuer) não fornece o CPF do comprador → consumidor não identificado.
-        # Sem isto o eShip recusa com MCA9101. Nome/endereço/etiqueta seguem os do cliente real.
-        dest["cpfDestinatario"] = _CPF_CONSUMIDOR_NAO_IDENTIFICADO
+        # Sem isto o eShip recusa com MCA9101. CPF sentinela ÚNICO por pedido (senão o cadastro do
+        # destinatário é compartilhado e um envio sobrescreve o nome do outro). Nome/endereço/etiqueta
+        # seguem os do cliente real.
+        dest["cpfDestinatario"] = _cpf_consumidor_para(order)
         # O eShip usa `razaoSocialDestinatario` como o Nome do Cadastro TAMBÉM para CPF — sem ele o
         # cadastro novo do CPF sentinela crasha (`Cadastro::setNome(null)`, MSG0001). = nome real.
         dest["razaoSocialDestinatario"] = order.buyer_name or "CONSUMIDOR NAO IDENTIFICADO"
@@ -755,7 +784,7 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
     bloqueios: list[str] = []
     avisos: list[str] = []
     _doc = dest.get("cpfDestinatario") or dest.get("cnpjDestinatario")
-    if is_shopee and dest.get("cpfDestinatario") == _CPF_CONSUMIDOR_NAO_IDENTIFICADO:
+    if is_shopee and _is_consumidor_nao_identificado(order):
         # Shopee (Invoice Issuer) não fornece o CPF do comprador. O eShip EXIGE documento (MCA9101),
         # então a ordem vai com um CPF SENTINELA — CONSUMIDOR NÃO IDENTIFICADO. Aviso (não bloqueio):
         # nome, endereço e etiqueta são os reais; a NF-e da Shopee (com o CPF) acompanha a carga.
