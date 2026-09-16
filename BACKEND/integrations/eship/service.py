@@ -581,9 +581,11 @@ _TRANSPORTE_CODIGO_INTERIM = "01"
 # CPF sentinela de "consumidor não identificado". O eShip EXIGE CPF ou CNPJ no destinatário
 # (MCA9101), mas a Shopee em modo Invoice Issuer NÃO fornece o CPF do comprador por API. A NF-e
 # real (que tem o CPF) é emitida pela Shopee e acompanha a carga; a ordem do WMS é só logística.
-# NÃO usar o CNPJ da MIG aqui — falsificaria o recebedor (parecer fiscal). O sentinela marca
-# explicitamente "não identificado" e satisfaz o campo obrigatório (MCA9101 é presença, não dígito).
-_CPF_CONSUMIDOR_NAO_IDENTIFICADO = "11111111111"
+# NÃO usar o CNPJ da MIG aqui — falsificaria o recebedor (parecer fiscal).
+# ATENÇÃO: o eShip **valida o dígito verificador** do CPF — um sentinela "fácil" (11111111111,
+# 00000000000) é recusado e crasha o cadastro (MSG0001 `Cadastro::setNome(null)`). Usa-se o CPF-teste
+# canônico `111.444.777-35`, que passa no algoritmo. Provado ao vivo: ordem criada (eship 4222229).
+_CPF_CONSUMIDOR_NAO_IDENTIFICADO = "11144477735"
 
 
 def transporte_code_for_order(order: Order) -> str | None:
@@ -632,6 +634,9 @@ def build_ordem_payload(
         # Shopee (Invoice Issuer) não fornece o CPF do comprador → consumidor não identificado.
         # Sem isto o eShip recusa com MCA9101. Nome/endereço/etiqueta seguem os do cliente real.
         dest["cpfDestinatario"] = _CPF_CONSUMIDOR_NAO_IDENTIFICADO
+        # O eShip usa `razaoSocialDestinatario` como o Nome do Cadastro TAMBÉM para CPF — sem ele o
+        # cadastro novo do CPF sentinela crasha (`Cadastro::setNome(null)`, MSG0001). = nome real.
+        dest["razaoSocialDestinatario"] = order.buyer_name or "CONSUMIDOR NAO IDENTIFICADO"
 
     dest["nomeDestinatario"] = order.buyer_name or ""
     dest["contato"] = [
