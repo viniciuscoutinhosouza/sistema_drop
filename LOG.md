@@ -12,7 +12,9 @@
 
 **Correção (`b169c85`):** CPF sentinela **único por pedido**, derivado do `order.id` (`9` + 8 dígitos do id + DV válido — o eShip valida o dígito verificador). Determinístico (reenvio reusa o mesmo cadastro, não duplica). Cada pedido passa a ter o próprio cadastro no WMS com o nome real. `_is_consumidor_nao_identificado` substitui a comparação com a constante. 6 testes (unicidade, DV, determinismo); 45 passam.
 
-**Verificado ao vivo:** deploy + restart (`/docs`→200); o payload de cada um dos 4 pedidos agora sai com CPF único e nome próprio (4114→90000411477/M, 4069→90000406988/P, 4063→90000406392/W, 4062→90000406201/H). **Pendente:** remediar os 4 pedidos já no WMS (status Lançado/Aguardando Expedição — nenhum expedido) via delete+reenvio p/ moverem do cadastro compartilhado 3764675 aos próprios.
+**Verificado ao vivo:** deploy + restart (`/docs`→200); o payload de cada um dos 4 pedidos agora sai com CPF único e nome próprio (4114→90000411477/M, 4069→90000406988/P, 4063→90000406392/W, 4062→90000406201/H).
+
+**4 pedidos já corrompidos (4114, 4069, 4063, 4062) — decisão do dono: deixar como estão.** Todos em Lançado/Aguardando Expedição (nenhum expedido), ainda apontando ao cadastro compartilhado 3764675 (exibem o nome do último enviado). A renomeação limpa do cadastro **não é possível**: o módulo Cadastro do eShip (`webServiceGetCadastro`/`webServicePutCadastro`) está **desabilitado no tenant da MIG** (`MAP0014: função não existe`), mesmo constando no OpenAPI. A única remediação viável seria delete+reenvio (cada um ganharia o próprio cadastro com o nome real) — o dono optou por não mexer. A correção de código impede novos casos.
 
 ## 2026-09-15 — feat(eship): pedido Shopee sem nota vai ao WMS como consumidor não identificado
 
