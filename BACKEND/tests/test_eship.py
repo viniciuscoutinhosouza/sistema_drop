@@ -857,7 +857,9 @@ async def test_preview_shopee_sem_documento_vira_aviso_nao_bloqueio(monkeypatch)
     assert any("CONSUMIDOR NÃO IDENTIFICADO" in a for a in prev["avisos"])
     assert not any("Mercado Livre" in a for a in prev["avisos"])  # nada de ML num pedido Shopee
     dest = prev["body"]["cadastroDestinatario"]
-    assert "cpfDestinatario" not in dest and "cnpjDestinatario" not in dest
+    # eShip exige documento (MCA9101) → CPF sentinela; sem CNPJ (não é a MIG); nome real.
+    assert dest["cpfDestinatario"] == service._CPF_CONSUMIDOR_NAO_IDENTIFICADO
+    assert "cnpjDestinatario" not in dest
     assert dest["nomeDestinatario"] == "Giovanna"                # nome real p/ a entrega
 
 

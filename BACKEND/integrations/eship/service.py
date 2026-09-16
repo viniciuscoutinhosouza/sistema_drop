@@ -578,6 +578,13 @@ async def _ensure_buyer_document_shopee(db: AsyncSession, order: Order) -> str:
 # código via PutOrdem antes (código inexistente TRAVA o PutOrdem: timeout de 30s).
 _TRANSPORTE_CODIGO_INTERIM = "01"
 
+# CPF sentinela de "consumidor não identificado". O eShip EXIGE CPF ou CNPJ no destinatário
+# (MCA9101), mas a Shopee em modo Invoice Issuer NÃO fornece o CPF do comprador por API. A NF-e
+# real (que tem o CPF) é emitida pela Shopee e acompanha a carga; a ordem do WMS é só logística.
+# NÃO usar o CNPJ da MIG aqui — falsificaria o recebedor (parecer fiscal). O sentinela marca
+# explicitamente "não identificado" e satisfaz o campo obrigatório (MCA9101 é presença, não dígito).
+_CPF_CONSUMIDOR_NAO_IDENTIFICADO = "11111111111"
+
 
 def transporte_code_for_order(order: Order) -> str | None:
     """codigoTransporte do eShip para o pedido (aplicado via PutOrdem). Interim ML: "01" (Correios).
@@ -621,6 +628,10 @@ def build_ordem_payload(
         dest["razaoSocialDestinatario"] = order.buyer_business_name or order.buyer_name or ""
     elif tipo == "CPF" or (not tipo and len(doc) == 11):
         dest["cpfDestinatario"] = doc
+    elif order.platform == "shopee":
+        # Shopee (Invoice Issuer) não fornece o CPF do comprador → consumidor não identificado.
+        # Sem isto o eShip recusa com MCA9101. Nome/endereço/etiqueta seguem os do cliente real.
+        dest["cpfDestinatario"] = _CPF_CONSUMIDOR_NAO_IDENTIFICADO
 
     dest["nomeDestinatario"] = order.buyer_name or ""
     dest["contato"] = [
@@ -738,19 +749,20 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
     )
     bloqueios: list[str] = []
     avisos: list[str] = []
-    if not (dest.get("cpfDestinatario") or dest.get("cnpjDestinatario")):
-        if is_shopee:
-            # O eShip NÃO exige documento (schema: só endereço é obrigatório no destinatário —
-            # verificado no OpenAPI). Comprador Shopee sem nota → segue como consumidor não
-            # identificado (nome + endereço reais, sem CPF/CNPJ). Aviso, não bloqueio.
-            avisos.append(
-                "Sem CPF/CNPJ do destinatário — o comprador não pediu nota na Shopee. A ordem irá "
-                "ao WMS como CONSUMIDOR NÃO IDENTIFICADO (nome e endereço reais, sem documento)."
-            )
-        else:
-            bloqueios.append(
-                f"Falta o CPF/CNPJ do destinatário (obrigatório no eShip). {_origem_doc}"
-            )
+    _doc = dest.get("cpfDestinatario") or dest.get("cnpjDestinatario")
+    if is_shopee and dest.get("cpfDestinatario") == _CPF_CONSUMIDOR_NAO_IDENTIFICADO:
+        # Shopee (Invoice Issuer) não fornece o CPF do comprador. O eShip EXIGE documento (MCA9101),
+        # então a ordem vai com um CPF SENTINELA — CONSUMIDOR NÃO IDENTIFICADO. Aviso (não bloqueio):
+        # nome, endereço e etiqueta são os reais; a NF-e da Shopee (com o CPF) acompanha a carga.
+        avisos.append(
+            "Sem CPF/CNPJ do comprador (a Shopee não fornece) — a ordem irá ao WMS como CONSUMIDOR "
+            "NÃO IDENTIFICADO (CPF genérico; nome, endereço e etiqueta reais)."
+        )
+    elif not _doc:
+        # ML sem documento → bloqueio (o eShip recusa com MCA9101).
+        bloqueios.append(
+            f"Falta o CPF/CNPJ do destinatário (obrigatório no eShip). {_origem_doc}"
+        )
     # Destinatário PJ sem razão social: o eShip recusa (MCA9102) ao criar o cadastro do CNPJ.
     if dest.get("cnpjDestinatario") and not (dest.get("razaoSocialDestinatario") or "").strip():
         bloqueios.append(
