@@ -862,6 +862,111 @@ async def test_preview_shopee_sem_documento_vira_aviso_nao_bloqueio(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_shopee_label_pendente_bloqueia_sem_pdf(monkeypatch):
+    """Gate do operador logístico: Shopee sem etiqueta (PDF None) → pendente=True (bloqueia)."""
+    from models.order import Order
+
+    async def sem_pdf(db, order):
+        return None, None
+    monkeypatch.setattr(service, "_resolve_labels_for", sem_pdf)
+    assert await service._shopee_label_pendente(None, Order(platform="shopee")) is True
+
+
+@pytest.mark.asyncio
+async def test_shopee_label_pendente_libera_com_pdf(monkeypatch):
+    """Etiqueta resolvida (PDF) → pendente=False (libera o envio)."""
+    from models.order import Order
+
+    async def com_pdf(db, order):
+        return b"%PDF", None
+    monkeypatch.setattr(service, "_resolve_labels_for", com_pdf)
+    assert await service._shopee_label_pendente(None, Order(platform="shopee")) is False
+
+
+@pytest.mark.asyncio
+async def test_shopee_label_pendente_libera_com_zpl(monkeypatch):
+    """Etiqueta Shopee vem como ZPL (não PDF) — ZPL presente já libera o envio."""
+    from models.order import Order
+
+    async def so_zpl(db, order):
+        return None, b"^XA...zpl...^XZ"
+    monkeypatch.setattr(service, "_resolve_labels_for", so_zpl)
+    assert await service._shopee_label_pendente(None, Order(platform="shopee")) is False
+
+
+@pytest.mark.asyncio
+async def test_shopee_label_pendente_ml_isento(monkeypatch):
+    """O gate é EXCLUSIVO Shopee — ML nunca é bloqueado por etiqueta (segue como aviso)."""
+    from models.order import Order
+
+    async def sem_pdf(db, order):
+        return None, None
+    monkeypatch.setattr(service, "_resolve_labels_for", sem_pdf)
+    assert await service._shopee_label_pendente(None, Order(platform="mercadolivre")) is False
+
+
+@pytest.mark.asyncio
+async def test_preview_shopee_sem_etiqueta_vira_bloqueio(monkeypatch):
+    """Etiqueta não liberada em pedido Shopee vira BLOQUEIO (não aviso) — regra do operador."""
+    creds = _creds_teste()
+
+    async def fake_creds(db, order):
+        return creds, None
+
+    async def fake_doc(db, order):
+        return ""
+
+    async def fake_muni(order):
+        return None
+
+    async def fake_nfe(db, order):
+        return None
+
+    async def fake_labels(db, order):
+        return None, None   # etiqueta ainda não liberada
+
+    monkeypatch.setattr(service, "_creds_for_order", fake_creds)
+    monkeypatch.setattr(service, "ensure_buyer_document", fake_doc)
+    monkeypatch.setattr(service, "resolve_municipio_ordem", fake_muni)
+    monkeypatch.setattr(service, "resolve_nfe_xml", fake_nfe)
+    monkeypatch.setattr(service, "_resolve_labels_for", fake_labels)
+
+    prev = await service.preview_ordem(None, _shopee_order_com_endereco())
+    assert any("etiqueta" in b.lower() and "Shopee" in b for b in prev["bloqueios"])
+
+
+def test_shopee_nfe_key_captura_chave_valida():
+    """Captura a chave da NF-e da Shopee só quando completa (44 díg.) e não cancelada."""
+    from services.webhook_service import _shopee_nfe_key
+    k = "3" * 44
+    assert _shopee_nfe_key({"invoice_data": {"access_key": k, "status": "valid"}}) == k
+    assert _shopee_nfe_key({"invoice_data": {"access_key": "123", "status": "valid"}}) is None
+    assert _shopee_nfe_key({"invoice_data": {"access_key": k, "status": "cancelled"}}) is None
+    assert _shopee_nfe_key({}) is None
+
+
+def test_split_shopee_label_pdf():
+    """Documento %PDF → (pdf, None)."""
+    pdf, zpl = service._split_shopee_label(b"%PDF-1.4\n...conteudo...")
+    assert pdf is not None and zpl is None
+
+
+def test_split_shopee_label_zip_zpl():
+    """THERMAL_AIR_WAYBILL vem como ZIP com ZPL dentro → (None, zpl)."""
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("thermal_zpl_shipping_label.txt", b"^XA...ZPL...^XZ")
+    pdf, zpl = service._split_shopee_label(buf.getvalue())
+    assert pdf is None and zpl == b"^XA...ZPL...^XZ"
+
+
+def test_split_shopee_label_vazio():
+    assert service._split_shopee_label(None) == (None, None)
+
+
+@pytest.mark.asyncio
 async def test_push_order_shopee_sem_documento_nao_bloqueia(monkeypatch):
     """O gate de documento no envio real só vale p/ ML. Shopee sem documento SEGUE (consumidor não
     identificado) — antes levantava EShipError e travava o envio."""

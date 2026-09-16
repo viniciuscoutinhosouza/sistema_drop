@@ -688,6 +688,18 @@ def _coax_id(v) -> str | None:
 _APIKEY_PLACEHOLDER = "SUA_APIKEY_ESHIP"
 
 
+async def _shopee_label_pendente(db: AsyncSession, order: Order) -> bool:
+    """Regra do operador logístico: pedido Shopee só vai ao eShip com a etiqueta liberada pela
+    Shopee. Fonte da verdade = o PDF resolvido — a etiqueta BR só existe APÓS `ship_order` (status
+    PROCESSED), então não dá para inferir por READY_TO_SHIP. True = ainda sem etiqueta (bloquear).
+    Ponto ÚNICO usado pela prévia e pelo envio, para a tela dizer o mesmo que o envio faria."""
+    if order.platform != "shopee" or order.eship_label_attached:
+        return False
+    # A etiqueta Shopee Xpress vem como ZPL (não PDF) — qualquer um dos dois = etiqueta disponível.
+    pdf, zpl = await _resolve_labels_for(db, order)
+    return pdf is None and zpl is None
+
+
 async def preview_ordem(db: AsyncSession, order: Order) -> dict:
     """Monta a PRÉVIA do `webServicePostOrdem` (payload + curl) SEM executar nada.
 
@@ -760,9 +772,17 @@ async def preview_ordem(db: AsyncSession, order: Order) -> dict:
         )
     if not order.eship_nfe_attached and not await resolve_nfe_xml(db, order):
         avisos.append("NF-e ainda não autorizada — a ordem irá ao WMS SEM o XML da nota.")
-    if not order.eship_label_attached and not (await _resolve_labels_for(db, order))[0]:
-        _origem = "Shopee" if order.platform == "shopee" else "Mercado Livre"
-        avisos.append(f"Etiqueta ainda não liberada pela {_origem} — a ordem irá SEM etiqueta.")
+    if order.platform == "shopee":
+        # Regra do operador logístico: pedido Shopee só vai ao eShip com a etiqueta liberada.
+        # Vira BLOQUEIO (não aviso) — o envio fica travado até a Shopee liberar o despacho.
+        if await _shopee_label_pendente(db, order):
+            bloqueios.append(
+                "Etiqueta ainda não disponível na Shopee (não liberada ou falha ao gerar) — o envio "
+                "ao eShip de pedido Shopee só é liberado com a etiqueta pronta. Aguarde a Shopee "
+                "liberar o despacho e envie de novo."
+            )
+    elif not order.eship_label_attached and not (await _resolve_labels_for(db, order))[0]:
+        avisos.append("Etiqueta ainda não liberada pelo Mercado Livre — a ordem irá SEM etiqueta.")
 
     url = f"{(creds.base_url or '').rstrip('/')}/?api&funcao={FUNC_POST_ORDEM}"
     body_json = json.dumps(body, ensure_ascii=False)
@@ -1252,22 +1272,48 @@ async def _resolve_labels_for(db: AsyncSession, order: Order) -> tuple[bytes | N
 _SHOPEE_LABELS_DIR = Path(__file__).resolve().parents[2] / "private_labels"
 
 
-async def _resolve_labels_shopee(db: AsyncSession, order: Order) -> tuple[bytes | None, bytes | None]:
-    """Etiqueta Shopee para o eShip. Retorna `(pdf, None)` — a Shopee só entrega PDF (sem ZPL).
-
-    Reusa o cache local do endpoint de logística (`private_labels/shopee_{id}.pdf`) e, se ausente,
-    o ponto único `shopee_service.resolve_label_pdf` (create→poll→download). Etiqueta ainda em
-    geração ou não liberada (pré-`ship_order`) → `(None, None)`: pendência recuperável, a ordem
-    vai ao WMS sem etiqueta e o reenvio a completa."""
-    cache = _SHOPEE_LABELS_DIR / f"shopee_{order.id}.pdf"
-    # size>0: um write interrompido (disco cheio/crash) deixaria um .pdf de 0 bytes com o selo já
-    # gravado, e o WMS receberia etiqueta vazia. Cache vazio/ilegível → regera pela Shopee.
-    if cache.exists() and order.label_cached_at:
+def _split_shopee_label(raw: bytes | None) -> tuple[bytes | None, bytes | None]:
+    """Detecta o formato do documento da Shopee → (pdf, zpl). THERMAL_AIR_WAYBILL (padrão do canal
+    Shopee Xpress) vem como ZIP contendo ZPL (`thermal_zpl_shipping_label.txt`); NORMAL viria como
+    PDF. `%PDF` → PDF; `PK` (ZIP) → extrai o ZPL de dentro. Assim o WMS recebe o formato certo
+    (ZPL na `etiqueta`, PDF em `documentosItPop`), sem servir um ZIP rotulado como PDF."""
+    if not raw:
+        return None, None
+    if raw[:4] == b"%PDF":
+        return raw, None
+    if raw[:2] == b"PK":  # ZIP
         try:
-            if cache.stat().st_size > 0:
-                return cache.read_bytes(), None
-        except OSError:
-            pass
+            import io
+            import zipfile
+            with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                names = z.namelist()
+                pick = next((n for n in names if n.lower().endswith((".zpl", ".txt"))), None) or (
+                    names[0] if names else None)
+                if pick:
+                    data = z.read(pick)
+                    return (data, None) if data[:4] == b"%PDF" else (None, data)
+        except Exception:  # noqa: BLE001 — zip ilegível: melhor esforço como PDF
+            return raw, None
+    return raw, None  # formato desconhecido: melhor esforço como PDF
+
+
+async def _resolve_labels_shopee(db: AsyncSession, order: Order) -> tuple[bytes | None, bytes | None]:
+    """Etiqueta Shopee para o eShip. Retorna `(pdf, zpl)` — o canal Shopee Xpress entrega **ZPL**
+    (dentro de um ZIP, THERMAL); NORMAL viria como PDF. Cache local por formato.
+
+    Reusa o ponto único `shopee_service.resolve_label_pdf` (create COM tracking_number→poll→download).
+    Etiqueta ainda em geração/não liberada → `(None, None)`: pendência recuperável."""
+    pdf_cache = _SHOPEE_LABELS_DIR / f"shopee_{order.id}.pdf"
+    zpl_cache = _SHOPEE_LABELS_DIR / f"shopee_{order.id}.zpl"
+    # size>0: um write interrompido deixaria arquivo de 0 bytes com o selo já gravado.
+    if order.label_cached_at:
+        for c, is_pdf in ((pdf_cache, True), (zpl_cache, False)):
+            try:
+                if c.exists() and c.stat().st_size > 0:
+                    b = c.read_bytes()
+                    return (b, None) if is_pdf else (None, b)
+            except OSError:
+                pass
     acc = (
         await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
     ).scalar_one_or_none()
@@ -1275,19 +1321,20 @@ async def _resolve_labels_shopee(db: AsyncSession, order: Order) -> tuple[bytes 
         return None, None
     try:
         token = await get_valid_shopee_token(acc, db)
-        pdf = await shopee_service.resolve_label_pdf(token, acc.shop_id, order.platform_order_id)
+        raw = await shopee_service.resolve_label_pdf(token, acc.shop_id, order.platform_order_id)
     except Exception as exc:  # noqa: BLE001 — etiqueta indisponível/falha Shopee → pendência
         logger.warning("[eShip] etiqueta Shopee pedido=%s: %s", order.id, exc)
         return None, None
-    if pdf:
+    pdf, zpl = _split_shopee_label(raw)
+    if pdf or zpl:
         try:
             _SHOPEE_LABELS_DIR.mkdir(parents=True, exist_ok=True)
-            cache.write_bytes(pdf)
+            (pdf_cache if pdf else zpl_cache).write_bytes(pdf or zpl)
             order.label_cached_at = datetime.now(UTC)
             await db.commit()
         except OSError:
             logger.warning("[eShip] falha ao cachear etiqueta Shopee pedido=%s", order.id, exc_info=True)
-    return pdf, None
+    return pdf, zpl
 
 
 async def _resolve_labels(db: AsyncSession, order: Order) -> tuple[bytes | None, bytes | None]:
@@ -1402,6 +1449,17 @@ async def send_order_full(db: AsyncSession, order: Order) -> dict:
         result["erros"].append({
             "etapa": "ordem",
             "erro": "Pedido FULL é gerido pelo Mercado Livre — não vai ao WMS (eShip).",
+        })
+        return result
+
+    # GATE Shopee (regra do operador logístico): só envia ao eShip quando a Shopee libera a
+    # etiqueta. Sem etiqueta → NÃO faz o claim/lock nem cria a Ordem (retorna com o erro; é
+    # retentável quando a etiqueta sair). Fonte da verdade = _shopee_label_pendente (PDF resolvido).
+    if await _shopee_label_pendente(db, order):
+        result["erros"].append({
+            "etapa": "etiqueta",
+            "erro": "Aguardando a Shopee liberar a etiqueta deste pedido (não liberada ou falha ao "
+                    "gerar) — o envio ao eShip só ocorre com a etiqueta disponível.",
         })
         return result
 

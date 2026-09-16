@@ -184,7 +184,10 @@ async def get_order_list(
 # quando pedidos em response_optional_fields — é o que transforma o "pedido pobre" em "pedido rico".
 _ORDER_DETAIL_FIELDS = (
     "buyer_user_id,buyer_username,recipient_address,item_list,pay_time,total_amount,"
-    "order_status,ship_by_date,create_time,update_time,payment_method,message_to_seller,cod,currency"
+    "order_status,ship_by_date,create_time,update_time,payment_method,message_to_seller,cod,currency,"
+    # invoice_data: chave de acesso da NF-e emitida pela Shopee (Invoice Issuer) sob o CNPJ do
+    # vendedor. Alimenta Order.nfe_key → ORDChave no eShip (referência fiscal da ordem do WMS).
+    "invoice_data"
 )
 
 
@@ -695,17 +698,21 @@ async def ship_order(access_token: str, shop_id: int, order_sn: str, *,
 
 async def get_shipping_document_parameter(access_token: str, shop_id: int, order_sn: str,
                                           package_number: str | None = None) -> dict:
-    """Tipos de documento (etiqueta) que o pedido suporta, antes de criar."""
-    extra = {"order_sn": order_sn}
-    if package_number:
-        extra["package_number"] = package_number
-    return await _shop_get("/logistics/get_shipping_document_parameter", access_token, shop_id, extra)
+    """Tipos de documento (etiqueta) suportados pelo pedido, antes de criar. É POST (order_list) —
+    em GET a Shopee devolve 404. `suggest_shipping_document_type`/`selectable_shipping_document_type`."""
+    body = {"order_list": [_doc_item(order_sn, package_number)]}
+    return await _shop_post("/logistics/get_shipping_document_parameter", access_token, shop_id, body)
 
 
-def _doc_item(order_sn: str, package_number: str | None, doc_type: str | None = None) -> dict:
+def _doc_item(order_sn: str, package_number: str | None, doc_type: str | None = None,
+              tracking_number: str | None = None) -> dict:
     it: dict = {"order_sn": order_sn}
     if package_number:
         it["package_number"] = package_number
+    # tracking_number é OBRIGATÓRIO no create de canais self-design AWB (ex.: Shopee Xpress) —
+    # sem ele a Shopee recusa com `logistics.tracking_number_invalid` (dentro de batch_api_all_failed).
+    if tracking_number:
+        it["tracking_number"] = tracking_number
     if doc_type:
         it["shipping_document_type"] = doc_type
     return it
@@ -713,27 +720,32 @@ def _doc_item(order_sn: str, package_number: str | None, doc_type: str | None = 
 
 async def create_shipping_document(access_token: str, shop_id: int, order_sn: str, *,
                                    package_number: str | None = None,
+                                   tracking_number: str | None = None,
                                    doc_type: str = "THERMAL_AIR_WAYBILL") -> dict:
     """Enfileira a geração da etiqueta (ASSÍNCRONO). Poll com get_shipping_document_result."""
-    body = {"order_list": [_doc_item(order_sn, package_number, doc_type)]}
+    body = {"order_list": [_doc_item(order_sn, package_number, doc_type, tracking_number)]}
     return await _shop_post("/logistics/create_shipping_document", access_token, shop_id, body)
 
 
 async def get_shipping_document_result(access_token: str, shop_id: int, order_sn: str, *,
                                        package_number: str | None = None,
+                                       tracking_number: str | None = None,
                                        doc_type: str = "THERMAL_AIR_WAYBILL") -> dict:
     """Status da geração da etiqueta: result_list[].status = READY|PROCESSING|FAILED."""
-    body = {"order_list": [_doc_item(order_sn, package_number, doc_type)]}
+    body = {"order_list": [_doc_item(order_sn, package_number, doc_type, tracking_number)]}
     return await _shop_post("/logistics/get_shipping_document_result", access_token, shop_id, body)
 
 
 async def download_shipping_document(access_token: str, shop_id: int, order_sn: str, *,
-                                     package_number: str | None = None) -> bytes:
-    """Baixa a etiqueta em PDF (binário). Levanta se a Shopee devolver JSON de erro (não pronto)."""
+                                     package_number: str | None = None,
+                                     tracking_number: str | None = None) -> bytes:
+    """Baixa a etiqueta (binário CRU). ATENÇÃO ao formato: THERMAL_AIR_WAYBILL vem como ZIP contendo
+    ZPL (não PDF); NORMAL_AIR_WAYBILL vem como PDF. O chamador detecta pelo magic (`%PDF` vs `PK`).
+    Levanta se a Shopee devolver JSON de erro (documento não pronto)."""
     suffix = "/logistics/download_shipping_document"
     path = "/api/v2" + suffix
     params = _shop_params(access_token, shop_id, path)
-    body = {"order_list": [_doc_item(order_sn, package_number)]}
+    body = {"order_list": [_doc_item(order_sn, package_number, tracking_number=tracking_number)]}
     async with httpx.AsyncClient(timeout=40) as client:
         resp = await client.post(f"{SHOPEE_API_BASE}{suffix}", params=params, json=body)
     ctype = resp.headers.get("content-type", "")
@@ -756,25 +768,36 @@ async def _package_number_for(access_token: str, shop_id: int, order_sn: str) ->
 
 async def resolve_label_pdf(access_token: str, shop_id: int, order_sn: str, *,
                             package_number: str | None = None,
+                            tracking_number: str | None = None,
                             tries: int = 4, delay: float = 1.5) -> bytes | None:
-    """Resolve a etiqueta (PDF) de um pedido Shopee: create → poll(READY) → download.
+    """Resolve a etiqueta de um pedido Shopee: create → poll(READY) → download. Retorna os bytes
+    CRUS do documento (pode ser PDF **ou** ZIP com ZPL — ver download_shipping_document; o chamador
+    detecta o formato). **None** se ainda em geração (PROCESSING). Levanta HTTPException em FAILED.
 
-    Ponto ÚNICO desse fluxo — reusado pelo endpoint de logística e pelo envio ao eShip.
-    Retorna os bytes do PDF; **None** se ainda em geração (PROCESSING) — pendência recuperável.
-    Levanta HTTPException em FAILED. Resolve o package_number sozinho se não vier."""
+    Resolve package_number e tracking_number sozinho se não vierem — o tracking_number é OBRIGATÓRIO
+    no create de canais self-design AWB (Shopee Xpress), senão a Shopee recusa (tracking_number_invalid)."""
     import asyncio
 
     if package_number is None:
         package_number = await _package_number_for(access_token, shop_id, order_sn)
-    await create_shipping_document(access_token, shop_id, order_sn, package_number=package_number)
+    if tracking_number is None:
+        try:
+            tn = await get_tracking_number(access_token, shop_id, order_sn, package_number)
+            tracking_number = tn.get("tracking_number") or ((tn.get("response") or {}).get("tracking_number"))
+        except Exception:  # noqa: BLE001 — sem tracking o create tenta mesmo assim e a Shopee dirá
+            tracking_number = None
+    await create_shipping_document(access_token, shop_id, order_sn,
+                                   package_number=package_number, tracking_number=tracking_number)
     for _ in range(tries):
         res = await get_shipping_document_result(access_token, shop_id, order_sn,
-                                                 package_number=package_number)
+                                                 package_number=package_number,
+                                                 tracking_number=tracking_number)
         rows = res.get("result_list") or []
         status = (rows[0].get("status") if rows else None) or ""
         if status == "READY":
             return await download_shipping_document(access_token, shop_id, order_sn,
-                                                    package_number=package_number)
+                                                    package_number=package_number,
+                                                    tracking_number=tracking_number)
         if status == "FAILED":
             row = rows[0] if rows else {}
             raise HTTPException(

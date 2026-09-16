@@ -733,6 +733,19 @@ async def process_ml_order(
     )
 
 
+def _shopee_nfe_key(detail: dict) -> str | None:
+    """Chave de acesso (44 díg.) da NF-e que a Shopee emitiu p/ o pedido (Invoice Issuer, sob o
+    CNPJ do vendedor), vinda de `get_order_detail.invoice_data.access_key`. Só quando a nota já
+    saiu (chave completa) — a nota é emitida DEPOIS do pedido, então costuma vir num sync posterior.
+    Alimenta Order.nfe_key → ORDChave do eShip (a Shopee NÃO entrega o XML por API — só a chave)."""
+    inv = detail.get("invoice_data") or {}
+    key = "".join(ch for ch in str(inv.get("access_key") or "") if ch.isdigit())
+    status = (inv.get("status") or "").lower()
+    if len(key) == 44 and status not in ("cancelled", "invalid", "failed"):
+        return key
+    return None
+
+
 async def process_shopee_order(
     db: AsyncSession,
     shopee_order_data: dict,
@@ -817,6 +830,8 @@ async def process_shopee_order(
         shipping_address=json.dumps(recipient_address, ensure_ascii=False),
         sale_amount=Decimal(str(detail.get("total_amount") or 0)),
         shipping_mode=MODE_DESCONHECIDO,  # Shopee usa rede propria — fora do escopo do bucket ML
+        # Chave da NF-e da Shopee (quando já emitida) → referência fiscal p/ o eShip (ORDChave).
+        nfe_key=_shopee_nfe_key(detail),
     )
     db.add(order)
     try:
@@ -1006,6 +1021,13 @@ async def _update_shopee_order_stock(
     prev_ship = order.shipment_status
     was_dispatched = (prev_ship or "") in ("shipped", "delivered")
     order.platform_status = order_status
+
+    # Backfill da chave da NF-e: a Shopee emite a nota DEPOIS do pedido, então a chave só aparece
+    # num sync posterior. Grava só quando ainda vazia (não pisa numa chave já capturada).
+    if not order.nfe_key:
+        _k = _shopee_nfe_key(detail)
+        if _k:
+            order.nfe_key = _k
 
     if is_cancelled:
         order.status = "cancelled"
