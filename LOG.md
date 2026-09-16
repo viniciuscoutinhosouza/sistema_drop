@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-09-16 — fix(eship): CPF sentinela único por pedido (nome não é mais sobrescrito)
+
+**Sintoma do dono:** um envio ao eShip sobrescrevia o nome de outro pedido Shopee já enviado.
+
+**Causa (provada ao vivo):** o CPF sentinela de "consumidor não identificado" era **fixo/compartilhado** (`11144477735`). O eShip usa o CPF como **chave do cadastro do destinatário** — GetOrdem dos 4 pedidos Shopee enviados mostrou todos no **mesmo `cadastro_id 3764675`**, exibindo o nome do **último** enviado (cada PostOrdem atualizava o nome do cadastro compartilhado).
+
+**Correção (`b169c85`):** CPF sentinela **único por pedido**, derivado do `order.id` (`9` + 8 dígitos do id + DV válido — o eShip valida o dígito verificador). Determinístico (reenvio reusa o mesmo cadastro, não duplica). Cada pedido passa a ter o próprio cadastro no WMS com o nome real. `_is_consumidor_nao_identificado` substitui a comparação com a constante. 6 testes (unicidade, DV, determinismo); 45 passam.
+
+**Verificado ao vivo:** deploy + restart (`/docs`→200); o payload de cada um dos 4 pedidos agora sai com CPF único e nome próprio (4114→90000411477/M, 4069→90000406988/P, 4063→90000406392/W, 4062→90000406201/H). **Pendente:** remediar os 4 pedidos já no WMS (status Lançado/Aguardando Expedição — nenhum expedido) via delete+reenvio p/ moverem do cadastro compartilhado 3764675 aos próprios.
+
 ## 2026-09-15 — feat(eship): pedido Shopee sem nota vai ao WMS como consumidor não identificado
 
 **Decisão do dono (opção 1):** permitir enviar ao eShip o pedido Shopee cujo comprador NÃO pediu nota (sem CPF/CNPJ), como "consumidor não identificado".
