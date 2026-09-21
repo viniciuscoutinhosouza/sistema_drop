@@ -41,6 +41,9 @@ async def _kit_assembled_balance(
     desmontadas manualmente. `vendas_locais` = kits vendidos em pedidos locais shipped/delivered.
     A venda local consome o MONTADO primeiro; o excedente monta a partir dos componentes.
     """
+    # SÓ retorno FÍSICO real materializa o kit no galpão. O "Retorno SIMBÓLICO de Depósito" é a
+    # baixa do FULL nas VENDAS FULL (ADR-0022) — o kit foi VENDIDO, não voltou montado; excluir
+    # (senão materializaríamos kits vendidos). Casa a regra de `fiscal_rules.is_simbolica`.
     ret = (
         await db.execute(
             select(func.sum(InvoiceItem.quantity))
@@ -50,6 +53,8 @@ async def _kit_assembled_balance(
                 Invoice.direction == "in",
                 Invoice.purpose == "retorno",
                 Invoice.status.in_(("authorized", "finalized")),
+                func.lower(func.coalesce(Invoice.natureza_operacao, "x")).notlike("%simbolic%"),
+                func.lower(func.coalesce(Invoice.natureza_operacao, "x")).notlike("%simbólic%"),
             )
         )
     ).scalar() or 0
