@@ -76,7 +76,9 @@ def _serialize_product(p: CatalogProduct, include_components: bool = False) -> d
     thumbnail = None
     if p.images:
         thumbnail = sorted(p.images, key=lambda i: i.sort_order)[0].url
-    stock = _calculate_pg_composite_stock(p.components) if p.is_composite else p.stock_quantity
+    # Kit: montadas materializadas (retorno do FULL) + montáveis dos componentes (ADR-0023 §montagem)
+    stock = (int(p.stock_quantity or 0) + _calculate_pg_composite_stock(p.components)) \
+        if p.is_composite else p.stock_quantity
     result = {
         "id": p.id,
         "sku": p.sku,

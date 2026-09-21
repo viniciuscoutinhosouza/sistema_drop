@@ -48,6 +48,11 @@
               <button type="button" class="btn" :class="anchor === 'baseline' ? 'btn-primary' : 'btn-outline-primary'" @click="setAnchor('baseline')" title="A partir do último inventário Baseline de cada estoque">Desde inventário baseline</button>
             </div>
             <button v-if="selected" class="btn btn-sm btn-outline-secondary" @click="loadLedger" title="Recarregar"><i class="fas fa-sync-alt"></i></button>
+            <button v-if="selected && selected.product_type === 'pg' && selected.is_composite"
+                    class="btn btn-sm btn-outline-warning ml-2" @click="disassemble"
+                    title="Desmontar unidades montadas do KIT (voltadas do FULL) em componentes">
+              <i class="fas fa-boxes mr-1"></i>Desmontar KIT
+            </button>
           </div>
         </div>
       </div>
@@ -237,6 +242,7 @@ function selectProduct(r) {
     sku: r.sku,
     name: r.name,
     cmig_name: r.cmig_name,
+    is_composite: r.is_composite,
   }
   search.value = `${r.sku} — ${r.name}`
   showResults.value = false
@@ -247,6 +253,22 @@ function selectProduct(r) {
 function setAnchor(a) {
   anchor.value = a
   if (selected.value) loadLedger()
+}
+
+async function disassemble() {
+  const s = selected.value
+  if (!s) return
+  const raw = window.prompt('Quantas unidades MONTADAS do KIT desmontar em componentes?', '1')
+  if (raw === null) return
+  const qty = parseInt(raw, 10)
+  if (!qty || qty <= 0) { toast.warning('Informe uma quantidade válida (> 0).'); return }
+  try {
+    const { data } = await api.post(`/stock/pg/${s.product_id}/disassemble`, { quantity: qty })
+    toast.success(`Desmontadas ${data.desmontadas} un — kit agora com ${data.novo_estoque_kit} montada(s).`)
+    loadLedger()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao desmontar o kit.')
+  }
 }
 
 async function loadLedger() {

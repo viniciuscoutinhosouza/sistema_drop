@@ -122,7 +122,9 @@ def _product_specs(src) -> dict:
 
 def _serialize_cmig_product(p: CMIGProduct) -> dict:
     thumbnail = p.images[0].url if p.images else None
-    stock = _calculate_cmig_composite_stock(p.components) if p.is_composite else p.stock_quantity
+    # Kit: montadas materializadas + montáveis dos componentes (ADR-0023 §montagem)
+    stock = (int(p.stock_quantity or 0) + _calculate_cmig_composite_stock(p.components)) \
+        if p.is_composite else p.stock_quantity
     components = []
     if p.is_composite:
         for comp in p.components:

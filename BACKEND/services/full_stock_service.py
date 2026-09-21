@@ -286,7 +286,8 @@ async def available_to_push(db: AsyncSession, listing) -> int:
                 # empurrado com 0 e auto-pausado por indisponibilidade (ADR-0014).
                 from services.fiscal.stock_calculator import composite_stock
 
-                montavel = composite_stock(pg_row.components, discount_reserved=True)
+                # + unidades MONTADAS materializadas (retorno do FULL) — ADR-0023 §montagem
+                montavel = int(pg_row.stock_quantity or 0) + composite_stock(pg_row.components, discount_reserved=True)
                 local = max(0, montavel - int(pg_row.reserved_quantity or 0))
             else:
                 local = max(0, int(pg_row.stock_quantity or 0) - int(pg_row.reserved_quantity or 0))
@@ -300,7 +301,7 @@ async def available_to_push(db: AsyncSession, listing) -> int:
                 # era auto-pausado com 0 no ciclo seguinte (mesmo bug do PG).
                 from services.fiscal.stock_calculator import composite_stock
 
-                montavel = composite_stock(cm_row.components, discount_reserved=True)
+                montavel = int(cm_row.stock_quantity or 0) + composite_stock(cm_row.components, discount_reserved=True)
                 local = max(0, montavel - int(cm_row.reserved_quantity or 0))
             else:
                 local = max(0, int(cm_row.stock_quantity or 0) - int(cm_row.reserved_quantity or 0))
@@ -321,7 +322,7 @@ async def available_to_push(db: AsyncSession, listing) -> int:
                 if pg_row.is_composite:  # ver comentário do ramo acima
                     from services.fiscal.stock_calculator import composite_stock
 
-                    montavel = composite_stock(pg_row.components, discount_reserved=True)
+                    montavel = int(pg_row.stock_quantity or 0) + composite_stock(pg_row.components, discount_reserved=True)
                     local = max(0, montavel - int(pg_row.reserved_quantity or 0))
                 else:
                     local = max(0, int(pg_row.stock_quantity or 0) - int(pg_row.reserved_quantity or 0))

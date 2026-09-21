@@ -8,16 +8,42 @@ from models.product import CatalogProduct
 from services.fiscal import stock_calculator
 
 
+class _FakeScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar(self):
+        return self._value
+
+
+class _FakeDBZero:
+    """db que responde 0 a qualquer agregado (kit sem retorno/venda/desmontagem)."""
+    async def execute(self, *_a, **_kw):
+        return _FakeScalarResult(0)
+
+
 @pytest.mark.asyncio
-async def test_calculate_pg_composite_retorna_zero_sem_tocar_db():
-    """Kit PG: retorna 0 ANTES de qualquer acesso ao db (db=None prova o short-circuit)."""
+async def test_calculate_pg_composite_sem_retorno_e_zero():
+    """Kit PG SEM retorno do FULL: materializado = max(0, 0−0) = 0 (ADR-0023 §montagem).
+    O saldo NUNCA vem de venda/remessa (que iriam ao componente), só de unidades montadas."""
     kit = CatalogProduct(id=362, sku="KIT_501D", is_composite=True, stock_quantity=-1)
-    assert await stock_calculator.calculate_pg_product_stock(kit, db=None) == 0
+    assert await stock_calculator.calculate_pg_product_stock(kit, db=_FakeDBZero()) == 0
+
+
+@pytest.mark.asyncio
+async def test_kit_materializado_retorno_menos_vendas(monkeypatch):
+    """Kit materializado = max(0, retornos_líquidos − vendas_locais). 3 voltaram do FULL, 1 vendido
+    localmente → 2 unidades montadas em estoque."""
+    async def fake_bal(kit_id, db, floor_date=None):
+        return 3, 1  # (retornos_liquidos, vendas_locais)
+    monkeypatch.setattr(stock_calculator, "_kit_assembled_balance", fake_bal)
+    kit = CatalogProduct(id=362, is_composite=True, stock_quantity=0)
+    assert await stock_calculator.calculate_pg_product_stock(kit, db=_FakeDBZero()) == 2
 
 
 @pytest.mark.asyncio
 async def test_calculate_cmig_composite_retorna_zero_sem_tocar_db():
-    """Kit CMIG: idem — 0 antes de tocar o db."""
+    """Kit CMIG: 0 antes de tocar o db (materialização de kit CMIG fica na Fase 3 do CMIG)."""
     kit = CMIGProduct(id=99, is_composite=True, stock_quantity=-4)
     assert await stock_calculator.calculate_cmig_product_stock(kit, db=None) == 0
 

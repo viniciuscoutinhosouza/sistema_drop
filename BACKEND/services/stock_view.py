@@ -58,9 +58,10 @@ def card_from_product(
     # componentes, SEMPRE calculado (ADR-0023). Ler `stock_quantity` aqui fazia o card e o
     # extrato mostrarem 0 enquanto o Catálogo e o marketplace mostravam o valor real.
     if getattr(product, "is_composite", False):
-        from services.fiscal.stock_calculator import composite_stock
+        from services.fiscal.stock_calculator import kit_available
 
-        physical = composite_stock(getattr(product, "components", None))
+        # montadas materializadas (retorno do FULL) + montáveis dos componentes (ADR-0023 §montagem)
+        physical = kit_available(product)
         reserved = int(getattr(product, "reserved_quantity", 0) or 0)
     else:
         physical = int(getattr(product, "stock_quantity", 0) or 0)

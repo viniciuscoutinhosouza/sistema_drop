@@ -597,6 +597,8 @@ const MOVEMENT_COLORS = {
   full_return_out: 'info',
   kit_assembly_out: 'danger',
   kit_assembly_in: 'success',
+  kit_disassemble_out: 'warning',
+  kit_disassemble_in: 'success',
   manual: 'light',
 }
 const MOVEMENT_LABELS = {
@@ -613,6 +615,8 @@ const MOVEMENT_LABELS = {
   full_return_out: 'Retorno do FULL',
   kit_assembly_out: 'Saída p/ transformação em KIT',
   kit_assembly_in: 'Entrada por montagem de KIT',
+  kit_disassemble_out: 'Saída por desmontagem de KIT',
+  kit_disassemble_in: 'Entrada por desmontagem de KIT',
   manual: 'Manual',
 }
 

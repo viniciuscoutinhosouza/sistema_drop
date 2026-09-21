@@ -18,9 +18,9 @@ def _pg_stock(p: CatalogProduct) -> int:
     (`stock_calculator.composite_stock`). Sem isto o catálogo mostrava 0 no kit e o
     `isSoldOut()` do frontend bloqueava a publicação."""
     if getattr(p, "is_composite", False):
-        from services.fiscal.stock_calculator import composite_stock
+        from services.fiscal.stock_calculator import kit_available
 
-        return composite_stock(p.components)
+        return kit_available(p)   # montadas (retorno do FULL) + montáveis dos componentes
     return int(p.stock_quantity or 0)
 
 

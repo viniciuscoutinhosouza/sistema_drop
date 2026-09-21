@@ -13,7 +13,7 @@ from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.fiscal import Invoice
 from models.full_stock import FullStock
 from models.integration import MarketplaceAccount
-from models.product import CatalogProduct
+from models.product import CatalogProduct, CatalogProductComponent
 from models.stock_movement import StockMovement
 from models.user import User
 from services.datetime_br import now_br
@@ -106,6 +106,7 @@ async def _collect_stock_items(
             CatalogProduct.awaiting_return_quantity,
             CatalogProduct.pending_validation_quantity,
             CatalogProduct.unfit_quantity,
+            CatalogProduct.is_composite,
         )
         local_pg_filter = (
             (CatalogProduct.stock_quantity > 0)
@@ -145,6 +146,7 @@ async def _collect_stock_items(
                 "cmig_id": None,
                 "cmig_name": None,
                 "is_full_mirror": False,
+                "is_composite": bool(row.is_composite),
                 "physical": physical,
                 "reserved": reserved,
                 "available": max(0, physical - reserved),
@@ -916,7 +918,9 @@ async def product_movements(
         "receive_return": "Devolução recebida", "full_in": "Enviado ao FULL",
         "full_out": "Pedido FULL", "full_return_out": "Retorno do FULL",
         "kit_assembly_out": "Saída p/ transformação em KIT",
-        "kit_assembly_in": "Entrada por montagem de KIT", "manual": "Manual",
+        "kit_assembly_in": "Entrada por montagem de KIT",
+        "kit_disassemble_out": "Saída por desmontagem de KIT",
+        "kit_disassemble_in": "Entrada por desmontagem de KIT", "manual": "Manual",
     }
     return {
         "items": [
@@ -940,6 +944,73 @@ async def product_movements(
         "page": page,
         "page_size": page_size,
     }
+
+
+@router.post("/pg/{product_id}/disassemble")
+async def disassemble_kit(
+    product_id: int,
+    body: dict,
+    current_user: User = Depends(require_menu_permission("estoque")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Desmontagem MANUAL de KIT (ADR-0023 §montagem, Fase 3): o operador converte N unidades
+    MONTADAS do kit (ex.: voltadas do FULL) de volta em componentes soltos.
+
+    −N do KIT, +N×composição de cada componente. Só admin/UGO. Exige unidades montadas suficientes
+    (`stock_quantity` do kit). Registra os movimentos no extrato dos dois produtos e recomputa.
+    """
+    if current_user.role not in ("admin", "ugo"):
+        raise HTTPException(status_code=403, detail="Apenas admin ou operador de galpão (UGO)")
+    qty = int(body.get("quantity") or 0)
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="Informe uma quantidade a desmontar (> 0)")
+
+    kit = (
+        await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
+    ).scalar_one_or_none()
+    if not kit:
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
+    if not kit.is_composite:
+        raise HTTPException(status_code=400, detail="Produto não é um KIT (composto)")
+    montadas = int(kit.stock_quantity or 0)
+    if qty > montadas:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Só há {montadas} unidade(s) montada(s) do kit; não dá para desmontar {qty}. "
+                   "As unidades montadas vêm de retorno do FULL.",
+        )
+    comps = (
+        await db.execute(
+            select(CatalogProductComponent).where(CatalogProductComponent.composite_id == kit.id)
+        )
+    ).scalars().all()
+    if not comps:
+        raise HTTPException(status_code=400, detail="KIT sem componentes cadastrados")
+
+    from services.fiscal.stock_calculator import recompute_pg_product_stock
+
+    # Movimentos no extrato: KIT sai, componentes voltam.
+    db.add(StockMovement(
+        product_type="pg", product_id=kit.id, movement_type="kit_disassemble_out",
+        qty=qty, field_affected="stock_quantity", delta=-qty, created_by=current_user.id,
+    ))
+    for c in comps:
+        volta = qty * int(c.quantity or 1)
+        db.add(StockMovement(
+            product_type="pg", product_id=c.component_id, movement_type="kit_disassemble_in",
+            qty=volta, field_affected="stock_quantity", delta=volta, created_by=current_user.id,
+        ))
+    await db.flush()
+
+    novo_kit = await recompute_pg_product_stock(kit.id, db)
+    componentes = []
+    for c in comps:
+        nv = await recompute_pg_product_stock(c.component_id, db)
+        componentes.append({"component_id": c.component_id, "quantidade": qty * int(c.quantity or 1),
+                            "novo_estoque": nv})
+    await db.commit()
+    return {"ok": True, "kit_id": kit.id, "desmontadas": qty, "novo_estoque_kit": novo_kit,
+            "componentes": componentes}
 
 
 @router.get("/ledger/{product_type}/{product_id}")

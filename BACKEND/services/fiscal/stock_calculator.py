@@ -24,7 +24,61 @@ from models.cmig import CMIGProduct
 from models.fiscal import Invoice, InvoiceItem
 from models.order import Order, OrderItem
 from models.product import CatalogProduct, CatalogProductComponent, ProductListing
+from models.stock_movement import StockMovement
 from services import stock_history
+
+# Movimentos de desmontagem manual de kit (ADR-0023 §montagem, Fase 3).
+MT_DISASSEMBLE_OUT = "kit_disassemble_out"  # KIT sai (desmontado)
+MT_DISASSEMBLE_IN = "kit_disassemble_in"    # componente volta
+
+
+async def _kit_assembled_balance(
+    kit_id: int, db: AsyncSession, floor_date=None
+) -> tuple[int, int]:
+    """(retornos_liquidos, vendas_locais) de um KIT — base do estoque MONTADO materializado.
+
+    `retornos_liquidos` = unidades que voltaram montadas do FULL (NF-e retorno, entrada) − as
+    desmontadas manualmente. `vendas_locais` = kits vendidos em pedidos locais shipped/delivered.
+    A venda local consome o MONTADO primeiro; o excedente monta a partir dos componentes.
+    """
+    ret = (
+        await db.execute(
+            select(func.sum(InvoiceItem.quantity))
+            .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+            .where(
+                InvoiceItem.catalog_product_id == kit_id,
+                Invoice.direction == "in",
+                Invoice.purpose == "retorno",
+                Invoice.status.in_(("authorized", "finalized")),
+            )
+        )
+    ).scalar() or 0
+    dis = (
+        await db.execute(
+            select(func.sum(StockMovement.qty)).where(
+                StockMovement.product_type == "pg",
+                StockMovement.product_id == kit_id,
+                StockMovement.movement_type == MT_DISASSEMBLE_OUT,
+            )
+        )
+    ).scalar() or 0
+    returns_net = int(ret) - int(dis)
+
+    sale_filters = [
+        OrderItem.catalog_product_id == kit_id,
+        Order.shipment_status.in_(("shipped", "delivered")),
+        stock_history.local_order_clause(),
+    ]
+    if floor_date is not None:
+        sale_filters.append(func.coalesce(Order.shipped_at, Order.created_at) > floor_date)
+    local_sales = (
+        await db.execute(
+            select(func.sum(OrderItem.quantity))
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(and_(*sale_filters))
+        )
+    ).scalar() or 0
+    return returns_net, int(local_sales)
 
 # ── Cálculo CMIG ──────────────────────────────────────────────────────────────
 
@@ -98,13 +152,13 @@ async def calculate_pg_product_stock(
     - Overflow de pedidos dos CMIGProducts vinculados (qty_to_pg após split)
     - Inventário: baseline reseta o saldo (piso de data) e adjustment soma delta.
     """
-    # ADR-0023: produto composto (kit) NUNCA tem estoque próprio materializado — é sempre 0 e o
-    # montável deriva dos componentes na leitura (`composite_stock`). Sem este guard, o passo 4
-    # ("pedidos diretos no PG") descontava a venda do KIT no id do próprio kit → saldo negativo
-    # fantasma, e o componente físico (ex.: 501D) ficava intocado. O componente é recomputado
-    # separadamente (kit_usage), então zerar o kit não perde a baixa.
+    # ADR-0023 §montagem: o kit NÃO materializa saldo a partir de vendas/remessas (o componente é o
+    # físico). Mas PODE ter unidades MONTADAS materializadas — as que voltaram do FULL montadas,
+    # menos as desmontadas e as vendidas localmente. `max(0, retornos_líquidos − vendas_locais)`. Sem
+    # retorno (caso comum) isto é 0 e o disponível deriva 100% dos componentes (`composite_stock`).
     if pg_product.is_composite:
-        return 0
+        returns_net, local_sales = await _kit_assembled_balance(pg_product.id, db)
+        return max(0, returns_net - local_sales)
     # Âncora de inventário: o baseline finalizado mais recente define um piso de
     # data (eventos anteriores são descartados) e o saldo inicial = contado.
     inv_events = await stock_history._fetch_inventory_events_for_product(
@@ -161,24 +215,31 @@ async def calculate_pg_product_stock(
 
     # 3) Consumo de kit: se este PG é componente de algum produto composto,
     # subtrair a quantidade usada em pedidos shipped/delivered dos kits.
-    kit_filters = [
-        CatalogProductComponent.component_id == pg_product.id,
-        Order.shipment_status.in_(("shipped", "delivered")),
-        stock_history.local_order_clause(),  # exclui kits via FULL
-    ]
-    if floor_date is not None:
-        kit_filters.append(
-            func.coalesce(Order.shipped_at, Order.created_at) > floor_date
-        )
-    kit_usage = (
+    # Venda LOCAL consome o MONTADO (retorno − desmontagem) primeiro; só o EXCEDENTE consome
+    # componentes. E a DESMONTAGEM devolve componentes. Itera os compostos que contêm este PG.
+    kit_rows = (
         await db.execute(
-            select(func.sum(OrderItem.quantity * CatalogProductComponent.quantity))
-            .join(CatalogProductComponent, CatalogProductComponent.composite_id == OrderItem.catalog_product_id)
-            .join(Order, Order.id == OrderItem.order_id)
-            .where(and_(*kit_filters))
+            select(CatalogProductComponent.composite_id, CatalogProductComponent.quantity)
+            .where(CatalogProductComponent.component_id == pg_product.id)
         )
-    ).scalar() or 0
-    balance -= int(kit_usage)
+    ).all()
+    for composite_id, comp_qty in kit_rows:
+        comp_qty = int(comp_qty or 1)
+        returns_net, local_sales = await _kit_assembled_balance(composite_id, db, floor_date)
+        # excedente de vendas locais além das unidades montadas → consome componentes
+        excedente = max(0, local_sales - max(0, returns_net))
+        balance -= excedente * comp_qty
+        # desmontagem manual devolve os componentes ao estoque
+        desmontados = (
+            await db.execute(
+                select(func.sum(StockMovement.qty)).where(
+                    StockMovement.product_type == "pg",
+                    StockMovement.product_id == composite_id,
+                    StockMovement.movement_type == MT_DISASSEMBLE_OUT,
+                )
+            )
+        ).scalar() or 0
+        balance += int(desmontados) * comp_qty
 
     # 3b) Consumo por MONTAGEM de kit em REMESSA ao FULL: se este PG é componente de um composto
     # enviado ao FULL por remessa (`purpose='remessa'`), os componentes são consumidos fisicamente
@@ -644,3 +705,17 @@ def composite_stock(components, *, discount_reserved: bool = False) -> int:
         qty = max(int(getattr(comp, "quantity", 1) or 1), 1)
         montaveis.append(max(0, disponivel) // qty)
     return min(montaveis) if montaveis else 0
+
+
+def kit_available(product, *, discount_reserved: bool = False) -> int:
+    """Disponível TOTAL de um kit (ADR-0023 §montagem): unidades MONTADAS materializadas
+    (`stock_quantity`, vindas de retorno do FULL) + montáveis a partir dos componentes soltos.
+
+    Com `discount_reserved=True`, desconta o reservado do próprio kit (as unidades montadas
+    reservadas por pedido). Sem retorno, `stock_quantity=0` e o disponível é 100% derivado —
+    idêntico ao comportamento anterior."""
+    montado = int(getattr(product, "stock_quantity", 0) or 0)
+    if discount_reserved:
+        montado = max(0, montado - int(getattr(product, "reserved_quantity", 0) or 0))
+    return montado + composite_stock(getattr(product, "components", None),
+                                     discount_reserved=discount_reserved)
