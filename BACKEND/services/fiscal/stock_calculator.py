@@ -180,6 +180,30 @@ async def calculate_pg_product_stock(
     ).scalar() or 0
     balance -= int(kit_usage)
 
+    # 3b) Consumo por MONTAGEM de kit em REMESSA ao FULL: se este PG é componente de um composto
+    # enviado ao FULL por remessa (`purpose='remessa'`), os componentes são consumidos fisicamente
+    # (transformação em KIT). Espelha o kit_usage dos pedidos, mas dirigido pela NF-e de remessa — o
+    # KIT vai ao FULL como unidade; o componente sai do galpão (ADR-0023 §montagem/kitting).
+    remessa_filters = [
+        CatalogProductComponent.component_id == pg_product.id,
+        Invoice.direction == "out",
+        Invoice.purpose == "remessa",
+        Invoice.status.in_(("authorized", "finalized")),
+    ]
+    if floor_date is not None:
+        remessa_filters.append(
+            func.coalesce(Invoice.exit_date, Invoice.issue_date) > floor_date
+        )
+    kit_remessa_usage = (
+        await db.execute(
+            select(func.sum(InvoiceItem.quantity * CatalogProductComponent.quantity))
+            .join(CatalogProductComponent, CatalogProductComponent.composite_id == InvoiceItem.catalog_product_id)
+            .join(Invoice, Invoice.id == InvoiceItem.invoice_id)
+            .where(and_(*remessa_filters))
+        )
+    ).scalar() or 0
+    balance -= int(kit_remessa_usage)
+
     # 4) Pedidos diretos no PG (OrderItem.catalog_product_id == pg.id) em
     # shipped/delivered, SEM CMIGProduct na CMIG do pedido capaz de contar.
     # A exclusão evita dupla contagem com:
@@ -334,6 +358,18 @@ async def affected_products_from_invoice(
             if cp_id:
                 cmig_ids.add(cp_id)
 
+    # Kit em remessa ao FULL: propaga os COMPONENTES (o consumo por montagem é replay no componente,
+    # não no kit) — senão o 501D não seria recomputado ao autorizar a remessa do KIT_501D.
+    if pg_ids:
+        comp_ids = (
+            await db.execute(
+                select(CatalogProductComponent.component_id).where(
+                    CatalogProductComponent.composite_id.in_(pg_ids)
+                )
+            )
+        ).scalars().all()
+        pg_ids.update(comp_ids)
+
     return cmig_ids, pg_ids
 
 
@@ -440,6 +476,11 @@ async def recompute_after_invoice_change(
     invoice: Invoice, db: AsyncSession
 ) -> dict:
     """Após mudança de status de invoice, recalcula todos os produtos afetados."""
+    # Remessa ao FULL com KIT: grava os movimentos de montagem no extrato (idempotente) ANTES do
+    # recompute, para o extrato do componente/kit refletir a transformação (ADR-0023 §montagem).
+    from services.fiscal.kit_assembly import sync_kit_assembly_movements
+    await sync_kit_assembly_movements(db, invoice)
+
     cmig_ids, pg_ids = await affected_products_from_invoice(invoice, db)
     for cp_id in cmig_ids:
         await recompute_cmig_product_stock(cp_id, db)

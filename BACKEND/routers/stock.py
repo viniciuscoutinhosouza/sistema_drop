@@ -910,11 +910,20 @@ async def product_movements(
             return f"https://www.mercadolivre.com.br/vendas/{platform_order_id}/detalhe"
         return None
 
+    _MT_LABELS = {
+        "reserve": "Reservado", "unreserve": "Reserva liberada", "dispatch": "Despachado",
+        "await_return": "Ag. Retorno", "confirm_return": "Retorno confirmado",
+        "receive_return": "Devolução recebida", "full_in": "Enviado ao FULL",
+        "full_out": "Pedido FULL", "full_return_out": "Retorno do FULL",
+        "kit_assembly_out": "Saída p/ transformação em KIT",
+        "kit_assembly_in": "Entrada por montagem de KIT", "manual": "Manual",
+    }
     return {
         "items": [
             {
                 "id": m.id,
                 "movement_type": m.movement_type,
+                "label": _MT_LABELS.get(m.movement_type, m.movement_type),
                 "qty": m.qty,
                 "field_affected": m.field_affected,
                 "delta": m.delta,
