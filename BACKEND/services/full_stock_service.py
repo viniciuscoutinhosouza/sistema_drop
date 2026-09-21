@@ -209,6 +209,9 @@ async def resolve_full_cmig_product(
         model=pg.model,
         ean=pg.ean,
         cost_price=pg.cost_price,
+        # Espelho de PG composto (kit) também é composto — senão o guard `if is_composite: return 0`
+        # não dispara no cálculo CMIG e o espelho materializa saldo fantasma no LOCAL (ADR-0023).
+        is_composite=pg.is_composite,
         stock_quantity=0,
         weight_kg=pg.weight_kg,
         height_cm=pg.height_cm,
