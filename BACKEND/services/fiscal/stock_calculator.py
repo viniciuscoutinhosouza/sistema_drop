@@ -67,7 +67,10 @@ async def _kit_assembled_balance(
             )
         )
     ).scalar() or 0
-    returns_net = int(ret) - int(dis)
+    # Não se desmonta mais do que voltou fisicamente montado — clampa (corrida de 2 desmontagens
+    # não pode inflar o crédito de componentes por unidades que nunca se materializaram).
+    dis_eff = min(int(dis), int(ret))
+    returns_net = int(ret) - dis_eff
 
     sale_filters = [
         OrderItem.catalog_product_id == kit_id,
@@ -83,7 +86,9 @@ async def _kit_assembled_balance(
             .where(and_(*sale_filters))
         )
     ).scalar() or 0
-    return returns_net, int(local_sales)
+    # returns_net = montadas disponíveis (ret − desmontadas); dis_eff = desmontagens EFETIVAS
+    # (clampadas), usadas para creditar componentes de volta sem inflar.
+    return returns_net, int(local_sales), dis_eff
 
 # ── Cálculo CMIG ──────────────────────────────────────────────────────────────
 
@@ -162,7 +167,7 @@ async def calculate_pg_product_stock(
     # menos as desmontadas e as vendidas localmente. `max(0, retornos_líquidos − vendas_locais)`. Sem
     # retorno (caso comum) isto é 0 e o disponível deriva 100% dos componentes (`composite_stock`).
     if pg_product.is_composite:
-        returns_net, local_sales = await _kit_assembled_balance(pg_product.id, db)
+        returns_net, local_sales, _dis = await _kit_assembled_balance(pg_product.id, db)
         return max(0, returns_net - local_sales)
     # Âncora de inventário: o baseline finalizado mais recente define um piso de
     # data (eventos anteriores são descartados) e o saldo inicial = contado.
@@ -230,21 +235,14 @@ async def calculate_pg_product_stock(
     ).all()
     for composite_id, comp_qty in kit_rows:
         comp_qty = int(comp_qty or 1)
-        returns_net, local_sales = await _kit_assembled_balance(composite_id, db, floor_date)
+        returns_net, local_sales, dis_eff = await _kit_assembled_balance(
+            composite_id, db, floor_date
+        )
         # excedente de vendas locais além das unidades montadas → consome componentes
         excedente = max(0, local_sales - max(0, returns_net))
         balance -= excedente * comp_qty
-        # desmontagem manual devolve os componentes ao estoque
-        desmontados = (
-            await db.execute(
-                select(func.sum(StockMovement.qty)).where(
-                    StockMovement.product_type == "pg",
-                    StockMovement.product_id == composite_id,
-                    StockMovement.movement_type == MT_DISASSEMBLE_OUT,
-                )
-            )
-        ).scalar() or 0
-        balance += int(desmontados) * comp_qty
+        # desmontagem EFETIVA (clampada aos retornos físicos) devolve os componentes ao estoque
+        balance += dis_eff * comp_qty
 
     # 3b) Consumo por MONTAGEM de kit em REMESSA ao FULL: se este PG é componente de um composto
     # enviado ao FULL por remessa (`purpose='remessa'`), os componentes são consumidos fisicamente

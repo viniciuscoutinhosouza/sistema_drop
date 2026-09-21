@@ -72,9 +72,11 @@ async def daily_stock_reconcile_and_snapshot() -> dict:
             # 3) Snapshota CatalogProduct (PG) e CMIGProduct.
             # NOTA: o comentário original prometia "com movimento ativo ou FULL > 0", mas o
             # filtro nunca existiu — os sets derivados de `full_map` ficavam sem uso (código
-            # morto removido). Hoje snapshota TODOS, exceto compostos (abaixo).
-            # Kit é EXCLUÍDO: seu estoque é derivado dos componentes, então snapshotá-lo
-            # somaria as mesmas unidades duas vezes (kit + componentes) na trilha contábil.
+            # morto removido). Snapshota TODOS os produtos pelo `stock_quantity` cru.
+            # ADR-0023 §montagem: o composto entra AGORA — seu `stock_quantity` guarda as unidades
+            # MONTADAS materializadas (retorno físico do FULL), que são itens físicos DISTINTOS dos
+            # componentes soltos (não há dupla contagem: o derivado `composite_stock` NÃO é
+            # snapshotado, só o cru). Sem retorno, o composto é 0 e não polui o snapshot.
 
             pg_rows = (
                 await db.execute(
@@ -86,7 +88,7 @@ async def daily_stock_reconcile_and_snapshot() -> dict:
                         CatalogProduct.awaiting_return_quantity,
                         CatalogProduct.pending_validation_quantity,
                         CatalogProduct.unfit_quantity,
-                    ).where(CatalogProduct.is_composite == False)  # noqa: E712
+                    )
                 )
             ).all()
             cmig_rows = (
@@ -100,7 +102,7 @@ async def daily_stock_reconcile_and_snapshot() -> dict:
                         CMIGProduct.awaiting_return_quantity,
                         CMIGProduct.pending_validation_quantity,
                         CMIGProduct.unfit_quantity,
-                    ).where(CMIGProduct.is_composite == False)  # noqa: E712
+                    )
                 )
             ).all()
 

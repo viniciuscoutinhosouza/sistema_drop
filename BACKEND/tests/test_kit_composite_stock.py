@@ -35,7 +35,7 @@ async def test_kit_materializado_retorno_menos_vendas(monkeypatch):
     """Kit materializado = max(0, retornos_líquidos − vendas_locais). 3 voltaram do FULL, 1 vendido
     localmente → 2 unidades montadas em estoque."""
     async def fake_bal(kit_id, db, floor_date=None):
-        return 3, 1  # (retornos_liquidos, vendas_locais)
+        return 3, 1, 0  # (retornos_liquidos, vendas_locais, desmontagens_efetivas)
     monkeypatch.setattr(stock_calculator, "_kit_assembled_balance", fake_bal)
     kit = CatalogProduct(id=362, is_composite=True, stock_quantity=0)
     assert await stock_calculator.calculate_pg_product_stock(kit, db=_FakeDBZero()) == 2
