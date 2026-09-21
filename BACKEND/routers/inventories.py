@@ -172,12 +172,16 @@ async def create_inventory(
     db.add(inv)
     await db.flush()
 
-    # Popula itens com o snapshot do estoque atual do catálogo escolhido
+    # Popula itens com o snapshot do estoque atual do catálogo escolhido.
+    # ADR-0023: kit (composto) NÃO é item contável — o físico é o componente. Incluir o kit fazia
+    # a contagem gravar um baseline no id do próprio kit e materializar `stock_quantity` nele
+    # (violando "kit sempre 0"). Mesmo filtro que o snapshot contábil (`daily_stock_reconcile`).
     if catalog_type == "pg":
         prods = (
             await db.execute(
                 select(CatalogProduct.id, CatalogProduct.stock_quantity)
-                .where(CatalogProduct.is_active == True)  # noqa: E712
+                .where(CatalogProduct.is_active == True,  # noqa: E712
+                       CatalogProduct.is_composite == False)  # noqa: E712
             )
         ).all()
         for pid, qty in prods:
@@ -189,7 +193,8 @@ async def create_inventory(
         prods = (
             await db.execute(
                 select(CMIGProduct.id, CMIGProduct.stock_quantity)
-                .where(CMIGProduct.cmig_id == cmig_id, CMIGProduct.is_active == True)  # noqa: E712
+                .where(CMIGProduct.cmig_id == cmig_id, CMIGProduct.is_active == True,  # noqa: E712
+                       CMIGProduct.is_composite == False)  # noqa: E712
             )
         ).all()
         for pid, qty in prods:
@@ -410,15 +415,39 @@ async def finalize_inventory(
             "account_id": inv.account_id,
         }
 
+    # ADR-0023: kit (composto) não é item contável — ignora linhas de kit em inventários legados
+    # (criados antes de o `create_inventory` filtrar compostos). Congelar delta/recompute num kit
+    # materializaria estoque nele. Pré-busca os ids compostos por tipo p/ pular no laço.
+    pg_composite = set((await db.execute(
+        select(CatalogProduct.id).where(
+            CatalogProduct.id.in_([it.product_id for it in items if it.product_type == "pg"]),
+            CatalogProduct.is_composite == True,  # noqa: E712
+        )
+    )).scalars().all()) if any(it.product_type == "pg" for it in items) else set()
+    cmig_composite = set((await db.execute(
+        select(CMIGProduct.id).where(
+            CMIGProduct.id.in_([it.product_id for it in items if it.product_type == "cmig"]),
+            CMIGProduct.is_composite == True,  # noqa: E712
+        )
+    )).scalars().all()) if any(it.product_type == "cmig" for it in items) else set()
+
     # Congela o delta: system_qty = saldo calculado PRÉ-inventário (este doc ainda
     # está em rascunho, então não entra no cálculo). delta = contado - sistema.
     cmig_ids: set[int] = set()
     pg_ids: set[int] = set()
     for it in items:
         if it.product_type == "pg":
+            if it.product_id in pg_composite:
+                it.system_qty = 0
+                it.delta = 0
+                continue
             sysq = await recompute_pg_product_stock(it.product_id, db)
             pg_ids.add(it.product_id)
         else:
+            if it.product_id in cmig_composite:
+                it.system_qty = 0
+                it.delta = 0
+                continue
             sysq = await recompute_cmig_product_stock(it.product_id, db)
             cmig_ids.add(it.product_id)
         it.system_qty = int(sysq or 0)

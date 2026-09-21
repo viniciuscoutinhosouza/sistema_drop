@@ -42,6 +42,12 @@ async def calculate_cmig_product_stock(
 
     Não muta `cmig_product.stock_quantity` — apenas calcula.
     """
+    # ADR-0023: produto composto (kit) NUNCA tem estoque próprio materializado — é sempre 0 e o
+    # montável deriva dos componentes na leitura (`composite_stock`). Sem este guard, o replay
+    # descontava a venda do KIT no id do próprio kit, gerando saldo (negativo) fantasma, enquanto
+    # o componente físico ficava intocado. O componente é recomputado à parte (kit_usage).
+    if cmig_product.is_composite:
+        return 0
     nfe_events = await stock_history._fetch_nfe_events_for_cmig_product(cmig_product, db)
     order_events = await stock_history._fetch_order_events_for_cmig_product(cmig_product, db)
     inv_events = await stock_history._fetch_inventory_events_for_product(
@@ -92,6 +98,13 @@ async def calculate_pg_product_stock(
     - Overflow de pedidos dos CMIGProducts vinculados (qty_to_pg após split)
     - Inventário: baseline reseta o saldo (piso de data) e adjustment soma delta.
     """
+    # ADR-0023: produto composto (kit) NUNCA tem estoque próprio materializado — é sempre 0 e o
+    # montável deriva dos componentes na leitura (`composite_stock`). Sem este guard, o passo 4
+    # ("pedidos diretos no PG") descontava a venda do KIT no id do próprio kit → saldo negativo
+    # fantasma, e o componente físico (ex.: 501D) ficava intocado. O componente é recomputado
+    # separadamente (kit_usage), então zerar o kit não perde a baixa.
+    if pg_product.is_composite:
+        return 0
     # Âncora de inventário: o baseline finalizado mais recente define um piso de
     # data (eventos anteriores são descartados) e o saldo inicial = contado.
     inv_events = await stock_history._fetch_inventory_events_for_product(

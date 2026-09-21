@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-09-21 — fix(estoque): kit não materializa mais saldo próprio; componente é debitado (ADR-0023)
+
+**Sintoma do dono:** venda de KIT baixava o estoque do próprio kit, mas o componente físico não era debitado (estoque errado; "vários produtos").
+
+**Causa (provada com dados reais):** o cálculo por replay (`calculate_pg_product_stock`/`calculate_cmig_product_stock`) tratava o kit como estocável — o passo "pedidos diretos no PG" descontava a venda do KIT no id do próprio kit, materializando saldo (negativo) fantasma, contra a ADR-0023 (kit sempre 0, derivado). Achado: 5 de 12 kits PG com `stock_quantity != 0` (KIT_501D=-1, KIT_501RD=-2, KIT_5550=-4, KIT_Bastao-Rolo=-2, KIT_ZLQ-1-2KG=-36); componente 501D=9 intocado apesar de 5 vendas entregues do KIT_501D (=10 unidades). O Inventário também capturava kits e materializava baseline neles.
+
+**Correção (alinhada ADR-0023, ponto único):** (P1) early-return `0` para `is_composite` em `calculate_pg_product_stock` e `calculate_cmig_product_stock` — o kit nunca materializa; o disponível deriva dos componentes (`composite_stock`). O componente segue debitado à parte pelo `kit_usage`, e `affected_products_from_order` já propaga o recompute do componente. (P2) `create_inventory` exclui compostos; `finalize_inventory` pula kits legados. 3 testes novos; 19 testes relacionados passam. Auditado por quality-guardian (sem CRITICAL/HIGH; componente debitado, sem dupla contagem, sem regressão de leitor) + adr-consistency-checker (tradução literal da ADR-0023, sem conflito com 0019/0022). ADR-0023 anotada com o guard de escrita.
+
+**Pendente pós-deploy:** `recompute-all` para higienizar os 5 kits sujos (→ 0) e aplicar o `kit_usage` aos componentes.
+
 ## 2026-09-16 — fix(eship): CPF sentinela único por pedido (nome não é mais sobrescrito)
 
 **Sintoma do dono:** um envio ao eShip sobrescrevia o nome de outro pedido Shopee já enviado.

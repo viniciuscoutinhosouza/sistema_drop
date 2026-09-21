@@ -20,6 +20,7 @@ Regra do dono, adotada como invariante:
 
 1. **Ponto único de cálculo:** `services/fiscal/stock_calculator.composite_stock(components, *, discount_reserved=False)`. Clampa negativo em 0 e tolera FK pendurada. Existiam 4 cópias da fórmula; todas passaram a delegar.
 2. **Sempre derivado na leitura, nunca materializado.** `catalog_products.stock_quantity` / `cmig_products.stock_quantity` do kit é **sempre 0**; nenhum caminho escreve nele. Um valor materializado envelhece e passa a discordar do calculado.
+   - **Guard de escrita/replay (o invariante kit=0 no cache):** `calculate_pg_product_stock` e `calculate_cmig_product_stock` fazem `if is_composite: return 0` **antes de qualquer evento** — o replay nunca escreve saldo no kit (via `recompute_*_stock`). Complementado pela exclusão de compostos em `create_inventory`/`finalize_inventory` (kit não é item contável). *Regressão real corrigida (2026-09-21): sem o guard, o passo "pedidos diretos no PG" descontava a venda do KIT no id do próprio kit → saldo negativo fantasma, enquanto o componente físico ficava intocado; o componente continua debitado à parte pelo `kit_usage`.*
 3. **Propagação nos dois sentidos:**
    - *componente → kit*: automática (o kit é derivado; não há valor guardado para ficar velho). A propagação para os **anúncios** do kit já existe em `stock_sync_service`, que expande componente → kits.
    - *venda do kit → componentes*: reserva, liberação e baixa atingem os **componentes** (`_kit_components` em `stock_reservation_service`), não o kit.
