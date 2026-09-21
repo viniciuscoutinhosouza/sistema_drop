@@ -74,5 +74,13 @@ Regra do dono, adotada como invariante:
 
 **Implementação (Fase 1, forward + backfill):** `stock_calculator.calculate_pg_product_stock` passo 3b debita o componente pelo consumo de kit em remessas ao FULL (espelha o `kit_usage` dos pedidos); `affected_products_from_invoice` propaga os componentes; `services/fiscal/kit_assembly.py` grava os movimentos (idempotente) em `recompute_after_invoice_change` e no backfill de todas as remessas de kit. Verificado ao vivo: 501D passou a debitar 20 un (6 remessas, backfill).
 
-**Pendente (Fase 3, próximo incremento):** retorno do FULL materializando o KIT no galpão + ação manual de desmontagem + ajuste do cálculo do disponível do kit para (materializado + derivado). E o **-4 fantasma do espelho CMIG** (CMIGProduct do kit com `is_composite=False`) — alinhar `is_composite` ao PG.
+**Fase 3 (feita — 2026-09-21):**
+- **Espelho CMIG** de kit herda `is_composite` do PG (`resolve_full_cmig_product`); -4 fantasma zerado.
+- **Kit materializado:** `calculate_pg_product_stock` do composto = `max(0, retornos_físicos − vendas_locais)` (helper `_kit_assembled_balance`). ⚠️ **Só retorno FÍSICO real** ("Retorno de Deposito Temporario") materializa; o **"Retorno SIMBÓLICO de Depósito"** é a baixa do FULL nas vendas FULL (ADR-0022) — NÃO materializa (senão kits vendidos virariam estoque). Sem retorno físico, materializado=0 → comportamento idêntico ao anterior.
+- **Consumo do componente:** venda local consome o montado primeiro; só o excedente consome componentes; a **desmontagem** devolve componentes.
+- **Disponível do kit** = `kit_available` = materializado + montáveis dos componentes (leitores: catálogo, card, PG, CMIG, `available_to_push`).
+- **Desmontagem manual:** `POST /stock/pg/{id}/disassemble` (admin/UGO) + botão "Desmontar KIT" no extrato; `kit_disassemble_out/in` no extrato.
+- Verificado ao vivo: 501D=-11 (montagem), KIT_501D=0 (os 9 "retornos" eram simbólicos → não materializam).
+
+**Pendente:** materialização de kit **CMIG** (o guard CMIG ainda retorna 0 — os kits atuais são PG-driven).
 

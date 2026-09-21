@@ -14,7 +14,7 @@
 
 **Fase 3a (feita, `85bda15`):** espelho CMIG de kit agora herda `is_composite` do PG (`resolve_full_cmig_product`); data fix alinhou os 2 espelhos existentes (KIT_501D -4→0, KIT_501RD 0→0), FULL preservado (1 e 2). Fim do -4 fantasma.
 
-**Pendente (Fase 3b-d, próximo incremento):** retorno do FULL **materializando** o KIT no galpão (muda o guard kit=0 para permitir unidades montadas retornadas) + **desmontagem manual** do operador (novo endpoint/tela: −1 KIT, +2× componente) + disponível do kit = (montado materializado + montáveis dos componentes), com a venda consumindo o montado primeiro. É mudança de modelo maior — implementar como incremento focado.
+**Fase 3b-d (feita, `b00a395`+`3491a01`):** kit passa a poder ter estoque LOCAL materializado — `calculate_pg_product_stock` do composto = `max(0, retornos_físicos − vendas_locais)`. **Distinção crítica pega na verificação:** só **retorno FÍSICO** ("Retorno de Deposito Temporario") materializa; o **retorno SIMBÓLICO** (baixa do FULL nas vendas FULL, ADR-0022) **não** — senão kit vendido virava estoque (KIT_501D dava 9 falso; corrigido para 0). Venda local consome o montado primeiro (excedente consome componentes); desmontagem devolve componentes. Disponível = `kit_available` (materializado + montáveis) nos leitores. Endpoint `POST /stock/pg/{id}/disassemble` + botão "Desmontar KIT" no extrato; rótulos `kit_disassemble_*`. Verificado ao vivo: KIT_501D=0, 501D=-11 (inalterado). Sem retorno físico, comportamento idêntico ao anterior (seguro).
 
 ## 2026-09-21 — fix(estoque): kit não materializa mais saldo próprio; componente é debitado (ADR-0023)
 
