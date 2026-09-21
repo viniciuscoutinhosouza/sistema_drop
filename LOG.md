@@ -14,6 +14,8 @@
 
 **Higienização (feita, direcionada):** recompute dos 12 kits compostos → todos em 0 (os 5 sujos -2/-1/-4/-2/-36 zerados). Componentes recomputados **sem mudança** — já estavam no valor calculado correto (ex.: 501D=9 já inclui o `kit_usage=10` das 5 vendas do KIT_501D; a diferença p/ a conta ingênua é o split PG↔CMIG). Disponível derivado dos kits verificado ao vivo: KIT_501D=4 montáveis (floor(501D 9 / 2)), KIT_501RD=2, KIT_Bastao-Rolo=77. **Conclusão:** o componente sempre esteve correto; o que estava errado era o saldo fantasma materializado no próprio kit (o que o dono via na tela de estoque), agora eliminado.
 
+**Recompute-all GLOBAL (a pedido do dono, 2026-09-21, 53s):** reativou 28 NF-e de entrada; recomputou **95 CMIG + 132 PG**; reconstruiu reservas (14 PG); replay FULL (52 produtos, 11 contas). Verificado pós-execução: **0 kits (PG e CMIG) com `stock_quantity != 0`** — o guard segurou no recálculo global; produto normal consistente (501D=9).
+
 ## 2026-09-16 — fix(eship): CPF sentinela único por pedido (nome não é mais sobrescrito)
 
 **Sintoma do dono:** um envio ao eShip sobrescrevia o nome de outro pedido Shopee já enviado.
