@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-09-21 — feat(estoque): montagem de KIT na remessa ao FULL (consome componentes)
+
+**Pedido do dono:** ao enviar um KIT ao FULL por remessa (NFE 3087, "Remessa para Deposito Temporario"), o sistema movia o KIT ao FULL mas **não baixava os componentes** — o 501D (2 un por KIT_501D) não saía do estoque. Requisito: registrar a montagem (saída do componente "para transformação em KIT" + entrada do KIT), visível no extrato dos dois produtos.
+
+**Desenho (respostas do dono):** montagem na remessa consome componentes; FULL guarda o KIT como unidade; retorno do FULL volta o KIT montado ao galpão (desmontagem é ação manual do operador); venda local consome primeiro a unidade montada. Evolui a ADR-0023 (emenda §Montagem): o kit passa a poder ter estoque LOCAL materializado (unidades retornadas do FULL).
+
+**Entregue (Fase 1, `f911860`):** `stock_calculator` passo 3b debita o componente pelo consumo de kit em remessas ao FULL (espelha o `kit_usage` dos pedidos); `affected_products_from_invoice` propaga os componentes; `kit_assembly.py` grava os movimentos no extrato dos dois produtos (`kit_assembly_out`/`kit_assembly_in`, idempotente) em `recompute_after_invoice_change` + backfill; `/movements` e StockControlView rotulam os novos tipos. **Verificado ao vivo:** backfill de 6 remessas de kit → 501D passou de 9 para **-11** (debitou 20 un via montagem); extrato do 501D com 4 `kit_assembly_out` (−20) e do KIT_501D com 4 `kit_assembly_in` (+10). *O -11 negativo indica que as entradas registradas do 501D não cobrem todo o consumo (venda direta + kits locais + kits ao FULL) — o dono reconcilia por inventário.*
+
+**Pendente (Fase 3, próximo incremento):** retorno do FULL materializando o KIT + desmontagem manual + disponível do kit (materializado + derivado); e o **-4 do espelho CMIG** (CMIGProduct do kit com `is_composite=False` — alinhar ao PG).
+
 ## 2026-09-21 — fix(estoque): kit não materializa mais saldo próprio; componente é debitado (ADR-0023)
 
 **Sintoma do dono:** venda de KIT baixava o estoque do próprio kit, mas o componente físico não era debitado (estoque errado; "vários produtos").

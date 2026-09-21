@@ -62,3 +62,17 @@ Regra do dono, adotada como invariante:
 
    Se um dia for preciso limitar de fato quanto cada vitrine pode vender, o mecanismo correto já existe e não é uma trava: **estoque fixo como teto** (ADR-0014, `min(fixo, disponível)`) — rateio explícito por anúncio.
 
+## Emenda — Montagem (kitting) na remessa ao FULL (2026-09-21)
+
+**Contexto:** ao enviar um KIT ao FULL por **remessa** (NF-e `purpose='remessa'`, "Remessa para Deposito Temporario"), o kit é fisicamente **montado** a partir dos componentes. O sistema movia o KIT ao FULL, mas **não consumia os componentes** (ex.: KIT_501D ia ao FULL e o 501D não baixava).
+
+**Decisão do dono:**
+1. **Montagem na remessa:** cada componente **sai** do estoque local na quantidade da composição ("saída para transformação em KIT"); o KIT **entra** montado (1 un por unidade da nota). Localmente o kit fica **líquido 0** (montagem +N, remessa −N) — a ADR-0023 (kit derivado) segue válida no LOCAL. O componente é debitado de fato.
+2. **O FULL guarda o KIT como unidade** (não os componentes) — é o que foi enviado e é vendido como kit no ML.
+3. **Retorno do FULL:** o KIT volta ao galpão **como unidade montada** (materializada no LOCAL). A **desmontagem** (voltar aos componentes) é uma **ação MANUAL do operador** — não automática. → *Consequência: o kit passa a poder ter `stock_quantity` LOCAL materializado (unidades montadas retornadas). O invariante evolui:* **disponível do kit (LOCAL) = unidades montadas em estoque + montáveis a partir dos componentes**; a venda/remessa consome primeiro a unidade montada, senão monta a partir dos componentes.
+4. **Extrato:** a montagem aparece no extrato dos DOIS produtos (`kit_assembly_out` no componente, `kit_assembly_in` no kit).
+
+**Implementação (Fase 1, forward + backfill):** `stock_calculator.calculate_pg_product_stock` passo 3b debita o componente pelo consumo de kit em remessas ao FULL (espelha o `kit_usage` dos pedidos); `affected_products_from_invoice` propaga os componentes; `services/fiscal/kit_assembly.py` grava os movimentos (idempotente) em `recompute_after_invoice_change` e no backfill de todas as remessas de kit. Verificado ao vivo: 501D passou a debitar 20 un (6 remessas, backfill).
+
+**Pendente (Fase 3, próximo incremento):** retorno do FULL materializando o KIT no galpão + ação manual de desmontagem + ajuste do cálculo do disponível do kit para (materializado + derivado). E o **-4 fantasma do espelho CMIG** (CMIGProduct do kit com `is_composite=False`) — alinhar `is_composite` ao PG.
+
