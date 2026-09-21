@@ -12,7 +12,9 @@
 
 **Entregue (Fase 1, `f911860`):** `stock_calculator` passo 3b debita o componente pelo consumo de kit em remessas ao FULL (espelha o `kit_usage` dos pedidos); `affected_products_from_invoice` propaga os componentes; `kit_assembly.py` grava os movimentos no extrato dos dois produtos (`kit_assembly_out`/`kit_assembly_in`, idempotente) em `recompute_after_invoice_change` + backfill; `/movements` e StockControlView rotulam os novos tipos. **Verificado ao vivo:** backfill de 6 remessas de kit → 501D passou de 9 para **-11** (debitou 20 un via montagem); extrato do 501D com 4 `kit_assembly_out` (−20) e do KIT_501D com 4 `kit_assembly_in` (+10). *O -11 negativo indica que as entradas registradas do 501D não cobrem todo o consumo (venda direta + kits locais + kits ao FULL) — o dono reconcilia por inventário.*
 
-**Pendente (Fase 3, próximo incremento):** retorno do FULL materializando o KIT + desmontagem manual + disponível do kit (materializado + derivado); e o **-4 do espelho CMIG** (CMIGProduct do kit com `is_composite=False` — alinhar ao PG).
+**Fase 3a (feita, `85bda15`):** espelho CMIG de kit agora herda `is_composite` do PG (`resolve_full_cmig_product`); data fix alinhou os 2 espelhos existentes (KIT_501D -4→0, KIT_501RD 0→0), FULL preservado (1 e 2). Fim do -4 fantasma.
+
+**Pendente (Fase 3b-d, próximo incremento):** retorno do FULL **materializando** o KIT no galpão (muda o guard kit=0 para permitir unidades montadas retornadas) + **desmontagem manual** do operador (novo endpoint/tela: −1 KIT, +2× componente) + disponível do kit = (montado materializado + montáveis dos componentes), com a venda consumindo o montado primeiro. É mudança de modelo maior — implementar como incremento focado.
 
 ## 2026-09-21 — fix(estoque): kit não materializa mais saldo próprio; componente é debitado (ADR-0023)
 
