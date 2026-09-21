@@ -12,7 +12,7 @@
 
 **Correção (alinhada ADR-0023, ponto único):** (P1) early-return `0` para `is_composite` em `calculate_pg_product_stock` e `calculate_cmig_product_stock` — o kit nunca materializa; o disponível deriva dos componentes (`composite_stock`). O componente segue debitado à parte pelo `kit_usage`, e `affected_products_from_order` já propaga o recompute do componente. (P2) `create_inventory` exclui compostos; `finalize_inventory` pula kits legados. 3 testes novos; 19 testes relacionados passam. Auditado por quality-guardian (sem CRITICAL/HIGH; componente debitado, sem dupla contagem, sem regressão de leitor) + adr-consistency-checker (tradução literal da ADR-0023, sem conflito com 0019/0022). ADR-0023 anotada com o guard de escrita.
 
-**Pendente pós-deploy:** `recompute-all` para higienizar os 5 kits sujos (→ 0) e aplicar o `kit_usage` aos componentes.
+**Higienização (feita, direcionada):** recompute dos 12 kits compostos → todos em 0 (os 5 sujos -2/-1/-4/-2/-36 zerados). Componentes recomputados **sem mudança** — já estavam no valor calculado correto (ex.: 501D=9 já inclui o `kit_usage=10` das 5 vendas do KIT_501D; a diferença p/ a conta ingênua é o split PG↔CMIG). Disponível derivado dos kits verificado ao vivo: KIT_501D=4 montáveis (floor(501D 9 / 2)), KIT_501RD=2, KIT_Bastao-Rolo=77. **Conclusão:** o componente sempre esteve correto; o que estava errado era o saldo fantasma materializado no próprio kit (o que o dono via na tela de estoque), agora eliminado.
 
 ## 2026-09-16 — fix(eship): CPF sentinela único por pedido (nome não é mais sobrescrito)
 
