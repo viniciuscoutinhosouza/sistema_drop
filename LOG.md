@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-09-22 — feat(estoque): fluxo do kit no extrato — saída "Envio para o FULL" + ordem + razão
+
+**Relato do dono:** no extrato, o KIT_501D (PG) mostrava só a montagem (entrada), sem a saída de envio ao FULL; a NF 3087 "sumia" no FULL; e um `nfe_out` torto aparecia no razão do kit CMIG.
+
+**Entregue (`b331ce7`):**
+- **Fase A:** a remessa de kit ao FULL grava no KIT (PG) um `kit_full_out` (−N, rótulo "Envio para o FULL") ligado à NF-e — espelha o `full_in` do CMIG. O galpão PG passa a mostrar montagem (+N) E envio ao FULL (−N) = 0, com número/link da nota. Ledger-only (saldo é replay). Backfill das 6 remessas (8 movimentos). Verificado: KIT_501D soma 0 (montagem +10, envio −10).
+- **Fase B:** trilha FULL ordena pela **data do evento** (NF-e exit/issue), não pela criação do movimento — a 3087 (mais antiga) deixa de aparecer fora de ordem; as 4 "Enviado ao FULL" ficam agrupadas cronologicamente.
+- **Fase C:** razão de NF-e de produto composto (kit) fica vazio — a remessa PG-source casava como `nfe_out` malformado no razão do CMIG; os movimentos reais do kit vão no bloco operacional. Verificado: razão CMIG do kit = 0 itens.
+
+
 ## 2026-09-21 — feat(estoque): montagem de KIT na remessa ao FULL (consome componentes)
 
 **Pedido do dono:** ao enviar um KIT ao FULL por remessa (NFE 3087, "Remessa para Deposito Temporario"), o sistema movia o KIT ao FULL mas **não baixava os componentes** — o 501D (2 un por KIT_501D) não saía do estoque. Requisito: registrar a montagem (saída do componente "para transformação em KIT" + entrada do KIT), visível no extrato dos dois produtos.
