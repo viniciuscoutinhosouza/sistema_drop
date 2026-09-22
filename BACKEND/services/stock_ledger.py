@@ -31,6 +31,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductVariant
+from models.fiscal import Invoice
 from models.integration import MarketplaceAccount
 from models.inventory import Inventory, InventoryItem
 from models.order import Order
@@ -48,6 +49,11 @@ _OP_TYPES = (
     "receive_return",
     "validate_ok",
     "validate_unfit",
+    # Montagem/desmontagem de kit (ADR-0023 §montagem) — ligadas à NF-e de remessa (assembly)
+    "kit_assembly_out",
+    "kit_assembly_in",
+    "kit_disassemble_out",
+    "kit_disassemble_in",
 )
 
 _OP_LABELS = {
@@ -59,6 +65,10 @@ _OP_LABELS = {
     "receive_return": "Devolução recebida (aguardando inspeção)",
     "validate_ok": "Devolução aprovada (volta ao vendável)",
     "validate_unfit": "Devolução reprovada (inservível)",
+    "kit_assembly_out": "Saída p/ transformação em KIT",
+    "kit_assembly_in": "Entrada por montagem de KIT",
+    "kit_disassemble_out": "Saída por desmontagem de KIT",
+    "kit_disassemble_in": "Entrada por desmontagem de KIT",
 }
 
 
@@ -187,15 +197,16 @@ async def _operational_movements(
     )
     rows = (
         await db.execute(
-            select(StockMovement, Order)
+            select(StockMovement, Order, Invoice)
             .outerjoin(Order, Order.id == StockMovement.order_id)
+            .outerjoin(Invoice, Invoice.id == StockMovement.invoice_id)
             .where(or_(*conds), type_filter)
             .order_by(StockMovement.created_at.desc())
         )
     ).all()
 
     out: list[dict] = []
-    for m, order in rows:
+    for m, order, inv in rows:
         if start_dt is not None and m.created_at and m.created_at < start_dt:
             continue
         if end_dt is not None and m.created_at and m.created_at > end_dt:
@@ -213,6 +224,11 @@ async def _operational_movements(
             "return_id": m.return_id,
             "order_platform": (order.platform if order else None),
             "order_platform_id": (order.platform_order_id if order else None),
+            # NF-e vinculada (remessa da montagem de kit) — número/série + link interno
+            "invoice_id": m.invoice_id,
+            "invoice_number": (inv.nfe_number if inv else None),
+            "invoice_serie": (inv.serie if inv else None),
+            "invoice_url": (f"/fiscal/invoices/{inv.id}" if inv else None),
             "variant_label": vlabel,
             "is_variant": vlabel is not None,
         })

@@ -895,8 +895,9 @@ async def product_movements(
 
     rows = (
         await db.execute(
-            select(StockMovement, Order)
+            select(StockMovement, Order, Invoice)
             .outerjoin(Order, Order.id == StockMovement.order_id)
+            .outerjoin(Invoice, Invoice.id == StockMovement.invoice_id)
             .where(
                 StockMovement.product_type == product_type,
                 StockMovement.product_id == product_id,
@@ -936,9 +937,14 @@ async def product_movements(
                 "order_platform": (o.platform if o else None),
                 "order_platform_id": (o.platform_order_id if o else None),
                 "marketplace_url": _mkt_url(o.platform, o.platform_order_id) if o else None,
+                # NF-e vinculada (ex.: remessa da montagem de kit) — número/série + link interno
+                "invoice_id": m.invoice_id,
+                "invoice_number": (inv.nfe_number if inv else None),
+                "invoice_serie": (inv.serie if inv else None),
+                "invoice_url": (f"/fiscal/invoices/{inv.id}" if inv else None),
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
-            for m, o in rows
+            for m, o, inv in rows
         ],
         "total": total,
         "page": page,

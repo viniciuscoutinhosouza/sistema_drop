@@ -379,7 +379,11 @@ const OperacionalTable = {
           h('span', { class: 'badge badge-light border' }, m.label),
           m.is_variant ? h('span', { class: 'badge badge-secondary ml-1', style: 'font-size:10px', title: 'Variante' }, m.variant_label) : null,
         ]),
-        h('td', { style: 'font-size:12px' }, m.order_platform_id ? `#${m.order_platform_id}` : (m.return_id ? `Devolução #${m.return_id}` : '—')),
+        h('td', { style: 'font-size:12px' },
+          m.invoice_id
+            ? h(RouterLink, { to: m.invoice_url || `/fiscal/invoices/${m.invoice_id}`, class: 'text-primary' },
+                () => (m.invoice_number ? `NF #${m.invoice_number}${m.invoice_serie ? '/' + m.invoice_serie : ''}` : `Rascunho #${m.invoice_id}`))
+            : (m.order_platform_id ? `#${m.order_platform_id}` : (m.return_id ? `Devolução #${m.return_id}` : '—'))),
         h('td', { class: 'text-right ' + (m.delta >= 0 ? 'text-success' : 'text-danger') }, `${m.delta >= 0 ? '+' : '−'}${Math.abs(m.delta)}`),
       ]))
       return h('div', {}, [

@@ -246,6 +246,7 @@
                           <th>Campo</th>
                           <th class="text-center">Delta</th>
                           <th class="text-center">Pedido</th>
+                          <th class="text-center">NF-e</th>
                           <th class="text-center">Devolução</th>
                         </tr>
                       </thead>
@@ -277,6 +278,13 @@
                                 {{ m.order_platform_id || m.order_id }}
                               </RouterLink>
                             </template>
+                            <span v-else>—</span>
+                          </td>
+                          <td class="text-center">
+                            <RouterLink v-if="m.invoice_id" :to="m.invoice_url || `/fiscal/invoices/${m.invoice_id}`"
+                                        class="text-primary" title="Abrir a NF-e">
+                              <i class="fas fa-file-invoice mr-1"></i>NF #{{ m.invoice_number || m.invoice_id }}<span v-if="m.invoice_serie">/{{ m.invoice_serie }}</span>
+                            </RouterLink>
                             <span v-else>—</span>
                           </td>
                           <td class="text-center">{{ m.return_id || '—' }}</td>
