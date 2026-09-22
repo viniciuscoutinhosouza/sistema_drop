@@ -22,7 +22,7 @@ from datetime import datetime as _datetime
 from datetime import time as _time
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.cmig import CMIGProduct
@@ -63,30 +63,31 @@ async def _build_full_movements(
     por isso vem como lista separada, com referência ao pedido/NF-e, número da
     venda, marketplace e link externo.
     """
+    # Ordena pela DATA DO EVENTO (NF-e: exit/issue; senão a criação do movimento), não pela hora
+    # em que o recompute gravou a linha — senão a remessa mais antiga (ex.: NF 3087) "some" no fim
+    # fora de ordem cronológica. `created_at` é o desempate.
+    _event_dt = func.coalesce(Invoice.exit_date, Invoice.issue_date, StockMovement.created_at)
     rows = (
         await db.execute(
-            select(StockMovement, Order)
+            select(StockMovement, Order, Invoice)
             .outerjoin(Order, Order.id == StockMovement.order_id)
+            .outerjoin(Invoice, Invoice.id == StockMovement.invoice_id)
             .where(
                 StockMovement.product_type == product_type,
                 StockMovement.product_id == product_id,
                 StockMovement.field_affected.in_(("full_stock", "full_stock_reserved")),
             )
-            .order_by(StockMovement.created_at.desc())
+            .order_by(_event_dt.desc(), StockMovement.created_at.desc())
         )
     ).all()
 
     out: list[dict] = []
-    for m, order in rows:
+    for m, order, inv in rows:
         if start_dt is not None and m.created_at and m.created_at < start_dt:
             continue
         if end_dt is not None and m.created_at and m.created_at > end_dt:
             continue
-        invoice_number = None
-        if m.invoice_id:
-            invoice_number = (
-                await db.execute(select(Invoice.nfe_number).where(Invoice.id == m.invoice_id))
-            ).scalar_one_or_none()
+        invoice_number = inv.nfe_number if inv else None
         platform = order.platform if order else None
         platform_order_id = order.platform_order_id if order else None
         out.append({
@@ -270,7 +271,11 @@ async def build_movements_response(
             if oid and num and oid not in _ord_nfe:
                 _ord_nfe[oid] = (num, ser)
 
-    # Walk cronológico para running_available + snapshots de período (M8)
+    # Walk cronológico para running_available + snapshots de período (M8).
+    # Kit (composto): o saldo é derivado dos componentes / materializado por retorno — o razão de
+    # NF-e do próprio kit não é significativo (a remessa é PG-source e casava como nfe_out torto).
+    # Os movimentos reais do kit (montagem/envio ao FULL/desmontagem) vão no bloco OPERACIONAL.
+    _is_composite = bool(getattr(product, "is_composite", False))
     visible_events: list[dict] = []
     running_nfe = int(_floor_ev.inventory_counted or 0) if _floor_ev else nfe_only_initial
     running_pending = 0
@@ -332,7 +337,8 @@ async def build_movements_response(
         else:
             d["running_balance"] = running_nfe
             d["running_available"] = running_nfe - running_pending
-        visible_events.append(d)
+        if not _is_composite:
+            visible_events.append(d)
         period_final_available = d["running_available"]
 
     if period_initial_available is None:

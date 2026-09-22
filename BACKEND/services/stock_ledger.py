@@ -52,6 +52,7 @@ _OP_TYPES = (
     # Montagem/desmontagem de kit (ADR-0023 §montagem) — ligadas à NF-e de remessa (assembly)
     "kit_assembly_out",
     "kit_assembly_in",
+    "kit_full_out",
     "kit_disassemble_out",
     "kit_disassemble_in",
 )
@@ -67,6 +68,7 @@ _OP_LABELS = {
     "validate_unfit": "Devolução reprovada (inservível)",
     "kit_assembly_out": "Saída p/ transformação em KIT",
     "kit_assembly_in": "Entrada por montagem de KIT",
+    "kit_full_out": "Envio para o FULL",
     "kit_disassemble_out": "Saída por desmontagem de KIT",
     "kit_disassemble_in": "Entrada por desmontagem de KIT",
 }

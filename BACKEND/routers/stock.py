@@ -920,6 +920,7 @@ async def product_movements(
         "full_out": "Pedido FULL", "full_return_out": "Retorno do FULL",
         "kit_assembly_out": "Saída p/ transformação em KIT",
         "kit_assembly_in": "Entrada por montagem de KIT",
+        "kit_full_out": "Envio para o FULL",
         "kit_disassemble_out": "Saída por desmontagem de KIT",
         "kit_disassemble_in": "Entrada por desmontagem de KIT", "manual": "Manual",
     }

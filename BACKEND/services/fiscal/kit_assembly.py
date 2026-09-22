@@ -20,6 +20,7 @@ from models.stock_movement import StockMovement
 
 MT_ASSEMBLY_OUT = "kit_assembly_out"  # componente sai (transformação em KIT)
 MT_ASSEMBLY_IN = "kit_assembly_in"    # KIT entra (montado)
+MT_FULL_OUT = "kit_full_out"          # KIT sai do galpão PG (envio ao FULL)
 
 
 async def _has_movement(db: AsyncSession, invoice_id: int, product_id: int, mt: str) -> bool:
@@ -82,6 +83,16 @@ async def sync_kit_assembly_movements(db: AsyncSession, invoice: Invoice) -> dic
                 product_type="pg", product_id=kit.id, invoice_id=invoice.id,
                 movement_type=MT_ASSEMBLY_IN, qty=qtd_kit,
                 field_affected="stock_quantity", delta=qtd_kit,
+            ))
+            created += 1
+
+        # Saída do KIT do galpão PG: ENVIO AO FULL. Balanceia a montagem (+N montagem, −N envio ao
+        # FULL = 0 no galpão PG), espelhando o `full_in` no CMIG. Ledger-only (o saldo é replay).
+        if not await _has_movement(db, invoice.id, kit.id, MT_FULL_OUT):
+            db.add(StockMovement(
+                product_type="pg", product_id=kit.id, invoice_id=invoice.id,
+                movement_type=MT_FULL_OUT, qty=qtd_kit,
+                field_affected="stock_quantity", delta=-qtd_kit,
             ))
             created += 1
 
