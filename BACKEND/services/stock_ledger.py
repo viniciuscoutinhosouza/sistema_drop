@@ -279,6 +279,22 @@ async def build_product_ledger(
         if not cmigs:
             raise HTTPException(status_code=403, detail="Produto fora do escopo do usuário")
 
+    # GO isolado por galpão (como o UGO): o produto tem de ser do galpão do GO — senão 403.
+    # Os irmãos /stock/card e /stock/movements já fazem isso; o /ledger faltava (vazamento).
+    if current_user.role == "go":
+        if product_type == "pg":
+            _wh = pg.warehouse_id if pg else None
+        else:
+            _wh = (
+                await db.execute(
+                    select(CMIG.warehouse_id)
+                    .join(CMIGProduct, CMIGProduct.cmig_id == CMIG.id)
+                    .where(CMIGProduct.id == product_id)
+                )
+            ).scalar_one_or_none()
+        if _wh != current_user.warehouse_id:
+            raise HTTPException(status_code=403, detail="Produto fora do escopo do seu Galpão")
+
     from services.stock_movements import _build_full_movements, build_movements_response
     from services.stock_view import get_stock_card, load_full_per_account_map
 

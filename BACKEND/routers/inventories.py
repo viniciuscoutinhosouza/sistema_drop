@@ -12,7 +12,7 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -39,9 +39,18 @@ async def _ac_cmig_ids(user: User, db: AsyncSession) -> list[int]:
 
 
 async def _check_view_scope(inv: Inventory, user: User, db: AsyncSession) -> None:
-    """AC só enxerga inventários das CMIGs que administra (cmig e full)."""
+    """AC só enxerga inventários das CMIGs que administra (cmig e full); GO, só do seu galpão."""
     if user.role == "ac":
         if inv.catalog_type not in ("cmig", "full") or inv.cmig_id not in await _ac_cmig_ids(user, db):
+            raise HTTPException(status_code=403, detail="Inventário fora do seu escopo")
+    elif user.role == "go":
+        ok = inv.warehouse_id == user.warehouse_id
+        if not ok and inv.cmig_id:
+            cmig_wh = (
+                await db.execute(select(CMIG.warehouse_id).where(CMIG.id == inv.cmig_id))
+            ).scalar_one_or_none()
+            ok = cmig_wh == user.warehouse_id
+        if not ok:
             raise HTTPException(status_code=403, detail="Inventário fora do seu escopo")
 
 
@@ -84,6 +93,15 @@ async def list_inventories(
             return []
         q = q.where(
             Inventory.catalog_type.in_(("cmig", "full")), Inventory.cmig_id.in_(cmig_ids)
+        )
+    elif current_user.role == "go":
+        # GO isolado por galpão: inventários do próprio galpão (por warehouse_id ou pela CMIG dele)
+        wh_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
+        q = q.where(
+            or_(
+                Inventory.warehouse_id == current_user.warehouse_id,
+                Inventory.cmig_id.in_(wh_cmigs),
+            )
         )
 
     rows = (await db.execute(q)).scalars().all()
