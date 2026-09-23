@@ -8,6 +8,7 @@ from dependencies import get_current_user, require_role
 from models.go import GO
 from models.user import User
 from models.warehouse import Warehouse
+from routers.warehouse import _norm_cep
 from schemas.go import GOCreate, GOOut, GOUpdate
 from services.auth_service import hash_password
 
@@ -120,7 +121,7 @@ async def create_go(
         phone=body.phone,
         whatsapp=body.whatsapp,
         email=body.email,
-        zip_code=body.zip_code,
+        zip_code=_norm_cep(body.zip_code),
         street=body.street,
         number=body.number,
         complement=body.complement,
@@ -194,7 +195,7 @@ async def update_go(
     wh_updates = {k: v for k, v in updates.items() if k in _WAREHOUSE_FIELDS}
     if wh_updates and go.warehouse:
         for field, value in wh_updates.items():
-            setattr(go.warehouse, field, value)
+            setattr(go.warehouse, field, _norm_cep(value) if field == "zip_code" else value)
         if "company_name" in wh_updates or "trade_name" in wh_updates:
             go.warehouse.name = go.warehouse.trade_name or go.warehouse.company_name
 

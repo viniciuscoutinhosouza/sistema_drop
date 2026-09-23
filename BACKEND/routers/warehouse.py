@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,6 +8,14 @@ from database import get_db
 from dependencies import get_current_user, require_menu_permission
 from models.user import User
 from models.warehouse import Warehouse
+
+
+def _norm_cep(v) -> str | None:
+    """CEP só com dígitos (8) — a coluna `zip_code` tem no máx. 9 e o front pode mandar formatado
+    ('12345-678') ou com caractere extra, estourando o limite (ORA-12899)."""
+    if v is None:
+        return None
+    return re.sub(r"\D", "", str(v))[:8] or None
 
 router = APIRouter()
 
@@ -94,7 +104,7 @@ async def create_warehouse(
         phone=body.get("phone"),
         whatsapp=body.get("whatsapp"),
         email=body.get("email"),
-        zip_code=body.get("zip_code"),
+        zip_code=_norm_cep(body.get("zip_code")),
         street=body.get("street"),
         number=body.get("number"),
         complement=body.get("complement"),
@@ -175,7 +185,7 @@ async def update_warehouse(
     ]
     for field in fields:
         if field in body:
-            setattr(warehouse, field, body[field])
+            setattr(warehouse, field, _norm_cep(body[field]) if field == "zip_code" else body[field])
 
     await db.commit()
     await db.refresh(warehouse)
