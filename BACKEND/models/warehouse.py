@@ -12,6 +12,8 @@ class Warehouse(Base):
     id = Column(Integer, primary_key=True)
     go_id = Column(Integer, ForeignKey("goes.id"), nullable=True)
     name = Column(String(200), nullable=False)
+    # 'dropship' (contas vendem PG + própria CMIG) | 'multilojas' (só a própria CMIG). Migration 137.
+    work_type = Column(String(20), nullable=False, server_default=text("'dropship'"))
     cnpj = Column(String(18))
     company_name = Column(String(255))
     trade_name = Column(String(255))

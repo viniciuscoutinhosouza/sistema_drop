@@ -8,13 +8,14 @@ from dependencies import get_current_user, require_role
 from models.go import GO
 from models.user import User
 from models.warehouse import Warehouse
-from routers.warehouse import _norm_cep
+from routers.warehouse import _norm_cep, _norm_work_type
 from schemas.go import GOCreate, GOOut, GOUpdate
 from services.auth_service import hash_password
 
 router = APIRouter()
 
 _WAREHOUSE_FIELDS = [
+    "work_type",
     "company_name",
     "trade_name",
     "phone",
@@ -47,6 +48,7 @@ def _go_to_out(go: GO) -> dict:
     }
     if wh:
         for f in [
+            "work_type",
             "company_name",
             "trade_name",
             "cnpj",
@@ -115,6 +117,7 @@ async def create_go(
     warehouse = Warehouse(
         go_id=go.id,
         name=body.trade_name or body.company_name,
+        work_type=_norm_work_type(getattr(body, "work_type", None)),
         cnpj=body.cnpj,
         company_name=body.company_name,
         trade_name=body.trade_name,
@@ -195,7 +198,11 @@ async def update_go(
     wh_updates = {k: v for k, v in updates.items() if k in _WAREHOUSE_FIELDS}
     if wh_updates and go.warehouse:
         for field, value in wh_updates.items():
-            setattr(go.warehouse, field, _norm_cep(value) if field == "zip_code" else value)
+            if field == "zip_code":
+                value = _norm_cep(value)
+            elif field == "work_type":
+                value = _norm_work_type(value)
+            setattr(go.warehouse, field, value)
         if "company_name" in wh_updates or "trade_name" in wh_updates:
             go.warehouse.name = go.warehouse.trade_name or go.warehouse.company_name
 

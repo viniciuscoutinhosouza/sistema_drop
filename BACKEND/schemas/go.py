@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 class GOCreate(BaseModel):
     # Empresa / Galpão (→ warehouses)
+    work_type: str | None = None  # 'dropship' | 'multilojas'
     company_name: str
     trade_name: str | None = None
     cnpj: str
@@ -30,6 +31,7 @@ class GOCreate(BaseModel):
 
 class GOUpdate(BaseModel):
     # Campos do Warehouse
+    work_type: str | None = None  # 'dropship' | 'multilojas'
     company_name: str | None = None
     trade_name: str | None = None
     phone: str | None = None
@@ -58,6 +60,7 @@ class GOOut(BaseModel):
     # Do User (responsável)
     full_name: str | None = None
     # Do Warehouse (empresa / galpão)
+    work_type: str | None = None
     company_name: str | None = None
     trade_name: str | None = None
     cnpj: str | None = None

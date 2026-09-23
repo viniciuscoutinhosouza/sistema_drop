@@ -17,6 +17,11 @@ def _norm_cep(v) -> str | None:
         return None
     return re.sub(r"\D", "", str(v))[:8] or None
 
+
+def _norm_work_type(v) -> str:
+    """Tipo de trabalho do galpão — só 'dropship' ou 'multilojas'; default 'dropship'."""
+    return v if v in ("dropship", "multilojas") else "dropship"
+
 router = APIRouter()
 
 
@@ -25,6 +30,7 @@ def _serialize(w: Warehouse) -> dict:
         "id": w.id,
         "go_id": w.go_id,
         "name": w.name,
+        "work_type": w.work_type or "dropship",
         "cnpj": w.cnpj,
         "company_name": w.company_name,
         "trade_name": w.trade_name,
@@ -98,6 +104,7 @@ async def create_warehouse(
     warehouse = Warehouse(
         go_id=go_id,
         name=body.get("name", ""),
+        work_type=_norm_work_type(body.get("work_type")),
         cnpj=body.get("cnpj"),
         company_name=body.get("company_name"),
         trade_name=body.get("trade_name"),
@@ -166,6 +173,7 @@ async def update_warehouse(
 
     fields = [
         "name",
+        "work_type",
         "cnpj",
         "company_name",
         "trade_name",
@@ -185,7 +193,13 @@ async def update_warehouse(
     ]
     for field in fields:
         if field in body:
-            setattr(warehouse, field, _norm_cep(body[field]) if field == "zip_code" else body[field])
+            if field == "zip_code":
+                val = _norm_cep(body[field])
+            elif field == "work_type":
+                val = _norm_work_type(body[field])
+            else:
+                val = body[field]
+            setattr(warehouse, field, val)
 
     await db.commit()
     await db.refresh(warehouse)
