@@ -147,16 +147,24 @@ async def get_kpis(
 
 
 @router.get("/top-products")
-async def get_top_products(db: AsyncSession = Depends(get_db)):
-    """Last 12 most recently added catalog products."""
+async def get_top_products(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Últimos 12 produtos do catálogo — escopados por galpão (isolamento).
+
+    UGO/GO/AC só veem produtos do PRÓPRIO galpão (`warehouse_id`); admin vê todos. Sem este
+    escopo o Dashboard mostrava produtos de OUTROS galpões (vazamento)."""
     from models.product import CatalogProduct, CatalogProductImage
 
-    result = await db.execute(
+    stmt = (
         select(CatalogProduct)
         .where(CatalogProduct.is_active == True)
         .order_by(CatalogProduct.created_at.desc())
-        .limit(12)
     )
+    if current_user.role in ("ugo", "go", "ac") and current_user.warehouse_id:
+        stmt = stmt.where(CatalogProduct.warehouse_id == current_user.warehouse_id)
+    result = await db.execute(stmt.limit(12))
     products = result.scalars().all()
 
     out = []
