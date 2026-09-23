@@ -6,8 +6,8 @@
       Útil para vendas fora dos marketplaces (WhatsApp, Instagram, balcão).
     </div>
 
-    <!-- 1) CMIG -->
-    <div class="card mb-3">
+    <!-- 1) CMIG — escondido quando o usuário tem 1 só CMIG (auto-selecionada) -->
+    <div class="card mb-3" v-if="availableCmigs.length > 1">
       <div class="card-header">
         <h3 class="card-title"><i class="fas fa-id-card mr-2"></i> CMIG</h3>
       </div>

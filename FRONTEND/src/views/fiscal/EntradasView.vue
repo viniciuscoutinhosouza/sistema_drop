@@ -263,6 +263,8 @@ const statusClass = fmt.statusClass
 
 onMounted(async () => {
   if (cmigs.value.length === 0) await cmigStore.fetchCmigs()
+  // 1 só CMIG: dropdown escondido — auto-seleciona para liberar sync/exportações
+  if (cmigs.value.length === 1) filters.cmig_id = cmigs.value[0].id
   reload()
 })
 </script>

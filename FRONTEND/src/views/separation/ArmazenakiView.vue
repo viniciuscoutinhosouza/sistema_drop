@@ -7,8 +7,8 @@
 
     <div class="card">
       <div class="card-header d-flex align-items-center flex-wrap" style="gap:.5rem">
-        <!-- Filtro por CMIG (inclui "Todas as CMIGs") -->
-        <div class="form-group mb-0" style="min-width:280px">
+        <!-- Filtro por CMIG (inclui "Todas as CMIGs") — escondido quando há 1 só CMIG eShip -->
+        <div class="form-group mb-0" style="min-width:280px" v-if="cmigsAtivas.length > 1">
           <select class="form-control form-control-sm" v-model="cmigId" @change="load" :disabled="loading">
             <option :value="null" disabled>Selecione…</option>
             <option value="all">★ Todas as CMIGs</option>
@@ -265,6 +265,11 @@ async function loadCmigs() {
   try {
     const { data: rows } = await api.get('/integrations/eship/cmigs')
     cmigs.value = rows || []
+    // 1 só CMIG eShip: dropdown escondido — auto-seleciona e carrega
+    if (cmigsAtivas.value.length === 1) {
+      cmigId.value = cmigsAtivas.value[0].cmig_id
+      await load()
+    }
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao carregar as CMIGs')
   } finally {

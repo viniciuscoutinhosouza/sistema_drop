@@ -37,6 +37,13 @@
                   <label>CNPJ <span class="text-danger">*</span></label>
                   <input v-model="form.cnpj" class="form-control" required placeholder="00.000.000/0000-00" />
                 </div>
+                <div class="col-md-5 form-group">
+                  <label>Tipo de trabalho <span class="text-danger">*</span></label>
+                  <select v-model="form.work_type" class="form-control" required>
+                    <option value="dropship">Dropship — contas vendem Produto Geral + a própria CMIG</option>
+                    <option value="multilojas">MultiLojas — cada conta vende só a própria CMIG</option>
+                  </select>
+                </div>
               </div>
 
               <div class="row">
@@ -197,7 +204,7 @@ const goes = ref([])
 function emptyForm() {
   return {
     id: null, go_id: null,
-    name: '', cnpj: '', company_name: '', trade_name: '',
+    name: '', work_type: 'dropship', cnpj: '', company_name: '', trade_name: '',
     phone: '', whatsapp: '', email: '',
     zip_code: '', street: '', number: '', complement: '',
     neighborhood: '', city: '', state: '',

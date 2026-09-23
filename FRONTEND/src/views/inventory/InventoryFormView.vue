@@ -35,7 +35,7 @@
               <option value="cmig">Conta CMIG</option>
             </select>
           </div>
-          <div v-if="newForm.catalog_type === 'cmig'" class="col-md-4 form-group">
+          <div v-if="newForm.catalog_type === 'cmig' && cmigs.length > 1" class="col-md-4 form-group">
             <label>Conta CMIG <span class="text-danger">*</span></label>
             <select v-model="newForm.cmig_id" class="form-control">
               <option :value="null">Selecione…</option>
@@ -226,6 +226,8 @@ onMounted(async () => {
     try {
       const { data } = await api.get('/cmigs')
       cmigs.value = Array.isArray(data) ? data : (data?.items || [])
+      // 1 só CMIG: dropdown escondido — auto-seleciona a única
+      if (cmigs.value.length === 1) newForm.value.cmig_id = cmigs.value[0].id
     } catch { cmigs.value = [] }
   } else {
     await loadInventory()

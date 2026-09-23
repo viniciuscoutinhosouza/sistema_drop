@@ -23,7 +23,7 @@
           <option value="">Marketplaces</option>
           <option v-for="p in platformOptions" :key="p" :value="p">{{ platformLabel(p) }}</option>
         </select>
-        <select v-model="filterCmig" class="form-control form-control-sm mr-2" style="max-width:160px">
+        <select v-if="cmigOptions.length > 1" v-model="filterCmig" class="form-control form-control-sm mr-2" style="max-width:160px">
           <option value="">Todas as CMIGs</option>
           <option v-for="c in cmigOptions" :key="c.id" :value="c.id">{{ c.name }}</option>
         </select>

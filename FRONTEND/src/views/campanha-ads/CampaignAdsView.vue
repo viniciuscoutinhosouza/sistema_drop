@@ -268,7 +268,7 @@ onMounted(fetchCmigs)
       <!-- Filtros -->
       <div class="card-body">
         <div class="form-row align-items-end">
-          <div class="form-group col-md-3">
+          <div class="form-group col-md-3" v-if="cmigs.length > 1">
             <label class="small mb-1">CMIG</label>
             <select class="form-control form-control-sm" v-model="cmigId" @change="onCmigChange">
               <option :value="null">Selecione…</option>

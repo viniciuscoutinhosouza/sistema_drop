@@ -11,7 +11,7 @@
     <div class="card">
       <div class="card-header d-flex align-items-center flex-wrap">
         <div class="d-flex align-items-center mr-2">
-          <select v-model="cmigId" class="form-control form-control-sm" style="width:220px">
+          <select v-if="cmigs.length > 1" v-model="cmigId" class="form-control form-control-sm" style="width:220px">
             <option :value="null" disabled>Selecione a CMIG…</option>
             <option v-for="c in cmigs" :key="c.id" :value="c.id">{{ c.trade_name }}</option>
           </select>

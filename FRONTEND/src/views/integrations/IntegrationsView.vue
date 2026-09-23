@@ -135,7 +135,7 @@
               <label>Telefone / celular da conta <span class="text-danger">*</span></label>
               <input v-model="newContaForm.phone" class="form-control" placeholder="(11) 91234-5678" required />
             </div>
-            <div class="form-group">
+            <div class="form-group" v-if="cmigs.length > 1">
               <label>Conta MIG (CMIG) <span class="text-danger">*</span></label>
               <select v-model="newContaForm.cmig_id" class="form-control" required>
                 <option value="">Selecione a CMIG...</option>
@@ -168,7 +168,7 @@
           </div>
           <div class="modal-body">
             <div v-if="editError" class="alert alert-danger">{{ editError }}</div>
-            <div class="form-group">
+            <div class="form-group" v-if="cmigs.length > 1">
               <label>Conta MIG (CMIG) <span class="text-danger">*</span></label>
               <select v-model="editForm.cmig_id" class="form-control">
                 <option value="">Selecione a CMIG...</option>
@@ -394,7 +394,9 @@ function cmigName(id) {
 }
 
 function openNewContaModal() {
-  newContaForm.value = { platform: '', email: '', phone: '', description: '', cmig_id: '' }
+  // 1 só CMIG: dropdown escondido — auto-seleciona a única
+  const singleCmigId = cmigs.value.length === 1 ? cmigs.value[0].id : ''
+  newContaForm.value = { platform: '', email: '', phone: '', description: '', cmig_id: singleCmigId }
   newContaError.value = ''
   modal.value.newConta = true
 }

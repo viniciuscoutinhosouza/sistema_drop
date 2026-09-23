@@ -13,7 +13,7 @@
 
       <div class="card-body pb-0">
         <div class="row mb-3">
-          <div class="col-md-4">
+          <div class="col-md-4" v-if="cmigs.length > 1">
             <select class="form-control form-control-sm" v-model="filterCmigId" @change="load">
               <option :value="null">Todas as CMIGs</option>
               <option v-for="c in cmigs" :key="c.id" :value="c.id">{{ cmigLabel(c) }}</option>
@@ -96,7 +96,7 @@
           <div v-if="formError" class="alert alert-danger py-2 small">{{ formError }}</div>
 
           <template v-if="!editId">
-            <div class="form-group">
+            <div class="form-group" v-if="cmigs.length > 1">
               <label class="small font-weight-bold">CMIG *</label>
               <select class="form-control form-control-sm" v-model="form.cmig_id" @change="onCmigChange">
                 <option :value="null">Selecionar...</option>
@@ -219,7 +219,9 @@ async function loadMeta() {
 
 function openCreate() {
   editId.value = null
-  form.value = { cmig_id: null, marketplace_account_id: null, cnpj: '', label: '' }
+  // 1 só CMIG: dropdown escondido — auto-seleciona a única
+  const singleCmigId = cmigs.value.length === 1 ? cmigs.value[0].id : null
+  form.value = { cmig_id: singleCmigId, marketplace_account_id: null, cnpj: '', label: '' }
   formError.value = ''
   showModal.value = true
 }

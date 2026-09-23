@@ -1403,7 +1403,7 @@
               <!-- Identificação -->
               <p class="font-weight-bold small text-uppercase text-muted mb-2">Identificação</p>
               <div class="row">
-                <div class="col-md-6 form-group">
+                <div class="col-md-6 form-group" v-if="cmigs.length > 1">
                   <label>CMIG <span class="text-danger">*</span></label>
                   <select v-model="createCmigForm.cmig_id" class="form-control" required>
                     <option value="">Selecione...</option>
@@ -3375,7 +3375,8 @@ function _openCreateCmigModalImpl(listing, variation) {
     variation_label: variation?.attributes_label || null,
   }
   createCmigForm.value = {
-    cmig_id:        selectedAccount.value?.cmig_id || '',
+    // 1 só CMIG: dropdown escondido — usa a única; senão herda a CMIG da conta selecionada
+    cmig_id:        selectedAccount.value?.cmig_id || (cmigs.value.length === 1 ? cmigs.value[0].id : ''),
     sku_cmig:       formSku,
     title:          formTitle,
     brand:          brand,

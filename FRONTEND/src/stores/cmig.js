@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import api from '@/composables/useApi'
 
 export const useCmigStore = defineStore('cmig', () => {
@@ -7,6 +7,11 @@ export const useCmigStore = defineStore('cmig', () => {
   const allCmigs = ref([])    // inclui inativas — usado só pela tela de gestão de CMIGs
   const activeCmig = ref(null)
   const loading = ref(false)
+
+  // true quando o usuário tem acesso a exatamente 1 CMIG (esconde o dropdown seletor)
+  const hasSingleCmig = computed(() => cmigs.value.length === 1)
+  // id da única CMIG (ou null quando há 0 ou 2+)
+  const singleCmigId = computed(() => (cmigs.value.length === 1 ? cmigs.value[0].id : null))
 
   async function fetchCmigs() {
     loading.value = true
@@ -58,5 +63,5 @@ export const useCmigStore = defineStore('cmig', () => {
     activeCmig.value = cmig
   }
 
-  return { cmigs, allCmigs, activeCmig, loading, fetchCmigs, fetchAllCmigs, createCmig, updateCmig, setActiveCmig }
+  return { cmigs, allCmigs, activeCmig, loading, hasSingleCmig, singleCmigId, fetchCmigs, fetchAllCmigs, createCmig, updateCmig, setActiveCmig }
 })

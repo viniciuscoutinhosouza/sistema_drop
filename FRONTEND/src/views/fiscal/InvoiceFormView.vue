@@ -28,7 +28,7 @@
           </div>
           <div class="card-body">
             <div class="row">
-              <div class="col-md-3" v-if="isNew">
+              <div class="col-md-3" v-if="isNew && cmigs.length > 1">
                 <label class="small mb-1">CMIG <span class="text-danger">*</span></label>
                 <select v-model="form.cmig_id" class="form-control" :disabled="!isNew" @change="reloadPeople">
                   <option :value="null">Selecione...</option>

@@ -27,7 +27,7 @@
     <div class="card">
       <div class="card-body">
         <div class="row mb-3">
-          <div class="col-md-2"><label class="small mb-1">CMIG</label>
+          <div class="col-md-2" v-if="cmigs.length > 1"><label class="small mb-1">CMIG</label>
             <select v-model="filters.cmig_id" class="form-control form-control-sm" @change="reload">
               <option :value="null">Todas</option>
               <option v-for="c in cmigs" :key="c.id" :value="c.id">{{ c.company_name || c.name || ('CMIG ' + c.id) }}</option>
@@ -269,6 +269,8 @@ onMounted(async () => {
   try {
     if (!cmigStore.cmigs?.length) await cmigStore.fetchCmigs()
     cmigs.value = cmigStore.cmigs || []
+    // 1 só CMIG: dropdown escondido — auto-seleciona para agrupamento/exportações
+    if (cmigs.value.length === 1) filters.cmig_id = cmigs.value[0].id
   } catch { /* segue sem lista */ }
   reload()
 })

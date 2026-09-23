@@ -20,7 +20,7 @@
         <div class="card card-outline card-primary mb-3">
           <div class="card-body py-3">
             <div class="row align-items-center">
-              <div class="col-md-6">
+              <div class="col-md-6" v-if="cmigStore.cmigs.length > 1">
                 <label class="mb-1 text-muted"><small>Conta MIG (CMIG):</small></label>
                 <select v-model="selectedCmigId" class="form-control form-control-sm" :disabled="loading">
                   <option value="">Selecione uma conta CMIG...</option>
