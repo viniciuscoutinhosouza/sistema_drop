@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-09-23 — feat(galpao): Tipo de trabalho (Dropship × MultiLojas) + dropdown de CMIG auto
+
+Pedido do dono, em 3 partes:
+- **Parte 1 — campo "Tipo de trabalho" no galpão** (`f654daf`): coluna `work_type` em warehouses (migration 137, default 'dropship' NOT NULL — backfill dos existentes); exposto/editável em /warehouse e /goes (validação `_norm_work_type`); dropdown no form do galpão (WarehouseAdminView).
+- **Parte 2 — dropdown de CMIG some quando o usuário tem 1 só** (`caba435`): store `cmig` ganhou `hasSingleCmig`/`singleCmigId`; ~18 telas escondem o `<select>` e auto-selecionam a única CMIG (catálogo, anúncios, fiscal, financeiro, full, inventário, pedidos, separação, integrações…). Telas onde a CMIG deriva da conta (sem dropdown) e as de gestão foram preservadas.
+- **Parte 3 — enforcement Dropship × MultiLojas** (`d780033`+`935631f`): em galpão `multilojas`, a conta só vende a PRÓPRIA CMIG — publicar produto do Produto Geral (PG) é bloqueado (403); dropship libera o PG. Ponto único `services/work_type_guard.py` aplicado em TODOS os caminhos de publicação: `anuncios.py` /publish, /publish-with-variations, /publish-as-family, e `listings.py` publish_listing (ML **e Shopee**).
+
+**Auditoria (quality-guardian):** pegou 1 CRITICAL — o `listings.py:publish_listing` (publish de ML+Shopee via ListingManager) estava sem o guard, um MultiLojas publicaria PG por lá. Corrigido (guard extraído p/ módulo único e aplicado). **Verificado ao vivo** (transação com rollback, sem tocar produção): dropship permite publicar PG; multilojas bloqueia PG (403) e permite CMIG. Migration rodada (2 galpões = dropship). Health 200, site 200.
+
 ## 2026-09-23 — fix(seg): isolamento do papel GO por galpão (fim do vazamento entre galpões)
 
 **Relato do dono:** criou um GO novo (go.harmonyexpress) num galpão NOVO e VAZIO (Harmony Express, id 22) e, ao acessar, viu produtos em Produto Geral, Dashboard, Catálogo etc.
