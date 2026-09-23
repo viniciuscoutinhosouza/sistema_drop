@@ -264,6 +264,11 @@ async def register_user(
                 plan_id=body.plan_id,
             )
         )
+    # GO precisa de um registro em `goes` para ser um GO de verdade (aparecer como "GO dono" etc.).
+    if role == "go":
+        from services.go_service import ensure_go_record
+
+        await ensure_go_record(user, db)
 
     try:
         await db.commit()

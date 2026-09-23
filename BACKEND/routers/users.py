@@ -330,6 +330,12 @@ async def update_user(
             # role 'go') de enviar ao eShip.
             user.role = profile.base_role
         user.profile_id = new_pid
+        # Se o novo perfil torna o usuário um GO, garante o registro em `goes` (idempotente) —
+        # senão ele seria "usuário GO" sem aparecer como GO (ex.: seletor de "GO dono").
+        if user.role == "go":
+            from services.go_service import ensure_go_record
+
+            await ensure_go_record(user, db)
 
     await db.commit()
     return {
