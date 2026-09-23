@@ -283,28 +283,10 @@ async def _get_account_or_403(account_id: int, user: User, db: AsyncSession) -> 
 async def _assert_pg_allowed_for_account(
     account: MarketplaceAccount, is_pg_publish, db: AsyncSession
 ) -> None:
-    """Enforcement Dropship × MultiLojas (work_type do galpão da conta).
+    """Enforcement Dropship × MultiLojas — delega ao ponto único `work_type_guard`."""
+    from services.work_type_guard import assert_pg_allowed_for_account
 
-    Em galpão **MultiLojas** a conta só vende a PRÓPRIA CMIG — publicar produto do **Produto Geral
-    (PG)** é bloqueado (o PG é apenas base para o cadastro na CMIG). Em **Dropship** o PG é liberado.
-    `is_pg_publish` = verdadeiro quando a publicação é de um produto PG; publicar CMIG não é afetado."""
-    if not is_pg_publish or not account.cmig_id:
-        return
-    from models.warehouse import Warehouse
-
-    work_type = (
-        await db.execute(
-            select(Warehouse.work_type)
-            .join(CMIG, CMIG.warehouse_id == Warehouse.id)
-            .where(CMIG.id == account.cmig_id)
-        )
-    ).scalar_one_or_none()
-    if work_type == "multilojas":
-        raise HTTPException(
-            status_code=403,
-            detail="Galpão MultiLojas: esta conta só pode vender produtos da própria CMIG. "
-                   "Cadastre o produto na CMIG — o Produto Geral (PG) é apenas base.",
-        )
+    await assert_pg_allowed_for_account(account, is_pg_publish, db)
 
 
 async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> ProductListing:

@@ -294,6 +294,12 @@ async def publish_listing(
             listing.error_message = None
 
         elif mode == "create":
+            # Enforcement Dropship × MultiLojas: galpão MultiLojas não publica produto do PG (só a
+            # própria CMIG). O DropshipperProduct com catalog_product_id é um produto PG. ML e Shopee.
+            from services.work_type_guard import assert_pg_allowed_for_account
+            await assert_pg_allowed_for_account(
+                account, bool(getattr(product, "catalog_product_id", None)), db
+            )
             if account.platform == "mercadolivre":
                 item_data = _build_ml_item(product, listing)
                 result = await ml_service.create_item(account.access_token, item_data)
