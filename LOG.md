@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-09-23 — fix(seg): isolamento do papel GO por galpão (fim do vazamento entre galpões)
+
+**Relato do dono:** criou um GO novo (go.harmonyexpress) num galpão NOVO e VAZIO (Harmony Express, id 22) e, ao acessar, viu produtos em Produto Geral, Dashboard, Catálogo etc.
+
+**Causa:** o papel `go` (Gestor Operacional) era tratado como **GLOBAL** em vários pontos (`dashboard.is_global = role in ("admin","go")`, PG/catálogo sem filtro, pedidos/financeiro com visão total). Um GO de um galpão via dados de TODOS os galpões. Não era o isolamento que quebrou — o GO **nunca** foi isolado (desenhado como "visão gerencial global").
+
+**Decisão do dono:** GO passa a ser **escopado por galpão, exatamente como o UGO**, para todos os GOs.
+
+**Entregue (`11ea9b0` + `ad66075`):** o `go` foi escopado por `warehouse_id` (produto) / `CMIG.warehouse_id` (CMIG) em 17 arquivos — PG, Catálogo, Dashboard, Pedidos, NF-e, Financeiro, Pessoas, Anúncios/Contas ML, Simulador, Estoque (summary/card/movements/ledger), Integrações, relatórios CMIG, Inventários. `admin` (global), `ugo` e `ac` preservados; ações destrutivas seguem 403 p/ GO. **Auditoria de segurança** (security-auditor) pegou 2 vazamentos residuais que a 1ª passada não tocou — `/stock/ledger` (crítico, sem menu-permission) e `/inventories` — corrigidos.
+
+**Verificado AO VIVO (HTTP real):** Harmony GO (galpão 22, vazio) → **0** em pg/catalog/products/orders/cmigs/accounts/invoices/people/stock/returns e **403** no ledger de produto de outro galpão; Vini019 GO (galpão 1) continua vendo os dados do galpão 1 (133 PG, 20 pedidos, 6 CMIGs, 4 inventários…); admin global. 224 testes passam (2 falhas de test_orders pré-existentes).
+
+
 ## 2026-09-22 — feat(estoque): fluxo do kit no extrato — saída "Envio para o FULL" + ordem + razão
 
 **Relato do dono:** no extrato, o KIT_501D (PG) mostrava só a montagem (entrada), sem a saída de envio ao FULL; a NF 3087 "sumia" no FULL; e um `nfe_out` torto aparecia no razão do kit CMIG.
