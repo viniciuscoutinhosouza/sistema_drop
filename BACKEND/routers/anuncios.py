@@ -280,6 +280,33 @@ async def _get_account_or_403(account_id: int, user: User, db: AsyncSession) -> 
     return account
 
 
+async def _assert_pg_allowed_for_account(
+    account: MarketplaceAccount, is_pg_publish, db: AsyncSession
+) -> None:
+    """Enforcement Dropship × MultiLojas (work_type do galpão da conta).
+
+    Em galpão **MultiLojas** a conta só vende a PRÓPRIA CMIG — publicar produto do **Produto Geral
+    (PG)** é bloqueado (o PG é apenas base para o cadastro na CMIG). Em **Dropship** o PG é liberado.
+    `is_pg_publish` = verdadeiro quando a publicação é de um produto PG; publicar CMIG não é afetado."""
+    if not is_pg_publish or not account.cmig_id:
+        return
+    from models.warehouse import Warehouse
+
+    work_type = (
+        await db.execute(
+            select(Warehouse.work_type)
+            .join(CMIG, CMIG.warehouse_id == Warehouse.id)
+            .where(CMIG.id == account.cmig_id)
+        )
+    ).scalar_one_or_none()
+    if work_type == "multilojas":
+        raise HTTPException(
+            status_code=403,
+            detail="Galpão MultiLojas: esta conta só pode vender produtos da própria CMIG. "
+                   "Cadastre o produto na CMIG — o Produto Geral (PG) é apenas base.",
+        )
+
+
 async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> ProductListing:
     result = await db.execute(
         select(ProductListing)
@@ -2929,6 +2956,7 @@ async def publish_anuncio_with_variations(
     source = body.get("source")
     variations_input = body.get("variations") or []
     _validate_variations_input(source, variations_input)
+    await _assert_pg_allowed_for_account(account, source == "pg", db)
 
     title = (body.get("title") or "").strip()
     if not title:
@@ -3924,6 +3952,7 @@ async def publish_anuncio(
     catalog_product_id = body.get("catalog_product_id")
     if not cmig_product_id and not catalog_product_id:
         raise HTTPException(status_code=400, detail="Informe cmig_product_id ou catalog_product_id")
+    await _assert_pg_allowed_for_account(account, bool(catalog_product_id), db)
 
     sale_price = body.get("sale_price")
     if not sale_price:
@@ -4193,6 +4222,7 @@ async def publish_anuncios_as_family(
         raise HTTPException(status_code=400, detail="category_id é obrigatório")
 
     account = await _get_account_or_403(account_id, current_user, db)
+    await _assert_pg_allowed_for_account(account, source == "pg", db)
     if account.platform != "mercadolivre":
         raise HTTPException(
             status_code=422,
