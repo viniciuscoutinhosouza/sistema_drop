@@ -26,6 +26,40 @@ router = APIRouter()
 _MAX_EXPORT_ROWS = 5000
 
 
+async def _go_assert_cmig_in_warehouse(db: AsyncSession, cmig_id: int, user: User) -> None:
+    """Isolamento por galpão do GO: bloqueia se a CMIG não pertencer ao galpão do GO.
+
+    O GO é escopado por galpão exatamente como o UGO; diferente do UGO (que hoje tem
+    bypass em alguns endpoints de estoque), o GO nunca alcança CMIG de outro galpão.
+    """
+    wh = (
+        await db.execute(select(CMIG.warehouse_id).where(CMIG.id == cmig_id))
+    ).scalar_one_or_none()
+    if wh is None or wh != user.warehouse_id:
+        raise HTTPException(status_code=403, detail="CMIG fora do escopo do seu Galpão")
+
+
+async def _go_assert_product_in_warehouse(
+    db: AsyncSession, product_type: str, product_id: int, user: User
+) -> None:
+    """Isolamento por galpão do GO para um produto PG/CMIG específico."""
+    if product_type == "pg":
+        wh = (
+            await db.execute(
+                select(CatalogProduct.warehouse_id).where(CatalogProduct.id == product_id)
+            )
+        ).scalar_one_or_none()
+        if wh is None or wh != user.warehouse_id:
+            raise HTTPException(status_code=403, detail="Produto fora do escopo do seu Galpão")
+    else:  # cmig
+        owner_cmig_id = (
+            await db.execute(select(CMIGProduct.cmig_id).where(CMIGProduct.id == product_id))
+        ).scalar_one_or_none()
+        if owner_cmig_id is None:
+            raise HTTPException(status_code=404, detail="Produto não encontrado")
+        await _go_assert_cmig_in_warehouse(db, owner_cmig_id, user)
+
+
 async def _collect_stock_items(
     db: AsyncSession,
     current_user: User,
@@ -47,6 +81,11 @@ async def _collect_stock_items(
     """
     if current_user.role not in ("ugo", "admin", "ac", "go"):
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
+
+    # GO escopado por galpão (isolamento): força o filtro de galpão no próprio warehouse,
+    # ignorando qualquer warehouse_id recebido — não pode enxergar estoque de outro galpão.
+    if current_user.role == "go":
+        warehouse_id = current_user.warehouse_id
 
     # AC só enxerga produtos das CMIGs em que é administrador
     ac_cmig_ids: list[int] | None = None
@@ -395,6 +434,9 @@ async def sync_full_stock_for_cmig(
         )
         if allowed.scalar_one_or_none() is None:
             raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
+    elif current_user.role == "go" and cmig.warehouse_id != current_user.warehouse_id:
+        # GO escopado por galpão (isolamento): só a CMIG do próprio galpão.
+        raise HTTPException(status_code=403, detail="CMIG fora do escopo do seu Galpão")
 
     accounts = (
         await db.execute(
@@ -763,6 +805,22 @@ async def stock_snapshots(
         q = q.where(StockSnapshot.cmig_id.in_(ac_cmig_ids))
         q = q.where(StockSnapshot.product_type == "cmig")
 
+    # GO escopado por galpão (isolamento): snapshots de CMIGs do seu galpão (rows cmig)
+    # ou de produtos PG do seu galpão (rows pg). Nunca de outro galpão.
+    if current_user.role == "go":
+        go_cmig_ids = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
+        go_pg_ids = select(CatalogProduct.id).where(
+            CatalogProduct.warehouse_id == current_user.warehouse_id
+        )
+        q = q.where(
+            or_(
+                (StockSnapshot.product_type == "cmig")
+                & StockSnapshot.cmig_id.in_(go_cmig_ids),
+                (StockSnapshot.product_type == "pg")
+                & StockSnapshot.product_id.in_(go_pg_ids),
+            )
+        )
+
     if product_type:
         q = q.where(StockSnapshot.product_type == product_type)
     if product_id:
@@ -845,6 +903,9 @@ async def stock_card(
         )
         if allowed.scalar_one_or_none() is None:
             raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
+    elif current_user.role == "go":
+        # GO escopado por galpão (isolamento): produto precisa ser do seu galpão.
+        await _go_assert_product_in_warehouse(db, product_type, product_id, current_user)
 
     from services.stock_view import get_stock_card
     return await get_stock_card(db, product_type, product_id, account_id=account_id)
@@ -880,6 +941,9 @@ async def product_movements(
         )
         if allowed.scalar_one_or_none() is None:
             raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
+    elif current_user.role == "go":
+        # GO escopado por galpão (isolamento): produto precisa ser do seu galpão.
+        await _go_assert_product_in_warehouse(db, product_type, product_id, current_user)
 
     from models.order import Order
 

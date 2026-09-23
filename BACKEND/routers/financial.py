@@ -90,11 +90,11 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
     if user.role == "admin":
         return cmig
-    if user.role == "ugo":
+    if user.role in ("ugo", "go"):
         if cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         return cmig
-    if user.role in ("ac", "go"):
+    if user.role == "ac":
         admin = (
             await db.execute(
                 select(CMIGAdministrator).where(
@@ -117,11 +117,11 @@ async def list_dre_cmigs(
     """CMIGs visíveis ao usuário para o seletor da DRE."""
     if current_user.role == "admin":
         result = await db.execute(select(CMIG).where(CMIG.is_active == True))  # noqa: E712
-    elif current_user.role == "ugo":
+    elif current_user.role in ("ugo", "go"):
         result = await db.execute(
             select(CMIG).where(CMIG.warehouse_id == current_user.warehouse_id)
         )
-    else:  # ac / go
+    else:  # ac
         subq = select(CMIGAdministrator.cmig_id).where(
             CMIGAdministrator.user_id == current_user.id
         )

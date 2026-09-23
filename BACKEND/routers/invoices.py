@@ -63,7 +63,7 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
     if user.role == "admin":
         return cmig
-    if user.role == "ugo":
+    if user.role in ("ugo", "go"):
         if cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         return cmig
@@ -84,7 +84,7 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG
 async def _accessible_cmig_ids(user: User, db: AsyncSession) -> list[int]:
     if user.role == "admin":
         rows = await db.execute(select(CMIG.id))
-    elif user.role == "ugo":
+    elif user.role in ("ugo", "go"):
         rows = await db.execute(select(CMIG.id).where(CMIG.warehouse_id == user.warehouse_id))
     elif user.role == "ac":
         rows = await db.execute(

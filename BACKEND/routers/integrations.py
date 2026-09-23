@@ -161,6 +161,17 @@ async def list_accounts(
         )
         return [_serialize_account(acc, True) for acc in result.scalars().all() if _visible(acc)]
 
+    # GO escopado por galpão (isolamento): vê as contas cujas CMIGs pertencem ao seu galpão,
+    # e SOMENTE elas (nunca contas de outro galpão).
+    if current_user.role == "go":
+        go_cmig_ids = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
+        result = await db.execute(
+            select(MarketplaceAccount)
+            .where(MarketplaceAccount.cmig_id.in_(go_cmig_ids))
+            .order_by(MarketplaceAccount.created_at)
+        )
+        return [_serialize_account(acc, False) for acc in result.scalars().all() if _visible(acc)]
+
     # Contas com vínculo direto via AccountAdministrator
     result = await db.execute(
         select(MarketplaceAccount, AccountAdministrator.is_owner)

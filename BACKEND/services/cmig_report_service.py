@@ -49,7 +49,7 @@ async def _get_cmig_or_403(db: AsyncSession, cmig_id: int, user: User) -> CMIG:
 
     if user.role == "admin":
         return cmig
-    if user.role == "ugo":
+    if user.role in ("ugo", "go"):
         if cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         return cmig

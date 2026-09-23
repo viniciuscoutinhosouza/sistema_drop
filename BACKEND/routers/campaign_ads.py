@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import services.ml_service as ml_service
 from database import get_db
-from dependencies import get_current_user, require_menu_permission
+from dependencies import require_menu_permission
 from models.cmig import CMIG, CMIGAdministrator
 from models.integration import MarketplaceAccount
 from models.user import User
@@ -36,6 +36,11 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada.")
     if user.role in ("admin", "ugo"):
+        return cmig
+    if user.role == "go":
+        # GO escopado por galpão (isolamento): só a CMIG do próprio galpão.
+        if cmig.warehouse_id != user.warehouse_id:
+            raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG.")
         return cmig
     link = (
         await db.execute(

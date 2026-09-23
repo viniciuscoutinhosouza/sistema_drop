@@ -470,7 +470,7 @@ async def list_available_cmigs(
     """Return CMIGs the current user has access to, for the orders filter dropdown.
 
     - admin: all CMIGs
-    - ugo: CMIGs in their warehouse
+    - ugo/go: CMIGs in their warehouse
     - ac: CMIGs they administer
     """
     from models.cmig import CMIG, CMIGAdministrator
@@ -479,7 +479,7 @@ async def list_available_cmigs(
         result = await db.execute(
             select(CMIG).where(CMIG.is_active == True).order_by(CMIG.trade_name)
         )
-    elif current_user.role == "ugo":
+    elif current_user.role in ("ugo", "go"):
         if not current_user.warehouse_id:
             return {"items": []}
         result = await db.execute(
@@ -532,11 +532,11 @@ async def list_orders(
     if current_user.role == "ac":
         # AC só vê pedidos próprios
         query = query.where(_ac_visible_filter(current_user))
-    elif current_user.role == "ugo":
-        # UGO só vê pedidos das CMIGs do seu galpão
+    elif current_user.role in ("ugo", "go"):
+        # UGO/GO só veem pedidos das CMIGs do seu galpão (isolamento por galpão)
         ugo_cmigs_subq = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
         query = query.where(Order.cmig_id.in_(ugo_cmigs_subq))
-    # admin / go: acesso total
+    # admin: acesso total
 
     # Filtro CMIG explícito (se informado, valida acesso)
     if cmig_id:
@@ -549,7 +549,7 @@ async def list_orders(
             )
             if not access_check.scalar_one_or_none():
                 raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
-        elif current_user.role == "ugo":
+        elif current_user.role in ("ugo", "go"):
             cmig_check = await db.execute(
                 select(CMIG).where(
                     CMIG.id == cmig_id, CMIG.warehouse_id == current_user.warehouse_id
@@ -868,6 +868,12 @@ async def get_order(
     query = select(Order).where(Order.id == order_id)
     if current_user.role in ("ac",):
         query = query.where(_ac_visible_filter(current_user))
+    elif current_user.role == "go":
+        # GO escopado por galpão (isolamento): só vê pedidos das CMIGs do seu galpão.
+        from models.cmig import CMIG
+
+        go_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
+        query = query.where(Order.cmig_id.in_(go_cmigs))
 
     result = await db.execute(query)
     order = result.scalar_one_or_none()
@@ -1207,6 +1213,12 @@ async def update_order_status(
     query = select(Order).where(Order.id == order_id)
     if current_user.role in ("ac",):
         query = query.where(_ac_visible_filter(current_user))
+    elif current_user.role == "go":
+        # GO escopado por galpão (isolamento): só age em pedidos das CMIGs do seu galpão.
+        from models.cmig import CMIG
+
+        go_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
+        query = query.where(Order.cmig_id.in_(go_cmigs))
 
     result = await db.execute(query)
     order = result.scalar_one_or_none()
@@ -1287,6 +1299,12 @@ async def update_order_notes(
     query = select(Order).where(Order.id == order_id)
     if current_user.role in ("ac",):
         query = query.where(_ac_visible_filter(current_user))
+    elif current_user.role == "go":
+        # GO escopado por galpão (isolamento): só age em pedidos das CMIGs do seu galpão.
+        from models.cmig import CMIG
+
+        go_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
+        query = query.where(Order.cmig_id.in_(go_cmigs))
 
     result = await db.execute(query)
     order = result.scalar_one_or_none()
@@ -1321,7 +1339,11 @@ async def _get_order_checked(db: AsyncSession, order_id: int, current_user: User
     if current_user.role == "ac":
         query = query.where(_ac_visible_filter(current_user))
     elif current_user.role == "go":
-        raise HTTPException(status_code=403, detail="GO não tem permissão para esta ação")
+        # GO escopado por galpão, igual ao UGO: só alcança pedidos das CMIGs do seu galpão.
+        from models.cmig import CMIG
+
+        go_cmigs_subq = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
+        query = query.where(Order.cmig_id.in_(go_cmigs_subq))
     result = await db.execute(query)
     order = result.scalar_one_or_none()
     if not order:
@@ -2117,7 +2139,7 @@ async def _backfill_product_links(
     )
     if current_user.role == "ac":
         q = q.where(_ac_visible_filter(current_user))
-    elif current_user.role == "ugo" and current_user.warehouse_id:
+    elif current_user.role in ("ugo", "go") and current_user.warehouse_id:
         from models.cmig import CMIG
         ugo_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
         q = q.where(Order.cmig_id.in_(ugo_cmigs))

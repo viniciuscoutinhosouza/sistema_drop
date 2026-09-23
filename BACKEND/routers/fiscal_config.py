@@ -29,7 +29,7 @@ async def _check_cmig_access(
 
     if user.role == "admin":
         return cmig
-    if user.role == "ugo":
+    if user.role in ("ugo", "go"):
         if cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         if require_owner:
@@ -212,7 +212,7 @@ async def upload_certificate(
 
     O .pfx é gravado em diretório RESTRITO no servidor (fora de static/) e a senha
     é arquivada CIFRADA no banco (Fernet master key). Nada vai para terceiros."""
-    cmig = await _check_cmig_access(cmig_id, current_user, db)
+    await _check_cmig_access(cmig_id, current_user, db)
     if current_user.role not in ("ac", "admin"):
         raise HTTPException(status_code=403, detail="Apenas AC ou admin podem subir certificado")
 

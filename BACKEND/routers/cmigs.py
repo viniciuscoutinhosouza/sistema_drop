@@ -66,7 +66,7 @@ async def _check_cmig_access(cmig: CMIG, user: User, db: AsyncSession, require_o
     """Valida se o usuário pode acessar a CMIG."""
     if user.role == "admin":
         return
-    if user.role == "ugo":
+    if user.role in ("ugo", "go"):
         if cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         if require_owner:
@@ -199,7 +199,7 @@ async def list_cmigs(
     base = select(CMIG) if include_inactive else select(CMIG).where(CMIG.is_active == True)  # noqa: E712
     if current_user.role == "admin":
         result = await db.execute(base)
-    elif current_user.role == "ugo":
+    elif current_user.role in ("ugo", "go"):
         result = await db.execute(base.where(CMIG.warehouse_id == current_user.warehouse_id))
     elif current_user.role == "ac":
         subq = select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == current_user.id)

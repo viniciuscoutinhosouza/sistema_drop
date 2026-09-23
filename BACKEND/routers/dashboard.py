@@ -236,9 +236,9 @@ async def get_marketplace_dashboard(
 
     Pedidos/Faturamento/Full/Flex saem ao vivo da tabela orders.
     Visitas/Perguntas/ADS saem do snapshot marketplace_metrics_daily (ML-only).
-    Conversão = pedidos/visitas. Admin/GO veem tudo; AC/UGO só os próprios pedidos.
+    Conversão = pedidos/visitas. Admin vê tudo; AC/UGO/GO só os próprios pedidos.
     """
-    is_global = current_user.role in ("admin", "go")
+    is_global = current_user.role == "admin"
     now_brt = datetime.now(BRT)
     dt_windows, dd_windows = _date_windows(now_brt)
 
@@ -282,7 +282,7 @@ async def get_marketplace_dashboard(
 
     # Snapshot: contas dentro do escopo do usuário. Se filtro de conta, usa ela;
     # senão, todas as contas que aparecem nos pedidos do escopo (alinha visitas/ads
-    # às mesmas contas que geraram os pedidos). Admin/GO = todas as contas ML.
+    # às mesmas contas que geraram os pedidos). Admin = todas as contas ML.
     snap_filters = ["metric_date >= :d_start", "metric_date <= :d_end"]
     snap_params: dict = {}
     if account_id is not None:

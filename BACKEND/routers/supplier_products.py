@@ -169,7 +169,7 @@ async def list_supplier_products(
     `search` (título/SKU), `simple_only` (exclui compostos — para pickers de componentes de KIT)
     e `limit` são OPCIONAIS: sem eles o comportamento é o de antes (catálogo inteiro).
     """
-    if current_user.role == "ugo" and current_user.warehouse_id:
+    if current_user.role in ("ugo", "go") and current_user.warehouse_id:
         stmt = (
             select(CatalogProduct)
             .options(selectinload(CatalogProduct.images))

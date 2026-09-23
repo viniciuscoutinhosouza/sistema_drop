@@ -3,7 +3,6 @@ Simulador de Custos — Mercado Livre
 Endpoints para calcular comissão, frete e margem líquida de anúncios ML.
 """
 
-from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -34,7 +33,18 @@ async def _get_account_with_token(
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta de marketplace não encontrada")
-    if user.role not in ("admin", "ugo"):
+    if user.role == "go":
+        # GO escopado por galpão (isolamento): a CMIG da conta precisa ser do seu galpão.
+        from models.cmig import CMIG
+
+        cmig_wh = None
+        if account.cmig_id:
+            cmig_wh = (
+                await db.execute(select(CMIG.warehouse_id).where(CMIG.id == account.cmig_id))
+            ).scalar_one_or_none()
+        if cmig_wh is None or cmig_wh != user.warehouse_id:
+            raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")
+    elif user.role not in ("admin", "ugo"):
         admin_ids = {a.user_id for a in account.administrators}
         if user.id not in admin_ids:
             raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")

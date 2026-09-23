@@ -91,8 +91,15 @@ async def list_catalog(
     page: int = Query(1, ge=1),
     page_size: int = Query(16, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     query = select(CatalogProduct).where(CatalogProduct.is_active == True)
+
+    # Isolamento por galpão: o GO (Gestor Operacional) enxerga somente o catálogo
+    # do próprio galpão, exatamente como o UGO. Demais papéis mantêm o comportamento
+    # anterior (admin/ac global). Ver tarefa de isolamento multi-tenant por galpão.
+    if current_user.role == "go" and current_user.warehouse_id:
+        query = query.where(CatalogProduct.warehouse_id == current_user.warehouse_id)
 
     if search:
         query = query.where(

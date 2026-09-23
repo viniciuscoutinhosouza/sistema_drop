@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 from config import get_settings
 from database import get_db
 from dependencies import get_current_user, require_role
-from models.cmig import CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
+from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
 from models.integration import MarketplaceAccount
 from models.product import CatalogProduct, ProductListing, ProductMarketplaceCategory
 from models.user import User
@@ -251,6 +251,17 @@ async def _get_account_or_403(account_id: int, user: User, db: AsyncSession) -> 
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta de marketplace não encontrada")
+    if user.role == "go":
+        # GO escopado por galpão (isolamento): só acessa contas cujas CMIGs pertencem
+        # ao seu galpão. Não recebe o bypass total do UGO.
+        cmig_wh = None
+        if account.cmig_id:
+            cmig_wh = (
+                await db.execute(select(CMIG.warehouse_id).where(CMIG.id == account.cmig_id))
+            ).scalar_one_or_none()
+        if cmig_wh is None or cmig_wh != user.warehouse_id:
+            raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")
+        return account
     if user.role not in ("admin", "ugo"):
         admin_ids = {a.user_id for a in account.administrators}
         if user.id not in admin_ids:
@@ -282,6 +293,19 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
     listing = result.scalar_one_or_none()
     if not listing:
         raise HTTPException(status_code=404, detail="Anúncio não encontrado")
+    if user.role == "go":
+        # GO escopado por galpão (isolamento): só acessa anúncios de contas cujas CMIGs
+        # pertencem ao seu galpão. Não recebe o bypass total do UGO.
+        cmig_wh = None
+        if listing.account and listing.account.cmig_id:
+            cmig_wh = (
+                await db.execute(
+                    select(CMIG.warehouse_id).where(CMIG.id == listing.account.cmig_id)
+                )
+            ).scalar_one_or_none()
+        if cmig_wh is None or cmig_wh != user.warehouse_id:
+            raise HTTPException(status_code=403, detail="Sem acesso a este anúncio")
+        return listing
     if user.role not in ("admin", "ugo"):
         admin_ids = {a.user_id for a in listing.account.administrators}
         if user.id not in admin_ids:
@@ -2282,7 +2306,14 @@ async def create_cmig_product_from_listing(
         raise HTTPException(status_code=400, detail="cmig_id é obrigatório")
 
     # Valida acesso à CMIG
-    if current_user.role not in ("admin", "ugo"):
+    if current_user.role == "go":
+        # GO escopado por galpão (isolamento): a CMIG precisa pertencer ao seu galpão.
+        cmig_wh = (
+            await db.execute(select(CMIG.warehouse_id).where(CMIG.id == cmig_id))
+        ).scalar_one_or_none()
+        if cmig_wh is None or cmig_wh != current_user.warehouse_id:
+            raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
+    elif current_user.role not in ("admin", "ugo"):
         r = await db.execute(
             select(CMIGAdministrator).where(
                 CMIGAdministrator.user_id == current_user.id,
@@ -3291,6 +3322,20 @@ async def _load_listings_for_group(
     for listing in listings:
         if user.role in ("admin", "ugo"):
             continue
+        if user.role == "go":
+            # GO escopado por galpão (isolamento): a CMIG da conta precisa pertencer ao seu galpão.
+            cmig_wh = None
+            if listing.account and listing.account.cmig_id:
+                cmig_wh = (
+                    await db.execute(
+                        select(CMIG.warehouse_id).where(CMIG.id == listing.account.cmig_id)
+                    )
+                ).scalar_one_or_none()
+            if cmig_wh is not None and cmig_wh == user.warehouse_id:
+                continue
+            raise HTTPException(
+                status_code=403, detail=f"Sem acesso ao anúncio #{listing.id}"
+            )
         admin_ids = {a.user_id for a in listing.account.administrators}
         if user.id in admin_ids:
             continue
@@ -6360,7 +6405,16 @@ async def sync_stock_to_marketplace(
         raise HTTPException(status_code=404, detail="Conta não encontrada")
 
     # Verifica acesso do usuário à conta
-    if current_user.role not in ("admin", "ugo"):
+    if current_user.role == "go":
+        # GO escopado por galpão (isolamento): a CMIG da conta precisa pertencer ao seu galpão.
+        cmig_wh = None
+        if account.cmig_id:
+            cmig_wh = (
+                await db.execute(select(CMIG.warehouse_id).where(CMIG.id == account.cmig_id))
+            ).scalar_one_or_none()
+        if cmig_wh is None or cmig_wh != current_user.warehouse_id:
+            raise HTTPException(status_code=403, detail="Acesso negado a esta conta")
+    elif current_user.role not in ("admin", "ugo"):
         from models.user import AccountAdministrator
         admin = (
             await db.execute(
