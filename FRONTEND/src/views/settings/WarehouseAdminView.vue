@@ -133,6 +133,88 @@
                   <input v-model="form.pix_key" class="form-control" placeholder="Chave PIX para receber dos Gestores de Conta" />
                 </div>
               </div>
+              <hr />
+              <h6 class="text-muted text-uppercase mb-3"><small>Marca e Tema</small></h6>
+              <div class="card">
+                <div class="card-body">
+                  <p class="text-sm text-muted mb-3">
+                    As cores e o logo aparecem para os usuários deste Galpão (canto superior esquerdo e menu lateral).
+                    Deixe em branco para usar o padrão do sistema.
+                  </p>
+
+                  <!-- Logo -->
+                  <div class="form-group">
+                    <label>Logo do Galpão</label>
+                    <div v-if="form.id">
+                      <div v-if="form.logo_url" class="d-flex align-items-center mb-2">
+                        <img :src="form.logo_url" alt="Logo" style="max-height:48px; max-width:180px; object-fit:contain;" class="mr-2" />
+                        <button type="button" class="btn btn-sm btn-outline-danger" @click="removeLogo">
+                          <i class="fas fa-trash mr-1"></i>Remover
+                        </button>
+                      </div>
+                      <input
+                        ref="logoInput"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        class="form-control-file"
+                        :disabled="uploadingLogo"
+                        @change="onLogoPicked"
+                      />
+                      <small v-if="uploadingLogo" class="text-muted">
+                        <i class="fas fa-spinner fa-spin mr-1"></i>Enviando…
+                      </small>
+                    </div>
+                    <small v-else class="text-muted d-block">
+                      Salve o galpão primeiro para enviar o logo.
+                    </small>
+                  </div>
+
+                  <!-- Cores -->
+                  <div class="row">
+                    <div class="col-md-4 form-group">
+                      <label>Barra lateral (fundo)</label>
+                      <div class="d-flex align-items-center">
+                        <input type="color" class="mr-2" :value="colorValue('theme_sidebar')" @input="setColor('theme_sidebar', $event)" style="width:44px; height:38px; padding:2px;" />
+                        <code class="mr-2">{{ form.theme_sidebar || '—' }}</code>
+                        <button v-if="form.theme_sidebar" type="button" class="btn btn-sm btn-link text-muted p-0" @click="clearColor('theme_sidebar')">Limpar</button>
+                      </div>
+                    </div>
+                    <div class="col-md-4 form-group">
+                      <label>Destaque (item ativo)</label>
+                      <div class="d-flex align-items-center">
+                        <input type="color" class="mr-2" :value="colorValue('theme_accent')" @input="setColor('theme_accent', $event)" style="width:44px; height:38px; padding:2px;" />
+                        <code class="mr-2">{{ form.theme_accent || '—' }}</code>
+                        <button v-if="form.theme_accent" type="button" class="btn btn-sm btn-link text-muted p-0" @click="clearColor('theme_accent')">Limpar</button>
+                      </div>
+                    </div>
+                    <div class="col-md-4 form-group">
+                      <label>Barra superior</label>
+                      <div class="d-flex align-items-center">
+                        <input type="color" class="mr-2" :value="colorValue('theme_topbar')" @input="setColor('theme_topbar', $event)" style="width:44px; height:38px; padding:2px;" />
+                        <code class="mr-2">{{ form.theme_topbar || '—' }}</code>
+                        <button v-if="form.theme_topbar" type="button" class="btn btn-sm btn-link text-muted p-0" @click="clearColor('theme_topbar')">Limpar</button>
+                      </div>
+                    </div>
+                    <div class="col-md-4 form-group">
+                      <label>Texto da barra lateral</label>
+                      <div class="d-flex align-items-center">
+                        <input type="color" class="mr-2" :value="colorValue('theme_sidebar_text')" @input="setColor('theme_sidebar_text', $event)" style="width:44px; height:38px; padding:2px;" />
+                        <code class="mr-2">{{ form.theme_sidebar_text || '—' }}</code>
+                        <button v-if="form.theme_sidebar_text" type="button" class="btn btn-sm btn-link text-muted p-0" @click="clearColor('theme_sidebar_text')">Limpar</button>
+                      </div>
+                    </div>
+                    <div class="col-md-4 form-group">
+                      <label>Links / realces</label>
+                      <div class="d-flex align-items-center">
+                        <input type="color" class="mr-2" :value="colorValue('theme_link')" @input="setColor('theme_link', $event)" style="width:44px; height:38px; padding:2px;" />
+                        <code class="mr-2">{{ form.theme_link || '—' }}</code>
+                        <button v-if="form.theme_link" type="button" class="btn btn-sm btn-link text-muted p-0" @click="clearColor('theme_link')">Limpar</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div class="form-group">
                 <label>Observações internas</label>
                 <textarea v-model="form.notes" class="form-control" rows="2"></textarea>
@@ -200,6 +282,8 @@ const error = ref('')
 const showForm = ref(false)
 const warehouses = ref([])
 const goes = ref([])
+const uploadingLogo = ref(false)
+const logoInput = ref(null)
 
 function emptyForm() {
   return {
@@ -209,9 +293,59 @@ function emptyForm() {
     zip_code: '', street: '', number: '', complement: '',
     neighborhood: '', city: '', state: '',
     pix_key_type: '', pix_key: '', notes: '',
+    logo_url: '',
+    theme_sidebar: '', theme_accent: '', theme_topbar: '',
+    theme_sidebar_text: '', theme_link: '',
   }
 }
 const form = ref(emptyForm())
+
+async function onLogoPicked(ev) {
+  const file = ev.target?.files?.[0]
+  if (!file) return
+  if (!form.value.id) {
+    toast.warning('Salve o galpão primeiro para enviar o logo.')
+    if (logoInput.value) logoInput.value.value = ''
+    return
+  }
+  uploadingLogo.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const { data } = await api.post(`/warehouse/${form.value.id}/logo`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    form.value.logo_url = data.logo_url || ''
+    toast.success('Logo enviado com sucesso!')
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao enviar o logo')
+  } finally {
+    uploadingLogo.value = false
+    if (logoInput.value) logoInput.value.value = ''
+  }
+}
+
+async function removeLogo() {
+  if (!form.value.id) { form.value.logo_url = ''; return }
+  try {
+    await api.delete(`/warehouse/${form.value.id}/logo`)
+    form.value.logo_url = ''
+    toast.success('Logo removido.')
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao remover o logo')
+  }
+}
+
+// <input type="color"> não aceita vazio; só gravamos a cor quando o usuário mexe.
+function colorValue(field) {
+  return form.value[field] || '#cccccc'
+}
+function setColor(field, ev) {
+  form.value[field] = ev.target.value
+}
+function clearColor(field) {
+  form.value[field] = ''
+}
 
 function goLabel(g) {
   const nome = g.full_name || g.company_name || g.trade_name || `GO #${g.id}`

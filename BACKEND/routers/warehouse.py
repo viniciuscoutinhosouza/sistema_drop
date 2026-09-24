@@ -1,6 +1,8 @@
+import os
 import re
+import uuid as _uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +11,35 @@ from dependencies import get_current_user, require_menu_permission
 from models.go import GO
 from models.user import User
 from models.warehouse import Warehouse
+
+# Upload de logo — só raster (SVG serve inline em /static e viraria XSS). Valida por magic bytes
+# (a extensão do nome do usuário é ignorada — o tipo real vem de _sniff_image_ext).
+_LOGO_DIR = "static/uploads/warehouse-logos"
+_LOGO_MAX_BYTES = 5 * 1024 * 1024
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _norm_color(v) -> str | None:
+    """Cor de tema hex #RRGGBB. None/vazio → None (usa default). Inválido → 400 (falha alto)."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    if not _HEX_RE.match(s):
+        raise HTTPException(status_code=400, detail=f"Cor inválida '{s}' — use o formato #RRGGBB.")
+    return s.lower()
+
+
+def _sniff_image_ext(data: bytes) -> str | None:
+    """Extensão real pelo magic byte (extensão do nome não é confiável). None se não for imagem aceita."""
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
 
 
 def _norm_cep(v) -> str | None:
@@ -87,7 +118,16 @@ def _serialize(w: Warehouse) -> dict:
         "pix_key_type": w.pix_key_type,
         "pix_key": w.pix_key,
         "notes": w.notes,
+        "logo_url": w.logo_url,
+        "theme_sidebar": w.theme_sidebar,
+        "theme_accent": w.theme_accent,
+        "theme_topbar": w.theme_topbar,
+        "theme_sidebar_text": w.theme_sidebar_text,
+        "theme_link": w.theme_link,
     }
+
+
+_THEME_COLOR_FIELDS = ("theme_sidebar", "theme_accent", "theme_topbar", "theme_sidebar_text", "theme_link")
 
 
 @router.get("")
@@ -167,6 +207,11 @@ async def create_warehouse(
         pix_key_type=body.get("pix_key_type"),
         pix_key=body.get("pix_key"),
         notes=body.get("notes"),
+        theme_sidebar=_norm_color(body.get("theme_sidebar")),
+        theme_accent=_norm_color(body.get("theme_accent")),
+        theme_topbar=_norm_color(body.get("theme_topbar")),
+        theme_sidebar_text=_norm_color(body.get("theme_sidebar_text")),
+        theme_link=_norm_color(body.get("theme_link")),
     )
     db.add(warehouse)
     await db.commit()
@@ -197,6 +242,7 @@ async def delete_warehouse(
             detail="Galpão possui usuários ativos. Desvincule-os antes de remover.",
         )
 
+    _delete_logo_file(warehouse.logo_url)  # limpa o arquivo do logo (sem órfão em disco)
     db.delete(warehouse)
     await db.commit()
 
@@ -247,6 +293,82 @@ async def update_warehouse(
                 val = body[field]
             setattr(warehouse, field, val)
 
+    # Cores do tema — validadas (hex #RRGGBB ou None). Inválida falha alto (400).
+    for field in _THEME_COLOR_FIELDS:
+        if field in body:
+            setattr(warehouse, field, _norm_color(body[field]))
+
     await db.commit()
     await db.refresh(warehouse)
     return _serialize(warehouse)
+
+
+@router.post("/{warehouse_id}/logo")
+async def upload_warehouse_logo(
+    warehouse_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
+):
+    """Envia o logo do Galpão (aparece no topo do menu). Só raster (jpg/png/webp), validado por
+    magic bytes; teto de 5 MB; nome com UUID (ignora o nome do usuário — anti path traversal).
+    `go_empresa` é permissão de menu — o acesso ao galpão específico é garantido por
+    `_can_access_warehouse` (nunca sobe logo em galpão de outro dono)."""
+    result = await db.execute(select(Warehouse).where(Warehouse.id == warehouse_id))
+    warehouse = result.scalar_one_or_none()
+    if not warehouse:
+        raise HTTPException(status_code=404, detail="Galpão não encontrado")
+    if not _can_access_warehouse(current_user, warehouse, await _owned_go_id(current_user, db)):
+        raise HTTPException(status_code=403, detail="Acesso negado a este Galpão")
+
+    data = await file.read(_LOGO_MAX_BYTES + 1)
+    if len(data) > _LOGO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Logo muito grande (máx. 5 MB).")
+    ext = _sniff_image_ext(data)
+    if ext is None:
+        raise HTTPException(
+            status_code=400, detail="Arquivo inválido — envie uma imagem JPG, PNG ou WEBP."
+        )
+
+    os.makedirs(_LOGO_DIR, exist_ok=True)
+    filename = f"{_uuid.uuid4().hex}{ext}"
+    with open(f"{_LOGO_DIR}/{filename}", "wb") as out:
+        out.write(data)
+
+    # Remove o logo anterior do disco (best-effort) para não acumular órfãos.
+    _delete_logo_file(warehouse.logo_url)
+
+    warehouse.logo_url = f"/{_LOGO_DIR}/{filename}"
+    await db.commit()
+    return {"logo_url": warehouse.logo_url}
+
+
+@router.delete("/{warehouse_id}/logo", status_code=204)
+async def delete_warehouse_logo(
+    warehouse_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
+):
+    """Remove o logo do Galpão (volta ao padrão MIG)."""
+    result = await db.execute(select(Warehouse).where(Warehouse.id == warehouse_id))
+    warehouse = result.scalar_one_or_none()
+    if not warehouse:
+        raise HTTPException(status_code=404, detail="Galpão não encontrado")
+    if not _can_access_warehouse(current_user, warehouse, await _owned_go_id(current_user, db)):
+        raise HTTPException(status_code=403, detail="Acesso negado a este Galpão")
+    _delete_logo_file(warehouse.logo_url)
+    warehouse.logo_url = None
+    await db.commit()
+
+
+def _delete_logo_file(logo_url: str | None) -> None:
+    """Apaga o arquivo de logo do disco (best-effort). Só toca arquivos dentro de _LOGO_DIR."""
+    if not logo_url:
+        return
+    name = os.path.basename(logo_url)
+    path = os.path.join(_LOGO_DIR, name)
+    try:
+        if name and os.path.commonpath([os.path.abspath(path), os.path.abspath(_LOGO_DIR)]) == os.path.abspath(_LOGO_DIR) and os.path.isfile(path):
+            os.remove(path)
+    except (OSError, ValueError):
+        pass

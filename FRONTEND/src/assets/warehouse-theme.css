@@ -1,0 +1,50 @@
+/* Tema de cor por Galpão (branding por warehouse).
+ * As CSS variables --wh-* são injetadas no <body> por App.vue a partir das cores do galpão do
+ * usuário logado. A classe `wh-themed` só é adicionada quando ao menos uma cor está definida —
+ * então, sem tema configurado, o visual padrão do AdminLTE (MIG) é preservado.
+ * Cada regra usa `var(--wh-x, <default AdminLTE>)`: variável não definida = valor padrão = sem
+ * mudança visual. Aditivo — não reescreve o AdminLTE, só sobrepõe as superfícies do "chrome". */
+
+/* Barra lateral (fundo) + área da marca */
+body.wh-themed .main-sidebar,
+body.wh-themed .brand-link {
+  background-color: var(--wh-sidebar, #343a40) !important;
+}
+
+/* Texto/ícones da barra lateral */
+body.wh-themed .brand-text,
+body.wh-themed .nav-sidebar .nav-link,
+body.wh-themed .nav-sidebar .nav-icon,
+body.wh-themed .user-panel .info a,
+body.wh-themed .user-panel .info span {
+  color: var(--wh-sidebar-text, #c2c7d0) !important;
+}
+
+/* Item ativo / destaque */
+body.wh-themed .nav-sidebar > .nav-item > .nav-link.active,
+body.wh-themed .nav-sidebar .nav-treeview > .nav-item > .nav-link.active {
+  background-color: var(--wh-accent, #007bff) !important;
+  color: #fff !important;
+}
+body.wh-themed .nav-sidebar > .nav-item > .nav-link.active .nav-icon {
+  color: #fff !important;
+}
+
+/* Barra superior (navbar do topo) */
+body.wh-themed .main-header.navbar {
+  background-color: var(--wh-topbar, #ffffff) !important;
+}
+
+/* Links e realces (aplicado onde marcado com .wh-link) */
+body.wh-themed .wh-link,
+body.wh-themed a.wh-accent {
+  color: var(--wh-link, #007bff) !important;
+}
+
+/* Logo no topo: limita a altura pra caber na área da marca */
+.brand-link .brand-image-wh {
+  max-height: 33px;
+  width: auto;
+  margin-right: 0.5rem;
+  opacity: 0.95;
+}

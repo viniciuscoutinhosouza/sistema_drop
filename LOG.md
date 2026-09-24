@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-09-24 — feat(galpao): logo + tema de cor por Galpão (branding por warehouse)
+
+Pedido do dono: no cadastro do Galpão, poder enviar um **logo** (canto superior esquerdo, acima do menu) e até **5 cores** de tema, para o sistema apresentar um visual diferente por Galpão.
+
+- **Backend** — migração 141 (idempotente): `warehouses` ganha `logo_url` + 5 cores (`theme_sidebar/accent/topbar/sidebar_text/link`, hex #RRGGBB). `_serialize` expõe; `create`/`update` aceitam as cores (validadas por `_norm_color`, inválida→400 fail-loud). Endpoints `POST /warehouse/{id}/logo` e `DELETE .../logo`: **só raster** jpg/png/webp validado por **magic bytes** (`_sniff_image_ext` — SVG rejeitado p/ não virar XSS via `/static` inline), teto real de 5 MB, nome com UUID (anti path traversal), gated por `go_empresa` **+ `_can_access_warehouse`** (nunca sobe logo em galpão de outro dono); limpa o arquivo antigo (sem órfão) inclusive no delete do galpão.
+- **Frontend** — `warehouse-theme.css` (CSS vars sobre o AdminLTE, aditivo, ativado por `body.wh-themed`); `ui` store guarda `warehouseTheme`; `App.vue` busca `GET /warehouse/{warehouse_id}` no boot/login (só se houver warehouse_id; 403/sem galpão → padrão MIG) e aplica/limpa as CSS vars **reativamente** (reflete sem F5); `AppSidebar` mostra logo + nome do galpão (fallback "MIG ECOMMERCE"); forms `WarehouseView`/`WarehouseAdminView` ganham seção "Marca e Tema" (upload de logo com preview — só após salvar o galpão — + 5 color pickers com "Limpar"). O tema aparece p/ o **operador** (não só dono), pelo `warehouse_id` dele.
+
+Pré-avaliado (consistency-auditor: pegou SVG/XSS, autorização, limite real) + auditado (quality-guardian + consistency-auditor): **sem CRITICAL/HIGH**. Backend compila + ruff; frontend build OK. Commit `<pendente>`.
+
+---
+
 ## 2026-09-24 — feat(rbac): Devoluções escopadas por galpão (fecha follow-up (a) da ADR-0026)
 
 Fecha o follow-up (a) da unificação Galpão: a Devolução deixou de ser admin-only global e passou a ser **isolada por galpão**. Como `Return` não tem coluna de galpão, o escopo vem por **dois caminhos**: `order_id → Order.cmig_id → CMIG.warehouse_id` OU `devolution_invoice_id → Invoice.cmig_id → CMIG.warehouse_id` (espelha o padrão de `orders.py`).

@@ -7,6 +7,8 @@ import router from './router'
 import 'bootstrap/dist/css/bootstrap.min.css'
 import 'admin-lte/dist/css/adminlte.min.css'
 import '@fortawesome/fontawesome-free/css/all.min.css'
+// Tema de cor por Galpão (sobrepõe o AdminLTE — importar DEPOIS dele)
+import '@/assets/warehouse-theme.css'
 
 // jQuery + Bootstrap JS + AdminLTE JS (required by AdminLTE)
 import $ from 'jquery'

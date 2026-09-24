@@ -30,6 +30,13 @@ class Warehouse(Base):
     pix_key_type = Column(String(20))  # cpf | cnpj | email | phone | random
     pix_key = Column(String(255))
     notes = Column(String(2000))
+    # Branding por Galpão (migration 141): logo + até 5 cores de tema (hex #RRGGBB). NULL = padrão MIG.
+    logo_url = Column(String(500))
+    theme_sidebar = Column(String(7))       # fundo da barra lateral
+    theme_accent = Column(String(7))        # item ativo / destaque
+    theme_topbar = Column(String(7))        # barra superior (navbar)
+    theme_sidebar_text = Column(String(7))  # texto/ícones da barra lateral
+    theme_link = Column(String(7))          # links e realces
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")

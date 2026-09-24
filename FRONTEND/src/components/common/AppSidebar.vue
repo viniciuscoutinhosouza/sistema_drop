@@ -1,8 +1,13 @@
 <template>
   <aside class="main-sidebar sidebar-dark-primary elevation-4">
-    <!-- Brand Logo -->
+    <!-- Brand Logo — logo + nome do Galpão do usuário (fallback MIG ECOMMERCE) -->
     <RouterLink to="/dashboard" class="brand-link">
-      <span class="brand-text font-weight-light"><strong>MIG</strong> ECOMMERCE</span>
+      <img v-if="ui.warehouseTheme?.logo_url" :src="ui.warehouseTheme.logo_url"
+           class="brand-image-wh" alt="Logo do Galpão" />
+      <span class="brand-text font-weight-light">
+        <template v-if="ui.warehouseTheme?.name">{{ ui.warehouseTheme.name }}</template>
+        <template v-else><strong>MIG</strong> ECOMMERCE</template>
+      </span>
     </RouterLink>
 
     <div class="sidebar">
@@ -411,10 +416,12 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useMessagesStore } from '@/stores/messages'
+import { useUiStore } from '@/stores/ui'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const ui = useUiStore()
 
 const messagesStore = useMessagesStore()
 const unreadMessages = computed(() => messagesStore.unreadTotal)
