@@ -27,7 +27,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_permission
 from models.fiscal import NCMCode
 from models.user import User
 
@@ -222,7 +222,7 @@ async def get_ncm(
 # ── CRUD avulso (admin) ───────────────────────────────────────────────────────
 
 
-@router.post("", dependencies=[Depends(require_role("admin"))])
+@router.post("", dependencies=[Depends(require_permission("ncm_gerenciar"))])
 async def create_ncm(body: dict, db: AsyncSession = Depends(get_db)):
     code = _normalize(body.get("code"))
     if not code:
@@ -246,7 +246,7 @@ async def create_ncm(body: dict, db: AsyncSession = Depends(get_db)):
     return _serialize(ncm)
 
 
-@router.patch("/{ncm_id}", dependencies=[Depends(require_role("admin"))])
+@router.patch("/{ncm_id}", dependencies=[Depends(require_permission("ncm_gerenciar"))])
 async def update_ncm(ncm_id: int, body: dict, db: AsyncSession = Depends(get_db)):
     ncm = (
         await db.execute(select(NCMCode).where(NCMCode.id == ncm_id))
@@ -264,7 +264,7 @@ async def update_ncm(ncm_id: int, body: dict, db: AsyncSession = Depends(get_db)
     return _serialize(ncm)
 
 
-@router.delete("/{ncm_id}", dependencies=[Depends(require_role("admin"))])
+@router.delete("/{ncm_id}", dependencies=[Depends(require_permission("ncm_gerenciar"))])
 async def delete_ncm(ncm_id: int, db: AsyncSession = Depends(get_db)):
     ncm = (
         await db.execute(select(NCMCode).where(NCMCode.id == ncm_id))
@@ -454,7 +454,7 @@ async def _fetch_siscomex_json() -> dict:
         )
 
 
-@router.get("/test-siscomex", dependencies=[Depends(require_role("admin"))])
+@router.get("/test-siscomex", dependencies=[Depends(require_permission("ncm_gerenciar"))])
 async def test_siscomex_connectivity():
     """Testa a conectividade com o Portal Único Siscomex sem importar nada.
     Retorna status, tempo de resposta e data de vigência da TEC atual.
@@ -502,7 +502,7 @@ async def test_siscomex_connectivity():
         }
 
 
-@router.post("/sync-siscomex", dependencies=[Depends(require_role("admin"))])
+@router.post("/sync-siscomex", dependencies=[Depends(require_permission("ncm_gerenciar"))])
 async def sync_from_siscomex(
     overwrite: bool = Query(False, description="Atualiza NCMs já existentes"),
     db: AsyncSession = Depends(get_db),
@@ -524,7 +524,7 @@ async def sync_from_siscomex(
 # ── Importação via upload do JSON Siscomex ───────────────────────────────────
 
 
-@router.post("/import-json", dependencies=[Depends(require_role("admin"))])
+@router.post("/import-json", dependencies=[Depends(require_permission("ncm_gerenciar"))])
 async def import_siscomex_json(
     json_file: UploadFile = File(..., description="Arquivo JSON baixado do Portal Único Siscomex"),
     overwrite: bool = Query(False, description="Atualiza NCMs já existentes"),
@@ -596,7 +596,7 @@ async def import_siscomex_json(
 # ── Importação em massa via CSV ───────────────────────────────────────────────
 
 
-@router.post("/import-csv", dependencies=[Depends(require_role("admin"))])
+@router.post("/import-csv", dependencies=[Depends(require_permission("ncm_gerenciar"))])
 async def import_tec_csv(
     csv_file: UploadFile = File(..., description="Arquivo CSV do TEC (separador ; ou ,)"),
     overwrite: bool = Query(False, description="Se True, atualiza registros existentes"),

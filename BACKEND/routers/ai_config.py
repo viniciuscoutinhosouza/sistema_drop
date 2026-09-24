@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import services.ai_service as ai_svc
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_permission
 from models.cmig import CMIG, CMIGAdministrator
 from models.messages import AIConfig, CMIGAIConfig
 from models.user import User
@@ -110,7 +110,7 @@ async def get_ai_config(
 async def update_ai_config(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("ia_config")),
 ):
     """Salva configuração global de IA. Somente admin."""
     provider = body.get("provider", "anthropic")
@@ -168,7 +168,7 @@ async def update_ai_config(
 @router.post("/test")
 async def test_ai_config(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("ia_config")),
 ):
     """Testa a configuração de IA atual enviando uma mensagem simples."""
     result = await db.execute(select(AIConfig))

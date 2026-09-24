@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct, CMIGProductImage, CMIGProductVariant
 from models.integration import MarketplaceAccount
 from models.product import CatalogProduct, ProductListing, ProductMarketplaceCategory
@@ -6044,7 +6044,7 @@ def _audit_snapshot(listing) -> dict:
 async def listar_auditoria_anuncios(
     limit: int = 200,
     account_id: int | None = None,
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("anuncios_admin")),
     db: AsyncSession = Depends(get_db),
 ):
     """Quem apagou anúncios, quando e de onde (só admin).

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from dependencies import get_current_user, require_menu_permission, require_role
+from dependencies import get_current_user, require_menu_permission, require_permission
 from models.cmig import CMIGProduct
 from models.order import OrderItem
 from models.product import (
@@ -605,7 +605,7 @@ async def recalculate_pg_product_stock(
 @router.post("/recalculate-all-stock")
 async def recalculate_all_stock(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("pg_admin")),
 ):
     """ADMIN: recalcula `stock_quantity` de TODOS os CMIGProducts e CatalogProducts.
     Usar após deploy de mudanças que afetam a fórmula de cálculo, ou pra corrigir

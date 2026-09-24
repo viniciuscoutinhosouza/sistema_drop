@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_permission
 from models.fiscal import PlatformCertConfig
 from models.integration import MarketplaceSetting
 from models.user import User
@@ -176,7 +176,7 @@ async def update_marketplace_settings(
     marketplace: str,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("config_marketplace")),
 ):
     """Salva (upsert) o settings_json do marketplace. Apenas Super Admin.
 
@@ -214,7 +214,7 @@ async def update_marketplace_settings(
 async def get_platform_certificate(
     profile_type: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("config_marketplace")),
 ):
     """Status do certificado central do assinante (ex.: 'marketplace_dce'). Super Admin."""
     cfg = (
@@ -246,7 +246,7 @@ async def upload_platform_certificate(
     site: str = Form(None),
     pfx_file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("config_marketplace")),
 ):
     """Upload do A1 CENTRAL do assinante marketplace (ex.: A1 da MIG p/ DC-e). Super Admin.
 
@@ -308,7 +308,7 @@ async def dce_status_check(
     profile_type: str,
     tp_amb: int = 2,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("config_marketplace")),
 ):
     """Smoke da conexão SVRS DC-e: resolve o A1 central e consulta o Status do Serviço.
 

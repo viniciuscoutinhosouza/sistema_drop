@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import require_role
+from dependencies import require_permission
 from models.user import ProfileActionPermission, ProfileMenuPermission, User, UserProfile
 from services.action_permissions import (
     ACTION_PERMISSIONS,
@@ -86,7 +86,7 @@ def _serialize_profile(p: UserProfile) -> dict:
 # ── GET /profiles/menu-keys ──────────────────────────────────────────────────
 @router.get("/menu-keys")
 async def list_menu_keys(
-    _: User = Depends(require_role("admin")),
+    _: User = Depends(require_permission("perfis_gerenciar")),
 ):
     """Retorna o catálogo completo de chaves de menu disponíveis."""
     return MENU_CATALOG
@@ -95,7 +95,7 @@ async def list_menu_keys(
 # ── GET /profiles/action-keys ────────────────────────────────────────────────
 @router.get("/action-keys")
 async def list_action_keys(
-    _: User = Depends(require_role("admin")),
+    _: User = Depends(require_permission("perfis_gerenciar")),
 ):
     """Catálogo de PERMISSÕES DE AÇÃO (o que cada perfil pode fazer — ADR-0025)."""
     return ACTION_PERMISSIONS
@@ -105,7 +105,7 @@ async def list_action_keys(
 @router.get("")
 async def list_profiles(
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("admin")),
+    _: User = Depends(require_permission("perfis_gerenciar")),
 ):
     result = await db.execute(select(UserProfile).order_by(UserProfile.is_system.desc(), UserProfile.name))
     profiles = result.scalars().all()
@@ -117,7 +117,7 @@ async def list_profiles(
 async def create_profile(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("admin")),
+    _: User = Depends(require_permission("perfis_gerenciar")),
 ):
     name = (body.get("name") or "").strip()
     label = (body.get("label") or "").strip()
@@ -167,7 +167,7 @@ async def update_profile(
     profile_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("admin")),
+    _: User = Depends(require_permission("perfis_gerenciar")),
 ):
     result = await db.execute(select(UserProfile).where(UserProfile.id == profile_id))
     profile = result.scalar_one_or_none()
@@ -228,7 +228,7 @@ async def update_profile(
 async def delete_profile(
     profile_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("admin")),
+    _: User = Depends(require_permission("perfis_gerenciar")),
 ):
     result = await db.execute(select(UserProfile).where(UserProfile.id == profile_id))
     profile = result.scalar_one_or_none()
@@ -246,7 +246,7 @@ async def delete_profile(
 async def list_profile_users(
     profile_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_role("admin")),
+    _: User = Depends(require_permission("perfis_gerenciar")),
 ):
     """Lista usuários vinculados a um perfil."""
     from models.user import User as UserModel

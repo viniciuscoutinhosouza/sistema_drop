@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_permission
 from models.go import GO
 from models.user import User
 from models.warehouse import Warehouse
@@ -73,7 +73,7 @@ def _go_to_out(go: GO) -> dict:
 @router.get("", response_model=list[GOOut])
 async def list_goes(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("go_gerenciar")),
 ):
     result = await db.execute(select(GO).options(selectinload(GO.warehouse), selectinload(GO.user)))
     goes = result.scalars().all()
@@ -84,7 +84,7 @@ async def list_goes(
 async def create_go(
     body: GOCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("go_gerenciar")),
 ):
     # Verificar CNPJ duplicado em warehouses
     dup_cnpj = await db.execute(select(Warehouse).where(Warehouse.cnpj == body.cnpj))

@@ -3,7 +3,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_permission
 from models.fiscal import CFOPCode
 from models.user import User
 
@@ -44,7 +44,7 @@ async def list_cfop(
     return [_serialize(r) for r in rows]
 
 
-@router.post("", dependencies=[Depends(require_role("admin"))])
+@router.post("", dependencies=[Depends(require_permission("cfop_gerenciar"))])
 async def create_cfop(
     body: dict,
     db: AsyncSession = Depends(get_db),
@@ -78,7 +78,7 @@ async def create_cfop(
     return _serialize(cfop)
 
 
-@router.patch("/{cfop_id}", dependencies=[Depends(require_role("admin"))])
+@router.patch("/{cfop_id}", dependencies=[Depends(require_permission("cfop_gerenciar"))])
 async def update_cfop(
     cfop_id: int,
     body: dict,
@@ -103,7 +103,7 @@ async def update_cfop(
     return _serialize(cfop)
 
 
-@router.delete("/{cfop_id}", dependencies=[Depends(require_role("admin"))])
+@router.delete("/{cfop_id}", dependencies=[Depends(require_permission("cfop_gerenciar"))])
 async def delete_cfop(
     cfop_id: int,
     db: AsyncSession = Depends(get_db),

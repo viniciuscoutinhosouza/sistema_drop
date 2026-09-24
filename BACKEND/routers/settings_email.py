@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import require_role
+from dependencies import require_permission
 from models.smtp_config import SMTPConfig
 from models.user import User
 from services import email_service
@@ -57,7 +57,7 @@ async def _get_or_create(db: AsyncSession) -> SMTPConfig:
 
 @router.get("")
 async def get_email_config(
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("config_email")),
     db: AsyncSession = Depends(get_db),
 ):
     cfg = (
@@ -69,7 +69,7 @@ async def get_email_config(
 @router.put("")
 async def update_email_config(
     body: dict,
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("config_email")),
     db: AsyncSession = Depends(get_db),
 ):
     cfg = await _get_or_create(db)
@@ -100,7 +100,7 @@ async def update_email_config(
 @router.post("/test")
 async def test_email_config(
     body: dict,
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("config_email")),
     db: AsyncSession = Depends(get_db),
 ):
     """Envia um e-mail de teste para o endereço informado usando a config salva."""

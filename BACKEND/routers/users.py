@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_current_user, require_menu_permission, require_role
+from dependencies import get_current_user, require_menu_permission, require_permission
 from models.cmig import CMIG
 from models.user import AccessPlan, ACProfile, User, UserInvite
 from models.warehouse import Warehouse
@@ -23,7 +23,7 @@ router = APIRouter()
 
 @router.get("/approvals")
 async def list_pending_approvals(
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("usuarios_gerenciar")),
     db: AsyncSession = Depends(get_db),
 ):
     """Fila de usuários que se cadastraram por convite e aguardam liberação do admin."""
@@ -54,7 +54,7 @@ async def list_pending_approvals(
 @router.post("/approvals/{invite_id}/approve")
 async def approve_registration(
     invite_id: int,
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("usuarios_gerenciar")),
     db: AsyncSession = Depends(get_db),
 ):
     """Libera o acesso do usuário cadastrado por convite (ativa o login)."""
@@ -82,7 +82,7 @@ async def approve_registration(
 @router.post("/approvals/{invite_id}/reject")
 async def reject_registration(
     invite_id: int,
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("usuarios_gerenciar")),
     db: AsyncSession = Depends(get_db),
 ):
     """Recusa o cadastro: mantém o usuário inativo e marca o convite como recusado."""
@@ -421,7 +421,7 @@ async def list_plans(
 async def create_plan(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("usuarios_gerenciar")),
 ):
     plan = AccessPlan(
         name=body["name"],
@@ -439,7 +439,7 @@ async def update_plan(
     plan_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("usuarios_gerenciar")),
 ):
     result = await db.execute(select(AccessPlan).where(AccessPlan.id == plan_id))
     plan = result.scalar_one_or_none()

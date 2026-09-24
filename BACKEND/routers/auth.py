@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import get_current_user, require_role
+from dependencies import get_current_user, require_permission
 from models.user import ACProfile, RefreshToken, User, UserProfile
 from schemas.auth import (
     ChangePasswordRequest,
@@ -147,7 +147,7 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
 async def register_ugo(
     body: RegisterUGORequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin", "go")),
+    current_user: User = Depends(require_permission("usuarios_criar")),
 ):
     """Cadastra um novo Operador Logístico (UGO). Admin ou GO podem executar."""
     result = await db.execute(select(User).where(User.email == body.email))
@@ -189,7 +189,7 @@ async def register_ugo(
 async def register_user(
     body: RegisterUserRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin", "go")),
+    current_user: User = Depends(require_permission("usuarios_criar")),
 ):
     """Cadastro unificado de usuário. O perfil de acesso (profile_id) define o papel.
 
@@ -285,7 +285,7 @@ async def register_user(
 async def register_ac(
     body: RegisterACRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ugo", "admin")),
+    current_user: User = Depends(require_permission("criar_ac")),
 ):
     """Cadastra um novo Gestor de Conta (AC). Apenas UGO ou Admin podem executar."""
     result = await db.execute(select(User).where(User.email == body.email))

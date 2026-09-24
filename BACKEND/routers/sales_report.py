@@ -7,7 +7,7 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import require_role
+from dependencies import require_permission
 from models.user import User
 from routers.anuncios import _get_account_or_403
 from services import sales_report_export as export
@@ -44,7 +44,7 @@ async def sales_report(
     account_id: int,
     date_from: date = Query(..., description="Data inicial (inclusiva, fuso BR)"),
     date_to: date = Query(..., description="Data final (inclusiva, fuso BR)"),
-    current_user: User = Depends(require_role("admin", "ac", "go")),
+    current_user: User = Depends(require_permission("relatorio_vendas")),
     db: AsyncSession = Depends(get_db),
 ):
     """Grid de vendas do período por produto + série diária para o gráfico."""
@@ -60,7 +60,7 @@ async def sales_report_refresh(
     account_id: int,
     date_from: date = Query(...),
     date_to: date = Query(...),
-    current_user: User = Depends(require_role("admin", "ac", "go")),
+    current_user: User = Depends(require_permission("relatorio_vendas")),
     db: AsyncSession = Depends(get_db),
 ):
     """Re-sincroniza os pedidos da conta no período e devolve o relatório atualizado."""
@@ -80,7 +80,7 @@ async def sales_report_export_file(
     date_from: date = Query(...),
     date_to: date = Query(...),
     format: str = Query("pdf", pattern="^(pdf|xlsx)$"),
-    current_user: User = Depends(require_role("admin", "ac", "go")),
+    current_user: User = Depends(require_permission("relatorio_vendas")),
     db: AsyncSession = Depends(get_db),
 ):
     """Exporta o relatório do período em PDF ou Excel."""

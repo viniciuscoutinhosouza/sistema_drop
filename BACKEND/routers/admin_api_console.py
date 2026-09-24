@@ -36,7 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from dependencies import require_role
+from dependencies import require_permission
 from models.cmig import CMIG
 from models.integration import MarketplaceAccount
 from models.user import User
@@ -54,7 +54,7 @@ _ESHIP_FUNCAO_RE = re.compile(r"^webService[A-Za-z]+$")
 @router.get("/accounts")
 async def list_all_accounts_for_admin(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("api_console")),
 ):
     """Lista TODAS as contas de marketplace pro Console de API.
 
@@ -84,7 +84,7 @@ async def list_all_accounts_for_admin(
 async def execute_request(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("api_console")),
 ):
     """Encaminha a request para a API do marketplace usando o token da conta."""
     # Import tardio para evitar import circular
@@ -179,7 +179,7 @@ async def execute_request(
         response_body = resp.text
 
     # Filtra response_headers — alguns headers binários ficam estranhos no JSON
-    response_headers = {k: v for k, v in resp.headers.items()}
+    response_headers = dict(resp.headers.items())
 
     return {
         "request_url": str(resp.request.url),
@@ -201,7 +201,7 @@ async def execute_request(
 async def execute_eship_request(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("admin")),
+    current_user: User = Depends(require_permission("api_console")),
 ):
     """Encaminha uma função RPC ao eShip usando as credenciais configuradas da CMIG."""
     from integrations.eship.config import creds_from_cmig
@@ -270,7 +270,7 @@ async def execute_eship_request(
     except ValueError:
         response_body = raw_text
 
-    response_headers = {k: v for k, v in resp.headers.items()}
+    response_headers = dict(resp.headers.items())
 
     return {
         "request_url": request_url,

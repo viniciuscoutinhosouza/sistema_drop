@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db, task_db
-from dependencies import get_current_user, require_menu_permission, require_role
+from dependencies import get_current_user, require_menu_permission, require_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem, NfeInutilizacao
 from models.integration import MarketplaceAccount
@@ -3796,7 +3796,7 @@ async def sync_ml_fiscal(
     period: str = Query(..., regex=r"^\d{6}$"),  # AAAAMM
     cmig_id: int | None = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ac", "admin")),
+    current_user: User = Depends(require_permission("nfe_gerenciar")),
 ):
     """Dispara (em background) a sincronização de TODAS as NF-e do mês das contas ML da
     CMIG via batch do Faturador — grava a sequência completa e move estoque das notas FULL.
@@ -3821,7 +3821,7 @@ async def backfill_ml_fiscal(
     cmig_id: int | None = Query(None),
     months: int = Query(6, ge=1, le=24),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ac", "admin")),
+    current_user: User = Depends(require_permission("nfe_gerenciar")),
 ):
     """Backfill (em background) de TODAS as NF-e dos últimos `months` meses das contas
     ML da CMIG — varre mês a mês do mais recente ao mais antigo (Fase 4). Idempotente:
@@ -4213,7 +4213,7 @@ async def inutilize_nfe_range(
 async def register_manual_inutilizacao(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role("ac", "admin")),
+    current_user: User = Depends(require_permission("nfe_gerenciar")),
 ):
     """Registra uma faixa de numeração inutilizada FORA do sistema — tipicamente uma
     inutilização feita no próprio Mercado Livre (a API do ML não a expõe), para a
