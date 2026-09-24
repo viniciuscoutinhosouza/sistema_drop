@@ -13,7 +13,7 @@ Fecha o follow-up (a) da unificação Galpão: a Devolução deixou de ser admin
 - **Política da órfã** (devolução sem `order_id` e sem `devolution_invoice_id`, ex.: `delete_order` nula o `order_id`): **fail-closed** para o Galpão (não resolve galpão → não vê), mas **visível ao admin** (que vê todas em `list_pending_validation`) e ao **próprio criador** (via `dropshipper_id`) — não some em silêncio.
 - **Frontend** `ReturnListView.vue`: `isUgoOrAdmin` volta a incluir `go` (Galpão reganha a visão de operador: validar, importar XML, ver todas do **seu** escopo). O `all=true` que o front manda é inócuo p/ go (backend só honra `all` p/ admin).
 
-Pré-avaliado + auditado (quality-guardian + consistency-auditor): **sem CRITICAL/HIGH, sem vazamento cross-galpão**; backend compila + ruff limpo; frontend build OK. Commit `<pendente>`.
+Pré-avaliado + auditado (quality-guardian + consistency-auditor): **sem CRITICAL/HIGH, sem vazamento cross-galpão**. Commit `e5e17f0`. **Deployado + verificado ao vivo** (2026-09-24): devolução sintética ligada ao galpão 1 (transação com rollback, zero mudança em produção) — GO do galpão 1 vê e acessa; **GO do galpão 22 não vê nem acessa** (pending-validation: gp1=1, gp22=0). Backend startup limpo, /docs 200; frontend rebuild OK.
 
 ---
 
