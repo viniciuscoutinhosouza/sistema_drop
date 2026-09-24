@@ -117,7 +117,7 @@ async def list_profiles(
 async def create_profile(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_permission("perfis_gerenciar")),
+    current_user: User = Depends(require_permission("perfis_gerenciar")),
 ):
     name = (body.get("name") or "").strip()
     label = (body.get("label") or "").strip()
@@ -128,6 +128,9 @@ async def create_profile(
         raise HTTPException(status_code=422, detail="name e label são obrigatórios")
     if base_role not in ("admin", "ac", "ugo", "go"):
         raise HTTPException(status_code=422, detail="base_role deve ser: admin, ac, ugo ou go")
+    # Escopo admin só pode ser concedido por um admin de verdade (perfis_gerenciar é delegável).
+    if base_role == "admin" and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Somente um admin pode criar perfil com escopo admin")
 
     existing = await db.execute(select(UserProfile).where(UserProfile.name == name))
     if existing.scalar_one_or_none():
@@ -167,7 +170,7 @@ async def update_profile(
     profile_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_permission("perfis_gerenciar")),
+    current_user: User = Depends(require_permission("perfis_gerenciar")),
 ):
     result = await db.execute(select(UserProfile).where(UserProfile.id == profile_id))
     profile = result.scalar_one_or_none()
@@ -182,6 +185,9 @@ async def update_profile(
         new_role = (body["base_role"] or "").strip()
         if new_role not in ("admin", "ac", "ugo", "go"):
             raise HTTPException(status_code=422, detail="base_role deve ser: admin, ac, ugo ou go")
+        # Escopo admin só pode ser concedido por um admin de verdade.
+        if new_role == "admin" and current_user.role != "admin":
+            raise HTTPException(status_code=403, detail="Somente um admin pode conceder escopo admin a um perfil")
         profile.base_role = new_role
 
     if "is_active" in body:
