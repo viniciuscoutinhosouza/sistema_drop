@@ -62,6 +62,22 @@
                   </div>
                 </div>
               </template>
+
+              <!-- Permissões de ação -->
+              <div class="mt-2 pt-2 border-top">
+                <div class="text-muted font-weight-bold mb-1" style="font-size:10px;text-transform:uppercase;letter-spacing:.5px">
+                  <i class="fas fa-key mr-1"></i>Ações ({{ profile.action_keys?.length || 0 }})
+                </div>
+                <div v-if="!profile.action_keys || profile.action_keys.length === 0" class="text-muted" style="font-size:11px">
+                  Nenhuma permissão de ação
+                </div>
+                <div v-else class="d-flex flex-wrap" style="gap:4px">
+                  <span v-for="key in profile.action_keys" :key="key"
+                        class="badge badge-info" style="font-size:10px">
+                    {{ actionLabel(key) }}
+                  </span>
+                </div>
+              </div>
             </div>
 
             <div class="card-footer py-2 d-flex justify-content-end" style="gap:6px">
@@ -120,7 +136,7 @@
                   <option value="go">GO — Gestor Operacional (go)</option>
                   <option value="admin">Admin (admin)</option>
                 </select>
-                <small class="text-muted">Define as permissões de API (require_role)</small>
+                <small class="text-muted">Modo de escopo de dados (galpão/CMIG). O que o perfil <em>faz</em> vem das permissões de ação abaixo.</small>
               </div>
             </div>
           </div>
@@ -146,6 +162,39 @@
                          v-model="modal.form.menu_keys" />
                   <label class="custom-control-label small" :for="`mk_${item.key}`">
                     {{ item.label }}
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Permissões de ação (o que o perfil pode FAZER) -->
+          <hr class="my-3">
+          <div class="font-weight-bold mb-2">
+            <i class="fas fa-key mr-1"></i>Permissões de ação
+            <small class="text-muted ml-2">({{ modal.form.action_keys.length }} de {{ actionCatalog.length }})</small>
+            <button class="btn btn-xs btn-outline-secondary ml-2" @click="selectAllActions">Todas</button>
+            <button class="btn btn-xs btn-outline-secondary ml-1" @click="selectNoneActions">Nenhuma</button>
+          </div>
+          <p class="text-muted small mb-2">
+            Controle fino do que este perfil executa (emitir NF-e, gerenciar usuários, etc.).
+            Independem dos menus visíveis. O papel base define apenas o <em>escopo de dados</em>
+            (galpão/CMIG); admin sempre pode tudo.
+          </p>
+          <div v-for="(items, group) in actionCatalogByGroup" :key="group" class="mb-3">
+            <div class="text-muted font-weight-bold mb-1" style="font-size:11px;text-transform:uppercase;border-bottom:1px solid #dee2e6;padding-bottom:3px">
+              {{ group }}
+            </div>
+            <div class="row">
+              <div v-for="item in items" :key="item.key" class="col-md-6">
+                <div class="custom-control custom-checkbox mb-1">
+                  <input type="checkbox" class="custom-control-input"
+                         :id="`ak_${item.key}`"
+                         :value="item.key"
+                         v-model="modal.form.action_keys" />
+                  <label class="custom-control-label small" :for="`ak_${item.key}`">
+                    {{ item.label }}
+                    <code class="text-muted ml-1" style="font-size:10px">{{ item.key }}</code>
                   </label>
                 </div>
               </div>
@@ -199,6 +248,7 @@ const toast = useToast()
 const profiles = ref([])
 const loading = ref(true)
 const menuCatalog = ref([])   // [{key, label, section}]
+const actionCatalog = ref([]) // [{key, label, group, default_base_roles}]
 
 const deleteTarget = ref(null)
 const deleting = ref(false)
@@ -209,7 +259,7 @@ const modal = reactive({
   editProfile: null,
   saving: false,
   error: '',
-  form: { name: '', label: '', base_role: 'ac', menu_keys: [] },
+  form: { name: '', label: '', base_role: 'ac', menu_keys: [], action_keys: [] },
 })
 
 // ── Agrupamento do catálogo por seção ────────────────────────────────────────
@@ -237,6 +287,21 @@ function menuLabel(key) {
   return menuCatalog.value.find(m => m.key === key)?.label || key
 }
 
+// ── Catálogo de permissões de ação agrupado ──────────────────────────────────
+const actionCatalogByGroup = computed(() => {
+  const groups = {}
+  for (const item of actionCatalog.value) {
+    const g = item.group || 'Geral'
+    if (!groups[g]) groups[g] = []
+    groups[g].push(item)
+  }
+  return groups
+})
+
+function actionLabel(key) {
+  return actionCatalog.value.find(a => a.key === key)?.label || key
+}
+
 function roleLabel(role) {
   return { admin: 'Admin', ac: 'GC', ugo: 'GL', go: 'GO' }[role] || role
 }
@@ -249,12 +314,14 @@ function roleClass(role) {
 async function load() {
   loading.value = true
   try {
-    const [p, m] = await Promise.all([
+    const [p, m, a] = await Promise.all([
       api.get('/profiles'),
       api.get('/profiles/menu-keys'),
+      api.get('/profiles/action-keys'),
     ])
     profiles.value = p.data
     menuCatalog.value = m.data
+    actionCatalog.value = a.data
   } catch (e) {
     toast.error('Erro ao carregar perfis')
   } finally {
@@ -269,7 +336,7 @@ function openCreate() {
   modal.isEdit = false
   modal.editProfile = null
   modal.error = ''
-  modal.form = { name: '', label: '', base_role: 'ac', menu_keys: [] }
+  modal.form = { name: '', label: '', base_role: 'ac', menu_keys: [], action_keys: [] }
   modal.show = true
 }
 
@@ -282,6 +349,7 @@ function openEdit(profile) {
     label: profile.label,
     base_role: profile.base_role,
     menu_keys: [...profile.menu_keys],
+    action_keys: [...(profile.action_keys || [])],
   }
   modal.show = true
 }
@@ -292,6 +360,12 @@ function selectAll() {
 }
 function selectNone() {
   modal.form.menu_keys = []
+}
+function selectAllActions() {
+  modal.form.action_keys = actionCatalog.value.map(a => a.key)
+}
+function selectNoneActions() {
+  modal.form.action_keys = []
 }
 
 // ── Salvar ────────────────────────────────────────────────────────────────────
@@ -308,6 +382,7 @@ async function saveProfile() {
         label: modal.form.label,
         base_role: modal.form.base_role,
         menu_keys: modal.form.menu_keys,
+        action_keys: modal.form.action_keys,
       })
       toast.success('Perfil atualizado com sucesso')
     } else {
