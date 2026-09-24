@@ -180,8 +180,8 @@ async def update_profile(
     if "label" in body:
         profile.label = (body["label"] or "").strip() or profile.label
 
-    # base_role só pode ser alterado em perfis não-sistema
-    if "base_role" in body and not profile.is_system:
+    # base_role (modo de escopo de dados) é editável em qualquer perfil, inclusive de sistema.
+    if "base_role" in body:
         new_role = (body["base_role"] or "").strip()
         if new_role not in ("admin", "ac", "ugo", "go"):
             raise HTTPException(status_code=422, detail="base_role deve ser: admin, ac, ugo ou go")

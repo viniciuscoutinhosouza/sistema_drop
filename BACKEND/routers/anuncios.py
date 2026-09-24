@@ -262,7 +262,7 @@ async def _get_account_or_403(account_id: int, user: User, db: AsyncSession) -> 
         if cmig_wh is None or cmig_wh != user.warehouse_id:
             raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")
         return account
-    if user.role not in ("admin", "ugo"):
+    if user.role != "admin":
         admin_ids = {a.user_id for a in account.administrators}
         if user.id not in admin_ids:
             # Fallback: colaborador CMIG tem acesso a contas vinculadas à sua CMIG
@@ -315,7 +315,7 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
         if cmig_wh is None or cmig_wh != user.warehouse_id:
             raise HTTPException(status_code=403, detail="Sem acesso a este anúncio")
         return listing
-    if user.role not in ("admin", "ugo"):
+    if user.role != "admin":
         admin_ids = {a.user_id for a in listing.account.administrators}
         if user.id not in admin_ids:
             # Fallback: colaborador CMIG tem acesso a anúncios de contas vinculadas à sua CMIG
@@ -2322,7 +2322,7 @@ async def create_cmig_product_from_listing(
         ).scalar_one_or_none()
         if cmig_wh is None or cmig_wh != current_user.warehouse_id:
             raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
-    elif current_user.role not in ("admin", "ugo"):
+    elif current_user.role != "admin":
         r = await db.execute(
             select(CMIGAdministrator).where(
                 CMIGAdministrator.user_id == current_user.id,
@@ -2708,7 +2708,7 @@ async def _load_variation_product(
                 status_code=422,
                 detail=f"Produto PG #{pid} é um KIT — variações exigem produtos simples",
             )
-        if user.role not in ("admin", "ugo") and user.warehouse_id and prod.warehouse_id and prod.warehouse_id != user.warehouse_id:
+        if user.role != "admin" and user.warehouse_id and prod.warehouse_id and prod.warehouse_id != user.warehouse_id:
             raise HTTPException(
                 status_code=403, detail=f"Produto PG #{pid} não pertence ao seu galpão"
             )
@@ -3330,7 +3330,7 @@ async def _load_listings_for_group(
 
     # Valida acesso para cada listing — replica regra de _get_listing_or_404
     for listing in listings:
-        if user.role in ("admin", "ugo"):
+        if user.role == "admin":
             continue
         if user.role == "go":
             # GO escopado por galpão (isolamento): a CMIG da conta precisa pertencer ao seu galpão.
@@ -6426,7 +6426,7 @@ async def sync_stock_to_marketplace(
             ).scalar_one_or_none()
         if cmig_wh is None or cmig_wh != current_user.warehouse_id:
             raise HTTPException(status_code=403, detail="Acesso negado a esta conta")
-    elif current_user.role not in ("admin", "ugo"):
+    elif current_user.role != "admin":
         from models.user import AccountAdministrator
         admin = (
             await db.execute(

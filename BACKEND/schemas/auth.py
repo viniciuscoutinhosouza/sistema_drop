@@ -7,7 +7,7 @@ class LoginRequest(BaseModel):
 
 
 class RegisterUGORequest(BaseModel):
-    """Cadastro de Operador Logístico (UGO) — realizado pelo Admin ou GO."""
+    """Cadastro de operador de Galpão (papel unificado `go`) — realizado pelo Admin ou Galpão."""
 
     full_name: str
     email: EmailStr
@@ -27,7 +27,7 @@ class RegisterUGORequest(BaseModel):
 class RegisterUserRequest(BaseModel):
     """Cadastro unificado de usuário — o perfil de acesso define o papel (base_role).
 
-    Sem perfil informado, o usuário é criado como Operador Logístico (ugo).
+    Sem perfil informado, o usuário é criado como operador de Galpão (papel unificado `go`).
     Campos de AC (cpf/endereço/plano) só são usados quando o perfil tem base_role == 'ac'.
     """
 

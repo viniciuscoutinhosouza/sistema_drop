@@ -869,8 +869,8 @@ function groupTotal(group) {
 }
 const userRole = computed(() => authStore.user?.role || '')
 const canPay = computed(() => ['ac', 'admin'].includes(userRole.value))
-const canUpdateStatus = computed(() => ['ugo', 'admin'].includes(userRole.value))
-const canDelete = computed(() => ['ac', 'ugo', 'admin'].includes(userRole.value))
+const canUpdateStatus = computed(() => ['ugo', 'go', 'admin'].includes(userRole.value))
+const canDelete = computed(() => ['ac', 'ugo', 'go', 'admin'].includes(userRole.value))
 const visiblePages = computed(() => {
   const start = Math.max(1, currentPage.value - 2)
   const end = Math.min(totalPages.value, start + 4)

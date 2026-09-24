@@ -210,18 +210,18 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
-    """Lista usuários. AC lista apenas outros ACs (exceto ele mesmo); UGO lista ACs;
-    GO lista UGOs+ACs do seu galpão; Admin lista todos."""
+    """Lista usuários. AC lista apenas outros ACs (exceto ele mesmo); Galpão (go/ugo) lista os
+    usuários (go/ugo/ac) do PRÓPRIO galpão (isolamento por warehouse_id); Admin lista todos."""
     query = select(User).where(User.is_active == True)
 
     if current_user.role == "ac":
         # AC só pode listar outros ACs (para selecionar colaboradores), excluindo a si mesmo
         query = query.where(User.role == "ac", User.id != current_user.id)
-    elif current_user.role == "ugo":
-        query = query.where(User.role == "ac")
-    elif current_user.role == "go":
+    elif current_user.role in ("go", "ugo"):
+        # Galpão unificado: lista apenas usuários do seu próprio galpão (nunca de outro galpão).
         query = query.where(
-            User.warehouse_id == current_user.warehouse_id, User.role.in_(["ugo", "ac"])
+            User.warehouse_id == current_user.warehouse_id,
+            User.role.in_(["go", "ugo", "ac"]),
         )
     elif role:
         query = query.where(User.role == role)
@@ -330,12 +330,10 @@ async def update_user(
             # role 'go') de enviar ao eShip.
             user.role = profile.base_role
         user.profile_id = new_pid
-        # Se o novo perfil torna o usuário um GO, garante o registro em `goes` (idempotente) —
-        # senão ele seria "usuário GO" sem aparecer como GO (ex.: seletor de "GO dono").
-        if user.role == "go":
-            from services.go_service import ensure_go_record
-
-            await ensure_go_record(user, db)
+        # Unificação Galpão: base_role='go' é o papel do OPERADOR (não do dono). Atribuir um perfil
+        # "Galpão" NÃO deve criar registro em `goes` (senão todo operador viraria "GO-dono" e poluiria
+        # o seletor de dono + o critério de posse em warehouse._owned_go_id). O GO-dono nasce só no
+        # fluxo dedicado goes.py:create_go. Por isso NÃO chamamos ensure_go_record aqui.
 
     await db.commit()
     return {

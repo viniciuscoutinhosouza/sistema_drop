@@ -129,11 +129,9 @@
             <div class="col-md-4">
               <div class="form-group">
                 <label class="font-weight-bold">Papel base (API) <span class="text-danger">*</span></label>
-                <select v-model="modal.form.base_role" class="form-control"
-                        :disabled="modal.isEdit && modal.editProfile?.is_system">
-                  <option value="ac">GC — Gestor de Conta (ac)</option>
-                  <option value="ugo">GL — Gestor Logístico (ugo)</option>
-                  <option value="go">GO — Gestor Operacional (go)</option>
+                <select v-model="modal.form.base_role" class="form-control">
+                  <option value="ac">Conta Loja (ac)</option>
+                  <option value="go">Galpão (go)</option>
                   <option value="admin">Admin (admin)</option>
                 </select>
                 <small class="text-muted">Modo de escopo de dados (galpão/CMIG). O que o perfil <em>faz</em> vem das permissões de ação abaixo.</small>
@@ -303,11 +301,12 @@ function actionLabel(key) {
 }
 
 function roleLabel(role) {
-  return { admin: 'Admin', ac: 'GC', ugo: 'GL', go: 'GO' }[role] || role
+  // `ugo` aposentado na unificação; mapeado para 'Galpão' caso apareça em perfil legado.
+  return { admin: 'Admin', ac: 'Conta Loja', ugo: 'Galpão', go: 'Galpão' }[role] || role
 }
 
 function roleClass(role) {
-  return { admin: 'badge-danger', ac: 'badge-success', ugo: 'badge-info', go: 'badge-warning' }[role] || 'badge-secondary'
+  return { admin: 'badge-danger', ac: 'badge-success', ugo: 'badge-warning', go: 'badge-warning' }[role] || 'badge-secondary'
 }
 
 // ── Carregar dados ───────────────────────────────────────────────────────────

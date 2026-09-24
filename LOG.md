@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-09-24 — feat(rbac): papel único "Galpão" (unifica go+ugo) — ADR-0026 [AGUARDANDO GATE DE PRODUÇÃO]
+
+Sequência do RBAC: o dono pediu para **unificar GO e GL (ugo)** num único papel "Galpão" ("todos os dados de Galpão"), diferenciando dono-vs-operador pelas permissões editáveis (ADR-0025). Decisão de isolamento tomada por ele: **cada Galpão vê só o próprio galpão**.
+
+Investigação (Explore) revelou que `go` era o papel **mais isolado** (por warehouse_id — o fix do vazamento do GO Harmony) e `ugo` o **mais permissivo** (bypass global em ~10 pontos). Avaliação prévia (consistency-auditor) mostrou que era merge estrutural (~15-18 arquivos + migração), não rename, com risco de reabrir o vazamento.
+
+- **Canônico:** valor `go`, rótulo "Galpão"; `ugo` aposentado (mantido no CHECK p/ rollback). Comportamento = **isolado por galpão**; removidos TODOS os bypasses globais do ugo (list_users, returns ?all, recompute global→admin-only, anúncios/eShip/simulador/campanhas→admin-only, com o Galpão caindo no ramo isolado).
+- **Dono-vs-operador = posse de registro em `goes`** (não base_role, não go_id herdado): ponto único `warehouse._owned_go_id`/`_can_access_warehouse` (mais robusto que o antigo `warehouse.go_id==user.go_id`, que vazava galpão irmão). Capacidades do ugo (eShip 14 guards + helpers, import/sync CMIG, desmontar kit) passam a incluir `go`. `ensure_go_record` não é mais disparado por cadastro/edição de operador.
+- **Migração 140** (idempotente, escrita, **não rodada**): role/base_role ugo→go + consolida os 2 perfis-sistema num "Galpão" (união de menus+ações), sem backfill de go_id.
+- **Frontend:** dropdown sem ugo, sidebar/labels "Galpão", computeds, ReturnListView admin-only. Também re-incluídos os itens do pedido anterior: base_role editável ao editar perfil + guard admin (profiles.py) + hardening dos 3 resolvers (tolera >1 perfil-sistema por papel).
+
+Implementado em **worktree isolado** por agente, revisado por mim (corrigi o isolamento owner-vs-operador do warehouse), **auditado** (quality-guardian/consistency/adr): **sem CRITICAL, sem vazamento cross-galpão**; achados HIGH/MÉDIA corrigidos (users.py não auto-promove operador a GO-dono; recompute admin-only no front; warehouse list dono OR próprio galpão; cmigs fail-closed). Backend compila + ruff limpo; **frontend build OK**. Commit `<pendente>`. **NÃO deployado** — a migração 140 (merge de papéis em produção, hard-to-reverse) aguarda o **OK do dono**; código e migração vão juntos (não pode deployar código sem rodar a 140).
+
+---
+
 ## 2026-09-24 — feat(rbac): Gestão de Perfil de Acesso — permissões de ação editáveis (ADR-0025)
 
 **Pedido do dono:** na Gestão de Perfil, poder definir cada item de permissão contido no "Papel Base API" — não ficar preso às 4 opções fixas (admin/ac/ugo/go). Escolheu a **Opção B** (permissões de ação editáveis). Instrução: "siga todas as fases, eu testo no final; a cada fase faça você os testes".

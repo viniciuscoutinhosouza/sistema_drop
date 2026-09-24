@@ -372,7 +372,8 @@ async function confirmImportPg() {
 }
 
 const isAC = computed(() => authStore.user?.role === 'ac')
-const isUGO = computed(() => ['ugo', 'admin'].includes(authStore.user?.role))
+// Galpão (go/ugo) e admin: importar/sincronizar Produto CMIG → PG (ver backend cmigs.py).
+const isUGO = computed(() => ['ugo', 'go', 'admin'].includes(authStore.user?.role))
 
 function setFilter(val) { filter.value = val }
 

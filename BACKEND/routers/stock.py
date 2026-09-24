@@ -679,13 +679,14 @@ async def recompute_all_stock_endpoint(
     """Recalcula stock_quantity de TODOS os produtos a partir dos eventos (NF-e + pedidos),
     reconstrói as reservas e reativa as flags de NF-e de entrada. Roda em background.
 
-    Operação GLOBAL (todas as CMIGs/galpões) — restrita a admin e operador de galpão (UGO).
+    Operação GLOBAL (todas as CMIGs/galpões) — restrita a admin. Por recomputar TODOS os galpões,
+    não cabe ao papel Galpão (isolado por galpão); só admin dispara.
     Também usada após zerar o estoque (SQL 74) para reconstruir os valores canônicos.
     """
-    if current_user.role not in ("admin", "ugo"):
+    if current_user.role != "admin":
         raise HTTPException(
             status_code=403,
-            detail="Apenas admin ou operador de galpão (UGO) podem recalcular o estoque de todos os produtos",
+            detail="Apenas admin pode recalcular o estoque global de todos os produtos/galpões",
         )
     async def _run():
         from services.fiscal.stock_calculator import recompute_all_stock
@@ -1027,11 +1028,11 @@ async def disassemble_kit(
     """Desmontagem MANUAL de KIT (ADR-0023 §montagem, Fase 3): o operador converte N unidades
     MONTADAS do kit (ex.: voltadas do FULL) de volta em componentes soltos.
 
-    −N do KIT, +N×composição de cada componente. Só admin/UGO. Exige unidades montadas suficientes
+    −N do KIT, +N×composição de cada componente. Só admin/Galpão. Exige unidades montadas suficientes
     (`stock_quantity` do kit). Registra os movimentos no extrato dos dois produtos e recomputa.
     """
-    if current_user.role not in ("admin", "ugo"):
-        raise HTTPException(status_code=403, detail="Apenas admin ou operador de galpão (UGO)")
+    if current_user.role not in ("admin", "ugo", "go"):
+        raise HTTPException(status_code=403, detail="Apenas admin ou Galpão")
     qty = int(body.get("quantity") or 0)
     if qty <= 0:
         raise HTTPException(status_code=400, detail="Informe uma quantidade a desmontar (> 0)")

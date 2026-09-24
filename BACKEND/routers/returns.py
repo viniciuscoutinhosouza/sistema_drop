@@ -45,7 +45,7 @@ async def list_returns(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if all and current_user.role in ("ugo", "admin"):
+    if all and current_user.role == "admin":
         query = select(Return)
     else:
         query = select(Return).where(Return.dropshipper_id == current_user.id)
@@ -108,7 +108,7 @@ async def get_return(
     ret = result.scalar_one_or_none()
     if not ret:
         raise HTTPException(status_code=404, detail="Devolução não encontrada")
-    if current_user.role not in ("ugo", "admin") and ret.dropshipper_id != current_user.id:
+    if current_user.role != "admin" and ret.dropshipper_id != current_user.id:
         raise HTTPException(status_code=403, detail="Acesso negado")
     return _serialize(ret)
 

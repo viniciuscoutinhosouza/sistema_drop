@@ -1,9 +1,13 @@
-"""Consistência do Gestor Operacional (GO).
+"""Consistência do Gestor Operacional (GO) dono.
 
-Um usuário com papel `go` precisa ter um registro na tabela `goes` para ser reconhecido como GO
-(ex.: aparecer no seletor de "GO dono" do galpão). Criar o usuário pela tela de Usuários setava só
-`user.role='go'` e deixava o registro de GO faltando. Este helper fecha essa lacuna: sempre que um
-usuário passa a ter papel GO, garante o registro correspondente (idempotente).
+ATENÇÃO — após a unificação Galpão, o papel `go` é o papel do OPERADOR de galpão (papel unificado
+que substituiu o antigo `ugo`). Ter papel `go` NÃO significa ser GO-dono. O GO-dono é definido pelo
+registro em `goes` + permissões de perfil (menus `go_empresa`/`go_usuarios`), não pelo base_role.
+
+Por isso este helper NÃO deve ser disparado por cadastro de operador (auth.register_user/register_ugo
+não o chamam mais). Ele é usado apenas quando um admin PROMOVE explicitamente um usuário a GO-dono
+(routers/users.py update, admin-gated). O fluxo dedicado routers/goes.py:create_go cria o `GO`
+diretamente, sem passar por aqui. Mantém idempotência para esse caminho de promoção.
 """
 from __future__ import annotations
 

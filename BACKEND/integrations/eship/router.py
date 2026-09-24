@@ -27,12 +27,12 @@ router = APIRouter()
 async def _assert_cmig_access(db: AsyncSession, cmig: CMIG, user: User) -> None:
     """Garante que o usuário pode acessar a CMIG (mesmo critério de routers.cmigs).
 
-    admin → tudo; ugo → CMIG do seu galpão; ac → CMIG que administra.
+    admin → tudo; Galpão (go/ugo) → CMIG do seu galpão; ac → CMIG que administra.
     """
     if user.role == "admin":
         return
-    if user.role == "ugo":
-        # warehouse_id nulo (ugo sem galpão / CMIG órfã) NÃO concede acesso.
+    if user.role in ("ugo", "go"):
+        # warehouse_id nulo (Galpão sem galpão / CMIG órfã) NÃO concede acesso.
         if not user.warehouse_id or cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         return
@@ -54,9 +54,9 @@ async def _accessible_cmig_ids(db: AsyncSession, user: User) -> set[int] | None:
     """IDs de CMIG que o usuário pode ver. None = todas (admin)."""
     if user.role == "admin":
         return None
-    if user.role == "ugo":
+    if user.role in ("ugo", "go"):
         if not user.warehouse_id:
-            return set()  # ugo sem galpão não vê nenhuma CMIG
+            return set()  # Galpão sem galpão não vê nenhuma CMIG
         rows = (
             await db.execute(select(CMIG.id).where(CMIG.warehouse_id == user.warehouse_id))
         ).all()
@@ -103,7 +103,7 @@ async def eship_enabled(
 
 @router.get("/cmigs")
 async def list_cmig_integrations(
-    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    current_user: User = Depends(require_role("admin", "ugo", "go", "ac")),
     db: AsyncSession = Depends(get_db),
 ):
     """Lista CMIGs ACESSÍVEIS ao usuário com o status da integração eShip (apikey nunca exposta)."""
@@ -138,7 +138,7 @@ def _num_origem_key(o: Order) -> str:
 @router.get("/cmigs/{cmig_id}/reconciliacao")
 async def eship_reconciliation(
     cmig_id: int,
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
     db: AsyncSession = Depends(get_db),
 ):
     """Concilia, para uma CMIG, os pedidos que o SISTEMA enviou ao eShip com as ordens que estão
@@ -276,7 +276,7 @@ async def eship_reconciliation(
 
 @router.get("/reconciliacao")
 async def eship_reconciliation_all(
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
     db: AsyncSession = Depends(get_db),
 ):
     """Conciliação CONSOLIDADA: todos os pedidos enviados ao eShip × ordens no WMS, de TODAS as
@@ -416,7 +416,7 @@ async def list_eship_products_endpoint(
     page: int = 1,
     all: bool = False,
     refresh: bool = False,
-    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    current_user: User = Depends(require_role("admin", "ugo", "go", "ac")),
     db: AsyncSession = Depends(get_db),
 ):
     """Lista os produtos cadastrados no eShip (WMS) com info + estoque.
@@ -440,7 +440,7 @@ async def list_eship_products_endpoint(
 async def export_eship_products_endpoint(
     cmig_id: int,
     format: str = Query("pdf", pattern="^(pdf|xlsx)$"),
-    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    current_user: User = Depends(require_role("admin", "ugo", "go", "ac")),
     db: AsyncSession = Depends(get_db),
 ):
     """Exporta os produtos da empresa (com estoque) em PDF ou Excel."""
@@ -476,7 +476,7 @@ async def export_eship_products_endpoint(
 async def get_saldo(
     cmig_id: int,
     sku: str | None = None,
-    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    current_user: User = Depends(require_role("admin", "ugo", "go", "ac")),
     db: AsyncSession = Depends(get_db),
 ):
     """Consulta o saldo de estoque no eShip (WMS = fonte de verdade do físico)."""
@@ -493,7 +493,7 @@ async def get_saldo(
 @router.post("/cmigs/{cmig_id}/push-products")
 async def push_cmig_products_endpoint(
     cmig_id: int,
-    current_user: User = Depends(require_role("admin", "ugo", "ac")),
+    current_user: User = Depends(require_role("admin", "ugo", "go", "ac")),
     db: AsyncSession = Depends(get_db),
 ):
     """Cadastra/atualiza em lote o catálogo da CMIG no eShip (WMS). Idempotente por SKU."""
@@ -573,7 +573,7 @@ async def _load_order(db: AsyncSession, order_id: int, user: User) -> Order:
 @router.get("/orders/{order_id}/preview-ordem")
 async def preview_ordem_endpoint(
     order_id: int,
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
     db: AsyncSession = Depends(get_db),
 ):
     """Prévia (debug) do webServicePostOrdem que o envio faria — payload + curl, sem executar."""
@@ -587,7 +587,7 @@ async def preview_ordem_endpoint(
 @router.get("/orders/{order_id}/eship-ordem")
 async def get_eship_ordem(
     order_id: int,
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
     db: AsyncSession = Depends(get_db),
 ):
     """Detalhe da ordem GRAVADA no eShip — alimenta o modal de conferência do pedido.
@@ -615,7 +615,7 @@ async def get_eship_ordem(
 @router.get("/orders/{order_id}/eship-anexos")
 async def get_eship_anexos(
     order_id: int,
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
     db: AsyncSession = Depends(get_db),
 ):
     """Arquivos ANEXADOS na ordem, consultados no eShip (webServiceGetAnexosOrdem).
@@ -633,7 +633,7 @@ async def get_eship_anexos(
 @router.post("/orders/{order_id}/send")
 async def send_order_endpoint(
     order_id: int,
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
     db: AsyncSession = Depends(get_db),
 ):
     """Envio completo ao eShip: Ordem + NF-e (XML) + Etiqueta (ZPL e PDF).
@@ -658,7 +658,7 @@ async def send_order_endpoint(
 @router.post("/orders/{order_id}/sync")
 async def sync_order_endpoint(
     order_id: int,
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
     db: AsyncSession = Depends(get_db),
 ):
     """Sincroniza o status de um pedido específico com o eShip."""
@@ -673,7 +673,7 @@ async def sync_order_endpoint(
 @router.post("/orders/{order_id}/cancel")
 async def cancel_order_endpoint(
     order_id: int,
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
     db: AsyncSession = Depends(get_db),
 ):
     """Cancela a ordem no eShip."""
@@ -688,7 +688,7 @@ async def cancel_order_endpoint(
 @router.get("/orders/{order_id}/falhas")
 async def order_falhas_endpoint(
     order_id: int,
-    current_user: User = Depends(require_role("admin", "ugo")),
+    current_user: User = Depends(require_role("admin", "ugo", "go")),
     db: AsyncSession = Depends(get_db),
 ):
     """Consulta falhas de processamento da ordem no eShip."""

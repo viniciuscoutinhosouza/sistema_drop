@@ -23,10 +23,10 @@ ACTION_PERMISSIONS: list[dict] = [
     {"key": "api_console", "label": "Console de API (diagnóstico)", "group": "Administração",
      "default_base_roles": ["admin"]},
     # Usuários — criação (endpoints distintos por papel)
-    {"key": "usuarios_criar", "label": "Cadastrar usuário / UGO", "group": "Usuários",
+    {"key": "usuarios_criar", "label": "Cadastrar usuário (Galpão)", "group": "Usuários",
      "default_base_roles": ["admin", "go"]},
     {"key": "criar_ac", "label": "Cadastrar Gestor de Conta (AC)", "group": "Usuários",
-     "default_base_roles": ["admin", "ugo"]},
+     "default_base_roles": ["admin", "go"]},
     # Fiscal
     {"key": "nfe_gerenciar", "label": "Ações fiscais de NF-e (finalizar/cancelar/inutilizar)",
      "group": "Fiscal", "default_base_roles": ["ac", "admin"]},

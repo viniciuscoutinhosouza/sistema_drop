@@ -90,9 +90,9 @@ async def _resolve_user_menu_permissions(user: User, db: AsyncSession) -> tuple[
                 UserProfile.base_role == user.role,
                 UserProfile.is_system == 1,
                 UserProfile.is_active == 1,
-            )
+            ).order_by(UserProfile.id)
         )
-        up = r.scalar_one_or_none()
+        up = r.scalars().first()  # tolera >1 perfil de sistema por papel (pega o mais antigo)
         if up:
             keys = sorted([m.menu_key for m in (up.menu_permissions or [])])
             return up.id, up.label, keys
@@ -149,12 +149,13 @@ async def register_ugo(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("usuarios_criar")),
 ):
-    """Cadastra um novo Operador Logístico (UGO). Admin ou GO podem executar."""
+    """Cadastra um novo operador de Galpão (papel unificado `go`). Admin ou Galpão podem executar."""
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="E-mail já cadastrado")
 
-    # GO só pode criar UGO em seus próprios Galpões
+    # O Galpão dono só cria operadores em seus próprios Galpões; o operador herda o go_id do dono
+    # (necessário para o isolamento/gestão por galpão). NÃO gera registro em `goes` (não é dono).
     warehouse_id = body.warehouse_id
     go_id = current_user.go_id if current_user.role == "go" else None
 
@@ -163,7 +164,7 @@ async def register_ugo(
         password_hash=hash_password(body.password),
         full_name=body.full_name,
         whatsapp=body.whatsapp,
-        role="ugo",
+        role="go",
         warehouse_id=warehouse_id,
         go_id=go_id,
     )
@@ -193,15 +194,15 @@ async def register_user(
 ):
     """Cadastro unificado de usuário. O perfil de acesso (profile_id) define o papel.
 
-    Sem perfil → criado como Operador Logístico (ugo). Admin ou GO podem executar,
-    mas apenas o admin pode criar usuários com papel admin ou go.
+    Sem perfil → criado como operador de Galpão (papel unificado `go`). Admin ou Galpão podem
+    executar, mas apenas o admin pode criar usuários com papel admin.
     """
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="E-mail já cadastrado")
 
     # Resolve o perfil de acesso → define o papel (base_role)
-    role = "ugo"
+    role = "go"
     profile_id = None
     if body.profile_id is not None:
         prof_result = await db.execute(
@@ -215,8 +216,9 @@ async def register_user(
         role = profile.base_role
         profile_id = profile.id
 
-    # GO não pode escalar privilégio criando admin ou outro go
-    if current_user.role != "admin" and role in ("admin", "go"):
+    # O Galpão pode criar operadores do seu galpão (papel `go`), mas NÃO pode escalar para admin.
+    # (GO-dono não é mais um papel — é o registro em `goes` + permissões de perfil; ver goes.py.)
+    if current_user.role != "admin" and role == "admin":
         raise HTTPException(
             status_code=403, detail="Sem permissão para criar usuários com este perfil"
         )
@@ -264,11 +266,10 @@ async def register_user(
                 plan_id=body.plan_id,
             )
         )
-    # GO precisa de um registro em `goes` para ser um GO de verdade (aparecer como "GO dono" etc.).
-    if role == "go":
-        from services.go_service import ensure_go_record
-
-        await ensure_go_record(user, db)
+    # Unificação Galpão: o papel `go` agora é o operador de galpão (default deste cadastro), NÃO o
+    # GO-dono. Por isso NÃO criamos registro em `goes` aqui — senão todo operador viraria "GO dono"
+    # e poluiria o seletor de dono. O registro em `goes` nasce só no fluxo dedicado (routers/goes.py
+    # create_go) e na promoção por admin (routers/users.py update, admin-gated). Ver services/go_service.
 
     try:
         await db.commit()

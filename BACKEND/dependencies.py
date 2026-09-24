@@ -67,9 +67,9 @@ async def _resolve_user_menu_keys(user: User, db: AsyncSession) -> set[str]:
                 UserProfile.base_role == user.role,
                 UserProfile.is_system == 1,
                 UserProfile.is_active == 1,
-            )
+            ).order_by(UserProfile.id)
         )
-        up = r.scalar_one_or_none()
+        up = r.scalars().first()  # tolera >1 perfil de sistema por papel (pega o mais antigo)
         if up:
             return {m.menu_key for m in (up.menu_permissions or [])}
 
@@ -114,9 +114,9 @@ async def _resolve_user_action_keys(user: User, db: AsyncSession) -> set[str]:
                 UserProfile.base_role == user.role,
                 UserProfile.is_system == 1,
                 UserProfile.is_active == 1,
-            )
+            ).order_by(UserProfile.id)
         )
-        up = r.scalar_one_or_none()
+        up = r.scalars().first()  # tolera >1 perfil de sistema por papel (pega o mais antigo)
         if up:
             return {a.permission_key for a in (up.action_permissions or [])}
     return set()
@@ -168,26 +168,6 @@ async def get_active_ac(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="Mensalidade vencida. Regularize seu plano para continuar.",
         )
-    return current_user
-
-
-async def get_active_ugo(
-    current_user: User = Depends(get_current_user),
-) -> User:
-    """Retorna o usuário atual se for um Operador Logístico (UGO) ativo."""
-    if current_user.role not in ("ugo", "admin"):
-        raise HTTPException(
-            status_code=403, detail="Acesso apenas para Operadores Logísticos (UGO)"
-        )
-    return current_user
-
-
-async def get_ac_or_ugo(
-    current_user: User = Depends(get_current_user),
-) -> User:
-    """Permite acesso tanto para AC quanto para UGO/admin."""
-    if current_user.role not in ("ac", "ugo", "admin"):
-        raise HTTPException(status_code=403, detail="Acesso não autorizado")
     return current_user
 
 

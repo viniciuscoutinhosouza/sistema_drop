@@ -67,7 +67,9 @@ async def _check_cmig_access(cmig: CMIG, user: User, db: AsyncSession, require_o
     if user.role == "admin":
         return
     if user.role in ("ugo", "go"):
-        if cmig.warehouse_id != user.warehouse_id:
+        # Fail-closed: Galpão sem warehouse_id (ou CMIG órfã) NÃO concede acesso — senão
+        # None != None seria False e liberaria CMIG sem galpão (vazamento entre galpões).
+        if not user.warehouse_id or cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         if require_owner:
             raise HTTPException(
@@ -851,9 +853,13 @@ async def create_cmig_product(
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
 
+    # Guard legado do antigo papel `ugo` (aposentado na unificação Galpão): o Galpão
+    # unificado usa o papel `go`, que MANTÉM a capacidade de criar Produtos CMIG do seu
+    # galpão (escopo garantido por _check_cmig_access acima). Não converter para `go` aqui —
+    # bloquearia a capacidade canônica. Mantido apenas por segurança/rollback.
     if current_user.role == "ugo":
         raise HTTPException(
-            status_code=403, detail="UGO não pode criar Produtos CMIG. Use importação de PG."
+            status_code=403, detail="Este papel não pode criar Produtos CMIG. Use importação de PG."
         )
 
     dup = await db.execute(
@@ -1406,12 +1412,12 @@ async def import_cmig_product_to_pg(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """UGO importa um Produto CMIG para o PG do seu Galpão (um a um)."""
+    """O Galpão importa um Produto CMIG para o PG do seu Galpão (um a um)."""
     import json as _json_imp
 
-    if current_user.role not in ("ugo", "admin"):
+    if current_user.role not in ("ugo", "admin", "go"):
         raise HTTPException(
-            status_code=403, detail="Apenas UGO pode importar Produtos CMIG para o PG"
+            status_code=403, detail="Apenas o Galpão pode importar Produtos CMIG para o PG"
         )
 
     cmig = await _get_cmig_or_404(cmig_id, db)
@@ -1540,9 +1546,9 @@ async def sync_pg_from_cmig(
     current_user: User = Depends(get_current_user),
 ):
     """Atualiza os campos do PG vinculado com os dados atuais do Produto CMIG."""
-    if current_user.role not in ("ugo", "admin"):
+    if current_user.role not in ("ugo", "admin", "go"):
         raise HTTPException(
-            status_code=403, detail="Apenas UGO pode sincronizar Produtos CMIG com PG"
+            status_code=403, detail="Apenas o Galpão pode sincronizar Produtos CMIG com PG"
         )
 
     cmig = await _get_cmig_or_404(cmig_id, db)

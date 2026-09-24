@@ -365,8 +365,9 @@ const loadingMovements = ref(false)
 const syncingFull = ref(false)
 const exporting = ref(false)
 const recalculatingAll = ref(false)
-// Recálculo GLOBAL de estoque — restrito a admin e operador de galpão (UGO).
-const canRecalcAll = computed(() => ['admin', 'ugo'].includes(role.value))
+// Recálculo GLOBAL de estoque — por ser global (todos os galpões) é restrito a admin (bate com
+// o backend stock.py recompute_all_stock_endpoint, que agora nega qualquer papel != admin).
+const canRecalcAll = computed(() => role.value === 'admin')
 
 async function recalcAllStock() {
   if (recalculatingAll.value) return

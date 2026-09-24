@@ -10,7 +10,7 @@
       <div class="d-flex align-items-center gap-2">
         <select v-model="filterRole" class="form-control form-control-sm" style="width:180px">
           <option value="">Todos os perfis</option>
-          <option value="ugo">Operador Logístico</option>
+          <option value="go">Galpão</option>
           <option value="ac">Gestor de Conta</option>
         </select>
         <input v-model="search" class="form-control form-control-sm ml-2" placeholder="Buscar nome ou e-mail…" style="width:220px" />
@@ -82,7 +82,7 @@
             <h5 class="modal-title">
               <i class="fas fa-user-edit mr-2"></i>
               <template v-if="modal.editing">
-                Editar {{ modal.type === 'ugo' ? 'Operador Logístico (UGO)' : 'Gestor de Conta (AC)' }}
+                Editar {{ modal.type === 'ac' ? 'Gestor de Conta (AC)' : 'Galpão' }}
               </template>
               <template v-else>Novo Usuário</template>
             </h5>
@@ -278,9 +278,9 @@ const form = ref(formDefault())
 
 // No cadastro, o papel efetivo do novo usuário vem do perfil selecionado (base_role).
 const createBaseRole = computed(() => {
-  if (!form.value.profile_id) return 'ugo'
+  if (!form.value.profile_id) return 'go'
   const p = profiles.value.find(p => p.id === Number(form.value.profile_id))
-  return p ? p.base_role : 'ugo'
+  return p ? p.base_role : 'go'
 })
 
 const filteredUsers = computed(() => {
@@ -441,11 +441,11 @@ async function lookupCep() {
 }
 
 function roleLabel(r) {
-  return { admin: 'Administrador', ugo: 'Op. Logístico', ac: 'Gestor de Conta', go: 'Gestor Op.' }[r] || r
+  return { admin: 'Administrador', ugo: 'Galpão', ac: 'Gestor de Conta', go: 'Galpão' }[r] || r
 }
 
 function roleBadge(r) {
-  return { admin: 'badge badge-dark', ugo: 'badge badge-warning', ac: 'badge badge-info', go: 'badge badge-success' }[r] || 'badge badge-secondary'
+  return { admin: 'badge badge-dark', ugo: 'badge badge-success', ac: 'badge badge-info', go: 'badge badge-success' }[r] || 'badge badge-secondary'
 }
 
 // Quando há perfil de acesso atribuído, exibe o label dele (sobrepõe o papel padrão).

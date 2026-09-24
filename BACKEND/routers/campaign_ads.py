@@ -31,11 +31,11 @@ MAX_RANGE_DAYS = 90  # Limite da API de Mercado Ads.
 
 
 async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG:
-    """Garante que o usuário pode ver a CMIG (admin/ugo bypass; senão CMIGAdministrator)."""
+    """Garante que o usuário pode ver a CMIG (admin bypass; Galpão escopado; senão CMIGAdministrator)."""
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada.")
-    if user.role in ("admin", "ugo"):
+    if user.role == "admin":
         return cmig
     if user.role == "go":
         # GO escopado por galpão (isolamento): só a CMIG do próprio galpão.

@@ -44,7 +44,7 @@ async def _get_account_with_token(
             ).scalar_one_or_none()
         if cmig_wh is None or cmig_wh != user.warehouse_id:
             raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")
-    elif user.role not in ("admin", "ugo"):
+    elif user.role != "admin":
         admin_ids = {a.user_id for a in account.administrators}
         if user.id not in admin_ids:
             raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")

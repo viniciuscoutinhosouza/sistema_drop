@@ -1,11 +1,12 @@
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user, require_menu_permission
+from models.go import GO
 from models.user import User
 from models.warehouse import Warehouse
 
@@ -31,6 +32,37 @@ def _norm_work_type(v) -> str:
     return v
 
 router = APIRouter()
+
+
+async def _owned_go_id(user: User, db: AsyncSession) -> int | None:
+    """Retorna o id do GO que o usuário é DONO (registro em `goes` com `user_id == user.id`), ou None.
+
+    É o único sinal confiável de "dono do galpão": ter papel `go` NÃO basta (é o papel unificado do
+    operador também) e ter `go_id` setado também não (operadores herdam o go_id do dono). Só é dono
+    quem POSSUI o registro em `goes`. Isolamento: operador (não-dono) nunca alcança galpão irmão.
+    """
+    if user.role == "admin":
+        return None
+    r = await db.execute(select(GO.id).where(GO.user_id == user.id))
+    return r.scalar_one_or_none()
+
+
+def _can_access_warehouse(user: User, warehouse: Warehouse, owned_go_id: int | None) -> bool:
+    """Isolamento por galpão para a GESTÃO de galpão (get/update/delete).
+
+    admin → tudo. Caso contrário, o usuário só alcança:
+      - o galpão vinculado a ele (`warehouse.id == user.warehouse_id`), OU
+      - qualquer galpão do GO que ELE é DONO (`owned_go_id` de `_owned_go_id`) — dono multi-galpão.
+    NUNCA um galpão de outro dono. Operador (não é dono de GO) fica restrito ao próprio warehouse_id
+    mesmo que tenha `go_id` herdado.
+    """
+    if user.role == "admin":
+        return True
+    if user.warehouse_id is not None and warehouse.id == user.warehouse_id:
+        return True
+    if owned_go_id is not None and warehouse.go_id == owned_go_id:
+        return True
+    return False
 
 
 def _serialize(w: Warehouse) -> dict:
@@ -63,14 +95,22 @@ async def list_warehouses(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Lista galpões. Admin vê todos; GO vê os seus; UGO/AC vê apenas o seu."""
+    """Lista galpões. Admin vê todos; Galpão-DONO (possui registro em `goes`) vê os galpões do seu
+    GO; operador/AC vê apenas o galpão vinculado. Isolamento por galpão — nunca galpão de outro dono
+    (operador não-dono NÃO vê galpão irmão mesmo com go_id herdado)."""
     if current_user.role == "admin":
         result = await db.execute(select(Warehouse))
         return [_serialize(w) for w in result.scalars().all()]
-    if current_user.role == "go":
-        result = await db.execute(select(Warehouse).where(Warehouse.go_id == current_user.go_id))
+    # Galpão-DONO multi-galpão: lista os galpões do GO que ele é dono + o próprio galpão vinculado
+    # (o OR com warehouse_id evita "galpão sumido" caso o vínculo go_id do galpão esteja divergente).
+    owned_go_id = await _owned_go_id(current_user, db)
+    if owned_go_id is not None:
+        conds = [Warehouse.go_id == owned_go_id]
+        if current_user.warehouse_id:
+            conds.append(Warehouse.id == current_user.warehouse_id)
+        result = await db.execute(select(Warehouse).where(or_(*conds)))
         return [_serialize(w) for w in result.scalars().all()]
-    # UGO ou AC — retorna apenas o galpão vinculado (lista com 0 ou 1 item)
+    # Operador (não é dono de GO) ou AC — retorna apenas o galpão vinculado (lista com 0 ou 1 item)
     if current_user.warehouse_id:
         result = await db.execute(
             select(Warehouse).where(Warehouse.id == current_user.warehouse_id)
@@ -91,9 +131,7 @@ async def get_warehouse(
     warehouse = result.scalar_one_or_none()
     if not warehouse:
         raise HTTPException(status_code=404, detail="Galpão não encontrado")
-    if current_user.role == "go" and warehouse.go_id != current_user.go_id:
-        raise HTTPException(status_code=403, detail="Acesso negado")
-    if current_user.role in ("ugo", "ac") and warehouse.id != current_user.warehouse_id:
+    if not _can_access_warehouse(current_user, warehouse, await _owned_go_id(current_user, db)):
         raise HTTPException(status_code=403, detail="Acesso negado")
     return _serialize(warehouse)
 
@@ -147,7 +185,7 @@ async def delete_warehouse(
     warehouse = result.scalar_one_or_none()
     if not warehouse:
         raise HTTPException(status_code=404, detail="Galpão não encontrado")
-    if current_user.role == "go" and warehouse.go_id != current_user.go_id:
+    if not _can_access_warehouse(current_user, warehouse, await _owned_go_id(current_user, db)):
         raise HTTPException(status_code=403, detail="Este Galpão não pertence ao seu GO")
 
     users_result = await db.execute(
@@ -176,7 +214,7 @@ async def update_warehouse(
     if not warehouse:
         raise HTTPException(status_code=404, detail="Galpão não encontrado")
 
-    if current_user.role == "go" and warehouse.go_id != current_user.go_id:
+    if not _can_access_warehouse(current_user, warehouse, await _owned_go_id(current_user, db)):
         raise HTTPException(status_code=403, detail="Este Galpão não pertence ao seu GO")
 
     fields = [

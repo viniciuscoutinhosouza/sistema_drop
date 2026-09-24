@@ -101,3 +101,7 @@ plugins_src/**/__pycache__/
 .venv-camoufox/
 # cloudflared (binário portátil baixado localmente para o túnel do coletor)
 tools/collector/cloudflared.exe
+
+# Claude Code worktrees e locks efêmeros
+.claude/worktrees/
+.claude/scheduled_tasks.lock

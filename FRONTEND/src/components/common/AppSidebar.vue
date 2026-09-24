@@ -491,7 +491,7 @@ const role = computed(() => authStore.user?.role)
 
 const roleLabel = computed(() => {
   if (authStore.user?.profile_name) return authStore.user.profile_name
-  const map = { admin: 'Administrador', go: 'Gestor Operacional', ugo: 'Gestor Logístico', ac: 'Gestor de Conta' }
+  const map = { admin: 'Administrador', go: 'Galpão', ugo: 'Galpão', ac: 'Gestor de Conta' }
   return map[role.value] || role.value
 })
 
@@ -512,12 +512,16 @@ const _legacyMenus = {
     'pessoas','fiscal_entradas','fiscal_saidas','fiscal_cfop','fiscal_config','fiscal_transicao',
     'inventario','integracao_envio',
   ]),
-  ugo: new Set([
+  // Papel unificado "Galpão" (go). UNIÃO dos menus dos antigos `ugo` (operador) e `go` (dono),
+  // já que dono-vs-operador virou permissão de perfil (menu_permissions), não papel. O uso real
+  // é sempre `go`; `ugo` é mantido só por rollback/segurança e aponta para a mesma união.
+  go: new Set([
     'pg','cmig','pedidos','estoque','separacao','ag_retorno','inventario','inventario_criar','devolucoes',
     'pessoas','fiscal_entradas','fiscal_saidas','rotinas','config_usuarios','integracao_envio',
+    'go_empresa','go_usuarios','relatorio_vendas',
   ]),
-  go: new Set(['rotinas','go_empresa','go_usuarios','inventario','relatorio_vendas']),
 }
+_legacyMenus.ugo = _legacyMenus.go
 
 function canSee(menuKey) {
   // Super Admin vê tudo — espelha o bypass do backend (require_role/menu_permission).

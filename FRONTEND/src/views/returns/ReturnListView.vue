@@ -159,7 +159,9 @@ const total = ref(0)
 const pendingValidationCount = ref(0)
 
 const currentUser = JSON.parse(localStorage.getItem('auth') || '{}').user
-const isUgoOrAdmin = computed(() => ['ugo', 'admin'].includes(currentUser?.role))
+// Visão GLOBAL de devoluções: só admin (Devolução é keyed por dropshipper, não por galpão —
+// backend returns.py concede ?all e bypass de dono apenas ao admin). Galpão vê só as próprias.
+const isUgoOrAdmin = computed(() => ['admin'].includes(currentUser?.role))
 
 const STATUS_COLORS = {
   analyzing: 'warning',
