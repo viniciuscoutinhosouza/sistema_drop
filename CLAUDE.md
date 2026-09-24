@@ -370,6 +370,7 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 
 - [ADR-0023](DOCs/decisions/ADR-0023-estoque-composto-derivado.md) — Estoque de **produto composto (kit) é derivado** dos componentes em toda leitura, **nunca materializado** (`stock_quantity` do kit é sempre 0); ponto único `stock_calculator.composite_stock`; venda do kit reserva/baixa os **componentes**; kit fora do snapshot contábil
 - [ADR-0024](DOCs/decisions/ADR-0024-galpao-work-type-dropship-multilojas.md) — **Tipo de trabalho do Galpão** (`warehouses.work_type`): `dropship` (conta vende PG + própria CMIG) × `multilojas` (só a própria CMIG; publicar PG é bloqueado). Enforcement em **ponto único** (`services/work_type_guard`) aplicado em TODOS os caminhos de publicação (anúncios + listings ML/Shopee); UI do Catálogo esconde a aba PG em multilojas; `work_type` inválido falha alto (400)
+- [ADR-0025](DOCs/decisions/ADR-0025-rbac-permissoes-acao-editaveis.md) — **RBAC: permissões de ação editáveis por perfil** (Opção B): decompõe os 47 gates `require_role` dos routers em **permissões de ação nomeadas** (`require_permission("chave")`, catálogo em `services/action_permissions.py`, tabela `profile_action_permissions`), editáveis por perfil na UI. `base_role` **permanece** como **modo de escopo de dados** (as ~150 checagens `role==` de isolação galpão/CMIG **não** foram tocadas). Admin bypassa; fallback pro default do base_role preserva o comportamento no deploy. eShip segue role-based por ora
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 

@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-09-24 — feat(rbac): Gestão de Perfil de Acesso — permissões de ação editáveis (ADR-0025)
+
+**Pedido do dono:** na Gestão de Perfil, poder definir cada item de permissão contido no "Papel Base API" — não ficar preso às 4 opções fixas (admin/ac/ugo/go). Escolheu a **Opção B** (permissões de ação editáveis). Instrução: "siga todas as fases, eu testo no final; a cada fase faça você os testes".
+
+Decompus os **47 gates `require_role`** dos routers em **permissões de ação nomeadas** (`require_permission("chave")`), editáveis por perfil como os menus. `base_role` **permanece** como modo de escopo de dados — as ~150 checagens `role==` de isolação galpão/CMIG **não** foram tocadas.
+
+- **Fase 1** (`fc6c06c`): catálogo `services/action_permissions.py` (15 chaves), tabela `profile_action_permissions` (migration 138) + model `ProfileActionPermission`, `require_permission` em `dependencies.py` (admin bypassa; fallback pro default do base_role preserva o comportamento no deploy), `GET /profiles/action-keys` + serialize/create/update. Seed em produção (20 concessões: admin 15, go 2, gl 1, gc 2).
+- **Fase 2** (`a6618e8`): 47 `require_role` trocados por `require_permission` em 14 routers (auth, users, invoices, ncm, cfop, goes, sales_report, settings_email, marketplace_settings, ai_config, admin_api_console, anuncios, supplier_products, profiles). `users.py:327` (qualquer autenticado) mantido; eShip (17 gates multi-papel) segue role-based por ora.
+- **Fase 3** (`b5ca369`): editor de checkboxes de permissões de ação no `ProfilesView.vue` (agrupado por domínio) + exibição no card + ADR-0025.
+- **Fase 4** (`06d8167`): auditoria (quality-guardian/consistency-auditor/adr-consistency-checker) **sem bloqueios**. Hardening: migration 139 versiona o seed (idempotente) e `create/update_profile` exigem **admin real** para conceder escopo `base_role=admin` (perfis_gerenciar é delegável).
+
+**Verificado ao vivo (produção):** teste de enforcement contra o banco real — **12/12 OK** (gc(ac): nfe/relatório ALLOW, usuarios/marketplace 403; go: usuarios_criar ALLOW, resto 403; gl(ugo): criar_ac ALLOW, ncm 403; admin bypassa; fallback do ac sem perfil preserva o antigo). Migration 139 idempotente (20→20, 0 novas). Backend startup limpo, /docs 200, `/profiles/action-keys` gated (401 sem token). Frontend buildado no servidor.
+
 ## 2026-09-23 — feat(galpao): Tipo de trabalho (Dropship × MultiLojas) + dropdown de CMIG auto
 
 Pedido do dono, em 3 partes:
