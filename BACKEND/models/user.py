@@ -28,6 +28,12 @@ class UserProfile(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    action_permissions = relationship(
+        "ProfileActionPermission",
+        back_populates="profile",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
     users = relationship("User", back_populates="user_profile")
 
 
@@ -41,6 +47,18 @@ class ProfileMenuPermission(Base):
     menu_key = Column(String(100), nullable=False)
 
     profile = relationship("UserProfile", back_populates="menu_permissions")
+
+
+class ProfileActionPermission(Base):
+    """Permissão de AÇÃO associada a um perfil (decompõe o require_role — ADR-0025)."""
+
+    __tablename__ = "profile_action_permissions"
+
+    id = Column(Integer, primary_key=True)
+    profile_id = Column(Integer, ForeignKey("user_profiles.id", ondelete="CASCADE"), nullable=False)
+    permission_key = Column(String(100), nullable=False)
+
+    profile = relationship("UserProfile", back_populates="action_permissions")
 
 
 class User(Base):

@@ -7,7 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import require_role
-from models.user import ProfileMenuPermission, User, UserProfile
+from models.user import ProfileActionPermission, ProfileMenuPermission, User, UserProfile
+from services.action_permissions import (
+    ACTION_PERMISSIONS,
+    VALID_ACTION_KEYS,
+    default_keys_for_base_role,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -73,6 +78,7 @@ def _serialize_profile(p: UserProfile) -> dict:
         "is_system": bool(p.is_system),
         "is_active": bool(p.is_active),
         "menu_keys": sorted([m.menu_key for m in (p.menu_permissions or [])]),
+        "action_keys": sorted([a.permission_key for a in (p.action_permissions or [])]),
         "created_at": p.created_at.isoformat() if p.created_at else None,
     }
 
@@ -84,6 +90,15 @@ async def list_menu_keys(
 ):
     """Retorna o catálogo completo de chaves de menu disponíveis."""
     return MENU_CATALOG
+
+
+# ── GET /profiles/action-keys ────────────────────────────────────────────────
+@router.get("/action-keys")
+async def list_action_keys(
+    _: User = Depends(require_role("admin")),
+):
+    """Catálogo de PERMISSÕES DE AÇÃO (o que cada perfil pode fazer — ADR-0025)."""
+    return ACTION_PERMISSIONS
 
 
 # ── GET /profiles ────────────────────────────────────────────────────────────
@@ -122,12 +137,24 @@ async def create_profile(
     if invalid:
         raise HTTPException(status_code=422, detail=f"menu_keys inválidas: {invalid}")
 
+    # Permissões de ação: se não vierem, o perfil novo herda o default do base_role (comporta como
+    # o papel base). Chaves inválidas falham alto.
+    if "action_keys" in body:
+        action_keys = body.get("action_keys") or []
+        bad = [k for k in action_keys if k not in VALID_ACTION_KEYS]
+        if bad:
+            raise HTTPException(status_code=422, detail=f"action_keys inválidas: {bad}")
+    else:
+        action_keys = default_keys_for_base_role(base_role)
+
     profile = UserProfile(name=name, label=label, base_role=base_role, is_system=0, is_active=1)
     db.add(profile)
     await db.flush()
 
     for key in menu_keys:
         db.add(ProfileMenuPermission(profile_id=profile.id, menu_key=key))
+    for key in action_keys:
+        db.add(ProfileActionPermission(profile_id=profile.id, permission_key=key))
 
     await db.commit()
     await db.refresh(profile)
@@ -176,6 +203,20 @@ async def update_profile(
 
         for key in menu_keys:
             db.add(ProfileMenuPermission(profile_id=profile_id, menu_key=key))
+
+    if "action_keys" in body:
+        action_keys: list[str] = body["action_keys"] or []
+        bad = [k for k in action_keys if k not in VALID_ACTION_KEYS]
+        if bad:
+            raise HTTPException(status_code=422, detail=f"action_keys inválidas: {bad}")
+        existing_acts = await db.execute(
+            select(ProfileActionPermission).where(ProfileActionPermission.profile_id == profile_id)
+        )
+        for perm in existing_acts.scalars().all():
+            db.delete(perm)   # síncrono no AsyncSyncSession
+        await db.flush()
+        for key in action_keys:
+            db.add(ProfileActionPermission(profile_id=profile_id, permission_key=key))
 
     await db.commit()
     await db.refresh(profile)

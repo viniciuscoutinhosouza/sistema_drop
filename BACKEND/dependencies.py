@@ -99,6 +99,56 @@ def require_menu_permission(menu_key: str):
     return checker
 
 
+async def _resolve_user_action_keys(user: User, db: AsyncSession) -> set[str]:
+    """Permissões de AÇÃO efetivas (perfil próprio → fallback perfil de sistema do base_role).
+
+    Mesma lógica de `_resolve_user_menu_keys`, mas para `action_permissions` (ADR-0025)."""
+    if user.profile_id:
+        r = await db.execute(select(UserProfile).where(UserProfile.id == user.profile_id))
+        up = r.scalar_one_or_none()
+        if up and up.is_active:
+            return {a.permission_key for a in (up.action_permissions or [])}
+    if user.role:
+        r = await db.execute(
+            select(UserProfile).where(
+                UserProfile.base_role == user.role,
+                UserProfile.is_system == 1,
+                UserProfile.is_active == 1,
+            )
+        )
+        up = r.scalar_one_or_none()
+        if up:
+            return {a.permission_key for a in (up.action_permissions or [])}
+    return set()
+
+
+def require_permission(*keys: str):
+    """Autoriza por PERMISSÃO DE AÇÃO do perfil do usuário (substitui `require_role`).
+
+    Admin sempre passa. Demais: exige que o perfil tenha ALGUMA das `keys`. Fallback só quando o
+    perfil não tem nenhuma ação seeda (legado/sem perfil) → cai no papel base do catálogo original,
+    preservando o comportamento anterior. Escopo de dados (galpão/CMIG) NÃO passa por aqui."""
+    async def checker(
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        if current_user.role == "admin":
+            return current_user
+        granted = await _resolve_user_action_keys(current_user, db)
+        if any(k in granted for k in keys):
+            return current_user
+        if not granted:
+            from services.action_permissions import roles_for_keys
+            if current_user.role in roles_for_keys(keys):
+                return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permissão insuficiente para esta ação. Solicite ao administrador.",
+        )
+
+    return checker
+
+
 async def get_active_ac(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
