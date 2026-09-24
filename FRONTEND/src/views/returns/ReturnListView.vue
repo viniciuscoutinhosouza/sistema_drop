@@ -159,9 +159,10 @@ const total = ref(0)
 const pendingValidationCount = ref(0)
 
 const currentUser = JSON.parse(localStorage.getItem('auth') || '{}').user
-// Visão GLOBAL de devoluções: só admin (Devolução é keyed por dropshipper, não por galpão —
-// backend returns.py concede ?all e bypass de dono apenas ao admin). Galpão vê só as próprias.
-const isUgoOrAdmin = computed(() => ['admin'].includes(currentUser?.role))
+// Visão de OPERADOR de devoluções (validar, importar XML, ver todas do escopo): admin + Galpão.
+// O backend (returns.py, ADR-0026) isola o Galpão às devoluções do PRÓPRIO galpão (via
+// pedido→CMIG→galpão ou NF-e→CMIG→galpão); o admin vê todas. Dropshipper (ac) vê só as próprias.
+const isUgoOrAdmin = computed(() => ['admin', 'go'].includes(currentUser?.role))
 
 const STATUS_COLORS = {
   analyzing: 'warning',

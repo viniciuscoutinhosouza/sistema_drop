@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-09-24 — feat(rbac): Devoluções escopadas por galpão (fecha follow-up (a) da ADR-0026)
+
+Fecha o follow-up (a) da unificação Galpão: a Devolução deixou de ser admin-only global e passou a ser **isolada por galpão**. Como `Return` não tem coluna de galpão, o escopo vem por **dois caminhos**: `order_id → Order.cmig_id → CMIG.warehouse_id` OU `devolution_invoice_id → Invoice.cmig_id → CMIG.warehouse_id` (espelha o padrão de `orders.py`).
+
+- **Helpers** em `returns.py`: `_return_scope_filter(user)` (admin=todas; Galpão=`or_(pedido/NF-e IN cmigs-do-galpão, dropshipper_id próprio)`, guard `warehouse_id` nulo→`false()` fail-closed; ac=próprias), `_return_warehouse_id`, `_can_access_return`.
+- **Aplicado nos 8 endpoints** (auditoria confirmou cobertura total): `list_returns`, `list_pending_validation` (que **vazava** — não tinha escopo nenhum), `get_return`, `update_return_status`, `upload_return_photo`, `validate_return_endpoint` (as 3 últimas **sem escopo** antes — Galpão agiria em devolução de outro galpão), `create_return` (valida `order_id` via `_check_cmig_access` — impede injeção cross-tenant), `import-xml` (já escopado).
+- **Política da órfã** (devolução sem `order_id` e sem `devolution_invoice_id`, ex.: `delete_order` nula o `order_id`): **fail-closed** para o Galpão (não resolve galpão → não vê), mas **visível ao admin** (que vê todas em `list_pending_validation`) e ao **próprio criador** (via `dropshipper_id`) — não some em silêncio.
+- **Frontend** `ReturnListView.vue`: `isUgoOrAdmin` volta a incluir `go` (Galpão reganha a visão de operador: validar, importar XML, ver todas do **seu** escopo). O `all=true` que o front manda é inócuo p/ go (backend só honra `all` p/ admin).
+
+Pré-avaliado + auditado (quality-guardian + consistency-auditor): **sem CRITICAL/HIGH, sem vazamento cross-galpão**; backend compila + ruff limpo; frontend build OK. Commit `<pendente>`.
+
+---
+
 ## 2026-09-24 — feat(rbac): papel único "Galpão" (unifica go+ugo) — ADR-0026 [DEPLOYADO + VERIFICADO]
 
 Sequência do RBAC: o dono pediu para **unificar GO e GL (ugo)** num único papel "Galpão" ("todos os dados de Galpão"), diferenciando dono-vs-operador pelas permissões editáveis (ADR-0025). Decisão de isolamento tomada por ele: **cada Galpão vê só o próprio galpão**.

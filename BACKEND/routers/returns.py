@@ -5,7 +5,7 @@ import uuid as _uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -17,6 +17,84 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ─── Escopo por galpão (ADR-0026) ────────────────────────────────────────────
+# A devolução liga ao galpão por DOIS caminhos: order_id→Order.cmig_id→CMIG.warehouse_id
+# OU devolution_invoice_id→Invoice.cmig_id→CMIG.warehouse_id. Espelha o padrão de orders.py.
+
+
+def _return_scope_filter(user: User):
+    """Condição SQLAlchemy p/ filtrar devoluções visíveis ao usuário. None = sem filtro (admin).
+
+    - admin → None (vê todas).
+    - Galpão (go/ugo) → devoluções cujo pedido OU NF-e de devolução pertence a uma CMIG do seu
+      galpão. Sem warehouse_id → conjunto vazio POR REGRA (fail-closed), não por acidente.
+    - demais (ac/dropshipper) → só as próprias (dropshipper_id).
+    """
+    if user.role == "admin":
+        return None
+    if user.role in ("go", "ugo"):
+        if not user.warehouse_id:
+            return false()
+        from models.cmig import CMIG
+        from models.fiscal import Invoice
+        from models.order import Order
+        order_ids = select(Order.id).join(CMIG, Order.cmig_id == CMIG.id).where(
+            CMIG.warehouse_id == user.warehouse_id
+        )
+        inv_ids = select(Invoice.id).join(CMIG, Invoice.cmig_id == CMIG.id).where(
+            CMIG.warehouse_id == user.warehouse_id
+        )
+        # + as devoluções que o próprio Galpão criou (cobre órfã sem order/invoice — senão sumiria
+        # p/ quem a criou). Não vaza: é a própria devolução dele.
+        return or_(
+            Return.order_id.in_(order_ids),
+            Return.devolution_invoice_id.in_(inv_ids),
+            Return.dropshipper_id == user.id,
+        )
+    return Return.dropshipper_id == user.id
+
+
+async def _return_warehouse_id(ret: Return, db: AsyncSession) -> int | None:
+    """Resolve o galpão da devolução via pedido OU NF-e de devolução. None = órfã (sem escopo)."""
+    from models.cmig import CMIG
+    from models.fiscal import Invoice
+    from models.order import Order
+    if ret.order_id:
+        wh = (
+            await db.execute(
+                select(CMIG.warehouse_id).join(Order, Order.cmig_id == CMIG.id).where(Order.id == ret.order_id)
+            )
+        ).scalar_one_or_none()
+        if wh is not None:
+            return wh
+    if ret.devolution_invoice_id:
+        wh = (
+            await db.execute(
+                select(CMIG.warehouse_id).join(Invoice, Invoice.cmig_id == CMIG.id).where(
+                    Invoice.id == ret.devolution_invoice_id
+                )
+            )
+        ).scalar_one_or_none()
+        if wh is not None:
+            return wh
+    return None
+
+
+async def _can_access_return(user: User, ret: Return, db: AsyncSession) -> bool:
+    """admin → sempre; Galpão → devolução do próprio galpão; ac/dropshipper → só as próprias.
+
+    (Órfã sem galpão resolvível fica acessível só ao admin — visível na lista dele; ver LOG/ADR.)
+    """
+    if user.role == "admin":
+        return True
+    if user.role in ("go", "ugo"):
+        if ret.dropshipper_id == user.id:  # devolução que o próprio Galpão criou (cobre órfã)
+            return True
+        wh = await _return_warehouse_id(ret, db)
+        return wh is not None and wh == user.warehouse_id
+    return ret.dropshipper_id == user.id
+
+
 @router.get("/pending-validation")
 async def list_pending_validation(
     page: int = Query(1, ge=1),
@@ -25,6 +103,9 @@ async def list_pending_validation(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Return).where(Return.status == "awaiting_validation")
+    scope = _return_scope_filter(current_user)  # None = admin (todas); senão isola por galpão/dono
+    if scope is not None:
+        query = query.where(scope)
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar()
     query = query.order_by(Return.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
     items = (await db.execute(query)).scalars().all()
@@ -45,10 +126,13 @@ async def list_returns(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if all and current_user.role == "admin":
-        query = select(Return)
+    # Escopo por papel (ADR-0026): admin (todas, ou só as próprias se all=False); Galpão (devoluções
+    # do próprio galpão); ac/dropshipper (só as próprias). O param `all` só faz sentido p/ admin.
+    if current_user.role == "admin":
+        query = select(Return) if all else select(Return).where(Return.dropshipper_id == current_user.id)
     else:
-        query = select(Return).where(Return.dropshipper_id == current_user.id)
+        scope = _return_scope_filter(current_user)
+        query = select(Return).where(scope if scope is not None else false())
     if status:
         query = query.where(Return.status == status)
 
@@ -82,9 +166,20 @@ async def create_return(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    order_id = body.get("order_id")
+    # Impede injetar devolução em pedido de outro galpão/CMIG: se veio order_id, o usuário precisa
+    # ter acesso à CMIG do pedido (admin=tudo; Galpão=galpão do pedido; ac=CMIG que administra).
+    if order_id and current_user.role != "admin":
+        from models.order import Order
+        order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+        if not order:
+            raise HTTPException(status_code=404, detail="Pedido não encontrado")
+        if order.cmig_id:
+            from routers.invoices import _check_cmig_access
+            await _check_cmig_access(order.cmig_id, current_user, db)  # 403 se sem acesso
     ret = Return(
         dropshipper_id=current_user.id,
-        order_id=body.get("order_id"),
+        order_id=order_id,
         reason=body.get("reason"),
         description=body.get("description"),
         tracking_code=body.get("tracking_code"),
@@ -108,7 +203,7 @@ async def get_return(
     ret = result.scalar_one_or_none()
     if not ret:
         raise HTTPException(status_code=404, detail="Devolução não encontrada")
-    if current_user.role != "admin" and ret.dropshipper_id != current_user.id:
+    if not await _can_access_return(current_user, ret, db):
         raise HTTPException(status_code=403, detail="Acesso negado")
     return _serialize(ret)
 
@@ -124,6 +219,8 @@ async def update_return_status(
     ret = result.scalar_one_or_none()
     if not ret:
         raise HTTPException(status_code=404, detail="Devolução não encontrada")
+    if not await _can_access_return(current_user, ret, db):
+        raise HTTPException(status_code=403, detail="Acesso negado a esta devolução")
 
     prev_status = ret.status
     ret.status = body["status"]
@@ -156,6 +253,8 @@ async def upload_return_photo(
     ret = result.scalar_one_or_none()
     if not ret:
         raise HTTPException(status_code=404, detail="Devolução não encontrada")
+    if not await _can_access_return(current_user, ret, db):
+        raise HTTPException(status_code=403, detail="Acesso negado a esta devolução")
 
     ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "jpg"
     filename = f"{_uuid.uuid4().hex}.{ext}"
@@ -176,6 +275,8 @@ async def validate_return_endpoint(
     ret = result.scalar_one_or_none()
     if not ret:
         raise HTTPException(status_code=404, detail="Devolução não encontrada")
+    if not await _can_access_return(current_user, ret, db):
+        raise HTTPException(status_code=403, detail="Acesso negado a esta devolução")
     if ret.status != "awaiting_validation":
         raise HTTPException(
             status_code=400,
