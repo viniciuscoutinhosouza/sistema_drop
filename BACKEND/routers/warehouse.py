@@ -19,8 +19,16 @@ def _norm_cep(v) -> str | None:
 
 
 def _norm_work_type(v) -> str:
-    """Tipo de trabalho do galpão — só 'dropship' ou 'multilojas'; default 'dropship'."""
-    return v if v in ("dropship", "multilojas") else "dropship"
+    """Tipo de trabalho do galpão. None → default 'dropship'; valor INVÁLIDO falha alto (400) —
+    não coage em silêncio (senão configurava MultiLojas achando que salvou e ficava Dropship)."""
+    if v is None:
+        return "dropship"
+    if v not in ("dropship", "multilojas"):
+        raise HTTPException(
+            status_code=400,
+            detail="Tipo de trabalho inválido — use 'dropship' ou 'multilojas'.",
+        )
+    return v
 
 router = APIRouter()
 

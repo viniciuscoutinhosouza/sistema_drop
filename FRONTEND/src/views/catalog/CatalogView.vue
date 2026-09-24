@@ -37,13 +37,16 @@
       <!-- Toggle PG / CMIG + Atalho Anúncio com Variações -->
       <div class="mb-3 d-flex flex-wrap align-items-center" style="gap:8px">
         <div class="btn-group">
-          <button class="btn" :class="catalogTab === 'pg' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'pg'">
+          <button v-if="!isMultilojas" class="btn" :class="catalogTab === 'pg' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'pg'">
             <i class="fas fa-warehouse mr-1"></i> Catálogo PG
           </button>
           <button class="btn" :class="catalogTab === 'cmig' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'cmig'">
             <i class="fas fa-id-card mr-1"></i> Catálogo CMIG
           </button>
         </div>
+        <span v-if="isMultilojas" class="text-muted small">
+          <i class="fas fa-store mr-1"></i>Galpão MultiLojas — cada conta vende só a própria CMIG (o Produto Geral é base)
+        </span>
         <button
           class="btn btn-outline-success ml-auto"
           :disabled="!selectedAccountId || !isMercadoLivre"
@@ -1113,6 +1116,19 @@ async function publishAnuncio() {
 
 // ── Catálogo CMIG ──────────────────────────────────────────────────────────────
 const catalogTab = ref('pg')
+// Galpão MultiLojas: a conta só vende a própria CMIG — a aba "Produto Geral" (PG) é escondida (o
+// backend já bloqueia a publicação de PG; aqui é o espelho na UI). Baseado no galpão do usuário
+// (escopado a 1 galpão); admin/multi-galpão vê as duas abas.
+const isMultilojas = ref(false)
+async function loadWorkType() {
+  try {
+    const { data } = await api.get('/warehouse')
+    if (Array.isArray(data) && data.length === 1 && data[0].work_type === 'multilojas') {
+      isMultilojas.value = true
+      catalogTab.value = 'cmig'
+    }
+  } catch { /* silencioso: sem info, mantém as duas abas */ }
+}
 const cmigs      = ref([])
 const cmigProducts = ref([])
 const cmigLoading  = ref(false)
@@ -1359,6 +1375,7 @@ function proceedToVariationsWizard() {
 }
 
 onMounted(() => {
+  loadWorkType()
   loadAccounts()
   loadCategories()
   loadProducts()

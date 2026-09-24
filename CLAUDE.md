@@ -369,6 +369,7 @@ Decisões arquiteturais registradas em `docs/decisions/`. Consultar antes de pro
 - [ADR-0022](DOCs/decisions/ADR-0022-baixa-full-dirigida-pelo-retorno-simbolico.md) — Baixa do FULL dirigida pelo **retorno simbólico** (o ML emite 2 notas por venda FULL: `sale` + `symbolic_inbound_return`); o pedido **não** debita o FULL; supersede o ponto correspondente da ADR-0019
 
 - [ADR-0023](DOCs/decisions/ADR-0023-estoque-composto-derivado.md) — Estoque de **produto composto (kit) é derivado** dos componentes em toda leitura, **nunca materializado** (`stock_quantity` do kit é sempre 0); ponto único `stock_calculator.composite_stock`; venda do kit reserva/baixa os **componentes**; kit fora do snapshot contábil
+- [ADR-0024](DOCs/decisions/ADR-0024-galpao-work-type-dropship-multilojas.md) — **Tipo de trabalho do Galpão** (`warehouses.work_type`): `dropship` (conta vende PG + própria CMIG) × `multilojas` (só a própria CMIG; publicar PG é bloqueado). Enforcement em **ponto único** (`services/work_type_guard`) aplicado em TODOS os caminhos de publicação (anúncios + listings ML/Shopee); UI do Catálogo esconde a aba PG em multilojas; `work_type` inválido falha alto (400)
 
 Nova decisão arquitetural → criar próximo ADR em `docs/decisions/`.
 
