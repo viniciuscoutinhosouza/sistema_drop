@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-09-24 — feat(rbac): papel único "Galpão" (unifica go+ugo) — ADR-0026 [AGUARDANDO GATE DE PRODUÇÃO]
+## 2026-09-24 — feat(rbac): papel único "Galpão" (unifica go+ugo) — ADR-0026 [DEPLOYADO + VERIFICADO]
 
 Sequência do RBAC: o dono pediu para **unificar GO e GL (ugo)** num único papel "Galpão" ("todos os dados de Galpão"), diferenciando dono-vs-operador pelas permissões editáveis (ADR-0025). Decisão de isolamento tomada por ele: **cada Galpão vê só o próprio galpão**.
 
@@ -15,7 +15,11 @@ Investigação (Explore) revelou que `go` era o papel **mais isolado** (por ware
 - **Migração 140** (idempotente, escrita, **não rodada**): role/base_role ugo→go + consolida os 2 perfis-sistema num "Galpão" (união de menus+ações), sem backfill de go_id.
 - **Frontend:** dropdown sem ugo, sidebar/labels "Galpão", computeds, ReturnListView admin-only. Também re-incluídos os itens do pedido anterior: base_role editável ao editar perfil + guard admin (profiles.py) + hardening dos 3 resolvers (tolera >1 perfil-sistema por papel).
 
-Implementado em **worktree isolado** por agente, revisado por mim (corrigi o isolamento owner-vs-operador do warehouse), **auditado** (quality-guardian/consistency/adr): **sem CRITICAL, sem vazamento cross-galpão**; achados HIGH/MÉDIA corrigidos (users.py não auto-promove operador a GO-dono; recompute admin-only no front; warehouse list dono OR próprio galpão; cmigs fail-closed). Backend compila + ruff limpo; **frontend build OK**. Commit `<pendente>`. **NÃO deployado** — a migração 140 (merge de papéis em produção, hard-to-reverse) aguarda o **OK do dono**; código e migração vão juntos (não pode deployar código sem rodar a 140).
+Implementado em **worktree isolado** por agente, revisado por mim (corrigi o isolamento owner-vs-operador do warehouse), **auditado** (quality-guardian/consistency/adr): **sem CRITICAL, sem vazamento cross-galpão**; achados HIGH/MÉDIA corrigidos (users.py não auto-promove operador a GO-dono; recompute admin-only no front; warehouse list dono OR próprio galpão; cmigs fail-closed). Commit `2f8efe3`.
+
+**DEPLOYADO em produção (2026-09-24) com OK do dono.** Deploy coordenado: pull → migração 140 → restart → build. Migração 140 rodada (runner ad-hoc que separa SQL plano dos blocos PL/SQL pelo `/` e tira comentários antes do split): ANTES 2 users ugo + perfil `gl` base=ugo; DEPOIS **0 ugo**, 1 perfil "Galpão" consolidado (id=2, label="Galpão", 25 menus + 3 ações união). **Isolamento verificado ao vivo** contra o banco real (funções `_owned_go_id`/`_can_access_warehouse` + `_accessible_cmig_ids`): **6/6 usuários Galpão isolados ao próprio galpão, 0 vazamento** (user=241 do galpão 22 vê só [22]; operadores sem `goes` só o próprio; donos → galpões do seu GO); eShip acessível ao Galpão (go=42 → 8 CMIGs do galpão, não todas). Backend startup limpo, /docs 200. Papéis pós-deploy: ugo:0, go:6, ac:7, admin:4.
+
+**Follow-ups:** (a) Devolução escopada por galpão (hoje admin-only global); (b) limpeza cosmética das metas `meta.role:'ugo'` no router do frontend (cobertas por rede de segurança); (c) `get_active_go` é dead code.
 
 ---
 
