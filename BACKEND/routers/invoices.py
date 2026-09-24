@@ -358,6 +358,11 @@ async def list_invoices(
         s = f"%{search.strip()}%"
         digits = "".join(c for c in search if c.isdigit())
         conds = [Invoice.access_key.like(s), Invoice.focus_ref.like(s)]
+        # Busca pela CONTRAPARTE (nome / razão social / documento da Person do invoice).
+        person_conds = [Person.name.ilike(s), Person.trade_name.ilike(s)]
+        if digits:
+            person_conds.append(Person.document.like(f"%{digits}%"))
+        conds.append(Invoice.person_id.in_(select(Person.id).where(or_(*person_conds))))
         if digits:
             try:
                 conds.append(Invoice.nfe_number == int(digits))
@@ -413,7 +418,13 @@ async def _notas_query(
         stmt = stmt.where(Invoice.issue_date <= datetime.combine(date_to, datetime.max.time()))
     if search:
         s = search.strip()
+        digits = "".join(c for c in s if c.isdigit())
         conds = [Invoice.access_key.like(f"%{s}%"), Invoice.natureza_operacao.ilike(f"%{s}%")]
+        # Busca pela CONTRAPARTE (nome / razão social / documento da Person do invoice).
+        person_conds = [Person.name.ilike(f"%{s}%"), Person.trade_name.ilike(f"%{s}%")]
+        if digits:
+            person_conds.append(Person.document.like(f"%{digits}%"))
+        conds.append(Invoice.person_id.in_(select(Person.id).where(or_(*person_conds))))
         if s.isdigit():
             conds.append(Invoice.nfe_number == int(s))
         stmt = stmt.where(or_(*conds))

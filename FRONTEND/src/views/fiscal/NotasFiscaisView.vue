@@ -50,7 +50,7 @@
             <input v-model="filters.date_to" type="date" class="form-control form-control-sm" @change="reload">
           </div>
           <div class="col-md-4"><label class="small mb-1">Buscar</label>
-            <input v-model="filters.search" class="form-control form-control-sm" placeholder="Número, chave, natureza…" @keyup.enter="reload">
+            <input v-model="filters.search" class="form-control form-control-sm" placeholder="Contraparte, número, chave, natureza…" @keyup.enter="reload">
           </div>
         </div>
 
