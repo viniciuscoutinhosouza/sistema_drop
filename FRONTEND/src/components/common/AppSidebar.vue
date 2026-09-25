@@ -1,10 +1,11 @@
 <template>
   <aside class="main-sidebar sidebar-dark-primary elevation-4">
-    <!-- Brand Logo — logo + nome do Galpão do usuário (fallback MIG ECOMMERCE) -->
+    <!-- Brand Logo — quando há LOGO cadastrada, mostra SÓ a logo (sem nome/fantasia);
+         sem logo, mostra o nome do Galpão (fallback MIG ECOMMERCE). -->
     <RouterLink to="/dashboard" class="brand-link">
       <img v-if="ui.warehouseTheme?.logo_url" :src="ui.warehouseTheme.logo_url"
            class="brand-image-wh" alt="Logo do Galpão" />
-      <span class="brand-text font-weight-light">
+      <span v-else class="brand-text font-weight-light">
         <template v-if="ui.warehouseTheme?.name">{{ ui.warehouseTheme.name }}</template>
         <template v-else><strong>MIG</strong> ECOMMERCE</template>
       </span>
