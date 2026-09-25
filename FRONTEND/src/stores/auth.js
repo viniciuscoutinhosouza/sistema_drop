@@ -53,6 +53,7 @@ export const useAuthStore = defineStore('auth', () => {
       email: data.email,
       role: data.role,
       dark_mode: data.dark_mode,
+      avatar_url: data.avatar_url ?? null,
       go_id: data.go_id ?? null,
       warehouse_id: data.warehouse_id ?? null,
       profile_id: data.profile_id ?? null,
@@ -105,6 +106,7 @@ export const useAuthStore = defineStore('auth', () => {
         email: data.email ?? user.value.email,
         role: data.role ?? user.value.role,
         dark_mode: data.dark_mode ?? user.value.dark_mode,
+        avatar_url: data.avatar_url ?? user.value.avatar_url,
         go_id: data.go_id ?? user.value.go_id,
         warehouse_id: data.warehouse_id ?? user.value.warehouse_id,
         profile_id: data.profile_id ?? null,
@@ -114,6 +116,15 @@ export const useAuthStore = defineStore('auth', () => {
     }
     saveToStorage()
     return data.access_token
+  }
+
+  // Atualiza a foto do próprio usuário na hora (após upload/remover) e repersiste no localStorage
+  // (senão sumiria no reload). URL nula = volta ao placeholder.
+  function setAvatar(url) {
+    if (user.value) {
+      user.value = { ...user.value, avatar_url: url }
+      saveToStorage()
+    }
   }
 
   return {
@@ -126,5 +137,6 @@ export const useAuthStore = defineStore('auth', () => {
     register,
     logout,
     doRefresh,
+    setAvatar,
   }
 })

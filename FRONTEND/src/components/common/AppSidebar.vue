@@ -14,8 +14,12 @@
     <div class="sidebar">
       <!-- User Panel -->
       <div class="user-panel mt-3 pb-3 mb-3 d-flex">
-        <div class="image">
-          <img src="https://via.placeholder.com/32" class="img-circle elevation-2" alt="User" />
+        <div class="image avatar-edit" @click="pickAvatar" title="Editar minha foto">
+          <img :src="authStore.user?.avatar_url || 'https://via.placeholder.com/32'"
+               class="img-circle elevation-2" alt="Minha foto" />
+          <span class="avatar-edit-icon"><i class="fas fa-camera"></i></span>
+          <input ref="avatarInput" type="file" accept="image/jpeg,image/png,image/webp"
+                 class="d-none" @change="onAvatarChange" />
         </div>
         <div class="info">
           <span class="d-block text-white text-truncate" style="max-width:150px">
@@ -418,14 +422,40 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useMessagesStore } from '@/stores/messages'
 import { useUiStore } from '@/stores/ui'
+import api from '@/composables/useApi'
+import { useToast } from '@/composables/useToast'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const ui = useUiStore()
+const toast = useToast()
 
 const messagesStore = useMessagesStore()
 const unreadMessages = computed(() => messagesStore.unreadTotal)
+
+// ── Foto do próprio usuário (clicar na foto do menu abre o seletor) ──
+const avatarInput = ref(null)
+function pickAvatar() {
+  avatarInput.value?.click()
+}
+async function onAvatarChange(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const { data } = await api.post('/users/me/avatar', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    authStore.setAvatar(data.avatar_url)
+    toast.success('Foto atualizada')
+  } catch (err) {
+    toast.error(err?.response?.data?.detail || 'Erro ao enviar a foto')
+  } finally {
+    if (e.target) e.target.value = ''  // permite reenviar o mesmo arquivo
+  }
+}
 
 // ── Estado de abertura/fechamento das seções principais ───────────────
 const STORAGE_KEY = 'sidebar_open_sections'
@@ -543,6 +573,36 @@ function canSee(menuKey) {
 </script>
 
 <style scoped>
+/* Foto do próprio usuário — clicável, com ícone de câmera no hover */
+.user-panel .avatar-edit {
+  position: relative;
+  cursor: pointer;
+}
+.user-panel .avatar-edit img {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+}
+.user-panel .avatar-edit .avatar-edit-icon {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.user-panel .avatar-edit:hover .avatar-edit-icon {
+  opacity: 1;
+}
+
 /* ── Hierarquia pai × filho no sidebar (sem cor forte no texto) ───────────────
    Pai (1º nível): branco + semibold. Filho: cinza, menor, recuado e ligado por
    uma linha-guia vertical. Menu aberto: realce sutil + barra fina de acento.

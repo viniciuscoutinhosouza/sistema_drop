@@ -111,6 +111,7 @@ class TokenResponse(BaseModel):
     email: str
     role: str
     dark_mode: bool
+    avatar_url: str | None = None
     go_id: int | None = None
     warehouse_id: int | None = None
     profile_id: int | None = None

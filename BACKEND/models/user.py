@@ -73,6 +73,7 @@ class User(Base):
     cpf_cnpj = Column(String(18), unique=True)
     is_active = Column(Boolean, nullable=False, default=True)
     dark_mode = Column(Boolean, nullable=False, default=False)
+    avatar_url = Column(String(500))  # foto do próprio usuário (menu lateral) — /static/uploads/…
     warehouse_id = Column(
         Integer, ForeignKey("warehouses.id"), nullable=True
     )  # UGO: galpão de trabalho

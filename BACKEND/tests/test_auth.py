@@ -17,6 +17,7 @@ def _make_user(user_id=1, email="test@example.com", role="ac", is_active=True):
     user.full_name = "Test User"
     user.password_hash = hash_password("senha123")
     user.dark_mode = False
+    user.avatar_url = None
     user.go_id = None
     user.warehouse_id = None
     return user

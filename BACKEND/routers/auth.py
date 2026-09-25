@@ -135,6 +135,7 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
         email=user.email,
         role=user.role,
         dark_mode=user.dark_mode,
+        avatar_url=user.avatar_url,
         go_id=user.go_id,
         warehouse_id=user.warehouse_id,
         profile_id=profile_id,

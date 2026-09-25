@@ -1,7 +1,7 @@
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,11 +11,51 @@ from models.cmig import CMIG
 from models.user import AccessPlan, ACProfile, User, UserInvite
 from models.warehouse import Warehouse
 from schemas.user import AddressSchema, PreferencesUpdate, ProfileOut, ProfileUpdate
+from services import image_upload
 from services.viacep_service import fetch_address
+
+_AVATAR_DIR = "static/uploads/user-avatars"
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ─── Foto (avatar) do próprio usuário ────────────────────────────────────────
+
+
+@router.post("/me/avatar")
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Envia a foto do PRÓPRIO usuário (aparece no menu lateral). Qualquer autenticado edita só a
+    própria foto — sem {user_id} no path (IDOR impossível). Só raster (jpg/png/webp) validado por
+    magic bytes; teto 5 MB; nome UUID. Remove a foto anterior (sem órfão em disco)."""
+    data = await file.read(image_upload.MAX_IMAGE_BYTES + 1)
+    if len(data) > image_upload.MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Imagem muito grande (máx. 5 MB).")
+    ext = image_upload.sniff_image_ext(data)
+    if ext is None:
+        raise HTTPException(
+            status_code=400, detail="Arquivo inválido — envie uma imagem JPG, PNG ou WEBP."
+        )
+    image_upload.delete_upload_file(current_user.avatar_url, _AVATAR_DIR)
+    current_user.avatar_url = image_upload.save_image(data, _AVATAR_DIR, ext)
+    await db.commit()
+    return {"avatar_url": current_user.avatar_url}
+
+
+@router.delete("/me/avatar", status_code=204)
+async def delete_my_avatar(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove a foto do próprio usuário (volta ao placeholder no menu)."""
+    image_upload.delete_upload_file(current_user.avatar_url, _AVATAR_DIR)
+    current_user.avatar_url = None
+    await db.commit()
 
 
 # ─── Aprovações de cadastro (convites de colaborador) — admin geral ──────────
