@@ -41,10 +41,15 @@ body.wh-themed a.wh-accent {
   color: var(--wh-link, #007bff) !important;
 }
 
-/* Logo no topo: limita a altura pra caber na área da marca */
+/* Logo no topo: CENTRALIZADA e ampliada (o nome fica oculto quando há logo). */
+.brand-link {
+  text-align: center;
+}
 .brand-link .brand-image-wh {
-  max-height: 33px;
+  max-height: 48px;
+  max-width: 90%;
   width: auto;
-  margin-right: 0.5rem;
-  opacity: 0.95;
+  margin: 0 auto;
+  display: block;
+  opacity: 1;
 }
