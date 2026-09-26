@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-09-25 — feat(rastreabilidade): Fase 1 — modelo + flags + guard (lote/validade/serial/med) (ADR-0027)
+
+Pedido do dono: produtos rastreáveis por **validade, lote e/ou número serial** (+ medicamentos), na entrada e na saída, com relatórios entrada×saída. Travas do dono: rastreável ⇒ **só emissão própria** (nunca Faturador ML/Shopee) e **nunca FULL**; saída FEFO sugere + operador confirma.
+
+Precedido de estudo (4 exploradores do código + consultas fiscal/ML da Fase 0) e **avaliação prévia obrigatória** (quality-guardian REPROVOU a v1: a baixa do lote estava picking-driven mas o escalar é order-driven → invariante furaria em vendas sem picking; consistency-auditor + adr-consistency-checker: 5 atenções). Design corrigido na v2 (baixa order-driven/replay + FEFO automático server-side; 5 baldes por lote; guards em choke point; bloquear kit/CPF; LGPD medicamento). Registrado em **ADR-0027**.
+
+- **Fase 1 (schema, zero comportamento):** migração **143** idempotente — flags `track_lot/track_expiry/track_serial` + campos medicamento (`med_anvisa_code/med_pmc/med_exempt_reason`) em `catalog_products`/`cmig_products`; tabelas `product_lots` (5 baldes espelhando o escalar), `product_serials`, `invoice_item_lots`, `invoice_item_serials`, `stock_lot_allocations` (UNIQUE anti-duplicação), `nfe_ncm_rastreavel` (parâmetro NCM×UF, não hardcode).
+- **Modelos** `models/traceability.py` (6 classes) + registrados no `models/__init__.py`; flags + `is_traceable` property em `CatalogProduct`/`CMIGProduct`.
+- **Guard** `services/traceability_guard.py` (ponto único, molde `work_type_guard`): `is_traceable`, `assert_not_full_for_traceable`, `assert_own_emission_for_traceable`, `assert_flag_change_allowed` (bloqueia kit/FULL>0). Definido; fiação nos choke points entra nas Fases 3/4.
+- **Auditoria do trio sobre o código real** (quality-guardian + consistency-auditor + adr-consistency-checker): sem CRITICAL. Correções aplicadas: `is_traceable` inclui medicamento (`med_anvisa_code`) + enforça med⇒`track_lot`; migração **144** (forward-only) troca a idempotência da alocação para `(order_id, product_type, product_id, lot_id)`, o serial para `(order_id, serial_id)` (permite revenda), e amplia `product_serials.status` p/ VARCHAR2(20).
+- **Migrações 143 + 144 aplicadas e verificadas no Oracle de PRODUÇÃO** via `run_migration.py` (scp+ssh; DEV não tem wallet): 6/6 tabelas, 6/6 flags nos dois produtos, 5 baldes, índices `UQ_SLA_ORDER_LOT`/`UQ_SLA_ORDER_SERIAL`, 0 erros. **Sem deploy de código** (só schema, aditivo).
+- **Fase 2 (captura na entrada — iniciada):** `nfe_xml_parser._parse_rastro`/`_parse_med` extraem `<rastro>`/`<med>` (antes descartados; hardening: teto 500 lotes, truncagem, descarta datas com dFab>dVal). `services/traceability_service.py` persiste lotes/serials no item (idempotente). Fiado no caminho automático de DFe (`dfe_service._create_invoice_from_xml`).
+- **Verificado:** import OK, parser/serviço testados (single/lista/med/data implausível), `pytest -m "not integration"` = 224 passam; 2 falhas em `test_orders.py` são **pré-existentes** (mock sem `.scalar()`, confirmado por stash) — não regressão.
+
+Próximo (amanhã): coração da Fase 2 — **crédito ao `product_lots` via `recompute_lots`** (replay gated por `stock_updated`, espelho termo-a-termo do escalar) + wire das vias upload-XML/manual + UI; depois inventário/devolução por lote. Commit+deploy do conjunto só no fim de todas as fases.
+
+---
+
 ## 2026-09-24 — feat(galpao): logo + tema de cor por Galpão (branding por warehouse)
 
 Pedido do dono: no cadastro do Galpão, poder enviar um **logo** (canto superior esquerdo, acima do menu) e até **5 cores** de tema, para o sistema apresentar um visual diferente por Galpão.

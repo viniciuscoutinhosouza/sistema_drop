@@ -233,6 +233,43 @@ def _format_cep(raw: str) -> str:
     return raw or ""
 
 
+def _parse_rastro(prod: dict) -> list[dict]:
+    """Extrai o grupo <rastro> (I80, 0..500) do item — lote/validade (ADR-0027).
+
+    Retorna lista de {n_lote, q_lote, d_fab, d_val, c_agreg} (datas como str AAAA-MM-DD, cruas;
+    a camada de persistência converte). Endurecido: teto de 500 lotes por item (schema NFe),
+    n_lote truncado em 20 chars. Tolerante a item sem rastro (retorna []).
+    """
+    out: list[dict] = []
+    for r in _ensure_list(prod.get("rastro"))[:500]:
+        if not isinstance(r, dict):
+            continue
+        n_lote = (str(r.get("nLote") or "").strip())[:20]
+        if not n_lote:
+            continue
+        out.append({
+            "n_lote": n_lote,
+            "q_lote": _to_dec(r.get("qLote")),
+            "d_fab": (r.get("dFab") or "").strip() or None,
+            "d_val": (r.get("dVal") or "").strip() or None,
+            "c_agreg": (str(r.get("cAgreg") or "").strip())[:20] or None,
+        })
+    return out
+
+
+def _parse_med(prod: dict) -> dict | None:
+    """Extrai o grupo <med> (K) do item — medicamento (cProdANVISA/xMotivoIsencao/vPMC). ADR-0027."""
+    med = prod.get("med")
+    if not isinstance(med, dict):
+        return None
+    anvisa = (str(med.get("cProdANVISA") or "").strip())[:13]
+    return {
+        "anvisa": anvisa or None,
+        "exempt_reason": (str(med.get("xMotivoIsencao") or "").strip())[:255] or None,
+        "pmc": _to_dec(med.get("vPMC")) if med.get("vPMC") is not None else None,
+    }
+
+
 def _parse_item(det: dict) -> dict:
     """Extrai dados de um <det> (item)."""
     item_number = _to_int(det.get("@nItem"), 1)
@@ -248,6 +285,9 @@ def _parse_item(det: dict) -> dict:
 
     return {
         "item_number": item_number,
+        # Rastreabilidade (ADR-0027): grupo <rastro> (0..500) e <med>. Antes descartados.
+        "lots": _parse_rastro(prod),
+        "med": _parse_med(prod),
         "cfop": prod.get("CFOP") or "",
         "ncm": prod.get("NCM") or "",
         "cest": prod.get("CEST") or "",

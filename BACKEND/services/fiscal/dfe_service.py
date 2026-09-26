@@ -27,6 +27,7 @@ from models.cmig import CMIG
 from models.fiscal import CMIGFiscalConfig, DFeRecebido, DFeSyncLog, Invoice, InvoiceItem
 from models.notification import Notification
 from models.person import Person
+from services import traceability_service
 from services.fiscal import sefaz_service
 from services.fiscal.nfe_xml_parser import parse_nfe_xml
 from services.fiscal.sefaz import distribuicao
@@ -276,9 +277,9 @@ async def _create_invoice_from_xml(
     db.add(inv)
     await db.flush()
 
+    created_items = []
     for it_data in parsed.get("items", []):
-        db.add(
-            InvoiceItem(
+        item = InvoiceItem(
                 invoice_id=inv.id,
                 item_number=it_data.get("item_number") or 1,
                 cfop=it_data.get("cfop") or None,
@@ -313,8 +314,15 @@ async def _create_invoice_from_xml(
                 cofins_aliquota=it_data.get("cofins_aliquota") or Decimal("0"),
                 cofins_value=it_data.get("cofins_value") or Decimal("0"),
                 additional_info=it_data.get("additional_info") or None,
-            )
         )
+        db.add(item)
+        created_items.append((item, it_data))
+
+    # Rastreabilidade (ADR-0027): captura os lotes <rastro> de cada item, se houver.
+    await db.flush()
+    for _item, _it in created_items:
+        if traceability_service.item_has_traceability(_it):
+            traceability_service.persist_item_lots(db, _item.id, _it)
 
     # Notification para o AC owner
     try:

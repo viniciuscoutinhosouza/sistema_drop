@@ -111,6 +111,13 @@ class CMIGProduct(Base):
     source_variation_id = Column(String(100), nullable=True)
     is_composite = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=True)
+    # Rastreabilidade (ADR-0027) — combináveis; default 0 = não rastreável (zero regressão).
+    track_lot = Column(Boolean, nullable=False, default=False)
+    track_expiry = Column(Boolean, nullable=False, default=False)
+    track_serial = Column(Boolean, nullable=False, default=False)
+    med_anvisa_code = Column(String(13))      # código ANVISA (13 díg.) ou 'ISENTO'
+    med_pmc = Column(Numeric(15, 2))          # preço máximo ao consumidor (grupo <med>)
+    med_exempt_reason = Column(String(255))   # obrigatório só se med_anvisa_code = 'ISENTO'
     # Espelho FULL: CMIGProduto auto-criado só para segurar o estoque FULL de um
     # produto cujo anúncio é vinculado ao PG (ADR-0010). Protegido de exclusão.
     is_full_mirror = Column(Boolean, nullable=False, default=False)
@@ -149,6 +156,14 @@ class CMIGProduct(Base):
     @property
     def physical_quantity(self) -> int:
         return self.stock_quantity or 0
+
+    @property
+    def is_traceable(self) -> bool:
+        # inclui medicamento (med_anvisa_code) — vide services/traceability_guard.is_traceable (SSOT)
+        return bool(
+            self.track_lot or self.track_expiry or self.track_serial
+            or (self.med_anvisa_code or "").strip()
+        )
 
     @property
     def category_name(self):
