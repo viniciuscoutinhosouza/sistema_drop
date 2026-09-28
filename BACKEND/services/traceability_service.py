@@ -27,6 +27,10 @@ from models.traceability import (
 
 logger = logging.getLogger(__name__)
 
+# Lote sintético que absorve a diferença entre o escalar e a soma dos lotes reais (reconciliação —
+# garante o invariante Σbalance==stock_quantity mesmo com entrada sem <rastro> ou drift de alocação).
+SEM_LOTE_CODE = "SEM-LOTE"
+
 
 def _to_date(v) -> date | None:
     """Converte 'AAAA-MM-DD' (ou datetime/date) em date; tolerante a formato inválido → None."""
@@ -126,21 +130,27 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
     # Resolução do item→produto ESPELHA affected_products_from_invoice (stock_calculator) termo a
     # termo — senão os lotes não batem com o escalar. Na entrada a FK costuma vir nula: casa por
     # EAN-na-CMIG (cuidado com a armadilha Oracle NULL/'' — L-012: usar is_(None), não coalesce).
+    # `not_pg` = source_type ∉ {'pg'} (com a armadilha Oracle NULL/'' — L-012: is_(None) explícito;
+    # func.lower para casar 'PG'/'Pg' como o escalar normaliza).
+    not_pg = or_(InvoiceItem.source_type.is_(None), func.lower(InvoiceItem.source_type) != "pg")
+    scalar_target = 0
     if product_type == "cmig":
         row = (
             await db.execute(
-                select(CMIGProduct.ean, CMIGProduct.cmig_id).where(CMIGProduct.id == product_id)
+                select(CMIGProduct.ean, CMIGProduct.cmig_id, CMIGProduct.stock_quantity)
+                .where(CMIGProduct.id == product_id)
             )
         ).first()
         if not row:
             return 0
-        p_ean, p_cmig_id = row
-        conds = [InvoiceItem.cmig_product_id == product_id]
+        p_ean, p_cmig_id, scalar_target = row
+        # CMIG (escalar: ramo NÃO-'pg'): FK cmig_product_id OU EAN-na-CMIG.
+        conds = [and_(not_pg, InvoiceItem.cmig_product_id == product_id)]
         if (p_ean or "").strip():
             conds.append(
                 and_(
+                    not_pg,
                     InvoiceItem.cmig_product_id.is_(None),
-                    or_(InvoiceItem.source_type.is_(None), InvoiceItem.source_type != "pg"),
                     InvoiceItem.ean == p_ean,
                     Invoice.cmig_id == p_cmig_id,
                 )
@@ -149,29 +159,24 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
     elif product_type == "pg":
         row = (
             await db.execute(
-                select(CatalogProduct.sku, CatalogProduct.ean).where(CatalogProduct.id == product_id)
+                select(CatalogProduct.sku, CatalogProduct.ean, CatalogProduct.stock_quantity)
+                .where(CatalogProduct.id == product_id)
             )
         ).first()
         if not row:
             return 0
-        p_sku, p_ean = row
-        pg_or = []
+        p_sku, p_ean, scalar_target = row
+        # PG (escalar: só quando source=='pg'): FK catalog_product_id OU SKU/EAN.
+        inner = [InvoiceItem.catalog_product_id == product_id]
         if (p_sku or "").strip():
-            pg_or.append(InvoiceItem.sku == p_sku)
+            inner.append(InvoiceItem.sku == p_sku)
         if (p_ean or "").strip():
-            pg_or.append(InvoiceItem.ean == p_ean)
-        conds = [InvoiceItem.catalog_product_id == product_id]
-        if pg_or:
-            conds.append(
-                and_(
-                    func.lower(InvoiceItem.source_type) == "pg",
-                    InvoiceItem.catalog_product_id.is_(None),
-                    or_(*pg_or),
-                )
-            )
-        item_match = or_(*conds)
+            inner.append(InvoiceItem.ean == p_ean)
+        item_match = and_(func.lower(InvoiceItem.source_type) == "pg", or_(*inner))
     else:
         return 0  # variant_pg/variant_cmig: resolução por SKU→variante fica p/ follow-up
+
+    scalar_target = int(scalar_target or 0)
 
     rows = (
         await db.execute(
@@ -229,7 +234,12 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
 
     seen = set()
     active = 0
+    sum_real = 0  # Σ saldo dos lotes REAIS (exclui o SEM-LOTE sintético)
+    sem_lote_obj = None
     for lot in existing:
+        if lot.lot_code == SEM_LOTE_CODE:
+            sem_lote_obj = lot  # reconciliado no fim (não conta como real)
+            continue
         seen.add(lot.lot_code)
         if lot.lot_code in totals:
             d_fab, d_val, entrada = totals[lot.lot_code]
@@ -239,6 +249,7 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
                 lot.mfg_date = d_fab
             if d_val:
                 lot.expiry_date = d_val
+            sum_real += bal
             if bal:
                 active += 1
         else:
@@ -259,8 +270,30 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
                 balance=bal,
             )
         )
+        sum_real += bal
         if bal:
             active += 1
+
+    # RECONCILIAÇÃO (invariante por construção): o SEM-LOTE sintético absorve a diferença entre o
+    # escalar (fonte da verdade — ADR-0004) e a soma dos lotes reais. Cobre: entrada sem <rastro>
+    # (fornecedor não preencheu), devolução parcial não-alinhada, e qualquer drift de alocação →
+    # garante Σ product_lots.balance == stock_quantity SEMPRE. O SEM-LOTE sem validade sai por
+    # último no FEFO e sinaliza rastro faltante. Só reconcilia diferença POSITIVA (falta lote);
+    # diferença negativa (lotes > escalar) é anomalia → loga (o monitor de drift pega).
+    diff = scalar_target - sum_real
+    if diff < 0:
+        logger.warning(
+            "[rastreabilidade] Σlotes(%s) > estoque(%s) p/ %s/%s — drift negativo (revisar alocações)",
+            sum_real, scalar_target, product_type, product_id,
+        )
+    sem_bal = max(0, diff)
+    if sem_lote_obj is not None:
+        sem_lote_obj.balance = sem_bal
+    elif sem_bal > 0:
+        db.add(ProductLot(product_type=product_type, product_id=product_id,
+                          lot_code=SEM_LOTE_CODE, balance=sem_bal))
+    if sem_bal:
+        active += 1
     return active
 
 

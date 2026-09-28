@@ -992,9 +992,12 @@ async def update_cmig_product(
     for field, value in payload.items():
         setattr(product, field, value)
 
-    # Rastreabilidade (ADR-0027): valida flags após aplicar (bloqueia kit e med sem track_lot).
+    # Rastreabilidade (ADR-0027): valida flags após aplicar (kit, med sem track_lot, e FULL>0).
+    from services.full_stock_service import product_has_full_stock
     from services.traceability_guard import assert_flag_change_allowed
-    assert_flag_change_allowed(product)
+    _wants_trace = bool(product.track_lot or product.track_expiry or product.track_serial or product.med_anvisa_code)
+    _has_full = await product_has_full_stock(db, "cmig", product_id) if _wants_trace else False
+    assert_flag_change_allowed(product, has_full_stock=_has_full)
 
     # Sincronizar imagens se fornecidas (substitui o conteúdo da tabela)
     if images is not None:

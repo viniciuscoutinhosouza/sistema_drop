@@ -233,11 +233,11 @@ async def get_supplier_product(
     return data
 
 
-def _apply_traceability_fields(product, body: dict) -> None:
+def _apply_traceability_fields(product, body: dict, *, has_full_stock: bool = False) -> None:
     """Aplica e VALIDA as flags de rastreabilidade (ADR-0027) do body no produto (PG ou CMIG).
 
-    Bloqueia flag em kit (composto) e medicamento sem track_lot (assert_flag_change_allowed).
-    Só toca os campos quando presentes no body (update parcial preserva o valor atual)."""
+    Bloqueia flag em kit (composto), medicamento sem track_lot e (no update) ligar a flag com FULL>0
+    (assert_flag_change_allowed). Só toca os campos presentes no body (update parcial preserva)."""
     from services.traceability_guard import assert_flag_change_allowed
 
     if "track_lot" in body:
@@ -252,7 +252,7 @@ def _apply_traceability_fields(product, body: dict) -> None:
         product.med_pmc = body.get("med_pmc")
     if "med_exempt_reason" in body:
         product.med_exempt_reason = (body.get("med_exempt_reason") or "").strip() or None
-    assert_flag_change_allowed(product)
+    assert_flag_change_allowed(product, has_full_stock=has_full_stock)
 
 
 @router.post("", status_code=201)
@@ -415,7 +415,12 @@ async def update_product(
                 val = _norm_cest(val)
             setattr(product, field, val)
 
-    _apply_traceability_fields(product, body)  # rastreabilidade (ADR-0027) + validação
+    # Rastreabilidade (ADR-0027): valida flags; no update, checa FULL>0 (bloqueia tornar rastreável
+    # produto com saldo no FULL — precisa drenar antes).
+    from services.full_stock_service import product_has_full_stock
+    _wants_trace = any(body.get(k) for k in ("track_lot", "track_expiry", "track_serial", "med_anvisa_code"))
+    _has_full = await product_has_full_stock(db, "pg", product_id) if _wants_trace else False
+    _apply_traceability_fields(product, body, has_full_stock=_has_full)
 
     # Sincronizar imagens se fornecidas
     if "images" in body:

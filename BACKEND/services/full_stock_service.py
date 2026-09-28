@@ -242,6 +242,34 @@ async def resolve_full_cmig_product(
     return cp
 
 
+async def product_has_full_stock(db: AsyncSession, product_type: str, product_id: int) -> bool:
+    """True se o produto tem saldo no FULL (ADR-0027: bloqueia tornar rastreável com FULL>0).
+
+    CMIG: soma FullStock direto. PG: soma dos CMIGProducts espelho (`pg_product_id`). Best-effort.
+    """
+    from sqlalchemy import func as _func
+
+    from models.cmig import CMIGProduct as _CMIGProduct
+
+    ids: list[int] = []
+    if product_type == "cmig":
+        ids = [product_id]
+    elif product_type == "pg":
+        ids = (
+            await db.execute(select(_CMIGProduct.id).where(_CMIGProduct.pg_product_id == product_id))
+        ).scalars().all()
+    if not ids:
+        return False
+    total = (
+        await db.execute(
+            select(_func.coalesce(_func.sum(FullStock.qty), 0)).where(
+                FullStock.product_type == "cmig", FullStock.product_id.in_(list(ids))
+            )
+        )
+    ).scalar()
+    return int(total or 0) > 0
+
+
 async def available_for_product(
     db: AsyncSession,
     account_id: int,

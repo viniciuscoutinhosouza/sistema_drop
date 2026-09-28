@@ -1,7 +1,8 @@
 """Relatórios de rastreabilidade (ADR-0027, Fase 6) — entrada × saída por lote/validade/serial.
 
-Endpoints só-leitura sob `/api/v1/traceability`. Gate: usuário autenticado. O recall reverso NÃO
-expõe dados pessoais do comprador (só referência de pedido) — LGPD Art. 11 (dado de saúde p/ med).
+Endpoints só-leitura sob `/api/v1/traceability`. Gate: usuário autenticado + ESCOPO por galpão
+(admin vê tudo; demais só o próprio `warehouse_id` — ADR-0026). O recall NÃO expõe dados pessoais
+do comprador (só referência de pedido) — LGPD Art. 11 (dado de saúde p/ medicamento).
 """
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,11 @@ from services import traceability_report_service as reports
 router = APIRouter()
 
 
+def _scope(user: User):
+    """Galpão do usuário para escopo; None só para admin (vê tudo)."""
+    return None if user.role == "admin" else user.warehouse_id
+
+
 @router.get("/lots")
 async def get_product_lots(
     product_type: str = Query(..., pattern="^(pg|cmig|variant_pg|variant_cmig)$"),
@@ -22,7 +28,7 @@ async def get_product_lots(
     current_user: User = Depends(get_current_user),
 ):
     """Lotes de um produto (saldo/validade, FEFO)."""
-    return await reports.list_product_lots(db, product_type, product_id)
+    return await reports.list_product_lots(db, product_type, product_id, _scope(current_user))
 
 
 @router.get("/lots/{lot_id}/ledger")
@@ -32,7 +38,7 @@ async def get_lot_ledger(
     current_user: User = Depends(get_current_user),
 ):
     """Kardex do lote: entradas (notas) × saídas (pedidos)."""
-    return await reports.lot_ledger(db, lot_id)
+    return await reports.lot_ledger(db, lot_id, _scope(current_user))
 
 
 @router.get("/expiring")
@@ -42,7 +48,7 @@ async def get_expiring(
     current_user: User = Depends(get_current_user),
 ):
     """Lotes a vencer em até N dias (com saldo > 0)."""
-    return await reports.expiring_lots(db, days)
+    return await reports.expiring_lots(db, days, _scope(current_user))
 
 
 @router.get("/recall")
@@ -52,7 +58,7 @@ async def get_recall(
     current_user: User = Depends(get_current_user),
 ):
     """Rastreabilidade reversa: dado um lote → pedidos que o levaram (sem PII do comprador)."""
-    return await reports.recall_by_lot(db, lot_code)
+    return await reports.recall_by_lot(db, lot_code, _scope(current_user))
 
 
 @router.get("/serials/{serial}")
@@ -62,4 +68,14 @@ async def get_serial(
     current_user: User = Depends(get_current_user),
 ):
     """Histórico de uma unidade serial."""
-    return await reports.serial_history(db, serial)
+    return await reports.serial_history(db, serial, _scope(current_user))
+
+
+@router.get("/med/{anvisa_code}/movements")
+async def get_med_movements(
+    anvisa_code: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Movimentação (lotes com saldo) de um medicamento por código ANVISA."""
+    return await reports.movements_by_anvisa(db, anvisa_code, _scope(current_user))

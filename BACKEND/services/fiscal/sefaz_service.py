@@ -423,6 +423,17 @@ async def load_trace_for_invoice(db: AsyncSession, inv: Invoice, items: list) ->
     ).scalars().first()
     alloc_by_prod: dict[tuple[str, int], list] = {}
     if order:
+        # A nota é transmitida ANTES do despacho → as alocações de lote ainda não existem. Aloca
+        # FEFO agora (idempotente; o despacho reusa) para a nota sair COM <rastro> (ADR-0027). Sem
+        # isto, produto rastreável emitiria a nota sem lote em silêncio. Best-effort.
+        try:
+            from services.stock_reservation_service import allocate_order_lots
+            await allocate_order_lots(db, order)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "load_trace_for_invoice: alocação FEFO na emissão falhou (inv=%s)", inv.id, exc_info=True
+            )
         rows = (
             await db.execute(
                 select(

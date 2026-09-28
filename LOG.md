@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-09-28 — fix(rastreabilidade): correções pós-auditoria final — CRITICAL + HIGH (ADR-0027)
+
+Auditoria final (trio) achou 1 CRITICAL + vários HIGH. Corrigidos:
+
+- **CRITICAL — IDOR multi-tenant nos relatórios**: `traceability_report_service` + router agora **escopam por galpão** (admin vê tudo; demais só o próprio `warehouse_id`; `_lot_scope`/`_product_in_scope`). Recall/serial por `lot_code`/serial não mesclam mais galpões. Novo endpoint `/med/{anvisa_code}/movements` (relatório por ANVISA que faltava).
+- **HIGH — invariante por construção (SEM-LOTE)**: `recompute_lots` reconcilia `Σ product_lots.balance == stock_quantity` via lote sintético "SEM-LOTE" que absorve a diferença (entrada sem `<rastro>`, devolução parcial não-alinhada, drift de alocação). Fecha o furo "credita escalar mas não lote". Match item→produto **alinhado termo-a-termo** ao escalar (source_type=='pg' no PG; `not_pg` no CMIG; `func.lower`; armadilha NULL L-012).
+- **HIGH — sub-alocação/colisão**: `allocate_order_lots` **agrega qty por produto** do pedido inteiro (kit→componentes) antes de alocar → sem sub-alocação nem violação do unique index.
+- **HIGH — emissão sem rastro**: `load_trace_for_invoice` **aloca FEFO na emissão** (a nota é transmitida antes do despacho) → nota sai COM `<rastro>`; despacho reusa (idempotente).
+- **HIGH — guard burlável (kit / FK-nula)**: `assert_order_own_emission` reescrito para usar `affected_products_from_order` (mesma resolução do motor: FK + SKU/EAN + kit→componentes) → item por SKU e kit com componente rastreável não escapam mais.
+- **HIGH — guard "drenar FULL" morto**: `product_has_full_stock` novo; PG/CMIG update passam `has_full_stock` ao `assert_flag_change_allowed` → bloqueia tornar rastreável produto com FULL>0.
+- **Verificado:** 238 testes passam (14 de rastreabilidade); queries (escopo/ANVISA/reconciliação) validadas no Oracle de produção. Sem deploy.
+
+Follow-ups documentados (não bloqueiam o núcleo): enforcement Shopee-Invoice-Issuer + conta CPF/DC-e (emissão EXTERNA → guard no publish/venda, decisão de config do dono); monitor de drift no `daily_stock_reconcile`; baldes 2-5 por lote; variante; serial no `infAdProd`; UI do kardex; esconder toggles em kit; permissão nomeada do recall; índice CLAUDE.md + back-refs ADRs (session-closer).
+
+---
+
 ## 2026-09-27 — feat(rastreabilidade): UI — flags no produto + tela de relatórios (ADR-0027)
 
 Frontend + CRUD de produto para habilitar/testar a rastreabilidade.

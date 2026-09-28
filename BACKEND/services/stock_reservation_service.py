@@ -556,24 +556,28 @@ async def allocate_order_lots(db: AsyncSession, order: Order) -> None:
     from services import traceability_service
 
     items = await _get_order_items(db, order)
-    touched: set[tuple[str, int]] = set()
+    # AGREGA a quantidade por (product_type, product_id) do pedido INTEIRO antes de alocar — senão
+    # produto repetido em vários itens (ou componente compartilhado entre kits) sub-aloca e colide
+    # no unique index (order_id, product_type, product_id, lot_id). Expande kit→componentes.
+    need: dict[tuple[str, int], int] = {}
     for item in items:
         qty = item.quantity or 1
         if item.catalog_product_id:
             kit = await _kit_components(db, item.catalog_product_id, qty)
             alvos = kit if kit is not None else [(item.catalog_product_id, qty)]
             for _pid, _q in alvos:
-                await traceability_service.allocate_fefo(db, "pg", _pid, order.id, item.id, _q)
-                touched.add(("pg", _pid))
+                need[("pg", _pid)] = need.get(("pg", _pid), 0) + _q
         elif item.cmig_product_id:
             _kit = await _kit_components_cmig(db, item.cmig_product_id, qty)
             _alvos = _kit if _kit is not None else [("cmig", item.cmig_product_id, qty)]
             for _tp, _pid, _q in _alvos:
-                await traceability_service.allocate_fefo(db, _tp, _pid, order.id, item.id, _q)
-                touched.add((_tp, _pid))
+                need[(_tp, _pid)] = need.get((_tp, _pid), 0) + _q
+
+    for (_tp, _pid), _q in need.items():
+        await traceability_service.allocate_fefo(db, _tp, _pid, order.id, None, _q)
 
     await db.flush()
-    for _tp, _pid in touched:
+    for _tp, _pid in need:
         await traceability_service.recompute_lots(db, _tp, _pid)
 
 

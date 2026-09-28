@@ -71,42 +71,36 @@ def assert_own_emission_for_traceable(product, *, context: str = "") -> None:
 
 
 async def assert_order_own_emission(db, order) -> None:
-    """Bloqueia emitir a NF-e de um pedido RASTREÁVEL pelo Faturador ML (decisão #1 do dono).
+    """Bloqueia emitir a NF-e de um pedido RASTREÁVEL por terceiro (Faturador ML / Shopee) — decisão #1.
 
-    Deve ser chamado ANTES de qualquer `ml_service.emit_nfe`. Carrega os itens do pedido e, se
-    qualquer produto for rastreável, levanta 409 (a nota tem de ser emitida pelo próprio sistema —
-    ADR-0015/0027). No-op para pedido sem item rastreável (zero regressão). Ponto de escopo local
-    (o `emit_nfe` puro não tem db); cobre os call-sites de Faturador (endpoint, etiqueta, bundle, cart).
+    Deve ser chamado ANTES de `ml_service.emit_nfe` e do upload/emissão Shopee. Resolve os produtos
+    do pedido pela MESMA lógica do motor de estoque (`affected_products_from_order`: FK, SKU/EAN e
+    KIT→componentes) — assim item com FK nula (resolvido por SKU) e kit com componente rastreável
+    NÃO escapam. Se qualquer produto for rastreável, levanta 409. No-op para pedido não rastreável.
     """
     from sqlalchemy import select
 
     from models.cmig import CMIGProduct
-    from models.order import OrderItem
     from models.product import CatalogProduct
+    from services.fiscal.stock_calculator import affected_products_from_order
 
-    items = (
-        await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))
-    ).scalars().all()
-    for it in items:
-        prod = None
-        if getattr(it, "catalog_product_id", None):
-            prod = (
-                await db.execute(
-                    select(CatalogProduct).where(CatalogProduct.id == it.catalog_product_id)
-                )
-            ).scalar_one_or_none()
-        elif getattr(it, "cmig_product_id", None):
-            prod = (
-                await db.execute(
-                    select(CMIGProduct).where(CMIGProduct.id == it.cmig_product_id)
-                )
-            ).scalar_one_or_none()
-        if is_traceable(prod):
-            raise HTTPException(
-                status_code=409,
-                detail="Pedido com produto rastreável (lote/validade/serial): a NF-e deve ser "
-                       "emitida pelo próprio sistema, não pelo Faturador do Mercado Livre.",
-            )
+    cmig_ids, pg_ids = await affected_products_from_order(order, db)
+    for pid in pg_ids:
+        p = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == pid))).scalar_one_or_none()
+        if is_traceable(p):
+            _raise_own_emission()
+    for cid in cmig_ids:
+        c = (await db.execute(select(CMIGProduct).where(CMIGProduct.id == cid))).scalar_one_or_none()
+        if is_traceable(c):
+            _raise_own_emission()
+
+
+def _raise_own_emission() -> None:
+    raise HTTPException(
+        status_code=409,
+        detail="Pedido com produto rastreável (lote/validade/serial): a NF-e deve ser emitida pelo "
+               "próprio sistema, não pelo Faturador do Mercado Livre nem pela Shopee.",
+    )
 
 
 def assert_flag_change_allowed(product, *, has_full_stock: bool = False) -> None:
