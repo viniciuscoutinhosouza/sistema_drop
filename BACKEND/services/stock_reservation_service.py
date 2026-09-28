@@ -530,12 +530,51 @@ async def confirm_dispatch(db: AsyncSession, order: Order) -> None:
                      order_id=order.id, movement_type="dispatch", qty=qty,
                      field="stock_quantity", delta=-qty)
 
+    # Rastreabilidade (ADR-0027, Fase 3): aloca lotes FEFO dos produtos rastreáveis (order-driven,
+    # mesmo gatilho do escalar). Best-effort — o saldo de lote é cache e nunca quebra o despacho.
+    try:
+        await allocate_order_lots(db, order)
+    except Exception as exc:
+        logger.warning("confirm_dispatch: alocação de lote order=%s: %s", order.id, exc)
+
     try:
         await db.commit()
         from services.stock_sync_service import schedule_push
         schedule_push(_cmig_ids, _pg_ids)
     except Exception as exc:
         logger.error("confirm_dispatch order=%s: %s", order.id, exc)
+
+
+async def allocate_order_lots(db: AsyncSession, order: Order) -> None:
+    """Aloca lotes FEFO dos itens rastreáveis de um pedido despachado (ADR-0027, Fase 3).
+
+    Espelha os ALVOS do `confirm_dispatch` (kit → componentes): a rastreabilidade vive nos
+    componentes. Produto não rastreável não tem `product_lots` → `allocate_fefo` é no-op. Depois
+    recomputa o saldo por lote dos produtos tocados (balance = entradas − alocações). O picking
+    (Fase 3 UI), quando ocorre, cria as alocações ANTES do despacho e o FEFO só preenche o resto.
+    """
+    from services import traceability_service
+
+    items = await _get_order_items(db, order)
+    touched: set[tuple[str, int]] = set()
+    for item in items:
+        qty = item.quantity or 1
+        if item.catalog_product_id:
+            kit = await _kit_components(db, item.catalog_product_id, qty)
+            alvos = kit if kit is not None else [(item.catalog_product_id, qty)]
+            for _pid, _q in alvos:
+                await traceability_service.allocate_fefo(db, "pg", _pid, order.id, item.id, _q)
+                touched.add(("pg", _pid))
+        elif item.cmig_product_id:
+            _kit = await _kit_components_cmig(db, item.cmig_product_id, qty)
+            _alvos = _kit if _kit is not None else [("cmig", item.cmig_product_id, qty)]
+            for _tp, _pid, _q in _alvos:
+                await traceability_service.allocate_fefo(db, _tp, _pid, order.id, item.id, _q)
+                touched.add((_tp, _pid))
+
+    await db.flush()
+    for _tp, _pid in touched:
+        await traceability_service.recompute_lots(db, _tp, _pid)
 
 
 # ─── Cancelamento pós-despacho ────────────────────────────────────────────────
@@ -596,6 +635,7 @@ async def confirm_pending_return(db: AsyncSession, order: Order) -> None:
     items = await _get_order_items(db, order)
     _pg_ids: set[int] = set()
     _cmig_ids: set[int] = set()
+    _rev: dict[tuple[str, int], int] = {}  # rastreabilidade: reverte alocações → 'returned'
 
     for item in items:
         qty = item.quantity or 1
@@ -614,6 +654,7 @@ async def confirm_pending_return(db: AsyncSession, order: Order) -> None:
                  order_id=order.id, movement_type="confirm_return", qty=qty,
                  field="stock_quantity", delta=qty)
             _pg_ids.add(item.catalog_product_id)
+            _rev[("pg", item.catalog_product_id)] = _rev.get(("pg", item.catalog_product_id), 0) + qty
             confirmed = True
 
         if item.cmig_product_id and not confirmed:
@@ -629,6 +670,16 @@ async def confirm_pending_return(db: AsyncSession, order: Order) -> None:
                  order_id=order.id, movement_type="confirm_return", qty=qty,
                  field="stock_quantity", delta=qty)
             _cmig_ids.add(item.cmig_product_id)
+            _rev[("cmig", item.cmig_product_id)] = _rev.get(("cmig", item.cmig_product_id), 0) + qty
+
+    # Rastreabilidade (ADR-0027): produto voltou ao vendável → reverte a alocação de lote ('returned').
+    if _rev:
+        try:
+            from services import traceability_service
+            for (_tp, _pid), _q in _rev.items():
+                await traceability_service.reverse_allocations(db, order.id, _tp, _pid, _q, "returned")
+        except Exception:
+            logger.warning("confirm_pending_return: reversão de lote falhou order=%s", order.id, exc_info=True)
 
     order.return_status = "returned"
     try:
@@ -833,6 +884,10 @@ async def validate_return_items(
         return
     _pg_ids: set[int] = set()
     _cmig_ids: set[int] = set()
+    # Rastreabilidade (ADR-0027): reverte as alocações de lote do pedido original.
+    _rev: dict[tuple[str, int], int] = {}
+    _order_id = getattr(return_obj, "order_id", None)
+    _new_status = "returned" if approved else "unfit"
     for item in items:
         qty = int(item.quantity or 0)
         if qty <= 0:
@@ -857,6 +912,7 @@ async def validate_return_items(
                  field="stock_quantity" if approved else "unfit_quantity",
                  delta=qty if approved else qty, created_by=user_id)
             _pg_ids.add(item.catalog_product_id)
+            _rev[("pg", item.catalog_product_id)] = _rev.get(("pg", item.catalog_product_id), 0) + qty
         elif item.cmig_product_id:
             vals = (
                 {
@@ -877,6 +933,16 @@ async def validate_return_items(
                  field="stock_quantity" if approved else "unfit_quantity",
                  delta=qty if approved else qty, created_by=user_id)
             _cmig_ids.add(item.cmig_product_id)
+            _rev[("cmig", item.cmig_product_id)] = _rev.get(("cmig", item.cmig_product_id), 0) + qty
+
+    # Reversão das alocações de lote do pedido original (best-effort — nunca quebra a devolução).
+    if _order_id and _rev:
+        try:
+            from services import traceability_service
+            for (_tp, _pid), _q in _rev.items():
+                await traceability_service.reverse_allocations(db, _order_id, _tp, _pid, _q, _new_status)
+        except Exception:
+            logger.warning("validate_return_items: reversão de lote falhou return=%s", return_obj.id, exc_info=True)
 
     if approved and (_pg_ids or _cmig_ids):
         from services.stock_sync_service import schedule_push

@@ -1702,6 +1702,16 @@ async def add_item(
     )
     db.add(item)
     await db.flush()
+
+    # Rastreabilidade (ADR-0027): lotes (<rastro>) e serials informados manualmente no recebimento.
+    # Chaves esperadas em `lots`: n_lote, q_lote, d_fab, d_val, c_agreg. `serials`: lista de strings.
+    # O crédito ao saldo por lote ocorre quando a nota é finalizada/transmitida (_apply_stock_movement).
+    from services import traceability_service
+    if body.get("lots"):
+        traceability_service.persist_item_lots(db, item.id, {"lots": body.get("lots")})
+    if body.get("serials"):
+        traceability_service.persist_item_serials(db, item.id, body.get("serials"))
+
     # Recarregar items e recomputar totais
     await db.refresh(inv, attribute_names=["items"])
     _recompute_totals(inv)

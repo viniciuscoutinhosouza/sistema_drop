@@ -17,7 +17,13 @@ from sqlalchemy import and_, delete, func, or_, select
 from models.cmig import CMIGProduct
 from models.fiscal import Invoice, InvoiceItem
 from models.product import CatalogProduct
-from models.traceability import InvoiceItemLot, InvoiceItemSerial, ProductLot
+from models.traceability import (
+    InvoiceItemLot,
+    InvoiceItemSerial,
+    ProductLot,
+    ProductSerial,
+    StockLotAllocation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +199,25 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
         if n_lote
     }
 
+    # Termo de DÉBITO (Fase 3): saídas alocadas por lote (stock_lot_allocations), por lot_code.
+    # balance = Σ entradas − Σ alocações. (Serial-only rows têm lot_id nulo → não entram aqui.)
+    alloc_rows = (
+        await db.execute(
+            select(ProductLot.lot_code, func.sum(StockLotAllocation.qty))
+            .select_from(StockLotAllocation)
+            .join(ProductLot, ProductLot.id == StockLotAllocation.lot_id)
+            .where(
+                ProductLot.product_type == product_type,
+                ProductLot.product_id == product_id,
+                # 'returned' (apto) volta ao saldo vendável → deixa de debitar. shipped/awaiting/
+                # pending/unfit continuam fora do vendável (mirror do escalar — ADR-0009).
+                StockLotAllocation.status != "returned",
+            )
+            .group_by(ProductLot.lot_code)
+        )
+    ).all()
+    alloc = {lc: int(s or 0) for (lc, s) in alloc_rows if lc}
+
     existing = (
         await db.execute(
             select(ProductLot).where(
@@ -207,7 +232,8 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
     for lot in existing:
         seen.add(lot.lot_code)
         if lot.lot_code in totals:
-            d_fab, d_val, bal = totals[lot.lot_code]
+            d_fab, d_val, entrada = totals[lot.lot_code]
+            bal = max(0, entrada - alloc.get(lot.lot_code, 0))
             lot.balance = bal
             if d_fab:
                 lot.mfg_date = d_fab
@@ -219,9 +245,10 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
             # entrada sumiu (nota cancelada/editada) → zera o saldo (não apaga: preserva FKs/histórico)
             lot.balance = 0
 
-    for n_lote, (d_fab, d_val, bal) in totals.items():
+    for n_lote, (d_fab, d_val, entrada) in totals.items():
         if n_lote in seen:
             continue
+        bal = max(0, entrada - alloc.get(n_lote, 0))
         db.add(
             ProductLot(
                 product_type=product_type,
@@ -235,6 +262,123 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
         if bal:
             active += 1
     return active
+
+
+async def allocate_fefo(db, product_type: str, product_id: int, order_id: int,
+                        order_item_id, qty: int) -> int:
+    """Aloca `qty` do produto por FEFO (menor validade primeiro; FIFO por id sem validade) — Fase 3.
+
+    Cria `stock_lot_allocations` (status 'shipped'). IDEMPOTENTE por (order_id, product) — respeita o
+    unique index (order_id, product_type, product_id, lot_id). NÃO bloqueia por falta de saldo (mirror
+    do escalar, que permite oversell entre ciclos de sync); loga o déficit. Só LOTE — serial vem por
+    bipagem no picking. Produto não rastreável não tem product_lots → no-op. Retorna qty alocada.
+    """
+    qty = int(qty or 0)
+    if qty <= 0:
+        return 0
+    already = int(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(StockLotAllocation.qty), 0)).where(
+                    StockLotAllocation.order_id == order_id,
+                    StockLotAllocation.product_type == product_type,
+                    StockLotAllocation.product_id == product_id,
+                    StockLotAllocation.lot_id.isnot(None),
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    remaining = qty - already
+    if remaining <= 0:
+        return already
+
+    lots = (
+        await db.execute(
+            select(ProductLot)
+            .where(
+                ProductLot.product_type == product_type,
+                ProductLot.product_id == product_id,
+                ProductLot.balance > 0,
+            )
+            .order_by(ProductLot.expiry_date.asc().nulls_last(), ProductLot.id.asc())
+        )
+    ).scalars().all()
+
+    allocated = 0
+    for lot in lots:
+        if remaining <= 0:
+            break
+        take = min(remaining, int(lot.balance or 0))
+        if take <= 0:
+            continue
+        db.add(
+            StockLotAllocation(
+                order_id=order_id,
+                order_item_id=order_item_id,
+                product_type=product_type,
+                product_id=product_id,
+                lot_id=lot.id,
+                qty=take,
+                status="shipped",
+            )
+        )
+        remaining -= take
+        allocated += take
+
+    if remaining > 0:
+        logger.warning(
+            "[rastreabilidade] FEFO insuficiente p/ %s/%s pedido %s: faltam %s un (oversell/sem lote)",
+            product_type, product_id, order_id, remaining,
+        )
+    return already + allocated
+
+
+async def reverse_allocations(db, order_id: int, product_type: str, product_id: int,
+                              qty: int, new_status: str) -> int:
+    """Reversão de alocações de um pedido (devolução/cancelamento) — ADR-0027, Fase 3.
+
+    Vira até `qty` de alocações ATIVAS (status != 'returned') do produto para `new_status`
+    ('returned' apto → volta ao saldo; 'unfit' reprovado → segue fora do vendável). Como a
+    alocação registrou QUAL lote saiu, o retorno credita o MESMO lote (resolve "qual lote volta"
+    sem perguntar ao operador). Flip de linha INTEIRA (não faz split — o unique index (order,
+    produto, lote) proíbe duas linhas do mesmo lote); resíduo não-alinhado a fronteira de alocação
+    fica logado. Recomputa o saldo ao final. Retorna qty revertida.
+    """
+    remaining = int(qty or 0)
+    if remaining <= 0:
+        return 0
+    allocs = (
+        await db.execute(
+            select(StockLotAllocation)
+            .where(
+                StockLotAllocation.order_id == order_id,
+                StockLotAllocation.product_type == product_type,
+                StockLotAllocation.product_id == product_id,
+                StockLotAllocation.status != "returned",
+                StockLotAllocation.status != new_status,
+            )
+            .order_by(StockLotAllocation.id.asc())
+        )
+    ).scalars().all()
+    reversed_qty = 0
+    for a in allocs:
+        if remaining <= 0:
+            break
+        if (a.qty or 0) <= remaining:
+            a.status = new_status
+            remaining -= a.qty or 0
+            reversed_qty += a.qty or 0
+    if remaining > 0:
+        logger.warning(
+            "[rastreabilidade] reversão parcial não-alinhada: pedido %s produto %s/%s, "
+            "resíduo %s un não revertido (%s)",
+            order_id, product_type, product_id, remaining, new_status,
+        )
+    if reversed_qty:
+        await db.flush()
+        await recompute_lots(db, product_type, product_id)
+    return reversed_qty
 
 
 async def recompute_lots_after_invoice_change(db, cmig_ids, pg_ids) -> None:

@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-09-27 — feat(rastreabilidade): Fase 3 — saída FEFO order-driven + reversão na devolução (ADR-0027)
+
+Débito de lote por venda + captura manual (fecha a entrada) + reversão em devolução/cancelamento.
+
+- **Captura manual** (`add_item`, `routers/invoices.py`): aceita `lots`/`serials` no body (crédito ocorre no finalize/transmit, via `_apply_stock_movement` já fiado). Fecha a captura de entrada (DFe + upload + manual).
+- **Débito por venda ORDER-DRIVEN** (`traceability_service.allocate_fefo` + `stock_reservation_service.allocate_order_lots`): ao despachar (`confirm_dispatch`), aloca lotes por **FEFO** (menor validade primeiro; FIFO por id sem validade) criando `stock_lot_allocations` (idempotente por pedido×produto, respeita o unique index). Espelha os alvos do dispatch (kit→componentes). Cobre TODOS os canais (webhook ML, separação, manual, polling) — inclusive vendas sem picking. Não bloqueia por falta de saldo (mirror do escalar; loga déficit). Serial-only sem bipagem = follow-up.
+- **`recompute_lots` com débito**: `balance = Σ entradas − Σ alocações (status≠'returned')`. O apto (`returned`) volta ao saldo; shipped/awaiting/pending/unfit seguem fora do vendável (mirror ADR-0009).
+- **Reversão** (`reverse_allocations`): devolução/cancelamento reusa a alocação que registrou QUAL lote saiu → credita o MESMO lote sem perguntar ao operador (resolve o alerta do auditor). Fiado em `validate_return_items` (NF-e-driven: apto→'returned', reprovado→'unfit') e `confirm_pending_return` (cancelamento→'returned'). Flip de linha inteira (sem split — unique index); resíduo não-alinhado é logado. Best-effort.
+- **Verificado**: 236 testes passam (2 pré-existentes); queries da Fase 3 (FEFO nulls_last, join do débito, reversão) **validadas no Oracle de produção** (read-only, 0 linhas). Sem deploy.
+
+Falta: Fase 4 (fiscal — `<rastro>`/`<med>` no xml_builder + guards em resolve_full_cmig_product/emit_nfe + bloqueio conta CPF), Fase 5 (eShip), Fase 6 (relatórios + UI). Inventário-por-lote e serial-non-picking = follow-ups documentados.
+
+---
+
 ## 2026-09-27 — feat(rastreabilidade): Fase 2 — crédito de lote por replay + captura entrada (ADR-0027)
 
 Continuação da Fase 2 (captura na entrada). Coração da fase: o **crédito ao `product_lots`**.
