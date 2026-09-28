@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-09-27 — feat(rastreabilidade): Fase 2 — crédito de lote por replay + captura entrada (ADR-0027)
+
+Continuação da Fase 2 (captura na entrada). Coração da fase: o **crédito ao `product_lots`**.
+
+- **`recompute_lots(db, product_type, product_id)`** (`services/traceability_service.py`): replay das entradas de lote (`invoice_item_lots`), gated por `stock_updated` + `direction='in'` + status autorizada/finalizada — **espelho TERMO A TERMO** de `affected_products_from_invoice`: resolve o item→produto por FK **ou** (FK nula + `source_type≠'pg'` + EAN-na-CMIG), com o cuidado da armadilha Oracle NULL (`is_(None)`, não `coalesce` — lição L-012). `balance` é **cache absoluto por replay** (Fase 2 = só entradas; o débito por venda entra na Fase 3). Best-effort — nunca quebra o fluxo fiscal.
+- **Fiado** após o recompute escalar em `_apply_stock_movement` (`routers/invoices.py`), `update_stock_from_invoice` (`dfe_service.py`, após setar `stock_updated`) e no **upload de XML** (via `affected_products_from_invoice`).
+- **Captura** do `<rastro>`/`<med>` (parser) persistida também no **upload de XML** (`import_xml`), além do DFe automático já feito.
+- **12 testes unitários** novos (`tests/test_traceability.py`): parser rastro/med, datas implausíveis, `is_traceable` (inclui med), guards (kit/med⇒track_lot/FULL). 236 passam (2 falhas pré-existentes em test_orders).
+- **Verificado no Oracle de produção** (read-only, tabelas vazias): a query de replay de lote compila e roda (joins/SUM/GROUP BY/Boolean válidos), 0 linhas.
+
+Falta na Fase 2: captura no lançamento **manual** (`add_item`) + campos na UI; inventário e devolução por lote. Sem deploy (schema 143/144 já em prod).
+
+---
+
 ## 2026-09-25 — feat(rastreabilidade): Fase 1 — modelo + flags + guard (lote/validade/serial/med) (ADR-0027)
 
 Pedido do dono: produtos rastreáveis por **validade, lote e/ou número serial** (+ medicamentos), na entrada e na saída, com relatórios entrada×saída. Travas do dono: rastreável ⇒ **só emissão própria** (nunca Faturador ML/Shopee) e **nunca FULL**; saída FEFO sugere + operador confirma.

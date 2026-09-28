@@ -1988,6 +1988,16 @@ async def _apply_stock_movement(inv: Invoice, db: AsyncSession, *, full_cycle: b
     await db.flush()
 
     result = await recompute_after_invoice_change(inv, db)
+
+    # Rastreabilidade (ADR-0027): espelha o recompute escalar para o saldo por lote. Best-effort.
+    try:
+        from services import traceability_service
+        await traceability_service.recompute_lots_after_invoice_change(
+            db, result.get("cmig_ids", set()), result.get("pg_ids", set())
+        )
+    except Exception:
+        logger.warning("[rastreabilidade] recompute_lots pós-invoice %s falhou", inv.id, exc_info=True)
+
     return {**result, "already_updated": False}
 
 
@@ -3035,7 +3045,9 @@ async def import_xml(
     await db.flush()
 
     # Itens
+    from services import traceability_service
     items_data = parsed.get("items", [])
+    _lot_items = []
     for it_data in items_data:
         item = InvoiceItem(
             invoice_id=inv.id,
@@ -3074,6 +3086,13 @@ async def import_xml(
             additional_info=it_data.get("additional_info") or None,
         )
         db.add(item)
+        _lot_items.append((item, it_data))
+
+    # Rastreabilidade (ADR-0027): captura os lotes <rastro> de cada item, se houver.
+    await db.flush()
+    for _item, _it in _lot_items:
+        if traceability_service.item_has_traceability(_it):
+            traceability_service.persist_item_lots(db, _item.id, _it)
 
     # Atualizar estoque (opcional). NF-e simbólica NÃO movimenta estoque, mesmo
     # com update_stock marcado (mantém stock_updated=False → inerte ao recompute).
@@ -3081,6 +3100,14 @@ async def import_xml(
     if update_stock and not _is_simbolica(inv.natureza_operacao):
         stock_result = await _update_stock_from_items(items_data, cmig_id, db)
         inv.stock_updated = True
+        # Crédito ao saldo por lote (replay), espelhando o escalar. Best-effort — nunca quebra o upload.
+        try:
+            from services.fiscal.stock_calculator import affected_products_from_invoice
+            await db.flush()
+            _cids, _pids = await affected_products_from_invoice(inv, db)
+            await traceability_service.recompute_lots_after_invoice_change(db, _cids, _pids)
+        except Exception:
+            logger.warning("[rastreabilidade] recompute_lots no upload-XML %s falhou", inv.id, exc_info=True)
 
     await db.commit()
     await db.refresh(inv, attribute_names=["items"])

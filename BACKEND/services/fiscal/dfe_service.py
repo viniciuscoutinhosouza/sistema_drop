@@ -422,6 +422,16 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
 
         result = await recompute_after_invoice_change(inv, db)
         inv.stock_updated = True
+        # Rastreabilidade (ADR-0027): recompute do saldo por lote APÓS setar stock_updated
+        # (o replay de lote gateia por stock_updated; o autoflush garante que o SELECT veja a flag).
+        # Best-effort — nunca quebra a manifestação (o saldo de lote é cache reconstruível).
+        try:
+            from services import traceability_service
+            await traceability_service.recompute_lots_after_invoice_change(
+                db, result.get("cmig_ids", set()), result.get("pg_ids", set())
+            )
+        except Exception:
+            log.exception("update_stock_from_invoice: recompute_lots falhou invoice %s", inv.id)
         await db.commit()
         # Se a NF-e de entrada veio de um CNPJ FULL, debita o full_stock
         try:
