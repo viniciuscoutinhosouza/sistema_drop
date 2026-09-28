@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-09-27 — feat(rastreabilidade): Fase 6 (backend) — relatórios entrada×saída + Fase 5 adiada (ADR-0027)
+
+Relatórios de rastreabilidade (o que o dono pediu). **Fase 5 (eShip) ADIADA**: a API do eShip não tem campo documentado de lote/serial no `webServicePostOrdem` e **lê saldo agregado ignorando lote** (gere lote internamente) — não inventar campo; a rastreabilidade interna (qual lote saiu) já vive nas `stock_lot_allocations`. Reabrir só com confirmação da API do eShip.
+
+- **`services/traceability_report_service.py`** + **`routers/traceability.py`** (`/api/v1/traceability`, registrado no main): `GET /lots` (saldo/validade FEFO), `/lots/{id}/ledger` (kardex entrada×saída), `/expiring?days=` (a vencer), `/recall?lot_code=` (rastreabilidade reversa), `/serials/{serial}`.
+- **LGPD:** o recall devolve REFERÊNCIA de pedido (id/qtd/status), NUNCA dados pessoais do comprador (dado de saúde p/ medicamento, Art. 11 — design 10.8). Gate `get_current_user`; permissão nomeada dedicada + escopo por galpão = follow-up.
+- **Verificado:** app monta com 5 rotas; 238 testes passam.
+
+Backend da rastreabilidade **completo** (F1-F4 + F6). Falta: **UI (Vue)** — flags no cadastro de produto, lotes/serials no lançamento manual de NF-e, tela de relatórios; validação SEFAZ em homologação; e os follow-ups (inventário-por-lote, serial-non-picking, eShip Fase 5, bloqueio conta CPF).
+
+---
+
 ## 2026-09-27 — feat(rastreabilidade): Fase 4b — fiscal `<rastro>`/`<med>` na emissão própria (ADR-0027)
 
 Emissão dos grupos fiscais de rastreabilidade na NF-e de emissão própria (ADR-0015).
