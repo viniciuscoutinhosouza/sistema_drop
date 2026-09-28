@@ -236,6 +236,24 @@ def _montar_det(inf_nfe: etree._Element, item: ItemEmissao) -> None:
     if item.valor_outras:
         _sub(prod, "vOutro", fmt_val(item.valor_outras))
     _sub(prod, "indTot", "1")
+    # Rastreabilidade (ADR-0027) — grupos filhos de <prod>, na ordem do schema NFe 4.00:
+    # <rastro> (I80, 0..500) DEPOIS de indTot e ANTES de <med> (K).
+    for r in (item.rastros or ()):
+        rastro = _sub(prod, "rastro")
+        _sub(rastro, "nLote", r.n_lote)
+        _sub(rastro, "qLote", fmt_qtd(r.q_lote))
+        if r.d_fab:
+            _sub(rastro, "dFab", r.d_fab)
+        if r.d_val:
+            _sub(rastro, "dVal", r.d_val)
+        if r.c_agreg:
+            _sub(rastro, "cAgreg", r.c_agreg)
+    if item.produto.med_anvisa:
+        med = _sub(prod, "med")
+        _sub(med, "cProdANVISA", item.produto.med_anvisa)
+        if item.produto.med_anvisa == "ISENTO" and item.produto.med_exempt_reason:
+            _sub(med, "xMotivoIsencao", item.produto.med_exempt_reason)
+        _sub(med, "vPMC", fmt_val(item.produto.med_pmc or Decimal("0")))
     imposto = _sub(det, "imposto")
     _montar_imposto(imposto, item)
     if item.produto.info_adicional:

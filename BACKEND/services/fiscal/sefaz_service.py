@@ -140,7 +140,7 @@ def _cliente(person: Person) -> Cliente:
     )
 
 
-def _item(it, numero_item: int | None = None) -> ItemEmissao:
+def _item(it, numero_item: int | None = None, rastros: tuple = (), med: dict | None = None) -> ItemEmissao:
     csosn = (it.icms_csosn or "102").strip()
     ncm = _digits(it.ncm)
     if len(ncm) != 8:
@@ -153,6 +153,10 @@ def _item(it, numero_item: int | None = None) -> ItemEmissao:
         vbc_st_ret=_dec(it.icms_st_base) if csosn == "500" else None,
         vicms_st_ret=_dec(it.icms_st_value) if csosn == "500" else None,
         info_adicional=(it.additional_info or None),
+        # Rastreabilidade — medicamento (grupo <med>), ADR-0027.
+        med_anvisa=(med or {}).get("anvisa"),
+        med_pmc=(med or {}).get("pmc"),
+        med_exempt_reason=(med or {}).get("exempt"),
     )
     return ItemEmissao(
         numero_item=numero_item if numero_item is not None else it.item_number, produto=prod,
@@ -160,22 +164,29 @@ def _item(it, numero_item: int | None = None) -> ItemEmissao:
         preco_unitario=_dec(it.unit_value), cfop=(it.cfop or "5102"),
         valor_frete=_dec(it.freight_value), valor_desconto=_dec(it.discount),
         valor_seguro=_dec(it.insurance_value), valor_outras=_dec(it.other_value),
+        rastros=rastros or (),  # grupo <rastro> (0..500), ADR-0027
     )
 
 
 def build_nota_emissao(
     inv: Invoice, cmig: CMIG, cfg: CMIGFiscalConfig, person: Person, items: list,
-    *, serie: int, numero: int, ambiente: str,
+    *, serie: int, numero: int, ambiente: str, trace_by_item: dict | None = None,
 ) -> NotaEmissao:
-    """Monta o NotaEmissao (chave/cNF congelados aqui — snapshot N-2 / regra N-6)."""
+    """Monta o NotaEmissao (chave/cNF congelados aqui — snapshot N-2 / regra N-6).
+
+    `trace_by_item` (ADR-0027): {item_id → (rastros_tuple, med_dict)} pré-carregado por
+    `load_trace_for_invoice` (async) — snapshot IMUTÁVEL do rastro/med na emissão.
+    """
     if not items:
         raise SefazServiceError("NF-e sem itens.")
     emit = _estabelecimento(cmig, cfg)
     dest = _cliente(person)
+    _trace = trace_by_item or {}
     # nItem tem de ser sequencial 1..N (SEFAZ cStat 927); o item_number do banco pode ter
     # buracos (itens removidos/reordenados) → reindexa na emissão pela ordem de item_number.
     itens = tuple(
-        _item(it, i) for i, it in enumerate(sorted(items, key=lambda x: x.item_number), start=1)
+        _item(it, i, *(_trace.get(it.id, ((), None))))
+        for i, it in enumerate(sorted(items, key=lambda x: x.item_number), start=1)
     )
 
     # ADR-0013: trata naive como UTC e converte para a borda (America/Sao_Paulo).
@@ -393,6 +404,71 @@ def montar_xml_previa(
 # ── Emissão ───────────────────────────────────────────────────────────────────
 
 
+async def load_trace_for_invoice(db: AsyncSession, inv: Invoice, items: list) -> dict:
+    """Rastreabilidade (ADR-0027): monta {item_id → (rastros_tuple, med_dict)} para a emissão.
+
+    - rastros: os LOTES que saíram, lidos das `stock_lot_allocations` (imutáveis) do pedido vinculado
+      a esta nota (Order.invoice_id == inv.id), NUNCA do cache de saldo. Só saídas não devolvidas.
+    - med: cadastro do produto (med_anvisa_code/med_pmc). Best-effort — sem trace, emite sem os grupos.
+    """
+    from models.cmig import CMIGProduct
+    from models.order import Order
+    from models.product import CatalogProduct
+    from models.traceability import ProductLot, StockLotAllocation
+    from services.fiscal.sefaz.models import LoteRastro
+
+    trace: dict = {}
+    order = (
+        await db.execute(select(Order).where(Order.invoice_id == inv.id))
+    ).scalars().first()
+    alloc_by_prod: dict[tuple[str, int], list] = {}
+    if order:
+        rows = (
+            await db.execute(
+                select(
+                    StockLotAllocation.product_type, StockLotAllocation.product_id,
+                    ProductLot.lot_code, ProductLot.mfg_date, ProductLot.expiry_date,
+                    StockLotAllocation.qty,
+                )
+                .join(ProductLot, ProductLot.id == StockLotAllocation.lot_id)
+                .where(
+                    StockLotAllocation.order_id == order.id,
+                    StockLotAllocation.status != "returned",
+                )
+            )
+        ).all()
+        for ptype, pid, lot_code, mfg, exp, qty in rows:
+            alloc_by_prod.setdefault((ptype, pid), []).append(
+                LoteRastro(
+                    n_lote=lot_code, q_lote=_dec(qty),
+                    d_fab=mfg.isoformat() if mfg else None,
+                    d_val=exp.isoformat() if exp else None,
+                )
+            )
+
+    def _med(p) -> dict | None:
+        code = (getattr(p, "med_anvisa_code", None) or "").strip() if p else ""
+        if not code:
+            return None
+        return {"anvisa": code, "pmc": getattr(p, "med_pmc", None),
+                "exempt": getattr(p, "med_exempt_reason", None)}
+
+    for it in items:
+        rastros: tuple = ()
+        med = None
+        if getattr(it, "catalog_product_id", None):
+            rastros = tuple(alloc_by_prod.get(("pg", it.catalog_product_id), ()))
+            pg = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == it.catalog_product_id))).scalar_one_or_none()
+            med = _med(pg)
+        elif getattr(it, "cmig_product_id", None):
+            rastros = tuple(alloc_by_prod.get(("cmig", it.cmig_product_id), ()))
+            cm = (await db.execute(select(CMIGProduct).where(CMIGProduct.id == it.cmig_product_id))).scalar_one_or_none()
+            med = _med(cm)
+        if rastros or med:
+            trace[it.id] = (rastros, med)
+    return trace
+
+
 async def emitir(
     db: AsyncSession, inv: Invoice, cmig: CMIG, cfg: CMIGFiscalConfig, person: Person, items: list,
 ) -> dict:
@@ -421,7 +497,12 @@ async def emitir(
 
     # Reserva número sob lock curto e congela chave/cNF ANTES de falar com a SEFAZ.
     numero = await reservar_numero(db, cmig.id, environment)
-    nota = build_nota_emissao(inv, cmig, cfg, person, items, serie=serie, numero=numero, ambiente=ambiente)
+    # Rastreabilidade (ADR-0027): snapshot imutável de rastro/med na emissão (lê alocações do pedido).
+    trace_by_item = await load_trace_for_invoice(db, inv, items)
+    nota = build_nota_emissao(
+        inv, cmig, cfg, person, items, serie=serie, numero=numero, ambiente=ambiente,
+        trace_by_item=trace_by_item,
+    )
 
     inv.serie = serie
     inv.nfe_number = numero

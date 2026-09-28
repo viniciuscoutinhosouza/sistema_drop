@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-09-27 — feat(rastreabilidade): Fase 4b — fiscal `<rastro>`/`<med>` na emissão própria (ADR-0027)
+
+Emissão dos grupos fiscais de rastreabilidade na NF-e de emissão própria (ADR-0015).
+
+- **Dataclasses** (`sefaz/models.py`): `LoteRastro` (nLote/qLote/dFab/dVal/cAgreg); `Produto` ganha med (cProdANVISA/vPMC/motivo isenção); `ItemEmissao` ganha `rastros`.
+- **Builder** (`xml_builder._montar_det`): emite `<rastro>` (0..500) DEPOIS de indTot e ANTES de `<med>` (K) — ordem do schema NFe 4.00; `<med>` com cProdANVISA/xMotivoIsencao(só ISENTO)/vPMC.
+- **Adaptador** (`sefaz_service`): `load_trace_for_invoice` monta {item→(rastros,med)} lendo as **alocações do pedido** (`stock_lot_allocations`, imutáveis — nunca o cache) + med do produto; `build_nota_emissao`/`_item` recebem o mapa; `emitir` chama antes de transmitir → **snapshot imutável** do rastro/med na nota.
+- **Verificado:** 2 testes novos provam a ordem `<rastro>`<`<med>`<`<imposto>`, formatos (qLote 3 casas, vPMC) e a ausência quando produto comum (zero regressão). 238 testes passam. Validação SEFAZ real = homologação no deploy final.
+
+Falta: Fase 5 (eShip — lote/serial no payload do WMS), Fase 6 (relatórios + UI). Bloqueio conta CPF/DC-e = follow-up.
+
+---
+
 ## 2026-09-27 — feat(rastreabilidade): Fase 4a — guards (nunca FULL / só emissão própria) (ADR-0027)
 
 As duas travas do dono, fiadas em choke points (padrão ADR-0024):

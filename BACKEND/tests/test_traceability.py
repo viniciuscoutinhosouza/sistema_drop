@@ -116,6 +116,50 @@ def test_assert_flag_change_blocks_full_stock():
 
 
 @pytest.mark.unit
+def test_xml_builder_emits_rastro_and_med_in_order():
+    """O <prod> emite <rastro> (I80) antes de <med> (K), ambos antes de <imposto> — schema NFe 4.00."""
+    import re
+
+    import lxml.etree as ET
+
+    from services.fiscal.sefaz import xml_builder
+    from services.fiscal.sefaz.models import ItemEmissao, LoteRastro, Produto
+
+    NS = "http://www.portalfiscal.inf.br/nfe"
+    prod = Produto(codigo="X", descricao="Remedio", ncm="30049099", csosn="102", origem="0",
+                   unidade="UN", med_anvisa="1" * 13, med_pmc=Decimal("19.90"))
+    it = ItemEmissao(numero_item=1, produto=prod, quantidade=Decimal("2"), preco_unitario=Decimal("10"),
+                     cfop="5102",
+                     rastros=(LoteRastro(n_lote="L1", q_lote=Decimal("2"), d_fab="2026-01-01", d_val="2027-01-01"),))
+    root = ET.Element(f"{{{NS}}}infNFe")
+    xml_builder._montar_det(root, it)
+    xn = re.sub(r"ns0:|\{[^}]+\}", "", ET.tostring(root, encoding="unicode"))
+    i_rastro, i_med, i_imp = xn.find("<rastro>"), xn.find("<med>"), xn.find("<imposto>")
+    assert 0 <= i_rastro < i_med < i_imp
+    assert "<nLote>L1" in xn and "<qLote>2.000" in xn and "<dVal>2027-01-01" in xn
+    assert "<cProdANVISA>" + "1" * 13 in xn and "<vPMC>19.90" in xn
+
+
+@pytest.mark.unit
+def test_xml_builder_no_rastro_when_absent():
+    """Sem rastros/med (produto comum), o <prod> não emite <rastro>/<med> (zero regressão)."""
+    import re
+
+    import lxml.etree as ET
+
+    from services.fiscal.sefaz import xml_builder
+    from services.fiscal.sefaz.models import ItemEmissao, Produto
+
+    NS = "http://www.portalfiscal.inf.br/nfe"
+    prod = Produto(codigo="X", descricao="Comum", ncm="61091000", csosn="102", origem="0", unidade="UN")
+    it = ItemEmissao(numero_item=1, produto=prod, quantidade=Decimal("1"), preco_unitario=Decimal("10"), cfop="5102")
+    root = ET.Element(f"{{{NS}}}infNFe")
+    xml_builder._montar_det(root, it)
+    xn = re.sub(r"ns0:|\{[^}]+\}", "", ET.tostring(root, encoding="unicode"))
+    assert "<rastro>" not in xn and "<med>" not in xn
+
+
+@pytest.mark.unit
 def test_not_full_and_own_emission_guards():
     from fastapi import HTTPException
     trace = SimpleNamespace(track_lot=True, track_expiry=False, track_serial=False, med_anvisa_code=None)

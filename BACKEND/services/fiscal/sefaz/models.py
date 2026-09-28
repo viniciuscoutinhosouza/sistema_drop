@@ -100,6 +100,17 @@ class Cliente:
 
 
 @dataclass(frozen=True, slots=True)
+class LoteRastro:
+    """Grupo <rastro> (I80) — rastreabilidade de lote/validade (ADR-0027). Por ITEM (0..500)."""
+
+    n_lote: str
+    q_lote: Decimal
+    d_fab: str | None = None  # AAAA-MM-DD
+    d_val: str | None = None  # AAAA-MM-DD
+    c_agreg: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Produto:
     """Snapshot cadastral do produto levado pelo item."""
 
@@ -116,6 +127,10 @@ class Produto:
     vbc_st_ret: Decimal | None = None
     vicms_st_ret: Decimal | None = None
     info_adicional: str | None = None
+    # Medicamento — grupo <med> (K), ADR-0027. cProdANVISA (13 díg. ou 'ISENTO') + vPMC.
+    med_anvisa: str | None = None
+    med_pmc: Decimal | None = None
+    med_exempt_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"\d{8}", self.ncm):
@@ -139,6 +154,7 @@ class ItemEmissao:
     valor_desconto: Decimal = Decimal("0")
     valor_seguro: Decimal = Decimal("0")
     valor_outras: Decimal = Decimal("0")
+    rastros: tuple = ()  # tuple[LoteRastro, ...] — grupo <rastro> (0..500), ADR-0027
 
     @property
     def valor_produto(self) -> Decimal:
