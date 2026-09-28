@@ -1434,6 +1434,9 @@ async def emit_order_nfe(
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="ID do pedido inválido para emissão de NF-e")
 
+    # Rastreabilidade (ADR-0027): produto rastreável não pode ser faturado pelo ML (só emissão própria).
+    from services.traceability_guard import assert_order_own_emission
+    await assert_order_own_emission(db, order)
     emit_result = await _ml.emit_nfe(account.access_token, account.platform_user_id, [ml_order_id])
     already_processing = emit_result.get("already_processing", False)
 
@@ -2989,6 +2992,9 @@ async def _emit_nfe_for_label(order: Order, account, db) -> None:
         ml_order_id = int(order.platform_order_id)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="ID do pedido inválido para emissão de NF-e")
+    # Rastreabilidade (ADR-0027): produto rastreável não pode ser faturado pelo ML (só emissão própria).
+    from services.traceability_guard import assert_order_own_emission
+    await assert_order_own_emission(db, order)
     await _ml.emit_nfe(account.access_token, account.platform_user_id, [ml_order_id])
     order.nfe_status = "pending"
     try:

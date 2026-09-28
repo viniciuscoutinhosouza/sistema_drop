@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-09-27 — feat(rastreabilidade): Fase 4a — guards (nunca FULL / só emissão própria) (ADR-0027)
+
+As duas travas do dono, fiadas em choke points (padrão ADR-0024):
+
+- **Rastreável ⇒ NUNCA FULL:** guard não-raising DENTRO de `resolve_full_cmig_product` (`full_stock_service.py`) — bloqueia a auto-criação do espelho CMIG por QUALQUER caminho (incremental E replay), sem quebrar o replay do FULL. + `available_to_push`: produto rastreável não cai para o FULL quando LOCAL=0 (fecha o bypass do ADR-0008 flagado na auditoria).
+- **Rastreável ⇒ só emissão própria:** `traceability_guard.assert_order_own_emission(db, order)` (carrega itens, checa `is_traceable`, 409) fiado nos **4** call-sites do Faturador ML: endpoint `/emit-nfe` (`orders.py`), auto-emit da etiqueta (`_emit_nfe_for_label`), `cart_emit_nfe` e `_bundle_ensure_nfe` (`separation.py`). No-op p/ pedido não rastreável (zero regressão).
+- **Verificado:** 236 testes passam (2 pré-existentes). Sem deploy.
+
+Falta na Fase 4: **fiscal XML** (`<rastro>`/`<med>`/`infAdProd` no xml_builder + dataclasses + adaptador lendo as alocações) — validação em homologação no fim. Bloqueio de conta CPF (DC-e) = follow-up. Depois: Fase 5 (eShip), Fase 6 (relatórios + UI).
+
+---
+
 ## 2026-09-27 — feat(rastreabilidade): Fase 3 — saída FEFO order-driven + reversão na devolução (ADR-0027)
 
 Débito de lote por venda + captura manual (fecha a entrada) + reversão em devolução/cancelamento.

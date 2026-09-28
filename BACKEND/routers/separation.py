@@ -1016,6 +1016,9 @@ async def cart_emit_nfe(
 
         try:
             ml_order_id = int(order.platform_order_id)
+            # Rastreabilidade (ADR-0027): rastreável não é faturado pelo ML (só emissão própria).
+            from services.traceability_guard import assert_order_own_emission
+            await assert_order_own_emission(db, order)
             await _ml.emit_nfe(acc.access_token, acc.platform_user_id, [ml_order_id])
             # Sincroniza o resultado de volta (a nota pode já sair autorizada).
             await _sync_nfe(db, order, acc)
@@ -1156,6 +1159,9 @@ async def _bundle_ensure_nfe(db: AsyncSession, entries: list) -> None:
         if getattr(claim, "rowcount", 0) == 0:
             continue
         try:
+            # Rastreabilidade (ADR-0027): rastreável não é faturado pelo ML (só emissão própria).
+            from services.traceability_guard import assert_order_own_emission
+            await assert_order_own_emission(db, order)
             await _ml.emit_nfe(acc.access_token, acc.platform_user_id, [int(order.platform_order_id)])
             await _sync_nfe(db, order, acc)
         except Exception as exc:  # noqa: BLE001 — best-effort; reverte o claim

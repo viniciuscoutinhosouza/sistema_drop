@@ -181,6 +181,16 @@ async def resolve_full_cmig_product(
         )
         return None
 
+    # Rastreabilidade (ADR-0027): produto rastreável NUNCA vai ao FULL. Choke point ÚNICO — bloqueia
+    # a AUTO-CRIAÇÃO do espelho CMIG por QUALQUER caminho (incremental E replay). Não levanta (não
+    # quebra o replay do FULL): apenas não cria. A venda via FULL já é barrada em available_to_push.
+    from services.traceability_guard import is_traceable as _is_traceable
+    if _is_traceable(pg):
+        logger.warning(
+            "resolve_full_cmig_product: PG #%s é rastreável — espelho FULL NÃO criado (ADR-0027)", pg.id
+        )
+        return None
+
     # Re-SELECT dentro da transação (idempotência sob concorrência: sem unique em
     # (cmig_id, pg_product_id), dois caminhos poderiam criar o espelho 2x).
     ex_conds = [CMIGProduct.pg_product_id == pg.id]
@@ -329,6 +339,22 @@ async def available_to_push(db: AsyncSession, listing) -> int:
 
     if local > 0:
         return local
+
+    # Rastreabilidade (ADR-0027): produto rastreável NUNCA cai para o FULL (decisão do dono).
+    # Fecha o bypass do ADR-0008 (não-FULL anuncia FULL quando LOCAL=0). Roda só no fallback.
+    from services.traceability_guard import is_traceable as _is_traceable
+    if cat_pid:
+        _pg_t = (
+            await db.execute(select(CatalogProduct).where(CatalogProduct.id == cat_pid))
+        ).scalar_one_or_none()
+        if _is_traceable(_pg_t):
+            return local
+    if cmig_pid:
+        _cm_t = (
+            await db.execute(select(CMIGProduct).where(CMIGProduct.id == cmig_pid))
+        ).scalar_one_or_none()
+        if _is_traceable(_cm_t):
+            return local
 
     # FULL é sempre do CMIG: se o anúncio é só-PG, resolve o CMIG espelho (sem criar)
     # para enxergar o saldo FULL correto.
