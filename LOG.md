@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-09-27 — feat(rastreabilidade): UI — flags no produto + tela de relatórios (ADR-0027)
+
+Frontend + CRUD de produto para habilitar/testar a rastreabilidade.
+
+- **Flags no cadastro de produto** (`components/products/ProductFiscalFields.vue`): seção "Rastreabilidade" com switches Lote/Validade/Serial + campos de medicamento (ANVISA/PMC/motivo isenção quando ISENTO), aviso "emissão própria + nunca FULL", dica "medicamento exige Lote". Form init nos 4 formulários (`PgProductFormView`/`CmigProductFormView`).
+- **Backend CRUD** — PG (`supplier_products.py`): helper `_apply_traceability_fields` (lê+valida via `assert_flag_change_allowed`) no create/update + campos na serialização. CMIG (`cmigs.py` + `schemas/cmig.py`): flags nos schemas Create/Update, validação no create/update, campos na serialização. Bloqueia flag em kit e medicamento sem track_lot (422).
+- **Tela de relatórios** (`views/stock/TraceabilityView.vue` + rota `/rastreabilidade`): abas A vencer (FEFO), Recall por lote (sem PII), Nº serial.
+- **Verificado:** `npm run build` OK (2×); backend importa; 238 testes passam.
+
+Feature de rastreabilidade **completa** (F1-F4 + F6 + UI). Falta antes de entregar: **auditoria final (trio) + validação SEFAZ em homologação + deploy** (o dono testa). Follow-ups: inventário-por-lote, serial-non-picking, eShip Fase 5, bloqueio conta CPF, menu lateral p/ a tela, permissão nomeada dedicada.
+
+---
+
 ## 2026-09-27 — feat(rastreabilidade): Fase 6 (backend) — relatórios entrada×saída + Fase 5 adiada (ADR-0027)
 
 Relatórios de rastreabilidade (o que o dono pediu). **Fase 5 (eShip) ADIADA**: a API do eShip não tem campo documentado de lote/serial no `webServicePostOrdem` e **lê saldo agregado ignorando lote** (gere lote internamente) — não inventar campo; a rastreabilidade interna (qual lote saiu) já vive nas `stock_lot_allocations`. Reabrir só com confirmação da API do eShip.

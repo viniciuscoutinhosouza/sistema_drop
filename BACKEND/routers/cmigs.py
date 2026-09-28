@@ -177,6 +177,13 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
         "pg_product_id": p.pg_product_id,
         "is_composite": p.is_composite,
         "is_active": p.is_active,
+        # Rastreabilidade (ADR-0027)
+        "track_lot": bool(getattr(p, "track_lot", False)),
+        "track_expiry": bool(getattr(p, "track_expiry", False)),
+        "track_serial": bool(getattr(p, "track_serial", False)),
+        "med_anvisa_code": getattr(p, "med_anvisa_code", None),
+        "med_pmc": float(p.med_pmc) if getattr(p, "med_pmc", None) is not None else None,
+        "med_exempt_reason": getattr(p, "med_exempt_reason", None),
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "thumbnail": thumbnail,
         "images": [
@@ -872,6 +879,9 @@ async def create_cmig_product(
 
     payload = body.model_dump(exclude={"components"})
     product = CMIGProduct(cmig_id=cmig_id, **payload)
+    # Rastreabilidade (ADR-0027): valida flags (bloqueia kit e medicamento sem track_lot).
+    from services.traceability_guard import assert_flag_change_allowed
+    assert_flag_change_allowed(product)
     db.add(product)
     await db.flush()
 
@@ -981,6 +991,10 @@ async def update_cmig_product(
 
     for field, value in payload.items():
         setattr(product, field, value)
+
+    # Rastreabilidade (ADR-0027): valida flags após aplicar (bloqueia kit e med sem track_lot).
+    from services.traceability_guard import assert_flag_change_allowed
+    assert_flag_change_allowed(product)
 
     # Sincronizar imagens se fornecidas (substitui o conteúdo da tabela)
     if images is not None:

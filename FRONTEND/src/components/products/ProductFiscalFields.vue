@@ -39,11 +39,64 @@
         <small class="text-muted">Obrigatório no Faturador ML. Em branco usa "102" se a CMIG é Simples Nacional.</small>
       </div>
     </div>
+
+    <!-- Rastreabilidade (ADR-0027): lote / validade / serial / medicamento -->
+    <hr />
+    <h6 class="text-muted text-uppercase mb-2"><small>Rastreabilidade</small></h6>
+    <div class="alert alert-warning py-2 px-3 small" v-if="isTraceable">
+      <i class="fas fa-exclamation-triangle"></i>
+      Produto rastreável: a NF-e será emitida <strong>pelo próprio sistema</strong> (nunca pelo Faturador ML/Shopee)
+      e o produto <strong>não vai ao FULL</strong>.
+    </div>
+    <div class="row">
+      <div class="col-md-4 form-group">
+        <div class="custom-control custom-switch">
+          <input type="checkbox" class="custom-control-input" id="trk_lot" v-model="form.track_lot" />
+          <label class="custom-control-label" for="trk_lot">Rastrear por <strong>Lote</strong></label>
+        </div>
+      </div>
+      <div class="col-md-4 form-group">
+        <div class="custom-control custom-switch">
+          <input type="checkbox" class="custom-control-input" id="trk_exp" v-model="form.track_expiry" />
+          <label class="custom-control-label" for="trk_exp">Rastrear por <strong>Validade</strong></label>
+        </div>
+      </div>
+      <div class="col-md-4 form-group">
+        <div class="custom-control custom-switch">
+          <input type="checkbox" class="custom-control-input" id="trk_ser" v-model="form.track_serial" />
+          <label class="custom-control-label" for="trk_ser">Rastrear por <strong>Nº Serial</strong></label>
+        </div>
+      </div>
+    </div>
+    <div class="row" v-if="isTraceable">
+      <div class="col-12"><small class="text-muted d-block mb-2">Medicamento (grupo &lt;med&gt; da NF-e — preencha só se for medicamento):</small></div>
+      <div class="col-md-4 form-group">
+        <label>Código ANVISA</label>
+        <input v-model="form.med_anvisa_code" class="form-control" maxlength="13" placeholder="13 dígitos ou ISENTO" />
+      </div>
+      <div class="col-md-4 form-group">
+        <label>PMC (Preço Máx. Consumidor)</label>
+        <input v-model="form.med_pmc" type="number" step="0.01" min="0" class="form-control" placeholder="0,00" />
+      </div>
+      <div class="col-md-4 form-group" v-if="(form.med_anvisa_code || '').toUpperCase() === 'ISENTO'">
+        <label>Motivo da Isenção</label>
+        <input v-model="form.med_exempt_reason" class="form-control" maxlength="255" />
+      </div>
+    </div>
+    <small class="text-muted" v-if="form.med_anvisa_code && !form.track_lot">
+      <i class="fas fa-info-circle"></i> Medicamento exige rastreio por Lote — ligue "Rastrear por Lote".
+    </small>
   </div>
 </template>
 
 <script setup>
+import { computed } from 'vue'
+
 const props = defineProps({
   form: { type: Object, required: true },
 })
+
+const isTraceable = computed(() =>
+  !!(props.form.track_lot || props.form.track_expiry || props.form.track_serial || props.form.med_anvisa_code)
+)
 </script>

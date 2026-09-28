@@ -172,6 +172,9 @@ const form = ref({
   width_cm: null, length_cm: null, ncm: '', cest: '',
   origin: 0, csosn: null, category_id: null, video_id: '', attributes_json: null,
   is_active: true,
+  // Rastreabilidade (ADR-0027)
+  track_lot: false, track_expiry: false, track_serial: false,
+  med_anvisa_code: '', med_pmc: null, med_exempt_reason: '',
 })
 
 const pictures = ref([])

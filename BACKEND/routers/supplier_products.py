@@ -104,6 +104,13 @@ def _serialize_product(p: CatalogProduct, include_components: bool = False) -> d
         "attributes_json": p.attributes_json,
         "is_composite": p.is_composite,
         "is_active": p.is_active,
+        # Rastreabilidade (ADR-0027)
+        "track_lot": bool(getattr(p, "track_lot", False)),
+        "track_expiry": bool(getattr(p, "track_expiry", False)),
+        "track_serial": bool(getattr(p, "track_serial", False)),
+        "med_anvisa_code": getattr(p, "med_anvisa_code", None),
+        "med_pmc": float(p.med_pmc) if getattr(p, "med_pmc", None) is not None else None,
+        "med_exempt_reason": getattr(p, "med_exempt_reason", None),
         "thumbnail": thumbnail,
         "images": [
             {"id": i.id, "url": i.url, "sort_order": i.sort_order, "is_primary": i.is_primary}
@@ -226,6 +233,28 @@ async def get_supplier_product(
     return data
 
 
+def _apply_traceability_fields(product, body: dict) -> None:
+    """Aplica e VALIDA as flags de rastreabilidade (ADR-0027) do body no produto (PG ou CMIG).
+
+    Bloqueia flag em kit (composto) e medicamento sem track_lot (assert_flag_change_allowed).
+    Só toca os campos quando presentes no body (update parcial preserva o valor atual)."""
+    from services.traceability_guard import assert_flag_change_allowed
+
+    if "track_lot" in body:
+        product.track_lot = bool(body.get("track_lot"))
+    if "track_expiry" in body:
+        product.track_expiry = bool(body.get("track_expiry"))
+    if "track_serial" in body:
+        product.track_serial = bool(body.get("track_serial"))
+    if "med_anvisa_code" in body:
+        product.med_anvisa_code = (body.get("med_anvisa_code") or "").strip() or None
+    if "med_pmc" in body:
+        product.med_pmc = body.get("med_pmc")
+    if "med_exempt_reason" in body:
+        product.med_exempt_reason = (body.get("med_exempt_reason") or "").strip() or None
+    assert_flag_change_allowed(product)
+
+
 @router.post("", status_code=201)
 async def create_product(
     body: dict,
@@ -257,6 +286,7 @@ async def create_product(
         is_composite=is_composite,
         # stock_quantity é gerenciado por eventos de NF-e/pedido (entrada/saída)
     )
+    _apply_traceability_fields(product, body)  # rastreabilidade (ADR-0027) + validação
     db.add(product)
     await db.flush()
 
@@ -384,6 +414,8 @@ async def update_product(
             elif field == "cest":
                 val = _norm_cest(val)
             setattr(product, field, val)
+
+    _apply_traceability_fields(product, body)  # rastreabilidade (ADR-0027) + validação
 
     # Sincronizar imagens se fornecidas
     if "images" in body:

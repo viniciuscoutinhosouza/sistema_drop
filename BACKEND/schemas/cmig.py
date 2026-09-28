@@ -140,6 +140,13 @@ class CMIGProductCreate(BaseModel):
     video_id: str | None = None
     attributes_json: str | None = None
     is_composite: bool | None = False
+    # Rastreabilidade (ADR-0027)
+    track_lot: bool = False
+    track_expiry: bool = False
+    track_serial: bool = False
+    med_anvisa_code: str | None = None
+    med_pmc: float | None = None
+    med_exempt_reason: str | None = None
     components: list[CMIGProductComponentIn] | None = None
 
     @field_validator("ncm", mode="before")
@@ -186,6 +193,13 @@ class CMIGProductUpdate(BaseModel):
     category_id: int | None = None
     video_id: str | None = None
     attributes_json: str | None = None
+    # Rastreabilidade (ADR-0027)
+    track_lot: bool | None = None
+    track_expiry: bool | None = None
+    track_serial: bool | None = None
+    med_anvisa_code: str | None = None
+    med_pmc: float | None = None
+    med_exempt_reason: str | None = None
     images: list | None = None  # [{url: "..."}]; quando presente, sincroniza cmig_product_images
     components: list[CMIGProductComponentIn] | None = (
         None  # quando presente, substitui todos os componentes

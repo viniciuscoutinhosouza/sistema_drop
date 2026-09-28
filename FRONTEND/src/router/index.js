@@ -45,6 +45,7 @@ const AwaitingReturnView = () => import('@/views/returns/AwaitingReturnView.vue'
 
 // Stock
 const StockControlView = () => import('@/views/stock/StockControlView.vue')
+const TraceabilityView = () => import('@/views/stock/TraceabilityView.vue')
 const ProductLedgerView = () => import('@/views/stock/ProductLedgerView.vue')
 
 // FULL (ML Fulfillment)
@@ -201,6 +202,7 @@ const routes = [
       { path: 'returns/validar/:id', component: ReturnValidationView, meta: { title: 'Validar Devolução', role: 'ugo' } },
 
       { path: 'estoque', component: StockControlView, meta: { title: 'Controle de Estoque', role: ['ugo', 'ac'] } },
+      { path: 'rastreabilidade', component: TraceabilityView, meta: { title: 'Rastreabilidade', role: ['ugo', 'ac', 'go', 'admin'] } },
       { path: 'estoque/movimentacao', component: ProductLedgerView, meta: { title: 'Extrato de Movimentação', role: ['ugo', 'ac'] } },
       { path: 'full-cnpjs', component: FullCnpjsView, meta: { title: 'CNPJs FULL', role: 'ac' } },
 
