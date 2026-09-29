@@ -162,28 +162,75 @@ async def list_catalog(
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
+# Isolamento de categorias por GALPÃO (migration 145): admin gerencia/vê todas; demais só o próprio
+# `warehouse_id` (ADR-0026). Fail-closed: não-admin sem galpão não vê nem cria categoria.
+def _is_admin(user: User) -> bool:
+    return user.role == "admin"
+
+
+async def _load_category(category_id: int, db: AsyncSession) -> Category:
+    cat = (
+        await db.execute(select(Category).where(Category.id == category_id))
+    ).scalar_one_or_none()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Categoria não encontrada")
+    return cat
+
+
+def _assert_category_owned(cat: Category, user: User) -> None:
+    """403 se a categoria é de outro galpão (admin bypassa)."""
+    if not _is_admin(user) and cat.warehouse_id != user.warehouse_id:
+        raise HTTPException(status_code=403, detail="Categoria pertence a outro galpão")
+
+
 @router.get("/categories")
-async def list_categories(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Category).order_by(Category.name))
-    return [{"id": c.id, "name": c.name, "parent_id": c.parent_id} for c in result.scalars().all()]
+async def list_categories(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    q = select(Category).order_by(Category.name)
+    if _is_admin(current_user):
+        pass  # admin vê todas
+    elif current_user.warehouse_id is not None:
+        q = q.where(Category.warehouse_id == current_user.warehouse_id)
+    else:
+        return []  # não-admin sem galpão → fail-closed
+    result = await db.execute(q)
+    return [
+        {"id": c.id, "name": c.name, "parent_id": c.parent_id, "warehouse_id": c.warehouse_id}
+        for c in result.scalars().all()
+    ]
 
 
-@router.post(
-    "/categories", status_code=201, dependencies=[Depends(require_menu_permission("catalog"))]
-)
-async def create_category(body: dict, db: AsyncSession = Depends(get_db)):
+@router.post("/categories", status_code=201)
+async def create_category(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("catalog")),
+):
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="name é obrigatório")
     parent_id = body.get("parent_id")
+    admin = _is_admin(current_user)
+
+    # Galpão da categoria: subcategoria HERDA do pai (fonte única); raiz = galpão do usuário
+    # (admin pode informar warehouse_id no body). Valida que o pai é do mesmo galpão.
+    if parent_id is not None:
+        parent = await _load_category(parent_id, db)
+        _assert_category_owned(parent, current_user)
+        warehouse_id = parent.warehouse_id
+    else:
+        warehouse_id = body.get("warehouse_id") if admin else current_user.warehouse_id
+    if warehouse_id is None and not admin:
+        raise HTTPException(status_code=422, detail="Usuário sem galpão não pode criar categoria")
 
     dup = await db.execute(
         select(Category).where(
             and_(
                 func.lower(Category.name) == name.lower(),
-                Category.parent_id.is_(parent_id)
-                if parent_id is None
-                else Category.parent_id == parent_id,
+                Category.parent_id.is_(None) if parent_id is None else Category.parent_id == parent_id,
+                Category.warehouse_id == warehouse_id,
             )
         )
     )
@@ -192,20 +239,22 @@ async def create_category(body: dict, db: AsyncSession = Depends(get_db)):
             status_code=409, detail="Já existe uma categoria com esse nome no mesmo nível"
         )
 
-    cat = Category(name=name, parent_id=parent_id)
+    cat = Category(name=name, parent_id=parent_id, warehouse_id=warehouse_id)
     db.add(cat)
     await db.commit()
     await db.refresh(cat)
-    return {"id": cat.id, "name": cat.name, "parent_id": cat.parent_id}
+    return {"id": cat.id, "name": cat.name, "parent_id": cat.parent_id, "warehouse_id": cat.warehouse_id}
 
 
-@router.put("/categories/{category_id}", dependencies=[Depends(require_menu_permission("catalog"))])
-async def update_category(category_id: int, body: dict, db: AsyncSession = Depends(get_db)):
-    cat = (
-        await db.execute(select(Category).where(Category.id == category_id))
-    ).scalar_one_or_none()
-    if not cat:
-        raise HTTPException(status_code=404, detail="Categoria não encontrada")
+@router.put("/categories/{category_id}")
+async def update_category(
+    category_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("catalog")),
+):
+    cat = await _load_category(category_id, db)
+    _assert_category_owned(cat, current_user)
 
     if "name" in body:
         new_name = (body["name"] or "").strip()
@@ -216,21 +265,24 @@ async def update_category(category_id: int, body: dict, db: AsyncSession = Depen
         new_parent = body["parent_id"]
         if new_parent == category_id:
             raise HTTPException(status_code=422, detail="Categoria não pode ser pai dela mesma")
+        if new_parent is not None:
+            parent = await _load_category(new_parent, db)
+            _assert_category_owned(parent, current_user)
+            cat.warehouse_id = parent.warehouse_id  # mantém a árvore no mesmo galpão
         cat.parent_id = new_parent
 
     await db.commit()
-    return {"id": cat.id, "name": cat.name, "parent_id": cat.parent_id}
+    return {"id": cat.id, "name": cat.name, "parent_id": cat.parent_id, "warehouse_id": cat.warehouse_id}
 
 
-@router.delete(
-    "/categories/{category_id}", dependencies=[Depends(require_menu_permission("catalog"))]
-)
-async def delete_category(category_id: int, db: AsyncSession = Depends(get_db)):
-    cat = (
-        await db.execute(select(Category).where(Category.id == category_id))
-    ).scalar_one_or_none()
-    if not cat:
-        raise HTTPException(status_code=404, detail="Categoria não encontrada")
+@router.delete("/categories/{category_id}")
+async def delete_category(
+    category_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("catalog")),
+):
+    cat = await _load_category(category_id, db)
+    _assert_category_owned(cat, current_user)
 
     pg_count = (
         await db.execute(

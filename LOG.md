@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-09-29 — feat(catalog): categorias de produto isoladas por Galpão (warehouse)
+
+Pedido do dono: categoria criada num galpão não aparece em outro; categorias atuais são do MIG.
+
+- **Migration 145** (idempotente): `categories.warehouse_id` (FK warehouses, nullable) + **backfill das 15 → MIG** (resolvido por NOME, não hardcode; re-executável `WHERE IS NULL`) + índice. **Verificado em produção:** 15/15 → warehouse 1 (MIG), 0 sem galpão.
+- **Modelo** `Category.warehouse_id`.
+- **`catalog.py`** (CRUD): `list_categories` agora exige auth e **escopa por galpão** (admin vê todas; demais só o próprio `warehouse_id`; **fail-closed** — não-admin sem galpão → vazio). `create_category` grava o galpão do usuário (subcategoria **herda do pai**; admin pode informar), valida pai do MESMO galpão, dup check por-galpão. `update`/`delete` verificam **posse** (403 se de outro galpão; admin bypassa); delete mantém a checagem global de uso. `require_menu_permission("catalog")` vira parâmetro (pega o User).
+- **Frontend:** sem mudança — todos os 6 consumidores usam `GET /catalog/categories` (a API escopa pelo token).
+- **Pré-avaliado** (consistency-auditor sobre o plano: HIGH parent cross-galpão, backfill-órfão, fail-closed, go+ac, user via param — todos incorporados; confirmado que nenhum produto de galpão ≠ MIG usa categoria).
+- **Verificado:** 238 testes passam. Aplica só a taxonomia interna `categories` (NÃO as categorias de marketplace ML/Shopee de `ProductMarketplaceCategory`).
+
+---
+
 ## 2026-09-28 — fix(rastreabilidade): correções pós-auditoria final — CRITICAL + HIGH (ADR-0027)
 
 Auditoria final (trio) achou 1 CRITICAL + vários HIGH. Corrigidos:

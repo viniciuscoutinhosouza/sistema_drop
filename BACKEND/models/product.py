@@ -12,6 +12,8 @@ class Category(Base):
     parent_id = Column(Integer, ForeignKey("categories.id"))
     ml_category_id = Column(String(50))
     shopee_category_id = Column(Integer)
+    # Isolamento por galpão (migration 145): categoria pertence a um warehouse; não aparece em outro.
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
 
     children = relationship("Category", backref="parent", remote_side=[id])
     products = relationship("CatalogProduct", back_populates="category")
