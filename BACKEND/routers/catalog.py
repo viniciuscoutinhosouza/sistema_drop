@@ -5,7 +5,7 @@ from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_menu_permission
-from models.cmig import CMIGProduct
+from models.cmig import CMIG, CMIGProduct
 from models.product import CatalogProduct, CatalogProductImage, Category, ProductListing
 from models.user import User
 
@@ -162,10 +162,26 @@ async def list_catalog(
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-# Isolamento de categorias por GALPÃO (migration 145): admin gerencia/vê todas; demais só o próprio
-# `warehouse_id` (ADR-0026). Fail-closed: não-admin sem galpão não vê nem cria categoria.
+# Isolamento de categorias por GALPÃO (migration 145): admin gerencia/vê todas; demais só os galpões
+# a que pertencem (ADR-0026). Fail-closed: quem não resolve nenhum galpão não vê nem cria/edita.
 def _is_admin(user: User) -> bool:
     return user.role == "admin"
+
+
+async def _effective_wh_ids(user: User, db: AsyncSession) -> set[int] | None:
+    """Galpões que o usuário enxerga. None = admin (todos). Set vazio = fail-closed.
+
+    `go`/`ac` com `warehouse_id` → esse galpão. `ac` sem `warehouse_id` → galpões das CMIGs que
+    possui (owner_ac_id) — categorias são compartilhadas PG↔CMIG dentro do galpão.
+    """
+    if _is_admin(user):
+        return None
+    if user.warehouse_id is not None:
+        return {user.warehouse_id}
+    rows = (
+        await db.execute(select(CMIG.warehouse_id).where(CMIG.owner_ac_id == user.id))
+    ).scalars().all()
+    return {w for w in rows if w is not None}
 
 
 async def _load_category(category_id: int, db: AsyncSession) -> Category:
@@ -177,10 +193,27 @@ async def _load_category(category_id: int, db: AsyncSession) -> Category:
     return cat
 
 
-def _assert_category_owned(cat: Category, user: User) -> None:
-    """403 se a categoria é de outro galpão (admin bypassa)."""
-    if not _is_admin(user) and cat.warehouse_id != user.warehouse_id:
+def _assert_owned(cat: Category, user: User, wh_ids: set[int] | None) -> None:
+    """403 se a categoria não é de um galpão do usuário. Admin bypassa. NULL nunca é possuível por
+    não-admin (endurecimento anti-IDOR)."""
+    if _is_admin(user):
+        return
+    if cat.warehouse_id is None or (wh_ids is not None and cat.warehouse_id not in wh_ids):
         raise HTTPException(status_code=403, detail="Categoria pertence a outro galpão")
+
+
+async def _is_descendant(node_id: int, ancestor_id: int, db: AsyncSession) -> bool:
+    """True se `node_id` está na subárvore de `ancestor_id` (sobe pelos parent_id). Anti-ciclo."""
+    seen: set[int] = set()
+    cur_id = node_id
+    while cur_id is not None and cur_id not in seen:
+        if cur_id == ancestor_id:
+            return True
+        seen.add(cur_id)
+        cur_id = (
+            await db.execute(select(Category.parent_id).where(Category.id == cur_id))
+        ).scalar_one_or_none()
+    return False
 
 
 @router.get("/categories")
@@ -188,13 +221,12 @@ async def list_categories(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    wh_ids = await _effective_wh_ids(current_user, db)
     q = select(Category).order_by(Category.name)
-    if _is_admin(current_user):
-        pass  # admin vê todas
-    elif current_user.warehouse_id is not None:
-        q = q.where(Category.warehouse_id == current_user.warehouse_id)
-    else:
-        return []  # não-admin sem galpão → fail-closed
+    if wh_ids is not None:  # não-admin
+        if not wh_ids:
+            return []  # fail-closed
+        q = q.where(Category.warehouse_id.in_(wh_ids))
     result = await db.execute(q)
     return [
         {"id": c.id, "name": c.name, "parent_id": c.parent_id, "warehouse_id": c.warehouse_id}
@@ -213,17 +245,23 @@ async def create_category(
         raise HTTPException(status_code=422, detail="name é obrigatório")
     parent_id = body.get("parent_id")
     admin = _is_admin(current_user)
+    wh_ids = await _effective_wh_ids(current_user, db)
 
-    # Galpão da categoria: subcategoria HERDA do pai (fonte única); raiz = galpão do usuário
-    # (admin pode informar warehouse_id no body). Valida que o pai é do mesmo galpão.
+    # Subcategoria HERDA o galpão do pai (fonte única); raiz = galpão do usuário. Valida posse do pai.
     if parent_id is not None:
         parent = await _load_category(parent_id, db)
-        _assert_category_owned(parent, current_user)
+        _assert_owned(parent, current_user, wh_ids)
         warehouse_id = parent.warehouse_id
+    elif admin:
+        warehouse_id = body.get("warehouse_id")  # admin escolhe (ou None = global)
+    elif wh_ids and len(wh_ids) == 1:
+        warehouse_id = next(iter(wh_ids))
+    elif wh_ids and body.get("warehouse_id") in wh_ids:
+        warehouse_id = body.get("warehouse_id")
     else:
-        warehouse_id = body.get("warehouse_id") if admin else current_user.warehouse_id
-    if warehouse_id is None and not admin:
-        raise HTTPException(status_code=422, detail="Usuário sem galpão não pode criar categoria")
+        raise HTTPException(
+            status_code=422, detail="Usuário sem galpão definido não pode criar categoria"
+        )
 
     dup = await db.execute(
         select(Category).where(
@@ -253,8 +291,9 @@ async def update_category(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("catalog")),
 ):
+    wh_ids = await _effective_wh_ids(current_user, db)
     cat = await _load_category(category_id, db)
-    _assert_category_owned(cat, current_user)
+    _assert_owned(cat, current_user, wh_ids)
 
     if "name" in body:
         new_name = (body["name"] or "").strip()
@@ -267,7 +306,11 @@ async def update_category(
             raise HTTPException(status_code=422, detail="Categoria não pode ser pai dela mesma")
         if new_parent is not None:
             parent = await _load_category(new_parent, db)
-            _assert_category_owned(parent, current_user)
+            _assert_owned(parent, current_user, wh_ids)
+            if await _is_descendant(new_parent, category_id, db):
+                raise HTTPException(
+                    status_code=422, detail="Movimento criaria um ciclo na árvore de categorias"
+                )
             cat.warehouse_id = parent.warehouse_id  # mantém a árvore no mesmo galpão
         cat.parent_id = new_parent
 
@@ -281,8 +324,9 @@ async def delete_category(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("catalog")),
 ):
+    wh_ids = await _effective_wh_ids(current_user, db)
     cat = await _load_category(category_id, db)
-    _assert_category_owned(cat, current_user)
+    _assert_owned(cat, current_user, wh_ids)
 
     pg_count = (
         await db.execute(
