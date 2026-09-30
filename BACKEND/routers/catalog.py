@@ -348,7 +348,11 @@ async def delete_category(
 
 
 @router.get("/{product_id}")
-async def get_catalog_product(product_id: int, db: AsyncSession = Depends(get_db)):
+async def get_catalog_product(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     result = await db.execute(
         select(CatalogProduct).where(
             CatalogProduct.id == product_id, CatalogProduct.is_active == True
@@ -356,8 +360,12 @@ async def get_catalog_product(product_id: int, db: AsyncSession = Depends(get_db
     )
     product = result.scalar_one_or_none()
     if not product:
-        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
 
+    # Isolamento por galpão (ADR-0026): não vaza o detalhe (custo/NCM/dimensões) de PG de outro
+    # galpão pelo id. Fora do escopo → 404 (não confirma existência). Admin (wh_ids None) vê tudo.
+    wh_ids = await warehouse_ids_for(current_user, db)
+    if wh_ids is not None and product.warehouse_id not in wh_ids:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
 
     images_result = await db.execute(

@@ -13,6 +13,7 @@ from models.order import Order, OrderItem
 from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
+from models.warehouse import Warehouse
 from services.file_naming import TIPO_ETIQUETA, order_download_filename
 from services.shipping_mode import MODE_COMBINADO
 
@@ -80,6 +81,28 @@ async def create_manual_order(
     if pg_ids:
         res = await db.execute(select(CatalogProduct).where(CatalogProduct.id.in_(pg_ids)))
         pg_map = {p.id: p for p in res.scalars().all()}
+
+        # Isolamento por galpão (ADR-0026) + multilojas não vende PG (ADR-0024): os itens PG do
+        # pedido TÊM de ser do galpão da CMIG do pedido. Sem esta fronteira no servidor, um usuário
+        # de outro galpão conseguia vender PG alheio por POST direto (o fix do /catalog só escondia
+        # da UI). O galpão da CMIG é a autoridade (é quem separa/expede).
+        cmig_wh = (
+            await db.execute(select(CMIG.warehouse_id).where(CMIG.id == cmig_id))
+        ).scalar_one_or_none()
+        work_type = (
+            await db.execute(select(Warehouse.work_type).where(Warehouse.id == cmig_wh))
+        ).scalar_one_or_none() if cmig_wh is not None else None
+        if work_type == "multilojas":
+            raise HTTPException(
+                status_code=400,
+                detail="Galpão multilojas não vende produtos PG — use produtos da própria CMIG.",
+            )
+        for p in pg_map.values():
+            if cmig_wh is not None and p.warehouse_id != cmig_wh:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Produto PG '{p.sku}' é de outro galpão e não pode entrar neste pedido.",
+                )
 
     cmig_map: dict[int, CMIGProduct] = {}
     if cmig_ids:

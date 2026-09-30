@@ -13,6 +13,7 @@ Bug do dono: no **pedido manual**, usuário `ac` da Harmony Express via produtos
 - **Item 3 — reforço multilojas**: `sellable_pg_warehouse_ids` exclui multilojas → galpão multilojas (Harmony) vê **PG vazio** no seletor (não vende PG).
 - **DRY**: `catalog.py` (categorias) passou a usar `warehouse_ids_for` (removido o `_effective_wh_ids` local); `/pg` (`supplier_products.list_supplier_products`) migrado para o helper (preserva "ac só vê PG ativo"; fail-closed p/ não-admin sem galpão).
 - **Verificado:** imports OK, 20 testes (auth+rastreabilidade) passam. Sem migração (só query). Backend-only.
+- **Fronteira de autorização (quality-guardian pós-fix)**: o fix da lista não bastava — o servidor ainda aceitava PG cross-galpão por id. Fechado: (HIGH#1) `manual_orders.create` valida que os itens PG são do **galpão da CMIG do pedido** + bloqueia PG em galpão **multilojas**; (HIGH#2) `GET /catalog/{id}` ganhou auth + escopo (404 fora do galpão, anti-enumeração); (MEDIUM/IDOR) `supplier_products` by-id (get/update/duplicate/delete/photos/recalculate/stock-movements/variants) agora chamam `_assert_pg_owned`/`_load_pg_or_403` (403 se PG de outro galpão; admin bypassa). 238 testes passam.
 
 ---
 

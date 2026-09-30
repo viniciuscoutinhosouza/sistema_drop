@@ -216,9 +216,35 @@ async def get_supplier_product(
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
+    await _assert_pg_owned(p, current_user, db)
     data = _serialize_product(p, include_components=True)
     data["variants"] = [_serialize_variant(v) for v in sorted(p.variants, key=lambda v: v.id)]
     return data
+
+
+async def _assert_pg_owned(product, current_user: User, db: AsyncSession) -> None:
+    """403 se o PG não é do galpão do usuário (admin bypassa) — anti-IDOR by-id (ADR-0026).
+
+    Ponto único de escopo (services/warehouse_scope). Impede ler/editar/duplicar/excluir PG de
+    outro galpão pelo `product_id` direto — o `list` já é escopado, o acesso por id não era."""
+    if current_user.role == "admin":
+        return
+    from services.warehouse_scope import warehouse_ids_for
+
+    wh_ids = await warehouse_ids_for(current_user, db)
+    if not wh_ids or getattr(product, "warehouse_id", None) not in wh_ids:
+        raise HTTPException(status_code=403, detail="Produto PG pertence a outro galpão")
+
+
+async def _load_pg_or_403(product_id: int, current_user: User, db: AsyncSession) -> CatalogProduct:
+    """Carrega o PG por id, 404 se não existe, 403 se de outro galpão. Para endpoints by-id/variante."""
+    p = (
+        await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
+    ).scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
+    await _assert_pg_owned(p, current_user, db)
+    return p
 
 
 def _apply_traceability_fields(product, body: dict, *, has_full_stock: bool = False) -> None:
@@ -316,6 +342,7 @@ async def update_product(
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
+    await _assert_pg_owned(product, current_user, db)
 
     # Mudança de SKU + cascata pra CMIGs vinculados e anúncios
     cascade_summary = {"cmigs_updated": 0, "listings_updated": 0}
@@ -471,6 +498,7 @@ async def duplicate_product(
     src = result.scalar_one_or_none()
     if not src:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
+    await _assert_pg_owned(src, current_user, db)
 
     new_sku = (body.get("sku") or "").strip()
     if not new_sku:
@@ -556,9 +584,12 @@ async def upload_product_photo(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("pg")),
 ):
-    result = await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
-    if not result.scalar_one_or_none():
+    _prod = (
+        await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))
+    ).scalar_one_or_none()
+    if not _prod:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
+    await _assert_pg_owned(_prod, current_user, db)
 
     ext = _os.path.splitext(file.filename or "")[1].lower() or ".jpg"
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
@@ -611,6 +642,7 @@ async def recalculate_pg_product_stock(
     ).scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Produto PG não encontrado")
+    await _assert_pg_owned(product, current_user, db)
     old = int(product.stock_quantity or 0)
     new = await _recompute(product_id, db)
     await log_adjustment(
@@ -710,6 +742,7 @@ async def get_pg_product_stock_movements(
     ).scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
+    await _assert_pg_owned(product, current_user, db)
 
     return await build_movements_response(
         product=product,
@@ -730,6 +763,7 @@ async def delete_product(
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
+    await _assert_pg_owned(product, current_user, db)
 
     # Única fonte confiável de venda interna: order_items
     r = await db.execute(
@@ -773,6 +807,7 @@ async def list_variants(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("pg")),
 ):
+    await _load_pg_or_403(product_id, current_user, db)
     result = await db.execute(
         select(CatalogProductVariant).where(CatalogProductVariant.product_id == product_id)
     )
@@ -786,6 +821,7 @@ async def create_variant(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("pg")),
 ):
+    await _load_pg_or_403(product_id, current_user, db)
     sku = (body.get("sku") or "").strip()
     if not sku:
         raise HTTPException(status_code=400, detail="sku é obrigatório")
@@ -829,6 +865,7 @@ async def update_variant(
     variant = result.scalar_one_or_none()
     if not variant:
         raise HTTPException(status_code=404, detail="Variante não encontrada")
+    await _load_pg_or_403(product_id, current_user, db)
 
     for field in (
         "variant_name",
@@ -864,5 +901,6 @@ async def delete_variant(
     variant = result.scalar_one_or_none()
     if not variant:
         raise HTTPException(status_code=404, detail="Variante não encontrada")
+    await _load_pg_or_403(product_id, current_user, db)
     db.delete(variant)
     await db.commit()
