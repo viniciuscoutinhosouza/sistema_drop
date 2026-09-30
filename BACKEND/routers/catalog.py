@@ -8,6 +8,7 @@ from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIG, CMIGProduct
 from models.product import CatalogProduct, CatalogProductImage, Category, ProductListing
 from models.user import User
+from services.warehouse_scope import sellable_pg_warehouse_ids, warehouse_ids_for
 
 router = APIRouter()
 
@@ -95,11 +96,14 @@ async def list_catalog(
 ):
     query = select(CatalogProduct).where(CatalogProduct.is_active == True)
 
-    # Isolamento por galpão: o GO (Gestor Operacional) enxerga somente o catálogo
-    # do próprio galpão, exatamente como o UGO. Demais papéis mantêm o comportamento
-    # anterior (admin/ac global). Ver tarefa de isolamento multi-tenant por galpão.
-    if current_user.role == "go" and current_user.warehouse_id:
-        query = query.where(CatalogProduct.warehouse_id == current_user.warehouse_id)
+    # Isolamento por galpão (ADR-0026) + multilojas não vende PG (ADR-0024): PG só do(s) galpão(ões)
+    # do usuário, excluindo multilojas. Ponto único (services/warehouse_scope). Fecha o vazamento de
+    # PG do MIG para usuário `ac` de outro galpão — o filtro anterior só cobria `role == "go"`.
+    pg_wh_ids = await sellable_pg_warehouse_ids(current_user, db)
+    if pg_wh_ids is not None:  # não-admin
+        if not pg_wh_ids:  # sem galpão vendável (inclui multilojas puro) → fail-closed
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+        query = query.where(CatalogProduct.warehouse_id.in_(pg_wh_ids))
 
     if search:
         query = query.where(
@@ -168,22 +172,6 @@ def _is_admin(user: User) -> bool:
     return user.role == "admin"
 
 
-async def _effective_wh_ids(user: User, db: AsyncSession) -> set[int] | None:
-    """Galpões que o usuário enxerga. None = admin (todos). Set vazio = fail-closed.
-
-    `go`/`ac` com `warehouse_id` → esse galpão. `ac` sem `warehouse_id` → galpões das CMIGs que
-    possui (owner_ac_id) — categorias são compartilhadas PG↔CMIG dentro do galpão.
-    """
-    if _is_admin(user):
-        return None
-    if user.warehouse_id is not None:
-        return {user.warehouse_id}
-    rows = (
-        await db.execute(select(CMIG.warehouse_id).where(CMIG.owner_ac_id == user.id))
-    ).scalars().all()
-    return {w for w in rows if w is not None}
-
-
 async def _load_category(category_id: int, db: AsyncSession) -> Category:
     cat = (
         await db.execute(select(Category).where(Category.id == category_id))
@@ -221,7 +209,7 @@ async def list_categories(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    wh_ids = await _effective_wh_ids(current_user, db)
+    wh_ids = await warehouse_ids_for(current_user, db)
     q = select(Category).order_by(Category.name)
     if wh_ids is not None:  # não-admin
         if not wh_ids:
@@ -245,7 +233,7 @@ async def create_category(
         raise HTTPException(status_code=422, detail="name é obrigatório")
     parent_id = body.get("parent_id")
     admin = _is_admin(current_user)
-    wh_ids = await _effective_wh_ids(current_user, db)
+    wh_ids = await warehouse_ids_for(current_user, db)
 
     # Subcategoria HERDA o galpão do pai (fonte única); raiz = galpão do usuário. Valida posse do pai.
     if parent_id is not None:
@@ -291,7 +279,7 @@ async def update_category(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("catalog")),
 ):
-    wh_ids = await _effective_wh_ids(current_user, db)
+    wh_ids = await warehouse_ids_for(current_user, db)
     cat = await _load_category(category_id, db)
     _assert_owned(cat, current_user, wh_ids)
 
@@ -324,7 +312,7 @@ async def delete_category(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("catalog")),
 ):
-    wh_ids = await _effective_wh_ids(current_user, db)
+    wh_ids = await warehouse_ids_for(current_user, db)
     cat = await _load_category(category_id, db)
     _assert_owned(cat, current_user, wh_ids)
 

@@ -176,31 +176,19 @@ async def list_supplier_products(
     `search` (título/SKU), `simple_only` (exclui compostos — para pickers de componentes de KIT)
     e `limit` são OPCIONAIS: sem eles o comportamento é o de antes (catálogo inteiro).
     """
-    if current_user.role in ("ugo", "go") and current_user.warehouse_id:
-        stmt = (
-            select(CatalogProduct)
-            .options(selectinload(CatalogProduct.images))
-            .where(CatalogProduct.warehouse_id == current_user.warehouse_id)
-            .order_by(CatalogProduct.created_at.desc())
-        )
-    elif current_user.role == "ac" and current_user.warehouse_id:
-        stmt = (
-            select(CatalogProduct)
-            .options(selectinload(CatalogProduct.images))
-            .where(
-                and_(
-                    CatalogProduct.warehouse_id == current_user.warehouse_id,
-                    CatalogProduct.is_active == True,
-                )
-            )
-            .order_by(CatalogProduct.created_at.desc())
-        )
-    else:
-        stmt = (
-            select(CatalogProduct)
-            .options(selectinload(CatalogProduct.images))
-            .order_by(CatalogProduct.created_at.desc())
-        )
+    # Escopo por galpão — ponto único (services/warehouse_scope, ADR-0026). admin global;
+    # não-admin só o(s) próprio(s) galpão(ões); fail-closed sem galpão. `ac` mantém "só PG ativo".
+    from services.warehouse_scope import warehouse_ids_for
+
+    wh_ids = await warehouse_ids_for(current_user, db)
+    stmt = select(CatalogProduct).options(selectinload(CatalogProduct.images))
+    if wh_ids is not None:  # não-admin
+        if not wh_ids:
+            return []  # fail-closed
+        stmt = stmt.where(CatalogProduct.warehouse_id.in_(wh_ids))
+        if current_user.role == "ac":
+            stmt = stmt.where(CatalogProduct.is_active == True)  # noqa: E712 — ac só vê PG ativo
+    stmt = stmt.order_by(CatalogProduct.created_at.desc())
 
     if simple_only:
         stmt = stmt.where(CatalogProduct.is_composite == False)  # noqa: E712

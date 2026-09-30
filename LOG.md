@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-09-29 — fix(catalog): vazamento de PG entre galpões no pedido manual + ponto único de escopo
+
+Bug do dono: no **pedido manual**, usuário `ac` da Harmony Express via produtos PG do MIG. Causa: `list_catalog` (`GET /catalog`, fonte do seletor de PG do pedido manual — `ManualOrderView.vue:368`) escopava **só `role == "go"`** (`catalog.py:101`) → `ac` (Harmony, wh 22) caía fora e via todo o PG, inclusive o do MIG (wh 1). `/pg` e `/cmigs/{id}/pg-products` já escopavam certo — só o `/catalog` estava fora do padrão.
+
+- **Item 2 — ponto único** `services/warehouse_scope.py`: `warehouse_ids_for(user, db)` (admin=None/todos; não-admin=próprio galpão; `ac` sem warehouse_id→galpões das CMIGs que possui; fail-closed) e `sellable_pg_warehouse_ids(user, db)` (idem, **excluindo galpões `multilojas`** — ADR-0024). Alinha ADR-0026 ("isolado por galpão; admin global").
+- **Item 1 — fix `list_catalog`**: escopa PG por `sellable_pg_warehouse_ids` (cobre `go`+`ac`; fail-closed sem galpão). Fecha o vazamento.
+- **Item 3 — reforço multilojas**: `sellable_pg_warehouse_ids` exclui multilojas → galpão multilojas (Harmony) vê **PG vazio** no seletor (não vende PG).
+- **DRY**: `catalog.py` (categorias) passou a usar `warehouse_ids_for` (removido o `_effective_wh_ids` local); `/pg` (`supplier_products.list_supplier_products`) migrado para o helper (preserva "ac só vê PG ativo"; fail-closed p/ não-admin sem galpão).
+- **Verificado:** imports OK, 20 testes (auth+rastreabilidade) passam. Sem migração (só query). Backend-only.
+
+---
+
 ## 2026-09-29 — feat(catalog): categorias de produto isoladas por Galpão (warehouse)
 
 Pedido do dono: categoria criada num galpão não aparece em outro; categorias atuais são do MIG.
