@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-10-06 — feat(produtos): campo "Fabricante" (manufacturer) no cadastro CMIG e PG
+
+Pedido do dono: incluir um campo **Fabricante** no cadastro de produto, para CMIG e PG. Adicionado **em paralelo** ao `brand` (Marca) já existente — fabricante é campo de cadastro, **não** entra em imposto/NF-e (não toca o `brand` de anúncios/ML, que é atributo de marketplace).
+
+- **Migration 146** (`146_product_manufacturer.sql`, idempotente): `manufacturer VARCHAR2(100)` em `cmig_products` e `catalog_products`.
+- **Models** CMIGProduct + CatalogProduct; **schemas** CMIG (create/update/out).
+- **Backend** (paralelo ao brand): serialize/create/update/clone/import em `cmigs.py`, `supplier_products.py` e **`catalog.py` (lista+detalhe)**; **sync CMIG→PG** copia fabricante (guard `is not None`); `product_import.py` aceita coluna "fabricante" na planilha.
+- **Frontend**: input "Fabricante" ao lado de "Marca" nos **4 formulários** (produto + kit, CMIG e PG) + "Fabricante" na string de confirmação do sync.
+
+Pré-avaliado (consistency-auditor — pegou catalog.py, whitelist de update do PG, os 4 forms, _EXAMPLE_ROWS; tudo incorporado). **Deployado + verificado**: migration 146 aplicada (2/2 colunas), backend startup limpo /docs 200, frontend build OK, round-trip do campo gravando/lendo nos dois produtos. Commit `f15bb35`.
+
+---
+
 ## 2026-10-06 — feat(produtos): importação de produtos simples por planilha Excel (PG + CMIG)
 
 Pedido do dono: cadastrar produtos SIMPLES em massa por planilha .xlsx (PG e CMIG) + entregar modelo.
