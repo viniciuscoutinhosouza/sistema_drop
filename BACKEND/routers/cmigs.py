@@ -157,6 +157,7 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
         "title": p.title,
         "description": p.description,
         "brand": p.brand,
+        "manufacturer": p.manufacturer,
         "model": p.model,
         "ean": p.ean,
         "cost_price": float(p.cost_price) if p.cost_price is not None else None,
@@ -862,7 +863,8 @@ async def cmig_import(
                                         "(galpão indefinido) — produto criado sem categoria"})
         product = CMIGProduct(
             cmig_id=cmig_id, sku_cmig=rec["sku"], title=rec["title"],
-            description=rec.get("description"), brand=rec.get("brand"), model=rec.get("model"),
+            description=rec.get("description"), brand=rec.get("brand"),
+            manufacturer=rec.get("manufacturer"), model=rec.get("model"),
             ean=rec.get("ean"), cost_price=rec.get("cost_price"),
             suggested_price=rec.get("suggested_price"), ncm=rec.get("ncm"), cest=rec.get("cest"),
             origin=rec.get("origin") or 0, weight_kg=rec.get("weight_kg"),
@@ -1182,6 +1184,7 @@ async def duplicate_cmig_product(
         title=f"{src.title} (Cópia)",
         description=src.description,
         brand=src.brand,
+        manufacturer=src.manufacturer,
         model=src.model,
         ean=src.ean,
         cost_price=src.cost_price,
@@ -1434,6 +1437,7 @@ async def import_pg_to_cmig(
         title=pg.title,
         description=pg.description,
         brand=pg.brand,
+        manufacturer=pg.manufacturer,
         model=pg.model,
         ean=pg.ean,
         cost_price=pg.cost_price,
@@ -1577,6 +1581,7 @@ async def import_cmig_product_to_pg(
         ncm=cp.ncm,
         cest=cp.cest,
         brand=cp.brand,
+        manufacturer=cp.manufacturer,
         origin=cp.origin or 0,
         csosn=cp.csosn,
         category_id=cp.category_id,
@@ -1689,6 +1694,8 @@ async def sync_pg_from_cmig(
 
     if cp.brand is not None:
         pg.brand = cp.brand
+    if cp.manufacturer is not None:
+        pg.manufacturer = cp.manufacturer
     if cp.model is not None:
         pg.model = cp.model
     if cp.ean is not None:

@@ -124,6 +124,7 @@ class CMIGProductCreate(BaseModel):
     title: str
     description: str | None = None
     brand: str | None = None
+    manufacturer: str | None = None
     model: str | None = None
     ean: str | None = None
     cost_price: float | None = None
@@ -167,6 +168,7 @@ class CMIGProductUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
     brand: str | None = None
+    manufacturer: str | None = None
     model: str | None = None
     ean: str | None = None
     cost_price: float | None = None
@@ -230,6 +232,7 @@ class CMIGProductOut(BaseModel):
     title: str
     description: str | None
     brand: str | None
+    manufacturer: str | None = None
     model: str | None
     ean: str | None
     cost_price: float | None

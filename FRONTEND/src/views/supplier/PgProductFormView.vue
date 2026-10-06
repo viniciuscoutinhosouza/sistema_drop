@@ -75,15 +75,19 @@
                   </div>
 
                   <div class="row">
-                    <div class="col-md-4 form-group">
+                    <div class="col-md-3 form-group">
                       <label>Marca</label>
                       <input v-model="form.brand" class="form-control" />
                     </div>
-                    <div class="col-md-4 form-group">
+                    <div class="col-md-3 form-group">
+                      <label>Fabricante</label>
+                      <input v-model="form.manufacturer" class="form-control" />
+                    </div>
+                    <div class="col-md-3 form-group">
                       <label>Modelo</label>
                       <input v-model="form.model" class="form-control" placeholder="Ex: Air Max 97" />
                     </div>
-                    <div class="col-md-4 form-group">
+                    <div class="col-md-3 form-group">
                       <label>Categoria</label>
                       <CategoryPickerWithModal v-model="form.category_id" />
                     </div>
@@ -169,7 +173,7 @@ const saving = ref(false)
 const error  = ref('')
 
 const form = ref({
-  sku: '', title: '', brand: '', model: '', ean: '',
+  sku: '', title: '', brand: '', manufacturer: '', model: '', ean: '',
   description: '', cost_price: null, suggested_price: null,
   weight_kg: null, height_cm: null,
   width_cm: null, length_cm: null, ncm: '', cest: '',

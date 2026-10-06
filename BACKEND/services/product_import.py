@@ -29,6 +29,7 @@ COLUMNS = [
     ("titulo", "title", True, "str"),
     ("descricao", "description", False, "str"),
     ("marca", "brand", False, "str"),
+    ("fabricante", "manufacturer", False, "str"),
     ("modelo", "model", False, "str"),
     ("ean", "ean", False, "str"),
     ("preco_custo", "cost_price", True, "dec"),
@@ -44,10 +45,11 @@ COLUMNS = [
 ]
 
 _EXAMPLE_ROWS = [
-    ["CAM-001", "Camiseta Básica Branca M", "Camiseta 100% algodão", "MinhaMarca", "Básica",
+    ["CAM-001", "Camiseta Básica Branca M", "Camiseta 100% algodão", "MinhaMarca",
+     "Confecções XYZ Ltda", "Básica",
      "7891234567890", "19.90", "39.90", "61091000", "", "0", "0.2", "2", "30", "40", "Vestuário"],
-    ["CANECA-PT", "Caneca Cerâmica Preta 300ml", "", "Genérica", "", "", "8.50", "24.90",
-     "69120000", "", "0", "0.35", "10", "9", "9", ""],
+    ["CANECA-PT", "Caneca Cerâmica Preta 300ml", "", "Genérica", "Cerâmica ABC", "", "", "8.50",
+     "24.90", "69120000", "", "0", "0.35", "10", "9", "9", ""],
 ]
 
 _INSTRUCTIONS = [
@@ -110,7 +112,7 @@ def norm_cest(v) -> str | None:
 
 # Limites das colunas do banco (CatalogProduct/CMIGProduct) — validados no parser para que um valor
 # longo vire ERRO DA LINHA (relatório) em vez de estourar no commit e derrubar o lote inteiro.
-_MAXLEN = {"sku": 100, "title": 500, "ean": 14, "brand": 100, "model": 200, "description": 4000}
+_MAXLEN = {"sku": 100, "title": 500, "ean": 14, "brand": 100, "manufacturer": 100, "model": 200, "description": 4000}
 _MAXNUM = {
     "cost_price": Decimal("9999999999999.99"),      # Numeric(15,2)
     "suggested_price": Decimal("9999999999999.99"),
@@ -162,7 +164,7 @@ def build_template_xlsx() -> bytes:
         hc.alignment = Alignment(horizontal="center")
     for ex in _EXAMPLE_ROWS:
         ws.append([_xlsx_safe(v) for v in ex])
-    widths = [14, 32, 30, 14, 12, 16, 12, 14, 12, 10, 8, 9, 10, 10, 14, 18]
+    widths = [14, 32, 30, 14, 20, 12, 16, 12, 14, 12, 10, 8, 9, 10, 10, 14, 18]
     for ci, w in enumerate(widths, start=1):
         ws.column_dimensions[ws.cell(row=1, column=ci).column_letter].width = w
     ws.freeze_panes = "A2"
@@ -251,7 +253,7 @@ def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
         if count > MAX_ROWS:
             raise ValueError(f"Arquivo acima do limite de {MAX_ROWS} linhas.")
 
-        def cell(h):
+        def cell(h, raw=raw):
             i = hmap.get(h)
             return raw[i] if i is not None and i < len(raw) else None
 

@@ -501,7 +501,7 @@ async function importToPg(product) {
 }
 
 async function syncPg(product) {
-  if (!confirm(`Sincronizar dados de "${product.title}" com o PG vinculado (PG #${product.pg_product_id})?\n\nIsso irá atualizar: Marca, Modelo, EAN, NCM, CEST, dimensões e origem no PG.`)) return
+  if (!confirm(`Sincronizar dados de "${product.title}" com o PG vinculado (PG #${product.pg_product_id})?\n\nIsso irá atualizar: Marca, Fabricante, Modelo, EAN, NCM, CEST, dimensões e origem no PG.`)) return
   try {
     const { data } = await api.post(`/cmigs/${cmigId.value}/products/${product.id}/sync-pg`)
     const synced = [

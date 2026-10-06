@@ -36,6 +36,7 @@ class CatalogProduct(Base):
     ncm = Column(String(10))
     cest = Column(String(7))
     brand = Column(String(100))
+    manufacturer = Column(String(100))
     model = Column(String(200))
     ean = Column(String(14))
     origin = Column(Integer, default=0)

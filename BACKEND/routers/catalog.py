@@ -5,7 +5,7 @@ from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_menu_permission
-from models.cmig import CMIG, CMIGProduct
+from models.cmig import CMIGProduct
 from models.product import CatalogProduct, CatalogProductImage, Category, ProductListing
 from models.user import User
 from services.warehouse_scope import sellable_pg_warehouse_ids, warehouse_ids_for
@@ -156,6 +156,7 @@ async def list_catalog(
                 "stock_quantity": _pg_stock(p),
                 "is_composite": p.is_composite,
                 "brand": p.brand,
+                "manufacturer": p.manufacturer,
                 "model": p.model,
                 "ean": p.ean,
                 "category_id": p.category_id,
@@ -388,6 +389,7 @@ async def get_catalog_product(
         "length_cm": float(product.length_cm) if product.length_cm else None,
         "ncm": product.ncm,
         "brand": product.brand,
+        "manufacturer": product.manufacturer,
         "model": product.model,
         "stock_quantity": _pg_stock(product),
         "is_composite": product.is_composite,

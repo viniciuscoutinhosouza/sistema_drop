@@ -80,6 +80,7 @@ class CMIGProduct(Base):
     title = Column(String(255), nullable=False)
     description = Column(String(4000))
     brand = Column(String(100))
+    manufacturer = Column(String(100))
     model = Column(String(200))
     ean = Column(String(14))
     cost_price = Column(Numeric(10, 2))
