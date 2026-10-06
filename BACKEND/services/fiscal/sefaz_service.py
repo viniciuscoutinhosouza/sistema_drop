@@ -140,24 +140,76 @@ def _cliente(person: Person) -> Cliente:
     )
 
 
-def _item(it, numero_item: int | None = None, rastros: tuple = (), med: dict | None = None) -> ItemEmissao:
-    csosn = (it.icms_csosn or "102").strip()
+def _item(it, numero_item: int | None = None, rastros: tuple = (), med: dict | None = None,
+          *, crt: int = 1) -> ItemEmissao:
     ncm = _digits(it.ncm)
     if len(ncm) != 8:
         raise SefazServiceError(f"Item '{it.description}': NCM inválido ({it.ncm!r}) — corrija o produto.")
-    prod = Produto(
-        codigo=(it.sku or str(it.cmig_product_id or it.id)), descricao=it.description or "",
-        ncm=ncm, csosn=csosn, origem=str(it.origin if it.origin is not None else 0),
-        unidade=it.unit or "UN", cest=(_digits(it.cest) or None) if it.cest else None,
-        ean=it.ean or None,
-        vbc_st_ret=_dec(it.icms_st_base) if csosn == "500" else None,
-        vicms_st_ret=_dec(it.icms_st_value) if csosn == "500" else None,
-        info_adicional=(it.additional_info or None),
-        # Rastreabilidade — medicamento (grupo <med>), ADR-0027.
-        med_anvisa=(med or {}).get("anvisa"),
-        med_pmc=(med or {}).get("pmc"),
-        med_exempt_reason=(med or {}).get("exempt"),
-    )
+
+    is_simples = crt in (1, 2, 4)
+    codigo = it.sku or str(it.cmig_product_id or it.id)
+    descricao = it.description or ""
+    origem = str(it.origin if it.origin is not None else 0)
+    unidade = it.unit or "UN"
+    cest = (_digits(it.cest) or None) if it.cest else None
+    # Rastreabilidade — medicamento (grupo <med>), ADR-0027.
+    med_kw = {
+        "med_anvisa": (med or {}).get("anvisa"),
+        "med_pmc": (med or {}).get("pmc"),
+        "med_exempt_reason": (med or {}).get("exempt"),
+    }
+
+    if is_simples:
+        # RAMO SIMPLES INTOCADO — CSOSN 102/500, PIS/COFINS 99 zerado no builder. Zero regressão.
+        csosn = (it.icms_csosn or "102").strip()
+        prod = Produto(
+            codigo=codigo, descricao=descricao, ncm=ncm, csosn=csosn, origem=origem,
+            unidade=unidade, cest=cest, ean=it.ean or None,
+            vbc_st_ret=_dec(it.icms_st_base) if csosn == "500" else None,
+            vicms_st_ret=_dec(it.icms_st_value) if csosn == "500" else None,
+            info_adicional=(it.additional_info or None), **med_kw,
+        )
+    else:
+        # ── Regime Normal (CRT 3) — lê o snapshot fiscal gravado no InvoiceItem (migration 147) ──
+        from services.fiscal.fiscal_resolver import compute_item_tax_values
+
+        icms_cst = (it.icms_cst or "").strip()
+        if not icms_cst:
+            raise SefazServiceError(
+                f"Item '{it.description}': Regime Normal (CRT 3) exige CST de ICMS no item — "
+                "o snapshot fiscal não foi gravado (recrie a nota)."
+            )
+        icms_cst = icms_cst.zfill(2)
+        vprod = (_dec(it.quantity) * _dec(it.unit_value)).quantize(Decimal("0.01"))
+        vals = compute_item_tax_values(
+            crt=crt, vprod=vprod,
+            icms_cst=icms_cst, icms_aliquota=_dec(it.icms_aliquota),
+            icms_reducao_bc=_dec(getattr(it, "icms_reducao_bc", None)),
+            fcp_aliquota=_dec(getattr(it, "fcp_aliquota", None)),
+            pis_cst=it.pis_cst, pis_aliquota=_dec(it.pis_aliquota),
+            cofins_cst=it.cofins_cst, cofins_aliquota=_dec(it.cofins_aliquota),
+            ipi_cst=it.ipi_cst, ipi_aliquota=_dec(it.ipi_aliquota),
+        )
+        prod = Produto(
+            codigo=codigo, descricao=descricao, ncm=ncm, origem=origem, unidade=unidade,
+            cest=cest, ean=it.ean or None, info_adicional=(it.additional_info or None),
+            crt=crt, icms_cst=icms_cst,
+            icms_aliquota=_dec(it.icms_aliquota),
+            icms_reducao_bc=_dec(getattr(it, "icms_reducao_bc", None)),
+            fcp_aliquota=_dec(getattr(it, "fcp_aliquota", None)),
+            mot_des_icms=getattr(it, "mot_des_icms", None),
+            cbenef=getattr(it, "cbenef", None),
+            pis_cst=(it.pis_cst or None), pis_aliquota=_dec(it.pis_aliquota),
+            cofins_cst=(it.cofins_cst or None), cofins_aliquota=_dec(it.cofins_aliquota),
+            ipi_cst=(it.ipi_cst or None), ipi_aliquota=_dec(it.ipi_aliquota),
+            ipi_cenq=getattr(it, "ipi_cenq", None),
+            # ST retida (CST 60) — reaproveita as colunas icms_st_* do item.
+            vbc_st_ret=_dec(it.icms_st_base) if icms_cst == "60" else None,
+            vicms_st_ret=_dec(it.icms_st_value) if icms_cst == "60" else None,
+            icms_base=vals["icms_base"], icms_value=vals["icms_value"], fcp_value=vals["fcp_value"],
+            pis_value=vals["pis_value"], cofins_value=vals["cofins_value"], ipi_value=vals["ipi_value"],
+            **med_kw,
+        )
     return ItemEmissao(
         numero_item=numero_item if numero_item is not None else it.item_number, produto=prod,
         quantidade=_dec(it.quantity),
@@ -182,10 +234,11 @@ def build_nota_emissao(
     emit = _estabelecimento(cmig, cfg)
     dest = _cliente(person)
     _trace = trace_by_item or {}
+    crt = int(cfg.crt or 1)  # define o regime: Simples (1/2/4) vs Regime Normal (3)
     # nItem tem de ser sequencial 1..N (SEFAZ cStat 927); o item_number do banco pode ter
     # buracos (itens removidos/reordenados) → reindexa na emissão pela ordem de item_number.
     itens = tuple(
-        _item(it, i, *(_trace.get(it.id, ((), None))))
+        _item(it, i, *(_trace.get(it.id, ((), None))), crt=crt)
         for i, it in enumerate(sorted(items, key=lambda x: x.item_number), start=1)
     )
 
@@ -503,8 +556,9 @@ async def emitir(
     # evita "queimar" numeração por erro de cadastro corrigível.
     _estabelecimento(cmig, cfg)
     _cliente(person)
+    _crt = int(cfg.crt or 1)
     for it in items:
-        _item(it)
+        _item(it, crt=_crt)
 
     # Reserva número sob lock curto e congela chave/cNF ANTES de falar com a SEFAZ.
     numero = await reservar_numero(db, cmig.id, environment)

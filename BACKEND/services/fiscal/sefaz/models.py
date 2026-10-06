@@ -117,9 +117,11 @@ class Produto:
     codigo: str
     descricao: str
     ncm: str
-    csosn: str
     origem: str  # '0'..'8'
     unidade: str
+    # Simples Nacional (CRT 1/2/4) — usa CSOSN. Regime Normal (CRT 3) — usa icms_cst (abaixo).
+    # Exatamente UM dos dois é obrigatório; nunca os dois (seriam regimes conflitantes).
+    csosn: str | None = None
     cest: str | None = None
     ean: str | None = None
     aliquota_icms: Decimal = Decimal("18.00")
@@ -131,12 +133,45 @@ class Produto:
     med_anvisa: str | None = None
     med_pmc: Decimal | None = None
     med_exempt_reason: str | None = None
+    # ── Regime Normal (CRT 3) — CST de ICMS e tributos destacados ─────────────
+    crt: int | None = None  # redundante com o emitente; carregado por conveniência
+    icms_cst: str | None = None       # 2 dígitos (00/10/20/40/41/50/51/60/70/90)
+    icms_aliquota: Decimal | None = None
+    icms_reducao_bc: Decimal | None = None  # pRedBC (CST 20/70)
+    fcp_aliquota: Decimal | None = None
+    mot_des_icms: str | None = None   # motDesICMS (CST 40/41/50 desonerado)
+    cbenef: str | None = None         # código de benefício fiscal (cBenef)
+    pis_cst: str | None = None
+    pis_aliquota: Decimal | None = None
+    cofins_cst: str | None = None
+    cofins_aliquota: Decimal | None = None
+    ipi_cst: str | None = None        # só emite grupo <IPI> quando presente
+    ipi_aliquota: Decimal | None = None
+    ipi_cenq: str | None = None       # cEnq do IPI (3 díg.; '999' quando não enquadrado)
+    # Valores monetários pré-calculados (gravados no snapshot do item na emissão). Quando None,
+    # o builder não destaca o tributo — Regime Normal exige que o caller os informe.
+    icms_base: Decimal | None = None
+    icms_value: Decimal | None = None
+    fcp_value: Decimal | None = None
+    pis_value: Decimal | None = None
+    cofins_value: Decimal | None = None
+    ipi_value: Decimal | None = None
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"\d{8}", self.ncm):
             raise XmlBuildError(f"ncm deve ter 8 dígitos, recebido {self.ncm!r}")
-        if not re.fullmatch(r"\d{3}", self.csosn):
-            raise XmlBuildError(f"csosn deve ter 3 dígitos, recebido {self.csosn!r}")
+        # Simples usa CSOSN (3 díg.); Regime Normal usa icms_cst (2 díg.). Validamos o que veio —
+        # exatamente UM dos dois. NÃO exigimos ambos (seriam regimes conflitantes).
+        if self.csosn is not None and self.icms_cst is not None:
+            raise XmlBuildError("Produto não pode ter csosn (Simples) e icms_cst (Normal) juntos.")
+        if self.csosn is not None:
+            if not re.fullmatch(r"\d{3}", self.csosn):
+                raise XmlBuildError(f"csosn deve ter 3 dígitos, recebido {self.csosn!r}")
+        elif self.icms_cst is not None:
+            if not re.fullmatch(r"\d{2}", self.icms_cst):
+                raise XmlBuildError(f"icms_cst deve ter 2 dígitos, recebido {self.icms_cst!r}")
+        else:
+            raise XmlBuildError("Produto precisa de csosn (Simples) ou icms_cst (Regime Normal).")
         if self.origem not in "012345678":
             raise XmlBuildError(f"origem deve ser '0'..'8', recebido {self.origem!r}")
 

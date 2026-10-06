@@ -1703,6 +1703,30 @@ async def add_item(
     db.add(item)
     await db.flush()
 
+    # Snapshot fiscal (cascata produto → default CMIG → fallback), quando o item aponta p/ um produto.
+    # Só preenche colunas fiscais VAZIAS — os campos vindos do body (edição manual) vencem a cascata.
+    # No Regime Normal (CRT 3) falha alto se faltar CST de ICMS. Padrão do snapshot imutável (ADR-0027).
+    _prod = None
+    if item.catalog_product_id:
+        _prod = (
+            await db.execute(select(CatalogProduct).where(CatalogProduct.id == item.catalog_product_id))
+        ).scalar_one_or_none()
+    elif item.cmig_product_id:
+        _prod = (
+            await db.execute(select(CMIGProduct).where(CMIGProduct.id == item.cmig_product_id))
+        ).scalar_one_or_none()
+    if _prod is not None:
+        _cfg = (
+            await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == inv.cmig_id))
+        ).scalar_one_or_none()
+        if _cfg is not None:
+            from services.fiscal.fiscal_resolver import apply_fiscal_snapshot, resolve_item_fiscal
+            try:
+                apply_fiscal_snapshot(item, resolve_item_fiscal(_prod, _cfg))
+            except sefaz_service.SefazServiceError as e:
+                # Fail-loud de configuração fiscal (ex.: CRT 3 sem CST de ICMS) → 400, não 500.
+                raise HTTPException(status_code=400, detail=str(e)) from e
+
     # Rastreabilidade (ADR-0027): lotes (<rastro>) e serials informados manualmente no recebimento.
     # Chaves esperadas em `lots`: n_lote, q_lote, d_fab, d_val, c_agreg. `serials`: lista de strings.
     # O crédito ao saldo por lote ocorre quando a nota é finalizada/transmitida (_apply_stock_movement).
@@ -4133,6 +4157,16 @@ async def create_invoice_from_order(
             total_value=(quantity * unit_price).quantize(Decimal("0.01")),
             origin=cmig_product.origin if cmig_product else 0,
         )
+        # Snapshot fiscal (cascata produto → default CMIG → fallback). Padrão do snapshot imutável
+        # de rastro/med (ADR-0027): grava CST/alíquotas no item na CRIAÇÃO; não sobrescreve valor
+        # já presente. No Regime Normal (CRT 3) falha alto se faltar CST de ICMS (fiscal_resolver).
+        if cmig_product and cfg:
+            from services.fiscal.fiscal_resolver import apply_fiscal_snapshot, resolve_item_fiscal
+            try:
+                apply_fiscal_snapshot(item, resolve_item_fiscal(cmig_product, cfg))
+            except sefaz_service.SefazServiceError as e:
+                # Fail-loud de configuração fiscal (ex.: CRT 3 sem CST de ICMS) → 400, não 500.
+                raise HTTPException(status_code=400, detail=str(e)) from e
         db.add(item)
 
     # Vincular order ↔ invoice
