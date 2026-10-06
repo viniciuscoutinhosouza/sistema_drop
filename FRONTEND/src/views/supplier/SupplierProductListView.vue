@@ -7,6 +7,9 @@
             <h1 class="m-0">Produtos Gerais (PG)</h1>
           </div>
           <div class="col-sm-6 text-right">
+            <button class="btn btn-outline-success mr-2" @click="importModal = true">
+              <i class="fas fa-file-excel mr-1"></i> Importar planilha
+            </button>
             <RouterLink to="/pg/novo-composto" class="btn btn-outline-primary mr-2">
               <i class="fas fa-layer-group mr-1"></i> Novo KIT
             </RouterLink>
@@ -169,6 +172,14 @@
       </div>
     </div>
   </div>
+
+  <ProductImportModal
+    :show="importModal"
+    endpoint="/pg/import"
+    template-url="/pg/import/template"
+    @close="importModal = false"
+    @imported="load"
+  />
 </template>
 
 <script setup>
@@ -177,9 +188,11 @@ import { useRouter, RouterLink } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import StockMovementsModal from '@/components/stock/StockMovementsModal.vue'
+import ProductImportModal from '@/components/products/ProductImportModal.vue'
 
 const products = ref([])
 const loading  = ref(true)
+const importModal = ref(false)
 const categories = ref([])
 
 const searchQuery = ref('')

@@ -14,6 +14,9 @@
             <RouterLink v-if="isAC" :to="`/cmig-products/new?cmig_id=${cmigId}`" class="btn btn-outline-primary mr-2">
               <i class="fas fa-plus mr-1"></i> Novo Produto
             </RouterLink>
+            <button v-if="isAC" class="btn btn-outline-success mr-2" @click="importModal = true" title="Importar produtos simples por planilha Excel">
+              <i class="fas fa-file-excel mr-1"></i> Importar planilha
+            </button>
             <button v-if="isAC" class="btn btn-outline-success mr-2" @click="openImportPgModal" title="Importar produto do Catálogo Geral (PG) para esta CMIG">
               <i class="fas fa-file-import mr-1"></i> Importar PG
             </button>
@@ -256,6 +259,14 @@
       </div>
     </div>
   </div>
+
+  <ProductImportModal
+    :show="importModal"
+    :endpoint="`/cmigs/${cmigId}/products/import`"
+    :template-url="`/cmigs/${cmigId}/products/import/template`"
+    @close="importModal = false"
+    @imported="loadProducts"
+  />
 </template>
 
 <script setup>
@@ -265,6 +276,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import StockMovementsModal from '@/components/stock/StockMovementsModal.vue'
+import ProductImportModal from '@/components/products/ProductImportModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -286,6 +298,7 @@ function onStockRecalculated({ new_stock }) {
 }
 
 const cmigId = computed(() => route.query.cmig_id || route.params.cmig_id)
+const importModal = ref(false)
 const cmig = ref(null)
 const allProducts = ref([])
 const categories = ref([])

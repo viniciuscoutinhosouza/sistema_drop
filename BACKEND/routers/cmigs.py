@@ -5,6 +5,7 @@ import uuid as _uuid_mod
 from datetime import date as _date
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response as _Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy import delete as _sa_delete
 from sqlalchemy import update as _sa_update
@@ -46,7 +47,7 @@ from schemas.cmig import (
     NFeConfigOut,
     NFeConfigUpdate,
 )
-from services import email_service
+from services import email_service, product_import
 
 router = APIRouter()
 
@@ -786,6 +787,91 @@ async def list_pg_products_for_cmig(
         }
         for p in result.scalars().all()
     ]
+
+
+@router.get("/{cmig_id}/products/import/template")
+async def cmig_import_template(
+    cmig_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Baixa a planilha modelo (.xlsx) para importação de produtos CMIG simples."""
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+    return _Response(
+        content=product_import.build_template_xlsx(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="modelo_produtos.xlsx"'},
+    )
+
+
+@router.post("/{cmig_id}/products/import")
+async def cmig_import(
+    cmig_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Importa produtos CMIG SIMPLES de uma planilha .xlsx para esta CMIG.
+
+    Validate-all-then-insert: valida tudo, carrega os `sku_cmig` existentes DESTA CMIG (unicidade é
+    app-side — não há unique no banco) e insere só as válidas num commit. Relatório por linha."""
+    from services.traceability_guard import assert_flag_change_allowed
+
+    cmig = await _get_cmig_or_404(cmig_id, db)
+    await _check_cmig_access(cmig, current_user, db)
+    # Mesmas travas do create_cmig_product (papel legado ugo não cria CMIG).
+    if current_user.role == "ugo":
+        raise HTTPException(
+            status_code=403, detail="Este papel não pode criar Produtos CMIG. Use importação de PG."
+        )
+    target_wh = cmig.warehouse_id
+
+    data = await file.read(product_import.MAX_FILE_BYTES + 1)
+    try:
+        valid, errors = product_import.parse_products_xlsx(data)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # Unicidade de sku_cmig é por CMIG (app-side — sem unique no DB): carrega os desta CMIG.
+    existing = {
+        (s or "").lower()
+        for s in (
+            await db.execute(
+                select(CMIGProduct.sku_cmig).where(CMIGProduct.cmig_id == cmig_id)
+            )
+        ).scalars().all()
+    }
+    created: list[str] = []
+    avisos: list[dict] = []
+    for rec in valid:
+        if rec["_sku_key"] in existing:
+            errors.append({"row": rec["_row"], "sku": rec["sku"], "motivo": "SKU CMIG já cadastrado nesta CMIG"})
+            continue
+        category_id = None
+        if rec.get("category_name"):
+            category_id = await product_import.resolve_category_id(db, rec["category_name"], target_wh)
+            if category_id is None:
+                avisos.append({"row": rec["_row"], "sku": rec["sku"],
+                               "aviso": f"Categoria '{rec['category_name']}' não existe neste galpão — "
+                                        "produto criado sem categoria"})
+        product = CMIGProduct(
+            cmig_id=cmig_id, sku_cmig=rec["sku"], title=rec["title"],
+            description=rec.get("description"), brand=rec.get("brand"), model=rec.get("model"),
+            ean=rec.get("ean"), cost_price=rec.get("cost_price"),
+            suggested_price=rec.get("suggested_price"), ncm=rec.get("ncm"), cest=rec.get("cest"),
+            origin=rec.get("origin") or 0, weight_kg=rec.get("weight_kg"),
+            height_cm=rec.get("height_cm"), width_cm=rec.get("width_cm"),
+            length_cm=rec.get("length_cm"), category_id=category_id,
+            is_composite=False, is_active=True,
+        )
+        assert_flag_change_allowed(product)  # produto simples passa; falha alto se ganhar rastreio no futuro
+        db.add(product)
+        existing.add(rec["_sku_key"])
+        created.append(rec["sku"])
+    await db.commit()
+    return {"criados": len(created), "skus_criados": created, "erros": errors, "avisos": avisos,
+            "total": len(created) + len(errors)}
 
 
 @router.get("/{cmig_id}/products/{product_id}")

@@ -4,6 +4,7 @@ import uuid as _uuid
 from datetime import date as _date
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy import delete as _sa_delete
 from sqlalchemy import update as _sa_update
@@ -22,6 +23,7 @@ from models.product import (
     ProductListing,
 )
 from models.user import User
+from services import product_import
 
 router = APIRouter()
 
@@ -200,6 +202,70 @@ async def list_supplier_products(
 
     result = await db.execute(stmt)
     return [_serialize_product(p) for p in result.scalars().all()]
+
+
+@router.get("/import/template")
+async def pg_import_template(current_user: User = Depends(require_menu_permission("pg"))):
+    """Baixa a planilha modelo (.xlsx) para importação de produtos PG simples."""
+    return Response(
+        content=product_import.build_template_xlsx(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="modelo_produtos.xlsx"'},
+    )
+
+
+@router.post("/import")
+async def pg_import(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("pg")),
+):
+    """Importa produtos PG SIMPLES de uma planilha .xlsx para o galpão do usuário.
+
+    Validate-all-then-insert: valida tudo, carrega os SKUs existentes (unique GLOBAL do PG) em 1
+    query, cruza, e insere só as válidas num commit. Relatório por linha (criados/erros/avisos)."""
+    target_wh = current_user.warehouse_id
+    if target_wh is None and current_user.role != "admin":
+        raise HTTPException(status_code=422, detail="Usuário sem galpão não pode importar produtos PG.")
+
+    data = await file.read(product_import.MAX_FILE_BYTES + 1)
+    try:
+        valid, errors = product_import.parse_products_xlsx(data)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # SKU do PG é único no SISTEMA inteiro → cruza contra TODOS (sem revelar o galpão dono).
+    existing = {
+        (s or "").lower() for s in (await db.execute(select(CatalogProduct.sku))).scalars().all()
+    }
+    created: list[str] = []
+    avisos: list[dict] = []
+    for rec in valid:
+        if rec["_sku_key"] in existing:
+            errors.append({"row": rec["_row"], "sku": rec["sku"], "motivo": "SKU já existe no sistema"})
+            continue
+        category_id = None
+        if rec.get("category_name"):
+            category_id = await product_import.resolve_category_id(db, rec["category_name"], target_wh)
+            if category_id is None:
+                avisos.append({"row": rec["_row"], "sku": rec["sku"],
+                               "aviso": f"Categoria '{rec['category_name']}' não existe neste galpão — "
+                                        "produto criado sem categoria"})
+        db.add(CatalogProduct(
+            warehouse_id=target_wh, sku=rec["sku"], title=rec["title"],
+            description=rec.get("description"), cost_price=rec["cost_price"],
+            suggested_price=rec.get("suggested_price"), brand=rec.get("brand"),
+            model=rec.get("model"), ean=rec.get("ean"), ncm=rec.get("ncm"),
+            cest=rec.get("cest"), origin=rec.get("origin") or 0,
+            weight_kg=rec.get("weight_kg"), height_cm=rec.get("height_cm"),
+            width_cm=rec.get("width_cm"), length_cm=rec.get("length_cm"),
+            category_id=category_id, is_composite=False, is_active=True,
+        ))
+        existing.add(rec["_sku_key"])
+        created.append(rec["sku"])
+    await db.commit()
+    return {"criados": len(created), "skus_criados": created, "erros": errors, "avisos": avisos,
+            "total": len(created) + len(errors)}
 
 
 @router.get("/{product_id}")

@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-10-06 — feat(produtos): importação de produtos simples por planilha Excel (PG + CMIG)
+
+Pedido do dono: cadastrar produtos SIMPLES em massa por planilha .xlsx (PG e CMIG) + entregar modelo.
+
+- **`services/product_import.py`**: `build_template_xlsx()` (aba Produtos cabeçalho+2 exemplos + aba Instruções; obrigatórios realçados; anti-formula-injection) + `parse_products_xlsx(bytes)` (valida obrigatórios, numéricos tolerantes a vírgula, origem 0–8, NCM/CEST normalizados, dedup intra-arquivo case-insensitive, teto 8MB/2000 linhas, captura `BadZipFile`/`InvalidFileException` → 422) + `resolve_category_id` (categoria EXISTENTE por nome, escopada ao galpão — não cria, evita poluir). Colunas: sku*, titulo*, descricao, marca, modelo, ean, preco_custo*, preco_sugerido, ncm, cest, origem, peso/altura/largura/comprimento, categoria.
+- **Endpoints** (desenho **validate-all-then-insert** — carrega SKUs existentes em 1 query, valida tudo, insere as válidas num commit; sem IntegrityError abortando o lote): PG `GET /pg/import/template` + `POST /pg/import` (SKU dup **global**, msg fail-closed; grava no `warehouse_id` do usuário, 422 se sem galpão; NÃO gateia por sellable — multilojas tem PG base). CMIG `GET /cmigs/{id}/products/import/template` + `POST /cmigs/{id}/products/import` (`_check_cmig_access` + guard ugo + `assert_flag_change_allowed`; dup **app-side** por (cmig_id, sku_cmig)). `is_composite=False`; estoque 0. Relatório por linha `{criados, erros[], avisos[], total}`.
+- **UI**: `components/products/ProductImportModal.vue` (baixar modelo via `saveBlobResponse` + upload + relatório) plugado em **SupplierProductListView** (PG) e **CmigProductListView** (CMIG, só AC). Botão "Importar planilha".
+- **Pré-avaliado** (consistency-auditor): C1 (SKU PG unique global → dup global), C2 (validate-all-then-insert), C3 (CMIG sem unique no DB → dedup app-side), H1 (fail-closed sem galpão), H2 (não gatear PG por sellable), H3 (guards CMIG), H4 (categoria resolve-existente, não cria) — todos incorporados.
+- **Verificado:** 10 testes unitários do parser + round-trip do modelo; 248 testes passam; `npm run build` OK; 4 rotas registradas. Sem migração (sem schema novo). Backend+UI, não deployado.
+
+---
+
 ## 2026-09-29 — fix(catalog): vazamento de PG entre galpões no pedido manual + ponto único de escopo
 
 Bug do dono: no **pedido manual**, usuário `ac` da Harmony Express via produtos PG do MIG. Causa: `list_catalog` (`GET /catalog`, fonte do seletor de PG do pedido manual — `ManualOrderView.vue:368`) escopava **só `role == "go"`** (`catalog.py:101`) → `ac` (Harmony, wh 22) caía fora e via todo o PG, inclusive o do MIG (wh 1). `/pg` e `/cmigs/{id}/pg-products` já escopavam certo — só o `/catalog` estava fora do padrão.
