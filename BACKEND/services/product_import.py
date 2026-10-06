@@ -16,7 +16,8 @@ from zipfile import BadZipFile
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
-MAX_FILE_BYTES = 8 * 1024 * 1024  # 8 MB
+MAX_FILE_BYTES = 8 * 1024 * 1024  # 8 MB (comprimido)
+MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024  # 100 MB descomprimido (anti zip-bomb)
 MAX_ROWS = 2000
 
 _NCM_RE = re.compile(r"\D")
@@ -95,12 +96,41 @@ def _to_dec(v):
 
 def norm_ncm(v) -> str | None:
     d = _NCM_RE.sub("", _s(v))
+    if d and len(d) != 8:
+        raise ValueError("ncm deve ter 8 dígitos (ex.: 61091000)")
     return d or None
 
 
 def norm_cest(v) -> str | None:
     d = _NCM_RE.sub("", _s(v))
+    if d and len(d) != 7:
+        raise ValueError("cest deve ter 7 dígitos")
     return d or None
+
+
+# Limites das colunas do banco (CatalogProduct/CMIGProduct) — validados no parser para que um valor
+# longo vire ERRO DA LINHA (relatório) em vez de estourar no commit e derrubar o lote inteiro.
+_MAXLEN = {"sku": 100, "title": 500, "ean": 14, "brand": 100, "model": 200, "description": 4000}
+_MAXNUM = {
+    "cost_price": Decimal("9999999999999.99"),      # Numeric(15,2)
+    "suggested_price": Decimal("9999999999999.99"),
+    "weight_kg": Decimal("99999.999"),               # Numeric(8,3)
+    "height_cm": Decimal("999999.99"),               # Numeric(8,2)
+    "width_cm": Decimal("999999.99"),
+    "length_cm": Decimal("999999.99"),
+}
+
+
+def _validate_limits(rec: dict) -> None:
+    """Garante que os campos cabem nas colunas do banco (evita DatabaseError no commit)."""
+    for field, mx in _MAXLEN.items():
+        val = rec.get(field)
+        if val and len(str(val)) > mx:
+            raise ValueError(f"'{field}' excede {mx} caracteres")
+    for field, mx in _MAXNUM.items():
+        val = rec.get(field)
+        if val is not None and val > mx:
+            raise ValueError(f"'{field}' é grande demais (máx {mx})")
 
 
 def _parse_origin(v) -> int:
@@ -172,6 +202,15 @@ def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
     """
     if len(data) > MAX_FILE_BYTES:
         raise ValueError(f"Arquivo acima do limite de {MAX_FILE_BYTES // (1024 * 1024)} MB.")
+    # Guard anti zip-bomb: o teto de 8 MB é sobre os bytes COMPRIMIDOS; um .xlsx pode inflar muito
+    # (ex.: sharedStrings.xml). Rejeita se o descomprimido ultrapassa o teto (ADR-0016, mesma ideia).
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as _zf:
+            if sum(i.file_size for i in _zf.infolist()) > MAX_UNCOMPRESSED_BYTES:
+                raise ValueError("Arquivo descomprimido grande demais (possível planilha corrompida).")
+    except zipfile.BadZipFile:
+        raise ValueError("Arquivo inválido — envie um .xlsx (Excel). Formato .xls antigo não é aceito.") from None
     try:
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except (BadZipFile, InvalidFileException, KeyError):
@@ -233,6 +272,7 @@ def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
                 raise ValueError("preco_custo é obrigatório")
             rec["title"] = _s(cell("titulo"))
             rec["sku"] = sku
+            _validate_limits(rec)  # cabe nas colunas do banco → erro de linha, não 500 no commit
             rec["_sku_key"] = key
             valid.append(rec)
         except ValueError as e:

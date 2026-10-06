@@ -13,6 +13,7 @@ Pedido do dono: cadastrar produtos SIMPLES em massa por planilha .xlsx (PG e CMI
 - **UI**: `components/products/ProductImportModal.vue` (baixar modelo via `saveBlobResponse` + upload + relatório) plugado em **SupplierProductListView** (PG) e **CmigProductListView** (CMIG, só AC). Botão "Importar planilha".
 - **Pré-avaliado** (consistency-auditor): C1 (SKU PG unique global → dup global), C2 (validate-all-then-insert), C3 (CMIG sem unique no DB → dedup app-side), H1 (fail-closed sem galpão), H2 (não gatear PG por sellable), H3 (guards CMIG), H4 (categoria resolve-existente, não cria) — todos incorporados.
 - **Verificado:** 10 testes unitários do parser + round-trip do modelo; 248 testes passam; `npm run build` OK; 4 rotas registradas. Sem migração (sem schema novo). Backend+UI, não deployado.
+- **Hardening pós-auditoria (quality-guardian, 1 HIGH + MEDIUMs):** validação de **comprimento/precisão no parser** (NCM=8/CEST=7 exatos; limites de coluna sku≤100/title≤500/ean≤14/brand≤100/model≤200/description≤4000; numéricos ≤ Numeric do banco) → valor longo vira **erro de linha**, não `DatabaseError` no commit derrubando o lote (furo do "validate-all-then-insert"); `commit` em **try/except** (rollback + 422) como rede de segurança (ex.: corrida de SKU no PG); **guard anti zip-bomb** (teto de 100 MB descomprimido via `zipfile` antes do openpyxl). 3 testes novos (NCM≠8, overflow de título, overflow de custo). 251 testes passam. Follow-ups: `client_max_body_size` do nginx; unique no DB para `(cmig_id, sku_cmig)` (hoje app-side).
 
 ---
 

@@ -88,6 +88,31 @@ def test_ncm_cest_normalized():
 
 
 @pytest.mark.unit
+def test_ncm_wrong_length_is_row_error():
+    data = _sheet([_row(ncm="123")])  # 3 dígitos → inválido
+    valid, errors = pi.parse_products_xlsx(data)
+    assert valid == []
+    assert any("ncm" in e["motivo"].lower() for e in errors)
+
+
+@pytest.mark.unit
+def test_overflow_length_is_row_error_not_crash():
+    # titulo > 500 chars deve virar erro de linha (não estourar no commit → 500)
+    data = _sheet([_row(titulo="X" * 600)])
+    valid, errors = pi.parse_products_xlsx(data)
+    assert valid == []
+    assert any("excede" in e["motivo"].lower() for e in errors)
+
+
+@pytest.mark.unit
+def test_cost_overflow_is_row_error():
+    data = _sheet([_row(custo="99999999999999999")])  # > Numeric(15,2)
+    valid, errors = pi.parse_products_xlsx(data)
+    assert valid == []
+    assert any("grande demais" in e["motivo"].lower() for e in errors)
+
+
+@pytest.mark.unit
 def test_missing_required_header():
     wb = Workbook()
     ws = wb.active

@@ -263,7 +263,14 @@ async def pg_import(
         ))
         existing.add(rec["_sku_key"])
         created.append(rec["sku"])
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail="Falha ao salvar os produtos — verifique os dados da planilha e tente de novo.",
+        ) from None
     return {"criados": len(created), "skus_criados": created, "erros": errors, "avisos": avisos,
             "total": len(created) + len(errors)}
 
