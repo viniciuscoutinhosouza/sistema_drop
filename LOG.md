@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-10-06 — feat(fiscal): codificação tributária por produto (Estágio 1+1b) + import PEGORARO
+
+Pedido do dono (farmacêutica PEGORARO, **Lucro Real**): importar 148 produtos de uma planilha fiscal e ter **codificação tributária por produto** (cada produto com seu CST/CSOSN/PIS-COFINS/CEST/CFOP/cClassTrib), com a CMIG expondo o **padrão** e o produto sobrescrevendo. Estudo fiscal apresentado (Simples/Presumido/Real + Reforma 2027) — achado-chave: **o emissor hoje só emite Simples (CSOSN 102/500)**; emitir Lucro Real/Reforma exige reescrever o emissor (Estágio 2, pendente).
+
+- **Import inicial** (feito antes): CMIG 161 (PEGORARO, CNPJ 45.254.868/0001-56) — excluídos os 3 produtos de teste e importados os **148** (SKU=Cod.Interno, título, EAN, NCM, CEST, origem).
+- **Estágio 1 — cadastro fiscal por produto** (commits `6e86b44`/`01faa07`, migration **147**): 16 campos fiscais nullable em `cmig_products` e `catalog_products` (cfop, icms_cst, icms_aliquota, icms_reducao_bc, fcp_aliquota, pis_cst, cofins_cst, pis_aliquota, cofins_aliquota, ipi_cst, ipi_aliquota, ipi_cenq, ibscbs_cst, cclasstrib, cbenef, mot_des_icms); 12 `default_*` em `cmig_fiscal_config` (o padrão por atividade); `invoice_items.ibs_cst/cbs_cst`→VARCHAR2(3). Models, schemas, serialize/create/update (cmigs, supplier_products, catalog, fiscal_config), import com aliases de cabeçalho, UI (`ProductFiscalFields` no form CMIG+PG + "Padrões tributários" na Config Fiscal). **Emissor NÃO tocado.** Deployado + verificado (16/16 colunas, backend startup limpo).
+- **Estágio 1b — import dos códigos fiscais**: os 148 produtos PEGORARO preenchidos com os códigos da planilha (89 com ICMS CST 60/CFOP 5405 = ST; 87 PIS/COFINS 04 = monofásico; cClassTrib/cBenef/alíquotas). Confirma por que a codificação por produto é essencial (o hardcoded 102/00 sairia errado em quase todos).
+
+**Pendente (Estágio 2 — sensível):** reescrever o emissor (`xml_builder`) para ICMS de Regime Normal (00/20/40/60/70/90) + IPI + PIS/COFINS reais + grupos IBS/CBS/IS da Reforma + ICMSTot real; ligar a cascata produto→default→fallback na criação da nota; **teste de não-regressão** (Simples 102 byte-idêntico) + **prova em homologação** + validação do contador antes de produção. Avaliação prévia (consistency-auditor) documentou os pontos (builder só-Simples hoje, `_item` lê direto do InvoiceItem, fail-loud p/ Regime Normal sem dados).
+
+---
+
 ## 2026-10-06 — feat(produtos): campo "Fabricante" (manufacturer) no cadastro CMIG e PG
 
 Pedido do dono: incluir um campo **Fabricante** no cadastro de produto, para CMIG e PG. Adicionado **em paralelo** ao `brand` (Marca) já existente — fabricante é campo de cadastro, **não** entra em imposto/NF-e (não toca o `brand` de anúncios/ML, que é atributo de marketplace).
