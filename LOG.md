@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-10-06 — feat(fiscal): Estágio 2 — emissor NF-e multi-regime (Regime Normal) + Reforma gated (ADR-0028)
+
+Continuação do fiscal-por-produto: o dono pediu "fazer tudo" (cadastro + emissor). O emissor próprio só emitia Simples; agora cobre **Regime Normal (CRT 3)** — necessário para a PEGORARO (Lucro Real).
+
+- **Emissor** (`xml_builder`, commit `12ff4d9`): grupos `ICMS00/20/40/41/50/60` (+`ICMS90` fallback p/ 10/70/90), `IPI`, `PIS/COFINS` reais por CST (PISAliq/NT/Outr), `ICMSTot` com somatórios reais; **Simples byte-idêntico** (ramo intocado, provado). `Produto` valida CSOSN(3) XOR icms_cst(2); builder recusa mistura de regimes.
+- **Cascata** (`services/fiscal/fiscal_resolver.py`): tributação resolvida **produto → default da CMIG → fallback**, **fail-loud** (CRT 3 sem CST → 400, não emite errado em silêncio), **snapshot imutável** gravado no `InvoiceItem` em `create_invoice_from_order`/`add_item` (só preenche vazio).
+- **Migration 148**: alinha `invoice_items` com os campos do snapshot que faltavam (`icms_reducao_bc`, `fcp_aliquota`, `fcp_value`, `mot_des_icms`, `cbenef`, `ipi_cenq`) — sem isso, CST 20/FCP/cBenef sairiam errados (HIGH achado pela auditoria e corrigido).
+- **Reforma IBS/CBS/IS**: cadastro guarda cClassTrib/CST por produto, mas os **grupos no XML ficam gated** por `tax_regime_mode` (não emitidos no `legacy`) — confirmar NT vigente para ativar.
+
+Implementado em worktree, auditado (quality-guardian: HIGH das colunas corrigido; adr-consistency: conforme ADR-0015/0027), **19 testes** (incl. round-trip CST 20 `pRedBC=65`/cBenef e zero-regressão Simples). **Deployado + verificado**: migration 148 (6/6 colunas), backend startup limpo, 19 testes passando no servidor. ADR-0028 registrada.
+
+**Pendente (ação do dono/contador):** a PEGORARO (CMIG 161) ainda **não tem config fiscal** (CRT/IE/IBGE/série) nem **certificado A1** — sem isso não há como emitir. Próximo passo: configurar o fiscal da PEGORARO + subir o A1 → emitir 1 NF-e de teste em **homologação** (cStat 100) → validar com o contador → liberar produção.
+
+---
+
 ## 2026-10-06 — feat(fiscal): codificação tributária por produto (Estágio 1+1b) + import PEGORARO
 
 Pedido do dono (farmacêutica PEGORARO, **Lucro Real**): importar 148 produtos de uma planilha fiscal e ter **codificação tributária por produto** (cada produto com seu CST/CSOSN/PIS-COFINS/CEST/CFOP/cClassTrib), com a CMIG expondo o **padrão** e o produto sobrescrevendo. Estudo fiscal apresentado (Simples/Presumido/Real + Reforma 2027) — achado-chave: **o emissor hoje só emite Simples (CSOSN 102/500)**; emitir Lucro Real/Reforma exige reescrever o emissor (Estágio 2, pendente).
