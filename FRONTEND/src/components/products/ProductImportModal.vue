@@ -28,6 +28,9 @@
               <strong>{{ report.criados }}</strong> produto(s) criado(s) de {{ report.total }}.
               <span v-if="report.erros && report.erros.length"> — {{ report.erros.length }} com erro.</span>
             </div>
+            <div v-if="report.categorias_criadas && report.categorias_criadas.length" class="small text-info mb-2">
+              <i class="fas fa-folder-plus mr-1"></i> Categorias criadas: {{ report.categorias_criadas.join(', ') }}
+            </div>
             <div v-if="report.erros && report.erros.length">
               <h6 class="text-danger mb-1">Erros</h6>
               <table class="table table-sm table-bordered">

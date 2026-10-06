@@ -844,17 +844,22 @@ async def cmig_import(
     }
     created: list[str] = []
     avisos: list[dict] = []
+    cats_criadas: set[str] = set()
     for rec in valid:
         if rec["_sku_key"] in existing:
             errors.append({"row": rec["_row"], "sku": rec["sku"], "motivo": "SKU CMIG já cadastrado nesta CMIG"})
             continue
         category_id = None
         if rec.get("category_name"):
-            category_id = await product_import.resolve_category_id(db, rec["category_name"], target_wh)
-            if category_id is None:
+            category_id, _cat_created = await product_import.resolve_or_create_category_id(
+                db, rec["category_name"], target_wh
+            )
+            if _cat_created:
+                cats_criadas.add(rec["category_name"].strip())
+            elif category_id is None:
                 avisos.append({"row": rec["_row"], "sku": rec["sku"],
-                               "aviso": f"Categoria '{rec['category_name']}' não existe neste galpão — "
-                                        "produto criado sem categoria"})
+                               "aviso": f"Categoria '{rec['category_name']}' não pôde ser criada "
+                                        "(galpão indefinido) — produto criado sem categoria"})
         product = CMIGProduct(
             cmig_id=cmig_id, sku_cmig=rec["sku"], title=rec["title"],
             description=rec.get("description"), brand=rec.get("brand"), model=rec.get("model"),
@@ -878,7 +883,7 @@ async def cmig_import(
             detail="Falha ao salvar os produtos — verifique os dados da planilha e tente de novo.",
         ) from None
     return {"criados": len(created), "skus_criados": created, "erros": errors, "avisos": avisos,
-            "total": len(created) + len(errors)}
+            "categorias_criadas": sorted(cats_criadas), "total": len(created) + len(errors)}
 
 
 @router.get("/{cmig_id}/products/{product_id}")

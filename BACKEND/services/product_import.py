@@ -177,20 +177,31 @@ def build_template_xlsx() -> bytes:
     return out.getvalue()
 
 
-async def resolve_category_id(db, name, warehouse_id):
-    """Resolve o id de uma categoria EXISTENTE pelo nome, no galpão (migration 145). None se não achar.
-    NÃO cria categoria (evita poluir a taxonomia por erro de digitação na planilha)."""
+async def resolve_or_create_category_id(db, name, warehouse_id):
+    """Resolve a categoria por nome NO GALPÃO (migration 145) e CRIA se não existir (raiz, no galpão
+    do produto). Retorna (id, created). Decisão do dono: a importação cria a categoria ausente.
+
+    Não cria categoria SEM galpão (warehouse_id None → só resolve; evita categoria órfã para admin
+    sem galpão). Comparação case-insensitive para reusar categoria já existente."""
     from sqlalchemy import func, select
 
     from models.product import Category
 
     nm = (name or "").strip()
     if not nm:
-        return None
+        return None, False
     q = select(Category.id).where(func.lower(Category.name) == nm.lower())
     if warehouse_id is not None:
         q = q.where(Category.warehouse_id == warehouse_id)
-    return (await db.execute(q)).scalars().first()
+    found = (await db.execute(q)).scalars().first()
+    if found is not None:
+        return found, False
+    if warehouse_id is None:
+        return None, False  # admin sem galpão → não cria categoria órfã
+    cat = Category(name=nm[:200], warehouse_id=warehouse_id)
+    db.add(cat)
+    await db.flush()  # obtém o id; a próxima linha com o mesmo nome reusa (SELECT autoflush)
+    return cat.id, True
 
 
 def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
