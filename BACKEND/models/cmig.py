@@ -95,6 +95,24 @@ class CMIGProduct(Base):
     length_cm = Column(Numeric(8, 2))
     ncm = Column(String(8))
     cest = Column(String(7))
+    # Codificação tributária POR PRODUTO (migration 147). TODOS NULLABLE: NULL = usa o default
+    # da CMIG (CMIGFiscalConfig.default_*). O produto SOBRESCREVE; a CMIG expõe o padrão.
+    cfop = Column(String(4))
+    icms_cst = Column(String(2))
+    icms_aliquota = Column(Numeric(5, 2))
+    icms_reducao_bc = Column(Numeric(5, 2))
+    fcp_aliquota = Column(Numeric(5, 2))
+    pis_cst = Column(String(2))
+    cofins_cst = Column(String(2))
+    pis_aliquota = Column(Numeric(7, 4))
+    cofins_aliquota = Column(Numeric(7, 4))
+    ipi_cst = Column(String(2))
+    ipi_aliquota = Column(Numeric(7, 4))
+    ipi_cenq = Column(String(3))
+    ibscbs_cst = Column(String(3))      # CST do CBS/IBS (reforma tributária)
+    cclasstrib = Column(String(6))      # cClassTrib do CBS/IBS
+    cbenef = Column(String(10))         # código de benefício fiscal
+    mot_des_icms = Column(String(2))    # motivo de desoneração do ICMS
     origin = Column(Integer, default=0)
     csosn = Column(String(3))  # ICMS CSOSN para Faturador ML (ex: "102" Simples Nacional)
     category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)

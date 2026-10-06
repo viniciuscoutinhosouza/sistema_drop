@@ -135,6 +135,23 @@ class CMIGProductCreate(BaseModel):
     length_cm: float | None = None
     ncm: str | None = None
     cest: str | None = None
+    # Codificação tributária por produto (migration 147) — NULL = usa default da CMIG
+    cfop: str | None = None
+    icms_cst: str | None = None
+    icms_aliquota: float | None = None
+    icms_reducao_bc: float | None = None
+    fcp_aliquota: float | None = None
+    pis_cst: str | None = None
+    cofins_cst: str | None = None
+    pis_aliquota: float | None = None
+    cofins_aliquota: float | None = None
+    ipi_cst: str | None = None
+    ipi_aliquota: float | None = None
+    ipi_cenq: str | None = None
+    ibscbs_cst: str | None = None
+    cclasstrib: str | None = None
+    cbenef: str | None = None
+    mot_des_icms: str | None = None
     origin: int | None = 0
     csosn: str | None = None
     category_id: int | None = None
@@ -189,6 +206,23 @@ class CMIGProductUpdate(BaseModel):
     @classmethod
     def normalize_cest(cls, v):
         return _norm_cest(v)
+    # Codificação tributária por produto (migration 147) — NULL = usa default da CMIG
+    cfop: str | None = None
+    icms_cst: str | None = None
+    icms_aliquota: float | None = None
+    icms_reducao_bc: float | None = None
+    fcp_aliquota: float | None = None
+    pis_cst: str | None = None
+    cofins_cst: str | None = None
+    pis_aliquota: float | None = None
+    cofins_aliquota: float | None = None
+    ipi_cst: str | None = None
+    ipi_aliquota: float | None = None
+    ipi_cenq: str | None = None
+    ibscbs_cst: str | None = None
+    cclasstrib: str | None = None
+    cbenef: str | None = None
+    mot_des_icms: str | None = None
     origin: int | None = None
     csosn: str | None = None
     is_active: bool | None = None
@@ -244,6 +278,23 @@ class CMIGProductOut(BaseModel):
     length_cm: float | None
     ncm: str | None
     cest: str | None
+    # Codificação tributária por produto (migration 147) — NULL = usa default da CMIG
+    cfop: str | None = None
+    icms_cst: str | None = None
+    icms_aliquota: float | None = None
+    icms_reducao_bc: float | None = None
+    fcp_aliquota: float | None = None
+    pis_cst: str | None = None
+    cofins_cst: str | None = None
+    pis_aliquota: float | None = None
+    cofins_aliquota: float | None = None
+    ipi_cst: str | None = None
+    ipi_aliquota: float | None = None
+    ipi_cenq: str | None = None
+    ibscbs_cst: str | None = None
+    cclasstrib: str | None = None
+    cbenef: str | None = None
+    mot_des_icms: str | None = None
     origin: int | None
     csosn: str | None = None
     category_id: int | None = None

@@ -169,6 +169,23 @@ def _serialize_cmig_product(p: CMIGProduct) -> dict:
         "length_cm": float(p.length_cm) if p.length_cm else None,
         "ncm": p.ncm,
         "cest": p.cest,
+        # Codificação tributária por produto (migration 147) — NULL = usa default da CMIG
+        "cfop": p.cfop,
+        "icms_cst": p.icms_cst,
+        "icms_aliquota": float(p.icms_aliquota) if p.icms_aliquota is not None else None,
+        "icms_reducao_bc": float(p.icms_reducao_bc) if p.icms_reducao_bc is not None else None,
+        "fcp_aliquota": float(p.fcp_aliquota) if p.fcp_aliquota is not None else None,
+        "pis_cst": p.pis_cst,
+        "cofins_cst": p.cofins_cst,
+        "pis_aliquota": float(p.pis_aliquota) if p.pis_aliquota is not None else None,
+        "cofins_aliquota": float(p.cofins_aliquota) if p.cofins_aliquota is not None else None,
+        "ipi_cst": p.ipi_cst,
+        "ipi_aliquota": float(p.ipi_aliquota) if p.ipi_aliquota is not None else None,
+        "ipi_cenq": p.ipi_cenq,
+        "ibscbs_cst": p.ibscbs_cst,
+        "cclasstrib": p.cclasstrib,
+        "cbenef": p.cbenef,
+        "mot_des_icms": p.mot_des_icms,
         "origin": p.origin,
         "csosn": p.csosn,
         "category_id": p.category_id,
@@ -871,6 +888,8 @@ async def cmig_import(
             height_cm=rec.get("height_cm"), width_cm=rec.get("width_cm"),
             length_cm=rec.get("length_cm"), category_id=category_id,
             is_composite=False, is_active=True,
+            # Codificação tributária por produto da planilha (migration 147)
+            **product_import.fiscal_import_fields(rec),
         )
         assert_flag_change_allowed(product)  # produto simples passa; falha alto se ganhar rastreio no futuro
         db.add(product)
@@ -1195,6 +1214,23 @@ async def duplicate_cmig_product(
         length_cm=src.length_cm,
         ncm=src.ncm,
         cest=src.cest,
+        # Codificação tributária por produto (migration 147)
+        cfop=src.cfop,
+        icms_cst=src.icms_cst,
+        icms_aliquota=src.icms_aliquota,
+        icms_reducao_bc=src.icms_reducao_bc,
+        fcp_aliquota=src.fcp_aliquota,
+        pis_cst=src.pis_cst,
+        cofins_cst=src.cofins_cst,
+        pis_aliquota=src.pis_aliquota,
+        cofins_aliquota=src.cofins_aliquota,
+        ipi_cst=src.ipi_cst,
+        ipi_aliquota=src.ipi_aliquota,
+        ipi_cenq=src.ipi_cenq,
+        ibscbs_cst=src.ibscbs_cst,
+        cclasstrib=src.cclasstrib,
+        cbenef=src.cbenef,
+        mot_des_icms=src.mot_des_icms,
         origin=src.origin,
         csosn=src.csosn,
         category_id=src.category_id,
@@ -1448,6 +1484,23 @@ async def import_pg_to_cmig(
         length_cm=pg.length_cm,
         ncm=pg.ncm,
         cest=pg.cest,
+        # Codificação tributária por produto (migration 147)
+        cfop=pg.cfop,
+        icms_cst=pg.icms_cst,
+        icms_aliquota=pg.icms_aliquota,
+        icms_reducao_bc=pg.icms_reducao_bc,
+        fcp_aliquota=pg.fcp_aliquota,
+        pis_cst=pg.pis_cst,
+        cofins_cst=pg.cofins_cst,
+        pis_aliquota=pg.pis_aliquota,
+        cofins_aliquota=pg.cofins_aliquota,
+        ipi_cst=pg.ipi_cst,
+        ipi_aliquota=pg.ipi_aliquota,
+        ipi_cenq=pg.ipi_cenq,
+        ibscbs_cst=pg.ibscbs_cst,
+        cclasstrib=pg.cclasstrib,
+        cbenef=pg.cbenef,
+        mot_des_icms=pg.mot_des_icms,
         origin=pg.origin or 0,
         csosn=pg.csosn,
         category_id=pg.category_id,
@@ -1580,6 +1633,23 @@ async def import_cmig_product_to_pg(
         length_cm=cp.length_cm,
         ncm=cp.ncm,
         cest=cp.cest,
+        # Codificação tributária por produto (migration 147)
+        cfop=cp.cfop,
+        icms_cst=cp.icms_cst,
+        icms_aliquota=cp.icms_aliquota,
+        icms_reducao_bc=cp.icms_reducao_bc,
+        fcp_aliquota=cp.fcp_aliquota,
+        pis_cst=cp.pis_cst,
+        cofins_cst=cp.cofins_cst,
+        pis_aliquota=cp.pis_aliquota,
+        cofins_aliquota=cp.cofins_aliquota,
+        ipi_cst=cp.ipi_cst,
+        ipi_aliquota=cp.ipi_aliquota,
+        ipi_cenq=cp.ipi_cenq,
+        ibscbs_cst=cp.ibscbs_cst,
+        cclasstrib=cp.cclasstrib,
+        cbenef=cp.cbenef,
+        mot_des_icms=cp.mot_des_icms,
         brand=cp.brand,
         manufacturer=cp.manufacturer,
         origin=cp.origin or 0,
@@ -1704,6 +1774,16 @@ async def sync_pg_from_cmig(
         pg.ncm = cp.ncm
     if cp.cest is not None:
         pg.cest = cp.cest
+    # Codificação tributária por produto (migration 147) — sincroniza o que estiver preenchido no CMIG
+    for _fiscal_field in (
+        "cfop", "icms_cst", "icms_aliquota", "icms_reducao_bc", "fcp_aliquota",
+        "pis_cst", "cofins_cst", "pis_aliquota", "cofins_aliquota",
+        "ipi_cst", "ipi_aliquota", "ipi_cenq", "ibscbs_cst", "cclasstrib",
+        "cbenef", "mot_des_icms",
+    ):
+        _val = getattr(cp, _fiscal_field, None)
+        if _val is not None:
+            setattr(pg, _fiscal_field, _val)
     if cp.weight_kg is not None:
         pg.weight_kg = cp.weight_kg
     if cp.height_cm is not None:

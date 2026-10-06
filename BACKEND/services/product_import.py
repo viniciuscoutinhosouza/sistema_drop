@@ -42,7 +42,69 @@ COLUMNS = [
     ("largura_cm", "width_cm", False, "dec"),
     ("comprimento_cm", "length_cm", False, "dec"),
     ("categoria", "category_name", False, "str"),
+    # ── Codificação tributária por produto (migration 147) ──────────────────────
+    # Cabeçalhos canônicos emitidos no template. Opcionais; absentes não sobrescrevem
+    # (guard `_h in hmap` no parse loop). Nomes alternativos da planilha real do dono são
+    # aceitos via _HEADER_ALIASES (ex.: "cst icms", "aliq. icms", "ncm do produto").
+    ("cfop", "cfop", False, "str"),
+    ("cst_icms", "icms_cst", False, "str"),
+    ("aliq_icms", "icms_aliquota", False, "dec"),
+    ("red_bc_icms", "icms_reducao_bc", False, "dec"),
+    ("fcp", "fcp_aliquota", False, "dec"),
+    ("cst_pis_cofins", "pis_cst", False, "str"),  # mesmo valor replicado p/ cofins_cst
+    ("aliq_pis", "pis_aliquota", False, "dec"),
+    ("aliq_cofins", "cofins_aliquota", False, "dec"),
+    ("cst_ipi", "ipi_cst", False, "str"),
+    ("aliq_ipi", "ipi_aliquota", False, "dec"),
+    ("cod_enq_ipi", "ipi_cenq", False, "str"),
+    ("cbenef", "cbenef", False, "str"),
+    ("motivo_desoneracao", "mot_des_icms", False, "str"),
+    ("cst_cbs_ibs", "ibscbs_cst", False, "str"),
+    ("cclasstrib_cbs_ibs", "cclasstrib", False, "str"),
 ]
+
+# Nomes alternativos de cabeçalho aceitos no import (além do canônico em COLUMNS[0]).
+# A planilha real do dono usa estes rótulos; mapeamos p/ o cabeçalho canônico no parser.
+# Chaves e valores são comparados já normalizados (minúsculas + trim).
+_HEADER_ALIASES = {
+    "ncm do produto": "ncm",
+    "cest do produto": "cest",
+    "cst icms": "cst_icms",
+    "aliq. icms": "aliq_icms",
+    "aliquota icms": "aliq_icms",
+    "red. bc. icms": "red_bc_icms",
+    "cst pis/cofins sai": "cst_pis_cofins",
+    "aliq. pis": "aliq_pis",
+    "aliq. cofins": "aliq_cofins",
+    "cst ipi sai": "cst_ipi",
+    "aliq. ipi": "aliq_ipi",
+    "cod. enq": "cod_enq_ipi",
+    "c. benef": "cbenef",
+    "motivo desoneração": "mot_des_icms",
+    "motivo desoneracao": "mot_des_icms",
+    "cst cbs/ibs": "cst_cbs_ibs",
+    "cclasstrib. cbs/ibs": "cclasstrib_cbs_ibs",
+}
+
+# Campos fiscais (migration 147) que viram colunas do produto no import. `pis_cst` propaga
+# para `cofins_cst` (a planilha traz um único "CST PIS/COFINS SAI").
+_FISCAL_IMPORT_FIELDS = (
+    "cfop", "icms_cst", "icms_aliquota", "icms_reducao_bc", "fcp_aliquota",
+    "pis_cst", "cofins_cst", "pis_aliquota", "cofins_aliquota",
+    "ipi_cst", "ipi_aliquota", "ipi_cenq", "ibscbs_cst", "cclasstrib",
+    "cbenef", "mot_des_icms",
+)
+
+
+def fiscal_import_fields(rec: dict) -> dict:
+    """Extrai do registro parseado os campos fiscais por produto (migration 147) prontos para o
+    construtor de CatalogProduct/CMIGProduct. Só inclui o que veio preenchido na planilha
+    (ausente = NULL = usa o default da CMIG). `cofins_cst` espelha `pis_cst` quando não vier
+    explícito (a planilha traz um único CST de PIS/COFINS)."""
+    out = {f: rec[f] for f in _FISCAL_IMPORT_FIELDS if rec.get(f) is not None}
+    if "pis_cst" in out and "cofins_cst" not in out:
+        out["cofins_cst"] = out["pis_cst"]
+    return out
 
 _EXAMPLE_ROWS = [
     ["CAM-001", "Camiseta Básica Branca M", "Camiseta 100% algodão", "MinhaMarca",
@@ -67,6 +129,9 @@ _INSTRUCTIONS = [
     "9. Esta planilha serve tanto para Produtos PG quanto para Produtos CMIG (a coluna 'sku' é usada",
     "   como SKU do PG ou SKU da CMIG conforme a tela em que você importar).",
     f"10. Limite: {MAX_ROWS} linhas por arquivo.",
+    "11. Colunas fiscais (cfop, cst_icms, aliq_icms, cst_pis_cofins, cst_ipi, cst_cbs_ibs etc.):",
+    "    opcionais. Em branco = o produto usa o PADRÃO da CMIG (Configuração Fiscal). Preencha só",
+    "    para SOBRESCREVER o padrão naquele produto. CST PIS/COFINS é um valor único (vale p/ os dois).",
 ]
 
 
@@ -236,8 +301,15 @@ def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
     except StopIteration:
         raise ValueError("Planilha vazia.") from None
 
-    # Mapa cabeçalho→índice (tolerante a maiúsc/espaços).
-    hmap = {_s(h).lower(): i for i, h in enumerate(header or []) if _s(h)}
+    # Mapa cabeçalho→índice (tolerante a maiúsc/espaços). Nomes alternativos da planilha real
+    # (migration 147) são reescritos para o cabeçalho canônico de COLUMNS via _HEADER_ALIASES.
+    hmap = {}
+    for i, h in enumerate(header or []):
+        key = _s(h).lower()
+        if not key:
+            continue
+        key = _HEADER_ALIASES.get(key, key)
+        hmap.setdefault(key, i)  # 1º cabeçalho vence (não sobrescreve canônico já visto)
     missing_req = [h for (h, _f, req, _t) in COLUMNS if req and h not in hmap]
     if missing_req:
         raise ValueError(f"Colunas obrigatórias ausentes no cabeçalho: {', '.join(missing_req)}")
@@ -270,6 +342,11 @@ def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
             seen.add(key)
 
             for _h, field, _req, typ in COLUMNS:
+                # Pula cabeçalhos ausentes na planilha. Sem isto, uma coluna com nome
+                # alternativo (ex.: "ncm do produto" quando só há "ncm") escreveria None por
+                # cima do valor já lido. Múltiplas entradas → campo = 1ª presente.
+                if _h not in hmap:
+                    continue
                 v = cell(_h)
                 if typ == "dec":
                     rec[field] = _to_dec(v)

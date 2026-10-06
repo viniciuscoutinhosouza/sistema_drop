@@ -91,6 +91,22 @@ def _serialize(cfg: CMIGFiscalConfig | None) -> dict:
         "fiscal_email_copy": cfg.fiscal_email_copy,
         "tax_estimate_pct": float(cfg.tax_estimate_pct) if cfg.tax_estimate_pct is not None else 0,
         "tax_regime_mode": cfg.tax_regime_mode or "legacy",
+        # Padrões tributários da CMIG (migration 147) — herdados pelo produto quando NULL
+        "default_cfop": cfg.default_cfop,
+        "default_csosn": cfg.default_csosn,
+        "default_icms_cst": cfg.default_icms_cst,
+        "default_icms_aliquota": float(cfg.default_icms_aliquota)
+        if cfg.default_icms_aliquota is not None else None,
+        "default_pis_cst": cfg.default_pis_cst,
+        "default_cofins_cst": cfg.default_cofins_cst,
+        "default_pis_aliquota": float(cfg.default_pis_aliquota)
+        if cfg.default_pis_aliquota is not None else None,
+        "default_cofins_aliquota": float(cfg.default_cofins_aliquota)
+        if cfg.default_cofins_aliquota is not None else None,
+        "default_ipi_cst": cfg.default_ipi_cst,
+        "default_ibscbs_cst": cfg.default_ibscbs_cst,
+        "default_cclasstrib": cfg.default_cclasstrib,
+        "default_origin": cfg.default_origin,
     }
 
 
@@ -161,6 +177,19 @@ async def update_fiscal_config(
         "fiscal_email_copy",
         "tax_estimate_pct",
         "tax_regime_mode",
+        # Padrões tributários da CMIG (migration 147)
+        "default_cfop",
+        "default_csosn",
+        "default_icms_cst",
+        "default_icms_aliquota",
+        "default_pis_cst",
+        "default_cofins_cst",
+        "default_pis_aliquota",
+        "default_cofins_aliquota",
+        "default_ipi_cst",
+        "default_ibscbs_cst",
+        "default_cclasstrib",
+        "default_origin",
     }
     if body.get("crt") is not None and body["crt"] not in (1, 2, 3, 4):
         raise HTTPException(status_code=422, detail="crt deve ser 1, 2, 3 ou 4")

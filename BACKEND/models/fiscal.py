@@ -77,6 +77,21 @@ class CMIGFiscalConfig(Base):
     # DRE — % de imposto estimado sobre o faturamento (linha "Imposto ML")
     tax_estimate_pct = Column(Numeric(8, 4), default=0)
 
+    # Padrões tributários da CMIG (migration 147): herdados pelo produto quando o campo
+    # correspondente do produto está NULL. Fundação da codificação por produto c/ default na CMIG.
+    default_cfop = Column(String(4))
+    default_csosn = Column(String(3))
+    default_icms_cst = Column(String(2))
+    default_icms_aliquota = Column(Numeric(5, 2))
+    default_pis_cst = Column(String(2))
+    default_cofins_cst = Column(String(2))
+    default_pis_aliquota = Column(Numeric(7, 4))
+    default_cofins_aliquota = Column(Numeric(7, 4))
+    default_ipi_cst = Column(String(2))
+    default_ibscbs_cst = Column(String(3))
+    default_cclasstrib = Column(String(6))
+    default_origin = Column(Integer)
+
     # Fase 2 — modo de regime tributário (Reforma Tributária EC 132/2023)
     # legacy = regime atual (ICMS/PIS/COFINS)
     # transition = coexistência 2026-2032 (ambos os regimes)
@@ -320,11 +335,11 @@ class InvoiceItem(Base):
     difal_fcp_value = Column(Numeric(15, 2))     # base × fcp_aliquota
 
     # Fase 2 — Reforma Tributária (EC 132/2023)
-    cbs_cst = Column(String(2))
+    cbs_cst = Column(String(3))  # CST do CBS tem 3 dígitos (alargado na migration 147)
     cbs_aliquota = Column(Numeric(6, 4))
     cbs_base = Column(Numeric(15, 2))
     cbs_value = Column(Numeric(15, 2))
-    ibs_cst = Column(String(2))
+    ibs_cst = Column(String(3))  # CST do IBS tem 3 dígitos (alargado na migration 147)
     ibs_aliquota_uf = Column(Numeric(6, 4))
     ibs_aliquota_mun = Column(Numeric(6, 4))
     ibs_base = Column(Numeric(15, 2))

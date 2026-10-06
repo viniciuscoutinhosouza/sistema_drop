@@ -179,6 +179,11 @@ const form = ref({
   width_cm: null, length_cm: null, ncm: '', cest: '',
   origin: 0, csosn: null, category_id: null, video_id: '', attributes_json: null,
   is_active: true,
+  // Tributação por produto (migration 147) — null/'' = usa o padrão da CMIG
+  cfop: '', icms_cst: '', icms_aliquota: null, icms_reducao_bc: null, fcp_aliquota: null,
+  pis_cst: '', cofins_cst: '', pis_aliquota: null, cofins_aliquota: null,
+  ipi_cst: '', ipi_aliquota: null, ipi_cenq: '', ibscbs_cst: '', cclasstrib: '',
+  cbenef: '', mot_des_icms: '',
   // Rastreabilidade (ADR-0027)
   track_lot: false, track_expiry: false, track_serial: false,
   med_anvisa_code: '', med_pmc: null, med_exempt_reason: '',

@@ -40,6 +40,86 @@
       </div>
     </div>
 
+    <!-- Tributação por produto (migration 147): sobrescreve o padrão da CMIG quando preenchido -->
+    <hr />
+    <h6 class="text-muted text-uppercase mb-1"><small>Tributação (fiscal)</small></h6>
+    <p class="text-muted small mb-3">
+      <i class="fas fa-info-circle"></i>
+      Vazio = usa o padrão da CMIG (Configuração Fiscal). Preencha só para sobrescrever neste produto.
+    </p>
+    <div class="row">
+      <div class="col-md-3 form-group">
+        <label>CFOP</label>
+        <input v-model="form.cfop" class="form-control" maxlength="4" placeholder="5102" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>CST ICMS</label>
+        <input v-model="form.icms_cst" class="form-control" maxlength="2" placeholder="00" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>Alíq. ICMS %</label>
+        <input v-model="form.icms_aliquota" type="number" step="0.01" min="0" class="form-control" placeholder="18,00" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>Red. BC ICMS %</label>
+        <input v-model="form.icms_reducao_bc" type="number" step="0.01" min="0" class="form-control" placeholder="0,00" />
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-3 form-group">
+        <label>FCP %</label>
+        <input v-model="form.fcp_aliquota" type="number" step="0.01" min="0" class="form-control" placeholder="0,00" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>CST PIS</label>
+        <input v-model="form.pis_cst" class="form-control" maxlength="2" placeholder="01" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>CST COFINS</label>
+        <input v-model="form.cofins_cst" class="form-control" maxlength="2" placeholder="01" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>Alíq. PIS %</label>
+        <input v-model="form.pis_aliquota" type="number" step="0.0001" min="0" class="form-control" placeholder="1,65" />
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-3 form-group">
+        <label>Alíq. COFINS %</label>
+        <input v-model="form.cofins_aliquota" type="number" step="0.0001" min="0" class="form-control" placeholder="7,60" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>CST IPI</label>
+        <input v-model="form.ipi_cst" class="form-control" maxlength="2" placeholder="53" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>Alíq. IPI %</label>
+        <input v-model="form.ipi_aliquota" type="number" step="0.0001" min="0" class="form-control" placeholder="0,00" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>Cód. Enq. IPI</label>
+        <input v-model="form.ipi_cenq" class="form-control" maxlength="3" placeholder="999" />
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-3 form-group">
+        <label>cBenef</label>
+        <input v-model="form.cbenef" class="form-control" maxlength="10" placeholder="Cód. benefício" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>Motivo Desoneração</label>
+        <input v-model="form.mot_des_icms" class="form-control" maxlength="2" placeholder="Ex: 9" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>CST CBS/IBS</label>
+        <input v-model="form.ibscbs_cst" class="form-control" maxlength="3" placeholder="000" />
+      </div>
+      <div class="col-md-3 form-group">
+        <label>cClassTrib</label>
+        <input v-model="form.cclasstrib" class="form-control" maxlength="6" placeholder="000000" />
+      </div>
+    </div>
+
     <!-- Rastreabilidade (ADR-0027): lote / validade / serial / medicamento -->
     <hr />
     <h6 class="text-muted text-uppercase mb-2"><small>Rastreabilidade</small></h6>

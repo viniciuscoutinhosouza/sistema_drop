@@ -133,6 +133,72 @@
             </div>
           </div>
 
+          <!-- Padrões tributários da CMIG (migration 147): herdados pelo produto quando este
+               deixa o campo vazio. Fundação da codificação tributária por produto. -->
+          <h6 class="text-muted mt-4 mb-1"><i class="fas fa-sitemap mr-1"></i>Padrões tributários</h6>
+          <p class="text-muted small mb-2">
+            Usados como padrão nos produtos desta CMIG que não têm a própria codificação fiscal preenchida.
+          </p>
+          <div class="row">
+            <div class="col-md-3">
+              <label class="small mb-1">CFOP padrão</label>
+              <input v-model="form.default_cfop" maxlength="4" class="form-control" :disabled="!canEdit" placeholder="5102">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">CSOSN padrão</label>
+              <input v-model="form.default_csosn" maxlength="3" class="form-control" :disabled="!canEdit" placeholder="102">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">CST ICMS padrão</label>
+              <input v-model="form.default_icms_cst" maxlength="2" class="form-control" :disabled="!canEdit" placeholder="00">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">Alíq. ICMS % padrão</label>
+              <input v-model.number="form.default_icms_aliquota" type="number" step="0.01" min="0" class="form-control" :disabled="!canEdit">
+            </div>
+          </div>
+          <div class="row mt-2">
+            <div class="col-md-3">
+              <label class="small mb-1">CST PIS padrão</label>
+              <input v-model="form.default_pis_cst" maxlength="2" class="form-control" :disabled="!canEdit" placeholder="01">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">CST COFINS padrão</label>
+              <input v-model="form.default_cofins_cst" maxlength="2" class="form-control" :disabled="!canEdit" placeholder="01">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">Alíq. PIS % padrão</label>
+              <input v-model.number="form.default_pis_aliquota" type="number" step="0.0001" min="0" class="form-control" :disabled="!canEdit">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">Alíq. COFINS % padrão</label>
+              <input v-model.number="form.default_cofins_aliquota" type="number" step="0.0001" min="0" class="form-control" :disabled="!canEdit">
+            </div>
+          </div>
+          <div class="row mt-2">
+            <div class="col-md-3">
+              <label class="small mb-1">CST IPI padrão</label>
+              <input v-model="form.default_ipi_cst" maxlength="2" class="form-control" :disabled="!canEdit" placeholder="53">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">CST CBS/IBS padrão</label>
+              <input v-model="form.default_ibscbs_cst" maxlength="3" class="form-control" :disabled="!canEdit" placeholder="000">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">cClassTrib padrão</label>
+              <input v-model="form.default_cclasstrib" maxlength="6" class="form-control" :disabled="!canEdit" placeholder="000000">
+            </div>
+            <div class="col-md-3">
+              <label class="small mb-1">Origem padrão</label>
+              <select v-model.number="form.default_origin" class="form-control" :disabled="!canEdit">
+                <option :value="null">— não definido —</option>
+                <option :value="0">0 - Nacional</option>
+                <option :value="1">1 - Estrangeira (Importação Direta)</option>
+                <option :value="2">2 - Estrangeira (Mercado Interno)</option>
+              </select>
+            </div>
+          </div>
+
           <div class="text-right mt-3" v-if="canEdit">
             <button type="submit" class="btn btn-primary" :disabled="saving">
               <i class="fas" :class="saving ? 'fa-spinner fa-spin' : 'fa-save'"></i>
@@ -246,6 +312,19 @@ const form = reactive({
   default_natureza_operacao: 'Venda de mercadoria',
   fiscal_email_copy: '',
   tax_estimate_pct: 0,
+  // Padrões tributários da CMIG (migration 147)
+  default_cfop: '',
+  default_csosn: '',
+  default_icms_cst: '',
+  default_icms_aliquota: null,
+  default_pis_cst: '',
+  default_cofins_cst: '',
+  default_pis_aliquota: null,
+  default_cofins_aliquota: null,
+  default_ipi_cst: '',
+  default_ibscbs_cst: '',
+  default_cclasstrib: '',
+  default_origin: null,
 })
 
 const canEdit = computed(() => ['ac', 'admin'].includes(authStore.user?.role))
@@ -302,6 +381,19 @@ async function load() {
       default_natureza_operacao: data.default_natureza_operacao ?? 'Venda de mercadoria',
       fiscal_email_copy: data.fiscal_email_copy ?? '',
       tax_estimate_pct: data.tax_estimate_pct ?? 0,
+      // Padrões tributários da CMIG (migration 147)
+      default_cfop: data.default_cfop ?? '',
+      default_csosn: data.default_csosn ?? '',
+      default_icms_cst: data.default_icms_cst ?? '',
+      default_icms_aliquota: data.default_icms_aliquota ?? null,
+      default_pis_cst: data.default_pis_cst ?? '',
+      default_cofins_cst: data.default_cofins_cst ?? '',
+      default_pis_aliquota: data.default_pis_aliquota ?? null,
+      default_cofins_aliquota: data.default_cofins_aliquota ?? null,
+      default_ipi_cst: data.default_ipi_cst ?? '',
+      default_ibscbs_cst: data.default_ibscbs_cst ?? '',
+      default_cclasstrib: data.default_cclasstrib ?? '',
+      default_origin: data.default_origin ?? null,
     })
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao carregar configuração fiscal')
