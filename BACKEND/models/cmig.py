@@ -27,6 +27,11 @@ class CMIG(Base):
     state = Column(String(2))
     ibge_code = Column(String(7))  # código IBGE do município (cMunFG/enderEmit na NF-e própria)
     is_active = Column(Boolean, nullable=False, default=True)
+    # Modo de grupo de produto (migration 149): 'both' | 'cmig_only' | 'pg_only'.
+    # Filtra quais grupos (PG × CMIG) aparecem/são permitidos (Catálogo, Pedido Manual, publicação).
+    # EXCEÇÃO: envio ao FULL sempre usa CMIG (ADR-0010), independente do modo. Combina por AND com
+    # warehouse.work_type (ADR-0024): 'multilojas' bloqueia PG — multilojas vence.
+    product_mode = Column(String(20), nullable=False, server_default=text("'both'"))
     # Integração eShip (WMS) — credenciais por empresa (a apikey é única por empresa).
     eship_base_url = Column(String(500))        # ex: https://armazenaki.eship.com.br/v3
     eship_api_key = Column(String(500))         # header api: <apikey>

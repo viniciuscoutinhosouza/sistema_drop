@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-10-07 — feat(cmig): modo de grupo de produto (product_mode) — PG × CMIG filtrável por CMIG
+
+CMIG ganha `product_mode`: `both` (PG+CMIG), `cmig_only` (só CMIG), `pg_only` (só PG). Filtra quais grupos de produto aparecem/são permitidos na UI (Catálogo, Pedido Manual) e no backend (publicação de anúncio/listing + add item de pedido manual). **EXCEÇÃO (ADR-0010):** envio ao FULL sempre usa/mostra o produto CMIG, independente do modo — `pg_only` + FULL é válido. Complementar ao `warehouse.work_type` (ADR-0024: multilojas bloqueia PG) — combina por AND, **multilojas vence**.
+
+- **Migration** `Scripts SQL/149_cmig_product_mode.sql`: `product_mode VARCHAR2(20) DEFAULT 'both' NOT NULL` + CHECK `CHK_CMIG_PRODUCT_MODE IN ('both','cmig_only','pg_only')`; idempotente (ORA-01430/02264/02275). Default `both` preserva comportamento; sem backfill p/ multilojas (ortogonais).
+- **Backend**: `models/cmig.py` (coluna), `schemas/cmig.py` (`product_mode` em Create/Update/Out + validador fail-loud), `routers/cmigs.py` (update aceita; **2 serializers** — `CMIGOut` + dict hand-built da listagem), `routers/orders.py` (`/orders/cmigs/available` expõe `product_mode` + `warehouse_work_type`).
+- **Guard ponto único** `services/product_mode.py` (`assert_product_group_allowed(cmig, warehouse, is_pg/is_cmig/is_full)`): isenta FULL; bloqueia PG se multilojas OU cmig_only; bloqueia CMIG se pg_only. `work_type_guard.assert_pg_allowed_for_account` vira **adaptador** que delega (regra multilojas NÃO duplicada). Fiado em: anuncios publish (×3), listings publish, manual_orders add item (substitui a checagem multilojas inline). NÃO fiado em FULL/import/separação/catalog-GET.
+- **Frontend**: `CmigFormView.vue` (seletor "Modo de produto"), `CatalogView.vue` (abas PG/CMIG viram computed `showPgTab`/`showCmigTab` + re-seleção), `ManualOrderView.vue` (idem, por CMIG selecionada). FullCnpjsView intocado (FULL nunca filtra).
+- **Testes**: py_compile + ruff OK nos .py; guard 10/10 casos (both/cmig_only/pg_only/multilojas × PG/CMIG/FULL); `npm run build` OK. Sem commit/deploy/banco (worktree isolado).
+
+---
+
 ## 2026-10-06 — feat(fiscal): Estágio 2 — emissor NF-e multi-regime (Regime Normal) + Reforma gated (ADR-0028)
 
 Continuação do fiscal-por-produto: o dono pediu "fazer tudo" (cadastro + emissor). O emissor próprio só emitia Simples; agora cobre **Regime Normal (CRT 3)** — necessário para a PEGORARO (Lucro Real).

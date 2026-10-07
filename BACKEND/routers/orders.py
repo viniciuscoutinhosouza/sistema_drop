@@ -473,24 +473,27 @@ async def list_available_cmigs(
     - ugo/go: CMIGs in their warehouse
     - ac: CMIGs they administer
     """
+    from sqlalchemy.orm import selectinload
+
     from models.cmig import CMIG, CMIGAdministrator
 
+    base = select(CMIG).options(selectinload(CMIG.warehouse))
     if current_user.role == "admin":
         result = await db.execute(
-            select(CMIG).where(CMIG.is_active == True).order_by(CMIG.trade_name)
+            base.where(CMIG.is_active == True).order_by(CMIG.trade_name)
         )
     elif current_user.role in ("ugo", "go"):
         if not current_user.warehouse_id:
             return {"items": []}
         result = await db.execute(
-            select(CMIG)
+            base
             .where(CMIG.warehouse_id == current_user.warehouse_id, CMIG.is_active == True)
             .order_by(CMIG.trade_name)
         )
     elif current_user.role == "ac":
         subq = select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == current_user.id)
         result = await db.execute(
-            select(CMIG).where(CMIG.id.in_(subq), CMIG.is_active == True).order_by(CMIG.trade_name)
+            base.where(CMIG.id.in_(subq), CMIG.is_active == True).order_by(CMIG.trade_name)
         )
     else:
         return {"items": []}
@@ -501,6 +504,10 @@ async def list_available_cmigs(
             "trade_name": c.trade_name,
             "company_name": c.company_name,
             "cnpj": c.cnpj,
+            # Modo de grupo de produto (migration 149) + work_type do galpão (ADR-0024) — o Pedido
+            # Manual usa p/ esconder/permitir abas PG/CMIG conforme a CMIG selecionada.
+            "product_mode": getattr(c, "product_mode", None) or "both",
+            "warehouse_work_type": getattr(c.warehouse, "work_type", None) if c.warehouse else None,
         }
         for c in result.scalars().all()
     ]

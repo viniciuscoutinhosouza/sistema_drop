@@ -33,6 +33,7 @@
           <h3 class="card-title"><i class="fas fa-boxes mr-2"></i> Selecionar Produtos</h3>
           <div class="btn-group">
             <button
+              v-if="showPgTab"
               type="button"
               class="btn btn-sm"
               :class="catalogTab === 'pg' ? 'btn-primary' : 'btn-outline-primary'"
@@ -41,6 +42,7 @@
               <i class="fas fa-warehouse mr-1"></i> Catálogo PG
             </button>
             <button
+              v-if="showCmigTab"
               type="button"
               class="btn btn-sm"
               :class="catalogTab === 'cmig' ? 'btn-primary' : 'btn-outline-primary'"
@@ -307,6 +309,14 @@ const availableCmigs = ref([])
 const cmigId = ref(null)
 
 const catalogTab = ref('pg')
+
+// CMIG selecionada + visibilidade das abas PG/CMIG — combina work_type do galpão (multilojas,
+// ADR-0024) com product_mode da CMIG (migration 149). multilojas vence (esconde PG).
+const activeCmig  = computed(() => availableCmigs.value.find(c => c.id === cmigId.value) ?? null)
+const showPgTab   = computed(() =>
+  activeCmig.value?.warehouse_work_type !== 'multilojas' && activeCmig.value?.product_mode !== 'cmig_only'
+)
+const showCmigTab = computed(() => activeCmig.value?.product_mode !== 'pg_only')
 const search = ref('')
 const products = ref([])
 const loadingProducts = ref(false)
@@ -350,6 +360,9 @@ function onCmigChange() {
   products.value = []
   pgPage.value = 1
   pgTotal.value = 0
+  // Se a aba ativa ficou escondida pelo modo/work_type da nova CMIG, cair na visível.
+  if (catalogTab.value === 'pg' && !showPgTab.value && showCmigTab.value) catalogTab.value = 'cmig'
+  else if (catalogTab.value === 'cmig' && !showCmigTab.value && showPgTab.value) catalogTab.value = 'pg'
   if (cmigId.value) reloadProducts()
 }
 

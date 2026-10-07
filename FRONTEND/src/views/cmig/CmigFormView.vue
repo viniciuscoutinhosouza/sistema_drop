@@ -78,6 +78,23 @@
                     </div>
                   </div>
 
+                  <!-- Modo de produto (migration 149): quais grupos (PG × CMIG) esta conta usa.
+                       O envio ao FULL sempre usa CMIG (ADR-0010), independente do modo. -->
+                  <div class="row">
+                    <div class="col-md-6 form-group">
+                      <label>Modo de produto</label>
+                      <select v-model="form.product_mode" class="form-control">
+                        <option value="both">Usa PG e CMIG</option>
+                        <option value="cmig_only">Somente CMIG</option>
+                        <option value="pg_only">Somente PG</option>
+                      </select>
+                      <small class="form-text text-muted">
+                        Define quais catálogos esta conta usa/vende. O envio ao FULL usa sempre o
+                        produto CMIG, independente deste modo.
+                      </small>
+                    </div>
+                  </div>
+
                   <!-- IE só na conversão CPF→CNPJ (fora dela, a IE mora na Configuração Fiscal).
                        O IBGE aparece SEMPRE para PJ: é obrigatório na NF-e própria (cMunFG) e
                        ficava inacessível fora da conversão — ninguém achava onde preencher. -->
@@ -220,6 +237,7 @@ const form = ref({
   ibge_code: '',
   ie: '',
   is_active: true,
+  product_mode: 'both',
 })
 
 // Só é "conversão" quando o tipo escolhido difere do tipo original de uma conta existente.

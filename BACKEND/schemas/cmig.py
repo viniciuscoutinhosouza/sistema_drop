@@ -14,6 +14,21 @@ def _norm_cest(v: str | None) -> str | None:
         return v
     return v.replace(".", "").replace("-", "")[:7] or None
 
+
+PRODUCT_MODES = ("both", "cmig_only", "pg_only")
+
+
+def _validate_product_mode(v):
+    """Valida o modo de grupo de produto da CMIG — fail-loud em valor inválido."""
+    if v is None:
+        return v
+    v = str(v).strip()
+    if v not in PRODUCT_MODES:
+        raise ValueError(
+            "product_mode inválido: use 'both' (PG+CMIG), 'cmig_only' (só CMIG) ou 'pg_only' (só PG)"
+        )
+    return v
+
 # ── CMIG ──────────────────────────────────────────────────────────────────────
 
 
@@ -32,6 +47,13 @@ class CMIGCreate(BaseModel):
     neighborhood: str | None = None
     city: str | None = None
     state: str | None = None
+    # Modo de grupo de produto (migration 149): 'both' | 'cmig_only' | 'pg_only'.
+    product_mode: str = "both"
+
+    @field_validator("product_mode")
+    @classmethod
+    def _validate_product_mode_create(cls, v):
+        return _validate_product_mode(v)
 
     @model_validator(mode="after")
     def check_document(self):
@@ -61,6 +83,8 @@ class CMIGUpdate(BaseModel):
     # informada aqui para o backend fazer o upsert na hora de virar PJ (exige IE + IBGE).
     ie: str | None = None
     is_active: bool | None = None
+    # Modo de grupo de produto (migration 149) — opcional no update.
+    product_mode: str | None = None
 
     @field_validator("cnpj", "cpf", "ibge_code", "ie", "company_name", mode="before")
     @classmethod
@@ -70,6 +94,11 @@ class CMIGUpdate(BaseModel):
             return None
         v = str(v).strip()
         return v or None
+
+    @field_validator("product_mode")
+    @classmethod
+    def _validate_product_mode_update(cls, v):
+        return _validate_product_mode(v)
 
 
 class CMIGOut(BaseModel):
@@ -91,6 +120,7 @@ class CMIGOut(BaseModel):
     state: str | None
     ibge_code: str | None = None
     is_active: bool
+    product_mode: str = "both"
     created_at: datetime
 
     model_config = {"from_attributes": True}

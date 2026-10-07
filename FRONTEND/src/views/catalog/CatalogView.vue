@@ -37,10 +37,10 @@
       <!-- Toggle PG / CMIG + Atalho Anúncio com Variações -->
       <div class="mb-3 d-flex flex-wrap align-items-center" style="gap:8px">
         <div class="btn-group">
-          <button v-if="!isMultilojas" class="btn" :class="catalogTab === 'pg' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'pg'">
+          <button v-if="showPgTab" class="btn" :class="catalogTab === 'pg' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'pg'">
             <i class="fas fa-warehouse mr-1"></i> Catálogo PG
           </button>
-          <button class="btn" :class="catalogTab === 'cmig' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'cmig'">
+          <button v-if="showCmigTab" class="btn" :class="catalogTab === 'cmig' ? 'btn-primary' : 'btn-outline-primary'" @click="catalogTab = 'cmig'">
             <i class="fas fa-id-card mr-1"></i> Catálogo CMIG
           </button>
         </div>
@@ -1137,6 +1137,16 @@ const cmigFilter   = ref('all')
 // CMIG é derivado automaticamente da conta de marketplace selecionada
 const derivedCmigId = computed(() => selectedAccount.value?.cmig_id ?? null)
 const activeCmig    = computed(() => cmigs.value.find(c => c.id === derivedCmigId.value) ?? null)
+
+// Visibilidade das abas PG/CMIG — combina work_type do galpão (multilojas, ADR-0024) com
+// product_mode da CMIG (migration 149). multilojas vence (esconde PG). FULL não se aplica aqui.
+const showPgTab   = computed(() => !isMultilojas.value && activeCmig.value?.product_mode !== 'cmig_only')
+const showCmigTab = computed(() => activeCmig.value?.product_mode !== 'pg_only')
+// Ao trocar de conta/CMIG, se a aba ativa ficou escondida, cair na visível.
+watch([showPgTab, showCmigTab], ([pg, cmig]) => {
+  if (catalogTab.value === 'pg' && !pg && cmig) catalogTab.value = 'cmig'
+  else if (catalogTab.value === 'cmig' && !cmig && pg) catalogTab.value = 'pg'
+}, { immediate: true })
 
 const filteredCmigProducts = computed(() => {
   let list = cmigProducts.value

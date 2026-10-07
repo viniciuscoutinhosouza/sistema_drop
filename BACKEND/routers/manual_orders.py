@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_menu_permission
@@ -13,8 +14,8 @@ from models.order import Order, OrderItem
 from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
-from models.warehouse import Warehouse
 from services.file_naming import TIPO_ETIQUETA, order_download_filename
+from services.product_mode import assert_product_group_allowed
 from services.shipping_mode import MODE_COMBINADO
 
 router = APIRouter()
@@ -77,26 +78,29 @@ async def create_manual_order(
     pg_ids = [int(i["id"]) for i in items_in if i.get("kind") == "pg" and i.get("id")]
     cmig_ids = [int(i["id"]) for i in items_in if i.get("kind") == "cmig" and i.get("id")]
 
+    # CMIG do pedido (+ galpão) — autoridade do grupo de produto permitido e do isolamento por galpão.
+    cmig_obj = (
+        await db.execute(
+            select(CMIG).options(selectinload(CMIG.warehouse)).where(CMIG.id == cmig_id)
+        )
+    ).scalar_one_or_none()
+    cmig_wh = cmig_obj.warehouse_id if cmig_obj else None
+
     pg_map: dict[int, CatalogProduct] = {}
     if pg_ids:
         res = await db.execute(select(CatalogProduct).where(CatalogProduct.id.in_(pg_ids)))
         pg_map = {p.id: p for p in res.scalars().all()}
 
-        # Isolamento por galpão (ADR-0026) + multilojas não vende PG (ADR-0024): os itens PG do
-        # pedido TÊM de ser do galpão da CMIG do pedido. Sem esta fronteira no servidor, um usuário
-        # de outro galpão conseguia vender PG alheio por POST direto (o fix do /catalog só escondia
-        # da UI). O galpão da CMIG é a autoridade (é quem separa/expede).
-        cmig_wh = (
-            await db.execute(select(CMIG.warehouse_id).where(CMIG.id == cmig_id))
-        ).scalar_one_or_none()
-        work_type = (
-            await db.execute(select(Warehouse.work_type).where(Warehouse.id == cmig_wh))
-        ).scalar_one_or_none() if cmig_wh is not None else None
-        if work_type == "multilojas":
-            raise HTTPException(
-                status_code=400,
-                detail="Galpão multilojas não vende produtos PG — use produtos da própria CMIG.",
-            )
+        # Grupo de produto permitido — ponto único (ADR-0024 multilojas × product_mode migration 149):
+        # item PG bloqueia se galpão multilojas OU CMIG em 'cmig_only'. FULL não se aplica (Pedido Manual).
+        assert_product_group_allowed(
+            cmig_obj, cmig_obj.warehouse if cmig_obj else None, is_pg=True
+        )
+
+        # Isolamento por galpão (ADR-0026): os itens PG do pedido TÊM de ser do galpão da CMIG do
+        # pedido. Sem esta fronteira no servidor, um usuário de outro galpão conseguia vender PG
+        # alheio por POST direto (o fix do /catalog só escondia da UI). O galpão da CMIG é a
+        # autoridade (é quem separa/expede).
         for p in pg_map.values():
             if cmig_wh is not None and p.warehouse_id != cmig_wh:
                 raise HTTPException(
@@ -106,6 +110,10 @@ async def create_manual_order(
 
     cmig_map: dict[int, CMIGProduct] = {}
     if cmig_ids:
+        # Grupo de produto permitido — item CMIG bloqueia se a CMIG está em 'pg_only' (migration 149).
+        assert_product_group_allowed(
+            cmig_obj, cmig_obj.warehouse if cmig_obj else None, is_cmig=True
+        )
         res = await db.execute(
             select(CMIGProduct).where(
                 CMIGProduct.id.in_(cmig_ids), CMIGProduct.cmig_id == cmig_id

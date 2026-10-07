@@ -269,6 +269,8 @@ async def list_cmigs(
             "city": c.city,
             "state": c.state,
             "is_active": c.is_active,
+            # Modo de grupo de produto (migration 149) — o front usa p/ esconder abas PG/CMIG.
+            "product_mode": getattr(c, "product_mode", None) or "both",
             "created_at": c.created_at.isoformat() if c.created_at else None,
             # eShip (WMS) — não expõe a apikey, só se está configurada
             "eship_active": bool(getattr(c, "eship_active", 0)),
