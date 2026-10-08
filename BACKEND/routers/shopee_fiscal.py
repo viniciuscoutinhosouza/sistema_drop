@@ -8,9 +8,11 @@ Ramo 100% Shopee (não toca o ML). Anexa, NÃO emite (emissão é o fluxo fiscal
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,10 +22,16 @@ from models.order import Order
 from models.user import User
 from routers.integrations import _assert_owner_or_admin
 from services import shopee_service
+from services.file_naming import TIPO_DANFE, TIPO_NFE, order_download_filename
 from services.fiscal.order_docs import resolve_nfe_xml
+
+# `_render`: primitivo de DANFE. O corpo que a Shopee devolve já é um `nfeProc` COMPLETO
+# (NFe + protNFe autorizado) — usar `gerar_danfe` re-embrulharia em <nfeProc> e duplicaria.
+from services.fiscal.sefaz.danfe import _render as _render_danfe
 from services.shopee_auth import get_valid_shopee_token
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 async def _shopee_order(order_id: int, user: User, db: AsyncSession):
@@ -36,6 +44,54 @@ async def _shopee_order(order_id: int, user: User, db: AsyncSession):
     account = await _assert_owner_or_admin(order.account_id, user, db)
     token = await get_valid_shopee_token(account, db)
     return order, account, token
+
+
+@router.get("/orders/{order_id}/nfe")
+async def download_order_nfe(
+    order_id: int,
+    kind: str = Query("xml"),  # "xml" (nfeProc autorizado) | "danfe" (PDF impresso)
+    current_user: User = Depends(require_menu_permission("fiscal_saidas")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Baixa a NF-e do pedido Shopee — INCLUI a emitida pelo Invoice Issuer da Shopee (sob o CNPJ
+    do vendedor), que não passa pela emissão própria do Drop (logo `resolve_nfe_xml` não a cobre).
+    `kind=xml` (padrão) devolve o `nfeProc` autorizado; `kind=danfe` renderiza o PDF. Falha alto
+    se o pedido não tem NF-e na Shopee."""
+    order, account, token = await _shopee_order(order_id, current_user, db)
+    if not (order.nfe_key or order.shopee_invoice_status == "validated"):
+        raise HTTPException(
+            status_code=404,
+            detail="Pedido sem NF-e na Shopee. Emita/valide a nota (Fiscal → Anexar NF-e) antes de baixar.",
+        )
+    content, ctype = await shopee_service.download_invoice_doc(token, account.shop_id, order.platform_order_id)
+    if not content:
+        raise HTTPException(status_code=404, detail="Shopee não retornou o documento fiscal do pedido.")
+    is_pdf = content[:4] == b"%PDF" or "pdf" in (ctype or "").lower()
+
+    if kind == "danfe":
+        if is_pdf:
+            pdf = content  # a Shopee já devolveu o PDF pronto
+        else:
+            xml_text = content.decode("utf-8", errors="replace")
+            try:
+                pdf = await asyncio.to_thread(_render_danfe, xml_text)
+            except Exception:  # noqa: BLE001 — loga o detalhe, devolve msg genérica (sem vazar interno)
+                logger.exception("Falha ao gerar DANFE da NF-e Shopee (order=%s)", order.id)
+                raise HTTPException(
+                    status_code=502,
+                    detail="Não foi possível gerar o DANFE a partir da NF-e Shopee.",
+                )
+        fname = order_download_filename(TIPO_DANFE, "pdf", order=order)
+        return Response(pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'inline; filename="{fname}"'})
+
+    # kind == "xml" (padrão) — a NF-e fiscal autorizada
+    if is_pdf:
+        raise HTTPException(status_code=502,
+                            detail="A Shopee devolveu PDF, não a XML da NF-e. Use kind=danfe.")
+    fname = order_download_filename(TIPO_NFE, "xml", order=order)
+    return Response(content, media_type="application/xml",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @router.get("/orders/pending-invoice")

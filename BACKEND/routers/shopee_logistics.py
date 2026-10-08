@@ -9,7 +9,6 @@ pré-condição de DADO (revalidada na Shopee), não RBAC.
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -80,7 +79,7 @@ async def ship(
     # Status fresco → vocabulário do sistema (não grava cru).
     dets = await shopee_service.get_order_detail(
         token, account.shop_id, [order.platform_order_id], optional_fields="order_status")
-    st = shopee_service.map_shopee_shipment_status((dets[0].get("order_status") if dets else None)) \
+    st = shopee_service.map_shopee_shipment_status(dets[0].get("order_status") if dets else None) \
         or "ready_to_ship"
     order.shipment_status = st
     await db.commit()
@@ -94,38 +93,37 @@ async def label(
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Etiqueta (PDF) do pedido Shopee. Gera (assíncrono) e faz cache em `private_labels/` (fora de
-    `static/` — documento com PII). Poll curto; se ainda gerando devolve 202 (clique de novo)."""
+    """Etiqueta (PDF) do pedido Shopee. Usa o PONTO ÚNICO `resolve_label_pdf` (create COM
+    tracking_number → poll READY → download) pedindo `NORMAL_AIR_WAYBILL` = PDF humano imprimível
+    (o THERMAL vem ZPL-em-ZIP). Cache em `private_labels/` (fora de `static/` — PII). Poll curto;
+    se ainda gerando devolve 202 (clique de novo)."""
     order, account, token = await _shopee_order(order_id, current_user, db)
     _LABELS_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = _LABELS_DIR / f"shopee_{order.id}.pdf"
 
-    if not refresh and cache_path.exists() and order.label_cached_at:
-        return Response(cache_path.read_bytes(), media_type="application/pdf",
-                        headers={"Content-Disposition": f'inline; filename="etiqueta-{order.id}.pdf"'})
+    # Cache válido só se for REALMENTE um PDF (magic %PDF). O mesmo caminho é compartilhado com o
+    # eShip, que grava ZPL/ZIP (THERMAL); servir esse cache como PDF entregaria lixo (CRITICAL
+    # apontado na auditoria). Se não começar com %PDF, regera.
+    if not refresh and order.label_cached_at and cache_path.exists():
+        cached = cache_path.read_bytes()
+        if cached[:4] == b"%PDF":
+            return Response(cached, media_type="application/pdf",
+                            headers={"Content-Disposition": f'inline; filename="etiqueta-{order.id}.pdf"'})
 
-    osn = order.platform_order_id
-    pkg = await _package_number(token, account.shop_id, osn)
-    await shopee_service.create_shipping_document(token, account.shop_id, osn, package_number=pkg)
-
-    status = None
-    for _ in range(_DOC_POLL_TRIES):
-        res = await shopee_service.get_shipping_document_result(token, account.shop_id, osn, package_number=pkg)
-        rows = res.get("result_list") or []
-        status = (rows[0].get("status") if rows else None) or ""
-        if status == "READY":
-            break
-        if status == "FAILED":
-            row = rows[0] if rows else {}
-            raise HTTPException(status_code=400,
-                                detail=f"Shopee falhou ao gerar a etiqueta: {row.get('fail_message') or row.get('fail_error')}")
-        await asyncio.sleep(_DOC_POLL_DELAY)
-    if status != "READY":
+    pdf = await shopee_service.resolve_label_pdf(
+        token, account.shop_id, order.platform_order_id,
+        doc_type="NORMAL_AIR_WAYBILL", tries=_DOC_POLL_TRIES, delay=_DOC_POLL_DELAY,
+    )
+    if pdf is None:
         return Response(status_code=202,
                         content='{"status":"processing","detail":"Etiqueta ainda em geração — clique novamente em instantes."}',
                         media_type="application/json")
-
-    pdf = await shopee_service.download_shipping_document(token, account.shop_id, osn, package_number=pkg)
+    if pdf[:4] != b"%PDF":
+        # NORMAL_AIR_WAYBILL deveria vir PDF; se vier ZIP/ZPL, não fingimos que é PDF (falhar alto).
+        raise HTTPException(
+            status_code=502,
+            detail="A Shopee devolveu a etiqueta em formato não-PDF (ZPL). Verifique o canal logístico do pedido.",
+        )
     cache_path.write_bytes(pdf)
     order.label_cached_at = datetime.now(UTC)
     await db.commit()

@@ -588,6 +588,20 @@
                 title="Etiqueta Shopee (PDF)"
               ><i class="fas fa-tag"></i></button>
               <button
+                v-if="order.shopee_invoice_status === 'validated' || order.nfe_key"
+                class="btn btn-xs btn-outline-success"
+                :disabled="shopeeLogBusy[order.id]"
+                @click="nfeShopee(order, 'danfe')"
+                title="Baixar NF-e (DANFE PDF)"
+              ><i class="fas fa-file-invoice"></i></button>
+              <button
+                v-if="order.shopee_invoice_status === 'validated' || order.nfe_key"
+                class="btn btn-xs btn-outline-success"
+                :disabled="shopeeLogBusy[order.id]"
+                @click="nfeShopee(order, 'xml')"
+                title="Baixar XML da NF-e"
+              ><i class="fas fa-file-code"></i></button>
+              <button
                 class="btn btn-xs btn-outline-info"
                 :disabled="shopeeLogBusy[order.id]"
                 @click="trackShopee(order)"
@@ -1439,6 +1453,35 @@ async function labelShopee(order) {
     }
   } catch (err) {
     let detail = 'Erro ao gerar a etiqueta Shopee'
+    if (err.response?.data instanceof Blob) {
+      try { detail = JSON.parse(await err.response.data.text()).detail || detail } catch { /* keep */ }
+    } else {
+      detail = err.response?.data?.detail || detail
+    }
+    toast.error(detail)
+  } finally {
+    _setShopeeLogBusy(order.id, false)
+  }
+}
+
+async function nfeShopee(order, kind = 'danfe') {
+  // Busca a NF-e do pedido Shopee (inclui a emitida pelo Invoice Issuer da Shopee).
+  // kind='danfe' → abre o PDF; kind='xml' → baixa o nfeProc autorizado.
+  _setShopeeLogBusy(order.id, true)
+  try {
+    const resp = await api.get(`/shopee/orders/${order.id}/nfe`, { params: { kind }, responseType: 'blob' })
+    const url = URL.createObjectURL(resp.data)
+    if (kind === 'xml') {
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `NF-e_${order.platform_order_id || order.id}.xml`
+      document.body.appendChild(a); a.click(); a.remove()
+    } else {
+      window.open(url, '_blank')
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+  } catch (err) {
+    let detail = 'Erro ao buscar a NF-e Shopee'
     if (err.response?.data instanceof Blob) {
       try { detail = JSON.parse(await err.response.data.text()).detail || detail } catch { /* keep */ }
     } else {

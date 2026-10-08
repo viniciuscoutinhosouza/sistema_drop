@@ -570,20 +570,40 @@ async def upload_invoice_doc(
     return data.get("response", {}) or {}
 
 
-async def download_invoice_doc(access_token: str, shop_id: int, order_sn: str) -> str | None:
-    """URL do documento fiscal anexado ao pedido (conferência). None se não houver."""
+async def download_invoice_doc(access_token: str, shop_id: int, order_sn: str) -> tuple[bytes, str]:
+    """Baixa o documento fiscal (NF-e) do pedido Shopee — **inclui a NF-e emitida pelo Invoice
+    Issuer da Shopee** (confirmado ao vivo: a API devolve o `nfeProc` autorizado direto no corpo,
+    `content-type: application/xml`). Retorna `(bytes, content_type)`.
+
+    A Shopee pode responder de 3 formas: (a) o documento CRU no corpo (XML/PDF) — o caso comum;
+    (b) um JSON `{response:{url}}` apontando pro arquivo; (c) um JSON de erro. Tratamos as três.
+    Antes a função fazia `resp.json()` cego e estourava `Expecting value` quando vinha a XML
+    (era o bug: "o sistema não consegue buscar a NF-e").
+    """
     path = "/api/v2/order/download_invoice_doc"
     params = _shop_params(access_token, shop_id, path)
     params["order_sn"] = order_sn
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"{SHOPEE_API_BASE}/order/download_invoice_doc", params=params)
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502,
-                            detail=f"Shopee download_invoice_doc HTTP {resp.status_code}: {resp.text[:300]}")
-    data = resp.json()
-    if data.get("error"):
-        raise HTTPException(status_code=502, detail=f"Shopee download_invoice_doc: {data.get('message')}")
-    return (data.get("response", {}) or {}).get("url")
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502,
+                                detail=f"Shopee download_invoice_doc HTTP {resp.status_code}: {resp.text[:300]}")
+        ctype = (resp.headers.get("content-type", "") or "").lower()
+        if "application/json" in ctype:
+            data = resp.json()
+            if data.get("error"):
+                raise HTTPException(status_code=502, detail=f"Shopee download_invoice_doc: {data.get('message')}")
+            url = (data.get("response", {}) or {}).get("url")
+            if not url:
+                raise HTTPException(status_code=404, detail="Shopee não retornou documento fiscal para o pedido")
+            if not str(url).lower().startswith("https://"):
+                raise HTTPException(status_code=502, detail="URL do documento fiscal Shopee inválida (esperado https).")
+            r2 = await client.get(url)
+            if r2.status_code != 200:
+                raise HTTPException(status_code=502,
+                                    detail=f"Falha ao baixar o doc fiscal Shopee (url) HTTP {r2.status_code}")
+            return r2.content, (r2.headers.get("content-type", "") or "application/octet-stream")
+        return resp.content, (ctype or "application/octet-stream")
 
 
 # Mapa status Shopee → vocabulário de shipment_status do sistema (ML): handling|ready_to_ship|
@@ -738,14 +758,16 @@ async def get_shipping_document_result(access_token: str, shop_id: int, order_sn
 
 async def download_shipping_document(access_token: str, shop_id: int, order_sn: str, *,
                                      package_number: str | None = None,
-                                     tracking_number: str | None = None) -> bytes:
+                                     tracking_number: str | None = None,
+                                     doc_type: str = "THERMAL_AIR_WAYBILL") -> bytes:
     """Baixa a etiqueta (binário CRU). ATENÇÃO ao formato: THERMAL_AIR_WAYBILL vem como ZIP contendo
     ZPL (não PDF); NORMAL_AIR_WAYBILL vem como PDF. O chamador detecta pelo magic (`%PDF` vs `PK`).
-    Levanta se a Shopee devolver JSON de erro (documento não pronto)."""
+    O `doc_type` DEVE ser o mesmo usado no create/result — senão a Shopee gera um tipo e o download
+    pede outro (documento inexistente → erro). Levanta se a Shopee devolver JSON de erro."""
     suffix = "/logistics/download_shipping_document"
     path = "/api/v2" + suffix
     params = _shop_params(access_token, shop_id, path)
-    body = {"order_list": [_doc_item(order_sn, package_number, tracking_number=tracking_number)]}
+    body = {"order_list": [_doc_item(order_sn, package_number, doc_type, tracking_number)]}
     async with httpx.AsyncClient(timeout=40) as client:
         resp = await client.post(f"{SHOPEE_API_BASE}{suffix}", params=params, json=body)
     ctype = resp.headers.get("content-type", "")
@@ -769,13 +791,17 @@ async def _package_number_for(access_token: str, shop_id: int, order_sn: str) ->
 async def resolve_label_pdf(access_token: str, shop_id: int, order_sn: str, *,
                             package_number: str | None = None,
                             tracking_number: str | None = None,
+                            doc_type: str = "THERMAL_AIR_WAYBILL",
                             tries: int = 4, delay: float = 1.5) -> bytes | None:
     """Resolve a etiqueta de um pedido Shopee: create → poll(READY) → download. Retorna os bytes
     CRUS do documento (pode ser PDF **ou** ZIP com ZPL — ver download_shipping_document; o chamador
     detecta o formato). **None** se ainda em geração (PROCESSING). Levanta HTTPException em FAILED.
 
-    Resolve package_number e tracking_number sozinho se não vierem — o tracking_number é OBRIGATÓRIO
-    no create de canais self-design AWB (Shopee Xpress), senão a Shopee recusa (tracking_number_invalid)."""
+    `doc_type` é repassado idêntico a create/result/download (DEFAULT `THERMAL_AIR_WAYBILL` —
+    o eShip depende disso p/ obter o ZPL; só o endpoint `label()` humano pede `NORMAL_AIR_WAYBILL`
+    para servir PDF). Resolve package_number e tracking_number sozinho se não vierem — o
+    tracking_number é OBRIGATÓRIO no create de canais self-design AWB (Shopee Xpress), senão a
+    Shopee recusa (tracking_number_invalid)."""
     import asyncio
 
     if package_number is None:
@@ -787,17 +813,20 @@ async def resolve_label_pdf(access_token: str, shop_id: int, order_sn: str, *,
         except Exception:  # noqa: BLE001 — sem tracking o create tenta mesmo assim e a Shopee dirá
             tracking_number = None
     await create_shipping_document(access_token, shop_id, order_sn,
-                                   package_number=package_number, tracking_number=tracking_number)
+                                   package_number=package_number, tracking_number=tracking_number,
+                                   doc_type=doc_type)
     for _ in range(tries):
         res = await get_shipping_document_result(access_token, shop_id, order_sn,
                                                  package_number=package_number,
-                                                 tracking_number=tracking_number)
+                                                 tracking_number=tracking_number,
+                                                 doc_type=doc_type)
         rows = res.get("result_list") or []
         status = (rows[0].get("status") if rows else None) or ""
         if status == "READY":
             return await download_shipping_document(access_token, shop_id, order_sn,
                                                     package_number=package_number,
-                                                    tracking_number=tracking_number)
+                                                    tracking_number=tracking_number,
+                                                    doc_type=doc_type)
         if status == "FAILED":
             row = rows[0] if rows else {}
             raise HTTPException(
