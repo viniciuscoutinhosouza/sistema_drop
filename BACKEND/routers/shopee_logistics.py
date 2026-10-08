@@ -9,6 +9,8 @@ pré-condição de DADO (revalidada na Shopee), não RBAC.
 """
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -53,6 +55,27 @@ async def _package_number(token, shop_id, order_sn) -> str | None:
         token, shop_id, [order_sn], optional_fields="package_list,order_status")
     pkgs = (dets[0].get("package_list") if dets else None) or []
     return (pkgs[0].get("package_number") if pkgs else None) or None
+
+
+def _normalize_label(raw: bytes) -> tuple[bytes, str, str]:
+    """Normaliza a etiqueta CRUA da Shopee → (bytes, media_type, ext). O formato varia por canal:
+    PDF direto; ZIP com PDF dentro; ou ZIP com ZPL (ex.: Shopee Xpress BR, que só entrega ZPL
+    térmico — `thermal_zpl_shipping_label.txt`). Para ZPL servimos o arquivo p/ impressora térmica
+    (não fingimos PDF). Nunca estoura — formato desconhecido cai como ZPL/binário."""
+    if raw[:4] == b"%PDF":
+        return raw, "application/pdf", "pdf"
+    if raw[:2] == b"PK":
+        try:
+            z = zipfile.ZipFile(io.BytesIO(raw))
+            names = z.namelist()
+            if names:
+                data = z.read(names[0])
+                if data[:4] == b"%PDF":
+                    return data, "application/pdf", "pdf"
+                return data, "application/octet-stream", "zpl"
+        except zipfile.BadZipFile:
+            pass
+    return raw, "application/octet-stream", "zpl"
 
 
 @router.post("/orders/{order_id}/ship")
@@ -110,25 +133,25 @@ async def label(
             return Response(cached, media_type="application/pdf",
                             headers={"Content-Disposition": f'inline; filename="etiqueta-{order.id}.pdf"'})
 
-    pdf = await shopee_service.resolve_label_pdf(
+    # Pede NORMAL_AIR_WAYBILL (PDF onde o canal oferecer); canais só-ZPL (Shopee Xpress BR)
+    # devolvem ZPL mesmo assim — tratado em _normalize_label.
+    raw = await shopee_service.resolve_label_pdf(
         token, account.shop_id, order.platform_order_id,
         doc_type="NORMAL_AIR_WAYBILL", tries=_DOC_POLL_TRIES, delay=_DOC_POLL_DELAY,
     )
-    if pdf is None:
+    if raw is None:
         return Response(status_code=202,
                         content='{"status":"processing","detail":"Etiqueta ainda em geração — clique novamente em instantes."}',
                         media_type="application/json")
-    if pdf[:4] != b"%PDF":
-        # NORMAL_AIR_WAYBILL deveria vir PDF; se vier ZIP/ZPL, não fingimos que é PDF (falhar alto).
-        raise HTTPException(
-            status_code=502,
-            detail="A Shopee devolveu a etiqueta em formato não-PDF (ZPL). Verifique o canal logístico do pedido.",
-        )
-    cache_path.write_bytes(pdf)
-    order.label_cached_at = datetime.now(UTC)
-    await db.commit()
-    return Response(pdf, media_type="application/pdf",
-                    headers={"Content-Disposition": f'inline; filename="etiqueta-{order.id}.pdf"'})
+    data, media, ext = _normalize_label(raw)
+    if media == "application/pdf":
+        cache_path.write_bytes(data)  # só cacheia PDF (o .pdf do cache; ZPL serve direto)
+        order.label_cached_at = datetime.now(UTC)
+        await db.commit()
+        disp = f'inline; filename="etiqueta-{order.id}.pdf"'
+    else:
+        disp = f'attachment; filename="etiqueta-{order.id}.{ext}"'  # ZPL térmico → download
+    return Response(data, media_type=media, headers={"Content-Disposition": disp})
 
 
 @router.get("/orders/{order_id}/fees")

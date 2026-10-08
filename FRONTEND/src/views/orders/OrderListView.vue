@@ -1440,16 +1440,26 @@ async function labelShopee(order) {
   _setShopeeLogBusy(order.id, true)
   try {
     const resp = await api.get(`/shopee/orders/${order.id}/label`, { responseType: 'blob' })
-    if ((resp.data.type || '').includes('application/pdf')) {
+    const ct = resp.data.type || ''
+    if (ct.includes('application/pdf')) {
       const url = URL.createObjectURL(resp.data)
       window.open(url, '_blank')
       setTimeout(() => URL.revokeObjectURL(url), 60000)
-    } else {
+    } else if (ct.includes('application/json')) {
       // 202 processing (ou JSON de erro) veio como blob — lê o texto
       const txt = await resp.data.text()
       let msg = 'Etiqueta ainda em geração — clique novamente em instantes.'
       try { msg = JSON.parse(txt).detail || msg } catch { /* keep */ }
       toast.info(msg)
+    } else {
+      // ZPL térmico (Shopee Xpress só entrega ZPL) — baixa o arquivo p/ impressora térmica
+      const url = URL.createObjectURL(resp.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `etiqueta-${order.platform_order_id || order.id}.zpl`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+      toast.info('Etiqueta ZPL (térmica) baixada — envie para a impressora térmica.')
     }
   } catch (err) {
     let detail = 'Erro ao gerar a etiqueta Shopee'
