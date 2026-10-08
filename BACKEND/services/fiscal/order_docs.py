@@ -1,9 +1,11 @@
 """Fonte ÚNICA do documento fiscal AUTORIZADO de um pedido.
 
 Resolve o XML fiscal já autorizado (nunca emite nada), na prioridade:
-  1. NF-e própria (SEFAZ)     — `Order.invoice_id` → `Invoice.xml_local_path` (arquivo local)
-  2. NF-e do Faturador ML     — download em `/users/{seller}/invoices/documents/xml/{iid}/authorized`
-  3. DC-e (conta CPF)         — `OrderDce` autorizada (XML procDCe)
+  1. NF-e própria (SEFAZ)        — `Order.invoice_id` → `Invoice.xml_local_path` (arquivo local)
+  2. NF-e do Faturador ML        — download em `/users/{seller}/invoices/documents/xml/{iid}/authorized`
+  2b. NF-e do Invoice Issuer     — pedido Shopee cuja nota foi emitida pela Shopee (sob o CNPJ do
+      da Shopee                    vendedor); baixada via `shopee_service.download_invoice_doc`
+  3. DC-e (conta CPF)            — `OrderDce` autorizada (XML procDCe)
 
 Compartilhado entre a Separação (bundle ZIP da gaiola) e a integração eShip (anexo da Ordem),
 para não duplicar a lógica fiscal em dois lugares.
@@ -91,6 +93,31 @@ async def resolve_nfe_xml(db: AsyncSession, order: Order) -> tuple[bytes, str, s
                     )
                     return None
                 return xml_bytes, (order.nfe_key or str(iid)), "nfe_ml"
+
+    # 2b) NF-e do Invoice Issuer da Shopee (emitida pela Shopee sob o CNPJ do vendedor — não
+    #     passa pela emissão própria do Drop, logo sem `invoice_id`). Ramo Shopee próprio
+    #     (ADR-0020: nunca dentro do fluxo ML). Fonte: download_invoice_doc (nfeProc autorizado).
+    if order.platform == "shopee" and (order.nfe_key or order.shopee_invoice_status == "validated"):
+        acc = (
+            await db.execute(
+                select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
+            )
+        ).scalar_one_or_none()
+        if acc and acc.shop_id and order.platform_order_id:
+            try:
+                from services import shopee_service as _shopee
+                from services.shopee_auth import get_valid_shopee_token
+
+                token = await get_valid_shopee_token(acc, db)
+                content, _ctype = await _shopee.download_invoice_doc(
+                    token, acc.shop_id, order.platform_order_id
+                )
+            except Exception as exc:  # noqa: BLE001 — indisponível agora → pendência (não emite)
+                logger.warning("resolve_nfe_xml Shopee order=%s: %s", order.id, exc)
+                return None
+            if content and _looks_like_nfe(content):
+                return content, (order.nfe_key or ""), "nfe_shopee"
+            return None
 
     # 3) DC-e (conta CPF) — só chega aqui quando não há NF-e (própria nem ML).
     from models.fiscal import OrderDce
