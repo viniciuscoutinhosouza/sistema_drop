@@ -62,9 +62,9 @@ async def list_all_accounts_for_admin(
     aqui o admin vê tudo — é o ponto de entrada da ferramenta de debug.
     """
     result = await db.execute(
-        select(MarketplaceAccount).order_by(
-            MarketplaceAccount.platform, MarketplaceAccount.created_at
-        )
+        select(MarketplaceAccount)
+        .where(MarketplaceAccount.is_deleted == False)  # noqa: E712 — conta excluída some do console
+        .order_by(MarketplaceAccount.platform, MarketplaceAccount.created_at)
     )
     return [
         {

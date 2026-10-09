@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-10-08 — feat(ui): reorg do menu (Cadastro/Administração), Produtos por CMIG e exclusão de conta
+
+O sistema (antes 100% marketplace) passa a servir venda manual → reorganização do menu lateral + exclusão real de conta de marketplace. Auditado pelo trio (quality-guardian 1 HIGH corrigido, consistency-auditor 1 MEDIUM corrigido, adr-consistency-checker aprovado).
+
+- **Menu** (`AppSidebar.vue`): grupo "Minhas Contas" → **"Cadastro"**; novo item **"Produtos"** sob "Contas MIG" (→ `/cmig-products`, gate `canSee('cmig')`); "Contas Marketplace" movida para dentro do grupo **Administração** existente, aninhada sob subgrupo **"Integrações"** (v-if do grupo ganhou `canSee('integrations')` p/ AC não perder acesso — CRITICAL-1); `sectionForPath('/integrations')`→`admin` + abre subseção.
+- **Produtos por CMIG** (`CmigProductListView.vue`): dropdown de CMIG no topo quando o usuário administra >1 (reusa `useCmigStore().fetchAllCmigs()`); 1 CMIG auto-seleciona; 0 CMIG mostra empty-state. Troca via `router.replace` + `watch(cmigId)`.
+- **Marketplaces por CMIG** (`CmigListView.vue` + `IntegrationsView.vue`): botão-ícone por linha da CMIG → `/integrations?cmig_id=X`; a tela de Contas Marketplace fica escopada à CMIG (filtra via backend, trava a CMIG nos modais, título/voltar).
+- **Exclusão de conta** (`integrations.py`): novo `DELETE /accounts/{id}/purge` (owner/admin). Sem histórico (pedido/claim/conversa/FULL/anúncio) → apaga de vez via Core (SET NULL em competitor/inventory; delete em balance+tx/otp/metrics/nfe_config/admins; por fim a conta). Com histórico → **arquiva** (`is_active=0, is_deleted=1`): some de toda a UI/seletor e dos jobs (que filtram `is_active`). `DELETE /{id}` segue como "Desconectar" (soft). Blindagem TOCTOU: `try/except IntegrityError → rollback → arquiva`.
+- **"Sumir do sistema"**: `list_accounts` (via `_visible`), guards `_assert_ac_can_access`/`_assert_owner_or_admin`, callbacks OAuth ML/Shopee e `admin_api_console` filtram `is_deleted`. `cmig_id` em `list_accounts` é filtro **AND** (nunca amplia — CRITICAL-2) e de brinde conserta `CmigDetailView`.
+- **Migration** `Scripts SQL/150_marketplace_account_soft_delete.sql`: `is_deleted NUMBER(1) DEFAULT 0 NOT NULL` + `deleted_at` (idempotente ORA-01430). Invariante `is_deleted=1 ⇒ is_active=0`.
+- **Verificação**: backend importa + `pytest` 286 ✓ (2 falhas pré-existentes); `npm run build` ✓; 13 FKs de `marketplace_accounts` cobertas (confirmado por 2 auditores).
+
+---
+
 ## 2026-10-07 — feat(cmig): modo de grupo de produto (product_mode) — PG × CMIG filtrável por CMIG
 
 CMIG ganha `product_mode`: `both` (PG+CMIG), `cmig_only` (só CMIG), `pg_only` (só PG). Filtra quais grupos de produto aparecem/são permitidos na UI (Catálogo, Pedido Manual) e no backend (publicação de anúncio/listing + add item de pedido manual). **EXCEÇÃO (ADR-0010):** envio ao FULL sempre usa/mostra o produto CMIG, independente do modo — `pg_only` + FULL é válido. Complementar ao `warehouse.work_type` (ADR-0024: multilojas bloqueia PG) — combina por AND, **multilojas vence**.

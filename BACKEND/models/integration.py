@@ -61,6 +61,11 @@ class MarketplaceAccount(Base):
     has_full_override = Column(Boolean, nullable=True)
     shipping_modes_checked_at = Column(TIMESTAMP(timezone=True))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    # Exclusão lógica (migration 150). Invariante: is_deleted=True IMPLICA is_active=False.
+    # Conta excluída (arquivada) some de TODA a UI/seletor e nada deve reativá-la sem antes
+    # limpar is_deleted. Usada quando a conta tem histórico que o banco não deixa apagar.
+    is_deleted = Column(Boolean, nullable=False, default=False)
+    deleted_at = Column(TIMESTAMP(timezone=True))
 
     @property
     def effective_has_flex(self) -> bool:

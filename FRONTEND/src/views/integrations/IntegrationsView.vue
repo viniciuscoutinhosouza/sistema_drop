@@ -2,10 +2,19 @@
   <div>
     <!-- Cabeçalho -->
     <div class="d-flex justify-content-between align-items-center mb-3">
-      <h4 class="mb-0"><i class="fas fa-plug mr-2"></i> Minhas Contas de Marketplace</h4>
-      <button class="btn btn-primary" @click="openNewContaModal">
-        <i class="fas fa-plus mr-1"></i> Nova Conta
-      </button>
+      <h4 class="mb-0">
+        <i class="fas fa-plug mr-2"></i>
+        <span v-if="scopedCmigId">Marketplaces — {{ scopedCmigName }}</span>
+        <span v-else>Minhas Contas de Marketplace</span>
+      </h4>
+      <div>
+        <RouterLink v-if="scopedCmigId" to="/cmigs" class="btn btn-secondary mr-2">
+          <i class="fas fa-arrow-left mr-1"></i> Voltar às CMIGs
+        </RouterLink>
+        <button class="btn btn-primary" @click="openNewContaModal">
+          <i class="fas fa-plus mr-1"></i> Nova Conta
+        </button>
+      </div>
     </div>
 
     <!-- Loading -->
@@ -38,8 +47,11 @@
                     title="Gerenciar colaboradores" @click="openCollab(acc)">
               <i class="fas fa-user-friends"></i>
             </button>
-            <button class="btn btn-xs btn-outline-danger ml-1" title="Desconectar" @click="disconnect(acc)">
+            <button v-if="canManage(acc)" class="btn btn-xs btn-outline-warning ml-1" title="Desconectar (desativa o OAuth; mantém a conta)" @click="disconnect(acc)">
               <i class="fas fa-unlink"></i>
+            </button>
+            <button v-if="canManage(acc)" class="btn btn-xs btn-outline-danger ml-1" title="Excluir conta (remove de vez; se houver histórico, arquiva e some do sistema)" @click="purge(acc)">
+              <i class="fas fa-trash"></i>
             </button>
           </div>
 
@@ -135,7 +147,7 @@
               <label>Telefone / celular da conta <span class="text-danger">*</span></label>
               <input v-model="newContaForm.phone" class="form-control" placeholder="(11) 91234-5678" required />
             </div>
-            <div class="form-group" v-if="cmigs.length > 1">
+            <div class="form-group" v-if="cmigs.length > 1 && !scopedCmigId">
               <label>Conta MIG (CMIG) <span class="text-danger">*</span></label>
               <select v-model="newContaForm.cmig_id" class="form-control" required>
                 <option value="">Selecione a CMIG...</option>
@@ -168,7 +180,7 @@
           </div>
           <div class="modal-body">
             <div v-if="editError" class="alert alert-danger">{{ editError }}</div>
-            <div class="form-group" v-if="cmigs.length > 1">
+            <div class="form-group" v-if="cmigs.length > 1 && !scopedCmigId">
               <label>Conta MIG (CMIG) <span class="text-danger">*</span></label>
               <select v-model="editForm.cmig_id" class="form-control">
                 <option value="">Selecione a CMIG...</option>
@@ -319,6 +331,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { formatDateTime as fmtBrDateTime } from '@/utils/formatters'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
@@ -326,8 +339,14 @@ import { useAuthStore } from '@/stores/auth'
 import CollaboratorsModal from '@/components/common/CollaboratorsModal.vue'
 
 const { show: toast } = useToast()
+const route = useRoute()
 const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.user?.role === 'admin')
+
+// Tela escopada a uma CMIG (acesso pelo botão da linha em Contas MIG → /integrations?cmig_id=X).
+// O backend (list_accounts) aplica o cmig_id como filtro ADICIONAL — nunca amplia a visibilidade.
+const scopedCmigId = computed(() => (route.query.cmig_id ? Number(route.query.cmig_id) : null))
+const scopedCmigName = computed(() => (scopedCmigId.value ? cmigName(scopedCmigId.value) : ''))
 
 const accounts = ref([])
 const cmigs    = ref([])
@@ -372,7 +391,10 @@ async function loadAccounts() {
   loading.value = true
   try {
     // Gestão de contas vê todas, inclusive as de CMIGs inativas.
-    const { data } = await api.get('/accounts', { params: { include_inactive_cmig: true } })
+    // Quando escopada a uma CMIG, pede ao backend só as contas daquela CMIG.
+    const params = { include_inactive_cmig: true }
+    if (scopedCmigId.value) params.cmig_id = scopedCmigId.value
+    const { data } = await api.get('/accounts', { params })
     accounts.value = data
   } catch {
     toast('Erro ao carregar contas', 'danger')
@@ -394,9 +416,10 @@ function cmigName(id) {
 }
 
 function openNewContaModal() {
-  // 1 só CMIG: dropdown escondido — auto-seleciona a única
+  // Tela escopada a uma CMIG: trava nela. Senão, 1 só CMIG auto-seleciona; várias → escolher.
   const singleCmigId = cmigs.value.length === 1 ? cmigs.value[0].id : ''
-  newContaForm.value = { platform: '', email: '', phone: '', description: '', cmig_id: singleCmigId }
+  const cmigId = scopedCmigId.value || singleCmigId
+  newContaForm.value = { platform: '', email: '', phone: '', description: '', cmig_id: cmigId }
   newContaError.value = ''
   modal.value.newConta = true
 }
@@ -567,6 +590,27 @@ async function disconnect(account) {
     await loadAccounts()
   } catch (err) {
     toast(err.response?.data?.detail || 'Erro ao desconectar', 'danger')
+  }
+}
+
+async function purge(account) {
+  const label = account.platform_username || account.description || account.email || `Conta #${account.id}`
+  if (!confirm(
+    `EXCLUIR a conta "${label}"?\n\n` +
+    `• Sem histórico: removida permanentemente.\n` +
+    `• Com histórico (pedidos, reclamações, anúncios, estoque FULL): arquivada e some de todo o sistema.\n\n` +
+    `Esta ação não pode ser desfeita.`
+  )) return
+  try {
+    const { data } = await api.delete(`/accounts/${account.id}/purge`)
+    if (data?.action === 'archived') {
+      toast(data.message || 'Conta arquivada.', 'warning')
+    } else {
+      toast(data?.message || 'Conta excluída permanentemente.', 'success')
+    }
+    await loadAccounts()
+  } catch (err) {
+    toast(err.response?.data?.detail || 'Erro ao excluir conta', 'danger')
   }
 }
 

@@ -24,7 +24,8 @@ def _trunc_bytes(s: str, max_bytes: int) -> str:
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -61,10 +62,15 @@ async def _assert_ac_can_access(
     role = (
         await db.execute(select(User.role).where(User.id == user_id))
     ).scalar_one_or_none()
+    # Conta EXCLUÍDA (is_deleted) é invisível para todos os caminhos de acesso — some
+    # da UI e para de responder a qualquer endpoint por-conta (sync, authorize, update…).
     if role == "admin":
         acc = (
             await db.execute(
-                select(MarketplaceAccount).where(MarketplaceAccount.id == account_id)
+                select(MarketplaceAccount).where(
+                    MarketplaceAccount.id == account_id,
+                    MarketplaceAccount.is_deleted == False,  # noqa: E712
+                )
             )
         ).scalar_one_or_none()
         if not acc:
@@ -76,6 +82,7 @@ async def _assert_ac_can_access(
         .join(AccountAdministrator, MarketplaceAccount.id == AccountAdministrator.account_id)
         .where(
             MarketplaceAccount.id == account_id,
+            MarketplaceAccount.is_deleted == False,  # noqa: E712
             AccountAdministrator.user_id == user_id,
         )
     )
@@ -89,6 +96,7 @@ async def _assert_ac_can_access(
         .join(CMIGAdministrator, MarketplaceAccount.cmig_id == CMIGAdministrator.cmig_id)
         .where(
             MarketplaceAccount.id == account_id,
+            MarketplaceAccount.is_deleted == False,  # noqa: E712
             CMIGAdministrator.user_id == user_id,
         )
     )
@@ -137,6 +145,7 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
 @router.get("")
 async def list_accounts(
     include_inactive_cmig: bool = False,
+    cmig_id: int | None = Query(None),
     current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -144,7 +153,11 @@ async def list_accounts(
     co-administra ou que pertencem às suas CMIGs.
 
     Por padrão NÃO inclui contas cujas CMIGs estão inativas (some de todos os
-    seletores). A tela de gestão de Integrações passa include_inactive_cmig=true."""
+    seletores). A tela de gestão de Integrações passa include_inactive_cmig=true.
+
+    `cmig_id` é um FILTRO ADICIONAL (AND) aplicado por cima da visibilidade de cada
+    ramo — NUNCA amplia o que o usuário já poderia ver (ver CRITICAL-2). Usado pela
+    tela de Marketplaces por CMIG e pelo CmigDetailView."""
     # CMIGs inativas → suas contas não aparecem em seletores (regra de negócio).
     inactive_cmig_ids: set[int] = set()
     if not include_inactive_cmig:
@@ -152,6 +165,12 @@ async def list_accounts(
         inactive_cmig_ids = {r[0] for r in rows.all()}
 
     def _visible(acc) -> bool:
+        # Exclui conta arquivada (is_deleted) e CMIG inativa; e, quando cmig_id vier,
+        # restringe à CMIG pedida. Só REMOVE itens — jamais amplia a visibilidade do ramo.
+        if acc.is_deleted:
+            return False
+        if cmig_id is not None and acc.cmig_id != cmig_id:
+            return False
         return acc.cmig_id is None or acc.cmig_id not in inactive_cmig_ids
 
     # Super Admin: vê TODAS as contas (incluindo as vinculadas a qualquer CMIG).
@@ -312,7 +331,12 @@ async def _assert_owner_or_admin(
 ) -> MarketplaceAccount:
     """Garante que o usuário é o owner da conta OU admin da plataforma.
     Retorna a conta se autorizado; caso contrário 403/404."""
-    acc_q = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
+    acc_q = await db.execute(
+        select(MarketplaceAccount).where(
+            MarketplaceAccount.id == account_id,
+            MarketplaceAccount.is_deleted == False,  # noqa: E712
+        )
+    )
     account = acc_q.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta não encontrada")
@@ -604,6 +628,134 @@ async def disconnect_account(
     await db.commit()
 
 
+@router.delete("/{account_id}/purge")
+async def purge_account(
+    account_id: int,
+    current_user: User = Depends(require_menu_permission("integrations")),
+    db: AsyncSession = Depends(get_db),
+):
+    """EXCLUIR (de verdade) uma CONTA — owner ou admin.
+
+    Diferente de `DELETE /{id}` (Desconectar = só `is_active=False`):
+
+    - **Sem histórico** (nenhum pedido/reclamação/conversa/estoque FULL/anúncio): apaga a
+      conta do banco de vez, limpando a infra que não tem cascade (OTP, métricas, saldo+extrato,
+      nfe_config, administradores) e zerando referências nullable (análise de concorrência,
+      inventário). Tudo via Core — determinístico, sem surpresa de cascade/lazy-load do ORM.
+    - **Com histórico** (FK RESTRICT protege o dado fiscal/operacional; anúncio entra aqui para
+      não sofrer o `ON DELETE CASCADE` silencioso de product_listings): ARQUIVA — `is_active=0` +
+      `is_deleted=1` — e a conta some de toda a UI/seletor e dos jobs (que filtram `is_active`).
+
+    Decisão determinística por CONTAGEM — nunca usa IntegrityError como fluxo de controle.
+    """
+    from models.claim import Claim
+    from models.competitor_analysis import CompetitorAnalysis
+    from models.full_stock import FullCnpj, FullStock
+    from models.integration import (
+        AccountTransaction,
+        MarketplaceMetricDaily,
+        OTPVerification,
+    )
+    from models.inventory import Inventory
+    from models.messages import ConversationThread
+    from models.nfe_config import NFeConfig
+    from models.order import Order
+
+    account = await _assert_owner_or_admin(account_id, current_user, db)
+
+    async def _count(model, col) -> int:
+        r = await db.execute(select(func.count()).select_from(model).where(col == account_id))
+        return int(r.scalar() or 0)
+
+    counts = {
+        "pedido(s)": await _count(Order, Order.account_id),
+        "reclamação(ões)": await _count(Claim, Claim.marketplace_account_id),
+        "conversa(s)": await _count(ConversationThread, ConversationThread.marketplace_account_id),
+        "registro(s) de estoque FULL": (
+            await _count(FullStock, FullStock.marketplace_account_id)
+            + await _count(FullCnpj, FullCnpj.marketplace_account_id)
+        ),
+        "anúncio(s)": await _count(ProductListing, ProductListing.account_id),
+    }
+    blockers = {k: v for k, v in counts.items() if v > 0}
+
+    if blockers:
+        # ARQUIVA — preserva o histórico; a conta some do sistema.
+        account.is_active = False
+        account.is_deleted = True
+        account.deleted_at = datetime.now(UTC)
+        await db.commit()
+        resumo = ", ".join(f"{v} {k}" for k, v in blockers.items())
+        return {
+            "action": "archived",
+            "message": (
+                f"Conta arquivada (possui {resumo}). O histórico foi preservado e a conta "
+                "não aparece mais no sistema."
+            ),
+        }
+
+    # SEM histórico → apaga de vez. Zera nullable, apaga infra e filhos, por fim a conta.
+    # Blindagem TOCTOU: se um job inserir um registro bloqueador (ex.: sync_orders criar um
+    # pedido) na janela entre a contagem e o DELETE, a FK RESTRICT barra a exclusão. Capturamos
+    # o IntegrityError, revertemos e caímos no ramo ARQUIVA — honra o contrato "nunca deixa
+    # IntegrityError vazar como 500".
+    try:
+        await db.execute(
+            update(CompetitorAnalysis)
+            .where(CompetitorAnalysis.account_id == account_id)
+            .values(account_id=None)
+        )
+        await db.execute(
+            update(Inventory).where(Inventory.account_id == account_id).values(account_id=None)
+        )
+        bal_ids = [
+            r[0]
+            for r in (
+                await db.execute(
+                    select(AccountBalance.id).where(AccountBalance.account_id == account_id)
+                )
+            ).all()
+        ]
+        if bal_ids:
+            await db.execute(
+                delete(AccountTransaction).where(
+                    AccountTransaction.account_balance_id.in_(bal_ids)
+                )
+            )
+        await db.execute(delete(AccountBalance).where(AccountBalance.account_id == account_id))
+        await db.execute(delete(OTPVerification).where(OTPVerification.account_id == account_id))
+        await db.execute(
+            delete(MarketplaceMetricDaily).where(MarketplaceMetricDaily.account_id == account_id)
+        )
+        await db.execute(delete(NFeConfig).where(NFeConfig.cm_id == account_id))
+        await db.execute(
+            delete(AccountAdministrator).where(AccountAdministrator.account_id == account_id)
+        )
+        await db.execute(delete(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        # Surgiu histórico durante a exclusão → arquiva (re-busca: a sessão foi revertida).
+        acc = (
+            await db.execute(
+                select(MarketplaceAccount).where(MarketplaceAccount.id == account_id)
+            )
+        ).scalar_one_or_none()
+        if acc is not None:
+            acc.is_active = False
+            acc.is_deleted = True
+            acc.deleted_at = datetime.now(UTC)
+            await db.commit()
+        return {
+            "action": "archived",
+            "message": (
+                "Conta arquivada (surgiu histórico durante a exclusão). O histórico foi "
+                "preservado e a conta não aparece mais no sistema."
+            ),
+        }
+    return {"action": "deleted", "message": "Conta excluída permanentemente."}
+
+
 # ─── OAuth – Mercado Livre ────────────────────────────────────────────────────
 
 
@@ -639,7 +791,14 @@ async def ml_callback(
     token_nick = user_info.get("nickname") or ""
     token_email = (user_info.get("email") or "").lower().strip()
 
-    result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
+    # Conta EXCLUÍDA (is_deleted) não pode ser ressuscitada por um callback em voo (state
+    # emitido antes do archive) — invariante: is_deleted=True IMPLICA is_active=False.
+    result = await db.execute(
+        select(MarketplaceAccount).where(
+            MarketplaceAccount.id == account_id,
+            MarketplaceAccount.is_deleted == False,  # noqa: E712
+        )
+    )
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta não encontrada")
@@ -733,7 +892,13 @@ async def shopee_callback(
     token_data = await shopee_service.exchange_code(code, resolved_shop_id)
     expires_at = datetime.now(UTC) + timedelta(seconds=token_data.get("expire_in", 14400))
 
-    result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
+    # Conta EXCLUÍDA (is_deleted) não pode ser ressuscitada por um callback em voo.
+    result = await db.execute(
+        select(MarketplaceAccount).where(
+            MarketplaceAccount.id == account_id,
+            MarketplaceAccount.is_deleted == False,  # noqa: E712
+        )
+    )
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta não encontrada")

@@ -7,7 +7,7 @@
             <h1 class="m-0">Produtos CMIG</h1>
             <small class="text-muted" v-if="cmig">{{ cmig.company_name }}</small>
           </div>
-          <div class="col-sm-6 text-right">
+          <div class="col-sm-6 text-right" v-if="cmigId">
             <RouterLink :to="`/cmigs/${cmigId}`" class="btn btn-secondary mr-2">
               <i class="fas fa-arrow-left mr-1"></i> Voltar à CMIG
             </RouterLink>
@@ -25,12 +25,38 @@
             </RouterLink>
           </div>
         </div>
+
+        <!-- Seletor de CMIG (quando o usuário administra mais de uma) -->
+        <div class="row mb-2" v-if="allCmigs.length > 1">
+          <div class="col-sm-6">
+            <div class="input-group input-group-sm">
+              <div class="input-group-prepend">
+                <span class="input-group-text"><i class="fas fa-id-card mr-1"></i> Conta MIG</span>
+              </div>
+              <select class="form-control" :value="cmigId || ''" @change="onSelectCmig($event.target.value)">
+                <option value="" disabled>Selecione a CMIG...</option>
+                <option v-for="c in allCmigs" :key="c.id" :value="c.id">
+                  {{ c.company_name }}<span v-if="c.cnpj"> — {{ c.cnpj }}</span>
+                </option>
+              </select>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
     <section class="content">
       <div class="container-fluid">
-        <div class="card">
+        <!-- Nenhuma CMIG escolhida (acesso pelo menu "Produtos" com várias CMIGs) -->
+        <div v-if="!cmigId" class="card">
+          <div class="card-body text-center py-5 text-muted">
+            <i class="fas fa-id-card fa-3x mb-3 d-block"></i>
+            <p class="mb-0" v-if="allCmigs.length > 1">Selecione uma Conta MIG acima para ver os produtos.</p>
+            <p class="mb-0" v-else>Nenhuma Conta MIG disponível para o seu usuário.</p>
+          </div>
+        </div>
+
+        <div v-else class="card">
           <div class="card-header d-flex align-items-center">
             <h3 class="card-title flex-grow-1"><i class="fas fa-box mr-2"></i>Produtos cadastrados</h3>
             <div class="btn-group btn-group-sm">
@@ -270,9 +296,11 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
+import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import { useCmigStore } from '@/stores/cmig'
 import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import StockMovementsModal from '@/components/stock/StockMovementsModal.vue'
@@ -281,6 +309,8 @@ import ProductImportModal from '@/components/products/ProductImportModal.vue'
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const cmigStore = useCmigStore()
+const { allCmigs } = storeToRefs(cmigStore)
 const toast = useToast()
 
 const duplicateModal = ref({ show: false, srcId: null, srcSku: '', newSku: '', loading: false })
@@ -399,11 +429,34 @@ async function loadCategories() {
   }
 }
 
-onMounted(async () => {
-  if (!cmigId.value) return
+// Troca de CMIG pelo seletor — reflete na query (fonte única do cmigId)
+function onSelectCmig(val) {
+  if (!val) return
+  router.replace({ path: '/cmig-products', query: { ...route.query, cmig_id: val } })
+}
+
+// Carrega CMIG + produtos sempre que o cmigId mudar (inclui a carga inicial).
+async function loadForCmig() {
+  if (!cmigId.value) {
+    cmig.value = null
+    allProducts.value = []
+    return
+  }
   const { data: c } = await api.get(`/cmigs/${cmigId.value}`)
   cmig.value = c
-  await Promise.all([loadProducts(), loadCategories()])
+  await loadProducts()
+}
+
+watch(cmigId, loadForCmig)
+
+onMounted(async () => {
+  await Promise.all([cmigStore.fetchAllCmigs(), loadCategories()])
+  // Sem CMIG na URL e só uma disponível → auto-seleciona (dropdown fica oculto)
+  if (!cmigId.value && allCmigs.value.length === 1) {
+    onSelectCmig(allCmigs.value[0].id)
+    return  // o watch dispara o load ao mudar a query
+  }
+  await loadForCmig()
 })
 
 function getThumb(p) {

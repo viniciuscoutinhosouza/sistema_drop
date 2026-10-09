@@ -66,6 +66,9 @@
                     <RouterLink v-if="isAC || isAdmin" :to="`/cmigs/${cmig.id}/edit`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
                       <i class="fas fa-edit"></i>
                     </RouterLink>
+                    <RouterLink v-if="isAC || isAdmin" :to="`/integrations?cmig_id=${cmig.id}`" class="btn btn-sm btn-outline-success mr-1" title="Marketplaces desta CMIG">
+                      <i class="fas fa-plug"></i>
+                    </RouterLink>
                     <button v-if="canManage(cmig)" class="btn btn-sm btn-outline-secondary"
                             title="Gerenciar colaboradores"
                             @click="openCollab(cmig)">

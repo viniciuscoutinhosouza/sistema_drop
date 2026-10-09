@@ -63,22 +63,22 @@
 
           <!-- ══ MENUS DINÂMICOS (perfil de acesso) — recolhíveis ════════════ -->
 
-          <!-- MINHAS CONTAS (GC / AC) -->
-          <li v-if="canSee('cmig') || canSee('integrations') || canSee('full_cnpjs')"
+          <!-- CADASTRO (GC / AC) -->
+          <li v-if="canSee('cmig') || canSee('full_cnpjs')"
               class="nav-item" :class="{ 'menu-open': sections.contas }">
             <a href="#" class="nav-link" @click.prevent="toggle('contas')">
               <i class="nav-icon fas fa-briefcase"></i>
-              <p>Minhas Contas <i class="right fas fa-angle-left"></i></p>
+              <p>Cadastro <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
               <li v-if="canSee('cmig')" class="nav-item">
-                <RouterLink to="/cmigs" class="nav-link" :class="{ active: route.path.startsWith('/cmigs') || route.path.startsWith('/cmig-products') }">
+                <RouterLink to="/cmigs" class="nav-link" :class="{ active: route.path.startsWith('/cmigs') }">
                   <i class="nav-icon fas fa-id-card"></i><p>Contas MIG (CMIG)</p>
                 </RouterLink>
               </li>
-              <li v-if="canSee('integrations')" class="nav-item">
-                <RouterLink to="/integrations" class="nav-link" :class="{ active: route.path.startsWith('/integrations') }">
-                  <i class="nav-icon fas fa-plug"></i><p>Contas Marketplace (CM)</p>
+              <li v-if="canSee('cmig')" class="nav-item">
+                <RouterLink to="/cmig-products" class="nav-link" :class="{ active: route.path.startsWith('/cmig-products') }">
+                  <i class="nav-icon fas fa-box"></i><p>Produtos</p>
                 </RouterLink>
               </li>
               <li v-if="canSee('full_cnpjs')" class="nav-item">
@@ -332,13 +332,27 @@
           </li>
 
           <!-- ADMINISTRAÇÃO -->
-          <li v-if="canSee('config_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_galpoes') || canSee('config_api_console') || canSee('config_perfis')"
+          <li v-if="canSee('integrations') || canSee('config_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_galpoes') || canSee('config_api_console') || canSee('config_perfis')"
               class="nav-item" :class="{ 'menu-open': sections.admin }">
-            <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') }" @click.prevent="toggle('admin')">
+            <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') || route.path.startsWith('/integrations') }" @click.prevent="toggle('admin')">
               <i class="nav-icon fas fa-cog"></i>
               <p>Administração <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
+              <!-- Integrações (subgrupo) → Contas Marketplace -->
+              <li v-if="canSee('integrations')" class="nav-item" :class="{ 'menu-open': sections.adminIntegracoes }">
+                <a href="#" class="nav-link" @click.prevent="toggle('adminIntegracoes')">
+                  <i class="nav-icon fas fa-plug"></i>
+                  <p>Integrações <i class="right fas fa-angle-left"></i></p>
+                </a>
+                <ul class="nav nav-treeview">
+                  <li class="nav-item">
+                    <RouterLink to="/integrations" class="nav-link" :class="{ active: route.path.startsWith('/integrations') }">
+                      <i class="nav-icon fas fa-store"></i><p>Contas Marketplace (CM)</p>
+                    </RouterLink>
+                  </li>
+                </ul>
+              </li>
               <li v-if="canSee('config_aprovacoes')" class="nav-item">
                 <RouterLink to="/admin/user-approvals" class="nav-link" :class="{ active: route.path === '/admin/user-approvals' }">
                   <i class="far fa-circle nav-icon"></i><p>Aprovações de Cadastro <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
@@ -476,6 +490,7 @@ const sections = reactive({
   monitoramento: false,
   gestao: false,
   admin: false,
+  adminIntegracoes: false,
   ...loadSavedSections(),
 })
 
@@ -491,7 +506,8 @@ function toggle(key) {
 // Qual seção contém a rota atual — abre automaticamente ao navegar / carregar
 function sectionForPath(path) {
   if (/^\/(cmig-reports|relatorios)/.test(path)) return 'relatorios'
-  if (/^\/(cmigs|cmig-products|integrations|full-cnpjs)/.test(path)) return 'contas'
+  if (path.startsWith('/integrations')) return 'admin'
+  if (/^\/(cmigs|cmig-products|full-cnpjs)/.test(path)) return 'contas'
   if (/^\/(anuncios|campanha-ads|messages|financial|orders|catalog|manual-orders|estoque)/.test(path)) return 'operacoes'
   if (path.startsWith('/returns')) return path === '/returns/aguardando-retorno' ? 'estoque' : 'operacoes'
   if (path === '/inventario' || path.startsWith('/inventario/')) return 'estoque'
@@ -508,6 +524,8 @@ function sectionForPath(path) {
 function openActiveSection(path) {
   const sec = sectionForPath(path)
   if (sec) sections[sec] = true
+  // /integrations vive aninhado em Administração → abre também o subgrupo Integrações
+  if (path.startsWith('/integrations')) sections.adminIntegracoes = true
 }
 
 watch(() => route.path, (p) => openActiveSection(p))
