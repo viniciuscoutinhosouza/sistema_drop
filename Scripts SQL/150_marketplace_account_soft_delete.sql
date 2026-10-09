@@ -28,7 +28,5 @@ EXCEPTION
 END;
 /
 
--- Backfill de segurança: nenhuma conta nasce excluída.
-UPDATE marketplace_accounts SET is_deleted = 0 WHERE is_deleted IS NULL;
-COMMIT;
-/
+-- Sem backfill: a coluna nasce NUMBER(1) DEFAULT 0 NOT NULL (nenhuma conta nasce excluída)
+-- e a invariante is_deleted=1 ⇒ is_active=0 é garantida em código (purge_account).
