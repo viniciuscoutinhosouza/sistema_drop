@@ -307,7 +307,7 @@
           </li>
 
           <!-- GESTÃO GO -->
-          <li v-if="(canSee('go_empresa') && authStore.user?.go_id) || canSee('go_usuarios')" class="nav-item" :class="{ 'menu-open': sections.gestao }">
+          <li v-if="canSee('go_empresa') && authStore.user?.go_id" class="nav-item" :class="{ 'menu-open': sections.gestao }">
             <a href="#" class="nav-link" @click.prevent="toggle('gestao')">
               <i class="nav-icon fas fa-sitemap"></i>
               <p>Gestão <i class="right fas fa-angle-left"></i></p>
@@ -318,16 +318,11 @@
                   <i class="nav-icon fas fa-building"></i><p>Minha Empresa</p>
                 </RouterLink>
               </li>
-              <li v-if="canSee('go_usuarios')" class="nav-item">
-                <RouterLink to="/settings/users" class="nav-link" :class="{ active: route.path === '/settings/users' }">
-                  <i class="nav-icon fas fa-users"></i><p>Usuários</p>
-                </RouterLink>
-              </li>
             </ul>
           </li>
 
           <!-- ADMINISTRAÇÃO -->
-          <li v-if="canSee('integrations') || canSee('full_cnpjs') || canSee('config_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_galpoes') || canSee('config_api_console') || canSee('config_perfis')"
+          <li v-if="canSee('integrations') || canSee('full_cnpjs') || canSee('config_usuarios') || canSee('go_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_galpoes') || canSee('config_api_console') || canSee('config_perfis')"
               class="nav-item" :class="{ 'menu-open': sections.admin }">
             <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') || route.path.startsWith('/integrations') || route.path.startsWith('/full-cnpjs') }" @click.prevent="toggle('admin')">
               <i class="nav-icon fas fa-cog"></i>
@@ -382,7 +377,7 @@
                   <i class="far fa-circle nav-icon"></i><p>Aprovações de Cadastro <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
                 </RouterLink>
               </li>
-              <li v-if="canSee('config_usuarios')" class="nav-item">
+              <li v-if="canSee('config_usuarios') || canSee('go_usuarios')" class="nav-item">
                 <RouterLink to="/settings/users" class="nav-link" :class="{ active: route.path === '/settings/users' }">
                   <i class="far fa-circle nav-icon"></i><p>Usuários</p>
                 </RouterLink>
