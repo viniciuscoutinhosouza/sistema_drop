@@ -64,7 +64,7 @@
           <!-- ══ MENUS DINÂMICOS (perfil de acesso) — recolhíveis ════════════ -->
 
           <!-- CADASTRO (GC / AC) -->
-          <li v-if="canSee('cmig') || canSee('full_cnpjs')"
+          <li v-if="canSee('cmig')"
               class="nav-item" :class="{ 'menu-open': sections.contas }">
             <a href="#" class="nav-link" @click.prevent="toggle('contas')">
               <i class="nav-icon fas fa-briefcase"></i>
@@ -79,11 +79,6 @@
               <li v-if="canSee('cmig')" class="nav-item">
                 <RouterLink to="/cmig-products" class="nav-link" :class="{ active: route.path.startsWith('/cmig-products') }">
                   <i class="nav-icon fas fa-box"></i><p>Produtos</p>
-                </RouterLink>
-              </li>
-              <li v-if="canSee('full_cnpjs')" class="nav-item">
-                <RouterLink to="/full-cnpjs" class="nav-link" :class="{ active: route.path.startsWith('/full-cnpjs') }">
-                  <i class="nav-icon fas fa-warehouse"></i><p>CNPJs FULL</p>
                 </RouterLink>
               </li>
             </ul>
@@ -332,23 +327,52 @@
           </li>
 
           <!-- ADMINISTRAÇÃO -->
-          <li v-if="canSee('integrations') || canSee('config_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_galpoes') || canSee('config_api_console') || canSee('config_perfis')"
+          <li v-if="canSee('integrations') || canSee('full_cnpjs') || canSee('config_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_galpoes') || canSee('config_api_console') || canSee('config_perfis')"
               class="nav-item" :class="{ 'menu-open': sections.admin }">
-            <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') || route.path.startsWith('/integrations') }" @click.prevent="toggle('admin')">
+            <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') || route.path.startsWith('/integrations') || route.path.startsWith('/full-cnpjs') }" @click.prevent="toggle('admin')">
               <i class="nav-icon fas fa-cog"></i>
               <p>Administração <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
-              <!-- Integrações (subgrupo) → Contas Marketplace -->
-              <li v-if="canSee('integrations')" class="nav-item" :class="{ 'menu-open': sections.adminIntegracoes }">
+              <!-- Integrações (subgrupo) → contas/CNPJs FULL/config de marketplaces/eShip/API/certificado -->
+              <li v-if="canSee('integrations') || canSee('full_cnpjs') || canSee('config_marketplaces') || canSee('config_eship') || canSee('config_api_console')"
+                  class="nav-item" :class="{ 'menu-open': sections.adminIntegracoes }">
                 <a href="#" class="nav-link" @click.prevent="toggle('adminIntegracoes')">
                   <i class="nav-icon fas fa-plug"></i>
                   <p>Integrações <i class="right fas fa-angle-left"></i></p>
                 </a>
                 <ul class="nav nav-treeview">
-                  <li class="nav-item">
+                  <li v-if="canSee('integrations')" class="nav-item">
                     <RouterLink to="/integrations" class="nav-link" :class="{ active: route.path.startsWith('/integrations') }">
                       <i class="nav-icon fas fa-store"></i><p>Contas Marketplace (CM)</p>
+                    </RouterLink>
+                  </li>
+                  <li v-if="canSee('full_cnpjs')" class="nav-item">
+                    <RouterLink to="/full-cnpjs" class="nav-link" :class="{ active: route.path.startsWith('/full-cnpjs') }">
+                      <i class="nav-icon fas fa-warehouse"></i><p>CNPJs FULL</p>
+                    </RouterLink>
+                  </li>
+                  <li v-if="canSee('config_marketplaces')" class="nav-item">
+                    <RouterLink to="/settings/marketplaces" class="nav-link" :class="{ active: route.path === '/settings/marketplaces' }">
+                      <i class="nav-icon fas fa-store-alt"></i>
+                      <p>Config. de Marketplaces <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
+                    </RouterLink>
+                  </li>
+                  <li v-if="canSee('config_eship')" class="nav-item">
+                    <RouterLink to="/settings/eship" class="nav-link" :class="{ active: route.path === '/settings/eship' }">
+                      <i class="nav-icon fas fa-truck-loading"></i><p>Integração eShip</p>
+                    </RouterLink>
+                  </li>
+                  <li v-if="canSee('config_api_console')" class="nav-item">
+                    <RouterLink to="/admin/api-console" class="nav-link" :class="{ active: route.path === '/admin/api-console' }">
+                      <i class="nav-icon fas fa-terminal"></i>
+                      <p>Console de API <span class="badge badge-danger ml-1" style="font-size:9px">Admin</span></p>
+                    </RouterLink>
+                  </li>
+                  <li v-if="canSee('config_marketplaces')" class="nav-item">
+                    <RouterLink to="/settings/marketplace-certificate" class="nav-link" :class="{ active: route.path === '/settings/marketplace-certificate' }">
+                      <i class="nav-icon fas fa-certificate"></i>
+                      <p>Certificado do Marketplace <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
                     </RouterLink>
                   </li>
                 </ul>
@@ -374,11 +398,6 @@
                   <i class="far fa-circle nav-icon"></i><p>Servidor de E-mail</p>
                 </RouterLink>
               </li>
-              <li v-if="canSee('config_eship')" class="nav-item">
-                <RouterLink to="/settings/eship" class="nav-link" :class="{ active: route.path === '/settings/eship' }">
-                  <i class="far fa-circle nav-icon"></i><p>Integração eShip</p>
-                </RouterLink>
-              </li>
               <li v-if="canSee('config_ncm')" class="nav-item">
                 <RouterLink to="/settings/ncm" class="nav-link" :class="{ active: route.path === '/settings/ncm' }">
                   <i class="far fa-circle nav-icon"></i><p>Tabela NCM</p>
@@ -387,24 +406,6 @@
               <li v-if="canSee('config_ai')" class="nav-item">
                 <RouterLink to="/settings/ai-config" class="nav-link" :class="{ active: route.path === '/settings/ai-config' }">
                   <i class="far fa-circle nav-icon"></i><p>Configuração de IA</p>
-                </RouterLink>
-              </li>
-              <li v-if="canSee('config_marketplaces')" class="nav-item">
-                <RouterLink to="/settings/marketplaces" class="nav-link" :class="{ active: route.path === '/settings/marketplaces' }">
-                  <i class="far fa-circle nav-icon"></i>
-                  <p>Config. de Marketplaces <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
-                </RouterLink>
-              </li>
-              <li v-if="canSee('config_marketplaces')" class="nav-item">
-                <RouterLink to="/settings/marketplace-certificate" class="nav-link" :class="{ active: route.path === '/settings/marketplace-certificate' }">
-                  <i class="far fa-circle nav-icon"></i>
-                  <p>Certificado do Marketplace <span class="badge badge-primary ml-1" style="font-size:9px">Admin</span></p>
-                </RouterLink>
-              </li>
-              <li v-if="canSee('config_api_console')" class="nav-item">
-                <RouterLink to="/admin/api-console" class="nav-link" :class="{ active: route.path === '/admin/api-console' }">
-                  <i class="far fa-circle nav-icon"></i>
-                  <p>Console de API <span class="badge badge-danger ml-1" style="font-size:9px">Admin</span></p>
                 </RouterLink>
               </li>
               <li v-if="canSee('config_perfis')" class="nav-item">
@@ -506,8 +507,8 @@ function toggle(key) {
 // Qual seção contém a rota atual — abre automaticamente ao navegar / carregar
 function sectionForPath(path) {
   if (/^\/(cmig-reports|relatorios)/.test(path)) return 'relatorios'
-  if (path.startsWith('/integrations')) return 'admin'
-  if (/^\/(cmigs|cmig-products|full-cnpjs)/.test(path)) return 'contas'
+  if (path.startsWith('/integrations') || path.startsWith('/full-cnpjs')) return 'admin'
+  if (/^\/(cmigs|cmig-products)/.test(path)) return 'contas'
   if (/^\/(anuncios|campanha-ads|messages|financial|orders|catalog|manual-orders|estoque)/.test(path)) return 'operacoes'
   if (path.startsWith('/returns')) return path === '/returns/aguardando-retorno' ? 'estoque' : 'operacoes'
   if (path === '/inventario' || path.startsWith('/inventario/')) return 'estoque'
@@ -521,11 +522,26 @@ function sectionForPath(path) {
   return null
 }
 
+// Rotas que vivem no subgrupo Administração ▸ Integrações
+function isIntegracoesPath(path) {
+  return (
+    path.startsWith('/integrations') ||
+    path.startsWith('/full-cnpjs') ||
+    path === '/settings/marketplaces' ||
+    path === '/settings/marketplace-certificate' ||
+    path === '/settings/eship' ||
+    path === '/admin/api-console'
+  )
+}
+
 function openActiveSection(path) {
   const sec = sectionForPath(path)
   if (sec) sections[sec] = true
-  // /integrations vive aninhado em Administração → abre também o subgrupo Integrações
-  if (path.startsWith('/integrations')) sections.adminIntegracoes = true
+  // Itens aninhados em Administração ▸ Integrações → abre também o subgrupo
+  if (isIntegracoesPath(path)) {
+    sections.admin = true
+    sections.adminIntegracoes = true
+  }
 }
 
 watch(() => route.path, (p) => openActiveSection(p))
@@ -661,6 +677,17 @@ function canSee(menuKey) {
   font-weight: 400;
   font-size: 0.9rem;
   padding-left: 0.85rem;
+}
+
+/* 3º nível (ex.: Administração ▸ Integrações ▸ itens) — mais um degrau de recuo
+   com a mesma linha-guia verde, para a hierarquia ficar visível como no padrão. */
+.main-sidebar .nav-sidebar .nav-treeview .nav-treeview {
+  margin-left: 0.9rem;
+  border-left: 2px solid #20c997;
+}
+.main-sidebar .nav-sidebar .nav-treeview .nav-treeview > .nav-item > .nav-link {
+  padding-left: 1rem;
+  font-size: 0.84rem;
 }
 .main-sidebar .nav-sidebar .nav-treeview > .nav-item > .nav-link .nav-icon {
   color: #8a93a2;
