@@ -41,15 +41,25 @@
                       required
                       :disabled="saving"
                     />
-                    <div v-if="form.person_type === 'PJ'" class="input-group-append">
+                    <div class="input-group-append">
                       <button
                         type="button"
+                        class="btn btn-outline-secondary"
+                        :disabled="saving || searchingDb || lookingUp"
+                        title="Buscar no banco de dados (cadastros existentes)"
+                        @click="searchDb"
+                      >
+                        <i class="fas" :class="searchingDb ? 'fa-spinner fa-spin' : 'fa-search'"></i>
+                      </button>
+                      <button
+                        v-if="form.person_type === 'PJ'"
+                        type="button"
                         class="btn btn-outline-info"
-                        :disabled="saving || lookingUp"
-                        title="Consultar CNPJ na BrasilAPI"
+                        :disabled="saving || lookingUp || searchingDb"
+                        title="Buscar na Receita Federal (BrasilAPI) e preencher os dados"
                         @click="doCnpjLookup"
                       >
-                        <i class="fas" :class="lookingUp ? 'fa-spinner fa-spin' : 'fa-search'"></i>
+                        <i class="fas" :class="lookingUp ? 'fa-spinner fa-spin' : 'fa-landmark'"></i>
                       </button>
                     </div>
                   </div>
@@ -150,6 +160,59 @@ const toast = useToast()
 
 const saving = ref(false)
 const lookingUp = ref(false)
+const searchingDb = ref(false)
+
+function _docDigits(s) {
+  return (s || '').replace(/\D/g, '')
+}
+
+// Busca no BANCO DE DADOS: se o documento já existe NESTA conta, seleciona direto; se existe em
+// OUTRA conta do usuário, preenche o formulário com os dados (para recadastrar nesta conta).
+async function searchDb() {
+  const digits = _docDigits(form.document)
+  const expected = form.person_type === 'PJ' ? 14 : 11
+  if (digits.length !== expected) {
+    toast.error(`Informe um ${form.person_type === 'PJ' ? 'CNPJ' : 'CPF'} com ${expected} dígitos`)
+    return
+  }
+  searchingDb.value = true
+  try {
+    // 1) Nesta CMIG → se achar, seleciona (reaproveita o cadastro existente).
+    if (props.cmigId) {
+      const inCmig = await peopleStore.fetchPeople({ cmig_id: props.cmigId, search: digits, page_size: 20 })
+      const exact = (inCmig.items || []).find(p => _docDigits(p.document) === digits)
+      if (exact) {
+        toast.success('Cliente já cadastrado nesta conta — selecionado.')
+        emit('created', exact)
+        return
+      }
+    }
+    // 2) Em outra conta do usuário → preenche os dados para cadastrar nesta conta.
+    const any = await peopleStore.fetchPeople({ search: digits, page_size: 20 })
+    const found = (any.items || []).find(p => _docDigits(p.document) === digits)
+    if (found) {
+      form.person_type = found.person_type || form.person_type
+      form.name = found.name || form.name
+      form.trade_name = found.trade_name || form.trade_name
+      form.email = found.email || form.email
+      form.phone = found.phone || form.phone
+      form.zip_code = found.zip_code || form.zip_code
+      form.street = found.street || form.street
+      form.address_number = found.address_number || form.address_number
+      form.complement = found.complement || form.complement
+      form.neighborhood = found.neighborhood || form.neighborhood
+      form.city = found.city || form.city
+      form.state = found.state || form.state
+      toast.info('Encontrado em outra conta — dados preenchidos. Revise e salve para cadastrar nesta conta.')
+      return
+    }
+    toast.warning('Nenhum cadastro encontrado no banco. Busque na Receita ou preencha manualmente.')
+  } catch {
+    toast.error('Falha ao buscar no banco de dados')
+  } finally {
+    searchingDb.value = false
+  }
+}
 
 function emptyForm() {
   return {
@@ -184,8 +247,9 @@ async function doCnpjLookup() {
   lookingUp.value = true
   try {
     const data = await peopleStore.lookupCnpj(digits)
-    form.name = data.name || form.name
-    form.trade_name = data.trade_name || form.trade_name
+    // A BrasilAPI (via backend) devolve razao_social / nome_fantasia — não name / trade_name.
+    form.name = data.razao_social || data.name || form.name
+    form.trade_name = data.nome_fantasia || data.trade_name || form.trade_name
     form.email = data.email || form.email
     form.phone = data.phone || form.phone
     form.zip_code = data.zip_code || form.zip_code
