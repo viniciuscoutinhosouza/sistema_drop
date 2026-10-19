@@ -50,7 +50,7 @@
           <!-- ══ MENUS DINÂMICOS (perfil de acesso) — recolhíveis ════════════ -->
 
           <!-- CADASTRO (GC / AC) -->
-          <li v-if="canSee('cmig')"
+          <li v-if="canSee('cmig') || canSee('pg')"
               class="nav-item" :class="{ 'menu-open': sections.contas }">
             <a href="#" class="nav-link" @click.prevent="toggle('contas')">
               <i class="nav-icon fas fa-briefcase"></i>
@@ -65,6 +65,11 @@
               <li v-if="canSee('cmig')" class="nav-item">
                 <RouterLink to="/cmig-products" class="nav-link" :class="{ active: route.path.startsWith('/cmig-products') }">
                   <i class="nav-icon fas fa-box"></i><p>Produtos</p>
+                </RouterLink>
+              </li>
+              <li v-if="canSee('pg')" class="nav-item">
+                <RouterLink to="/pg" class="nav-link" :class="{ active: route.path.startsWith('/pg') }">
+                  <i class="nav-icon fas fa-warehouse"></i><p>Produto Geral (PG)</p>
                 </RouterLink>
               </li>
             </ul>
@@ -162,7 +167,7 @@
               class="nav-item" :class="{ 'menu-open': sections.venda }">
             <a href="#" class="nav-link" @click.prevent="toggle('venda')">
               <i class="nav-icon fas fa-shopping-cart"></i>
-              <p>Venda <i class="right fas fa-angle-left"></i></p>
+              <p>Venda / Saída <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
               <li v-if="canSee('pedidos')" class="nav-item">
@@ -193,7 +198,7 @@
               class="nav-item" :class="{ 'menu-open': sections.compras }">
             <a href="#" class="nav-link" @click.prevent="toggle('compras')">
               <i class="nav-icon fas fa-shopping-bag"></i>
-              <p>Compras <i class="right fas fa-angle-left"></i></p>
+              <p>Compra / Entrada <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
               <li v-if="canSee('fiscal_entradas')" class="nav-item">
@@ -204,21 +209,6 @@
               <li v-if="canSee('fiscal_entradas')" class="nav-item">
                 <RouterLink to="/compras/devolucoes" class="nav-link" :class="{ active: route.path === '/compras/devolucoes' }">
                   <i class="nav-icon fas fa-undo-alt"></i><p>Registrar Devolução de Compra</p>
-                </RouterLink>
-              </li>
-            </ul>
-          </li>
-
-          <!-- OPERAÇÃO GL / UGO -->
-          <li v-if="canSee('pg')" class="nav-item" :class="{ 'menu-open': sections.operacao }">
-            <a href="#" class="nav-link" @click.prevent="toggle('operacao')">
-              <i class="nav-icon fas fa-warehouse"></i>
-              <p>Operação <i class="right fas fa-angle-left"></i></p>
-            </a>
-            <ul class="nav nav-treeview">
-              <li class="nav-item">
-                <RouterLink to="/pg" class="nav-link" :class="{ active: route.path.startsWith('/pg') }">
-                  <i class="nav-icon fas fa-warehouse"></i><p>Produto Geral (PG)</p>
                 </RouterLink>
               </li>
             </ul>
@@ -561,7 +551,7 @@ function toggle(key) {
 function sectionForPath(path) {
   if (/^\/(cmig-reports|relatorios)/.test(path)) return 'relatorios'
   if (path.startsWith('/integrations') || path.startsWith('/full-cnpjs')) return 'admin'
-  if (/^\/(cmigs|cmig-products)/.test(path)) return 'contas'
+  if (/^\/(cmigs|cmig-products|pg)/.test(path)) return 'contas'
   if (/^\/(anuncios|catalog|messages|campanha-ads|simulator|analysis\/competitor)/.test(path)) return 'anuncios'
   if (path.startsWith('/financial')) return 'financeiro'
   if (path.startsWith('/orders') || path.startsWith('/manual-orders')) return 'venda'
@@ -569,7 +559,6 @@ function sectionForPath(path) {
   if (path === '/fiscal/entradas' || path.startsWith('/fiscal/entradas/') || path.startsWith('/compras/')) return 'compras'
   if (path.startsWith('/estoque')) return 'estoque'
   if (path === '/inventario' || path.startsWith('/inventario/')) return 'estoque'
-  if (path.startsWith('/pg')) return 'operacao'
   if (path.startsWith('/separacao')) return 'logistica'
   if (path.startsWith('/people') || path.startsWith('/fiscal/')) return 'fiscal'
   if (path.startsWith('/integracao/')) return 'integracao'

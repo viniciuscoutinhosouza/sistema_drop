@@ -27,6 +27,9 @@
     </div>
 
     <template v-if="cmigId">
+      <div class="row">
+        <!-- Coluna principal: seleção de produtos + cliente -->
+        <div class="col-lg-8 col-xl-9">
       <!-- 2) Seleção de Produtos -->
       <div class="card mb-3">
         <div class="card-header d-flex justify-content-between align-items-center flex-wrap">
@@ -163,111 +166,97 @@
         </div>
       </div>
 
-      <!-- 4) Carrinho -->
-      <div class="card mb-3">
-        <div class="card-header">
+        </div><!-- /col-esquerda (produtos + cliente) -->
+
+        <!-- Sidebar direita: Carrinho -->
+        <div class="col-lg-4 col-xl-3">
+      <!-- 4) Carrinho (sidebar direita) -->
+      <div class="card mb-3 cart-sidebar">
+        <div class="card-header d-flex justify-content-between align-items-center">
           <h3 class="card-title"><i class="fas fa-shopping-cart mr-2"></i> Carrinho</h3>
+          <span v-if="cart.length" class="badge badge-primary badge-pill">{{ cartCount }}</span>
         </div>
-        <div class="card-body">
+        <div class="card-body" style="max-height:60vh;overflow-y:auto">
           <div v-if="!cart.length" class="text-center text-muted py-3">
-            Adicione produtos do catálogo acima para montar o pedido.
+            Adicione produtos do catálogo para montar o pedido.
           </div>
-          <div v-else class="table-responsive">
-            <table class="table table-sm align-middle">
-              <thead>
-                <tr>
-                  <th style="width:60px"></th>
-                  <th>SKU</th>
-                  <th>Produto</th>
-                  <th style="width:110px">Qtde</th>
-                  <th class="text-right" style="width:130px" title="Preço unitário (editável)">Preço unit.</th>
-                  <th class="text-right">Subtotal</th>
-                  <th style="width:40px"></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(it, idx) in cart" :key="it.kind + '-' + it.id">
-                  <td>
-                    <img
-                      v-if="it.thumb"
-                      :src="it.thumb"
-                      style="height:40px;width:40px;object-fit:contain;background:#f8f9fa"
-                    />
-                  </td>
-                  <td>
-                    <small class="text-muted">{{ it.sku }}</small>
-                    <span class="badge ml-1" :class="it.kind === 'pg' ? 'badge-info' : 'badge-warning'">
-                      {{ it.kind === 'pg' ? 'PG' : 'CMIG' }}
-                    </span>
-                  </td>
-                  <td>{{ it.title }}</td>
-                  <td>
-                    <input
-                      v-model.number="it.quantity"
-                      type="number"
-                      min="1"
-                      class="form-control form-control-sm"
-                      @change="normalizeQty(idx)"
-                    />
-                  </td>
-                  <td class="text-right">
-                    <input
-                      v-model.number="it.unit_price"
-                      type="number"
-                      min="0.01"
-                      step="0.01"
-                      class="form-control form-control-sm text-right"
-                      @change="normalizePrice(idx)"
-                    />
-                  </td>
-                  <td class="text-right">
-                    <strong>{{ formatCurrency((Number(it.unit_price) || 0) * (Number(it.quantity) || 0)) }}</strong>
-                  </td>
-                  <td>
-                    <button class="btn btn-sm btn-link text-danger" @click="removeItem(idx)">
-                      <i class="fas fa-times"></i>
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-              <tfoot>
-                <tr>
-                  <td colspan="4" class="text-right text-muted small">Subtotal produtos</td>
-                  <td class="text-right">
-                    <span>{{ formatCurrency(cartTotal) }}</span>
-                  </td>
-                  <td colspan="2"></td>
-                </tr>
-                <tr>
-                  <td colspan="4" class="text-right text-muted small">
-                    <label class="mb-0" for="shipping-input">Frete</label>
-                  </td>
-                  <td class="text-right">
-                    <input
-                      id="shipping-input"
-                      v-model.number="shippingCost"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      class="form-control form-control-sm text-right"
-                    />
-                  </td>
-                  <td colspan="2"></td>
-                </tr>
-                <tr class="font-weight-bold">
-                  <td colspan="4" class="text-right">Total da venda</td>
-                  <td class="text-right">
-                    <strong class="text-success">{{ formatCurrency(saleTotal) }}</strong>
-                  </td>
-                  <td colspan="2"></td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
+          <template v-else>
+            <div
+              v-for="(it, idx) in cart"
+              :key="it.kind + '-' + it.id"
+              class="d-flex mb-2 pb-2 border-bottom"
+            >
+              <img
+                v-if="it.thumb"
+                :src="it.thumb"
+                class="mr-2 flex-shrink-0"
+                style="height:42px;width:42px;object-fit:contain;background:#f8f9fa;border-radius:4px"
+              />
+              <div class="flex-grow-1" style="min-width:0">
+                <div class="d-flex justify-content-between align-items-start">
+                  <span class="font-weight-bold text-truncate" style="font-size:12px" :title="it.title">{{ it.title }}</span>
+                  <button class="btn btn-sm btn-link text-danger p-0 ml-1" title="Remover" @click="removeItem(idx)">
+                    <i class="fas fa-times"></i>
+                  </button>
+                </div>
+                <small class="text-muted d-block" style="font-size:10px">
+                  {{ it.sku }}
+                  <span class="badge ml-1" :class="it.kind === 'pg' ? 'badge-info' : 'badge-warning'">
+                    {{ it.kind === 'pg' ? 'PG' : 'CMIG' }}
+                  </span>
+                </small>
+                <div class="d-flex align-items-center mt-1" style="gap:.25rem">
+                  <input
+                    v-model.number="it.quantity"
+                    type="number"
+                    min="1"
+                    class="form-control form-control-sm"
+                    style="width:52px"
+                    title="Quantidade"
+                    @change="normalizeQty(idx)"
+                  />
+                  <span class="text-muted small">×</span>
+                  <input
+                    v-model.number="it.unit_price"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    class="form-control form-control-sm text-right"
+                    style="width:82px"
+                    title="Preço unitário"
+                    @change="normalizePrice(idx)"
+                  />
+                  <span class="ml-auto font-weight-bold" style="font-size:12px">
+                    {{ formatCurrency((Number(it.unit_price) || 0) * (Number(it.quantity) || 0)) }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
-        <div class="card-footer text-right">
+        <div class="card-footer">
+          <div class="d-flex justify-content-between mb-1">
+            <span class="text-muted small">Subtotal produtos</span>
+            <span>{{ formatCurrency(cartTotal) }}</span>
+          </div>
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <label class="text-muted small mb-0" for="shipping-input">Frete</label>
+            <input
+              id="shipping-input"
+              v-model.number="shippingCost"
+              type="number"
+              min="0"
+              step="0.01"
+              class="form-control form-control-sm text-right"
+              style="width:100px"
+            />
+          </div>
+          <div class="d-flex justify-content-between font-weight-bold border-top pt-1">
+            <span>Total da venda</span>
+            <strong class="text-success">{{ formatCurrency(saleTotal) }}</strong>
+          </div>
           <button
-            class="btn btn-success"
+            class="btn btn-success btn-block mt-2"
             :disabled="!canSubmit || submitting"
             @click="closeOrder"
           >
@@ -276,6 +265,8 @@
           </button>
         </div>
       </div>
+        </div><!-- /col-direita (carrinho) -->
+      </div><!-- /row -->
     </template>
 
     <PersonSearchModal
@@ -336,6 +327,9 @@ const submitting = ref(false)
 
 const cartTotal = computed(() =>
   cart.value.reduce((acc, it) => acc + (Number(it.unit_price) || 0) * (Number(it.quantity) || 0), 0)
+)
+const cartCount = computed(() =>
+  cart.value.reduce((acc, it) => acc + (Number(it.quantity) || 0), 0)
 )
 const saleTotal = computed(() => cartTotal.value + (Number(shippingCost.value) || 0))
 const canSubmit = computed(() => cart.value.length > 0 && !!selectedPerson.value && !!cmigId.value)
@@ -500,3 +494,14 @@ watch(catalogTab, () => {
 
 loadAvailableCmigs()
 </script>
+
+<style scoped>
+/* Carrinho como barra lateral: fica fixo (sticky) ao rolar a lista de produtos em telas grandes.
+   Em telas pequenas as colunas empilham (Bootstrap) e o carrinho vai pro fim, sem sticky. */
+@media (min-width: 992px) {
+  .cart-sidebar {
+    position: sticky;
+    top: 1rem;
+  }
+}
+</style>

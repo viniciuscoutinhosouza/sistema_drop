@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-10-19 — feat(ui/sales): ajustes de menu + carrinho em barra lateral no Pedido Manual
+
+Sobre o menu reorganizado (`e30ff8d`, outra sessão):
+- **AppSidebar.vue**: "Venda" → **"Venda / Saída"**; "Compras" → **"Compra / Entrada"**; **Produto Geral (PG)**
+  movido de **Operação** para **Cadastro** (grupo Operação removido; item PG mantém gate `pg`; Cadastro
+  passa a aparecer/abrir também com `pg`; `sectionForPath('/pg')`→Cadastro).
+- **ManualOrderView.vue** (Emitir Pedido de Venda - Manual): o card **Carrinho** virou **barra lateral
+  direita** (sticky em telas ≥992px; empilha no mobile), em lista compacta (thumb + título + qtd × preço +
+  subtotal + remover), com contador no header e totais/frete/"Fechar pedido" no rodapé. `npm run build` ✓.
+
+---
+
 ## 2026-10-16 — feat(fiscal): emissão de NF-e roteada por conta (própria SEFAZ × Faturador ML) — ADR-0030
 
 O sistema passa a permitir, **por conta de marketplace (CNPJ)**, escolher se a NF-e de pedidos
