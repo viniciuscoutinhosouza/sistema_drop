@@ -50,13 +50,18 @@
           <!-- ══ MENUS DINÂMICOS (perfil de acesso) — recolhíveis ════════════ -->
 
           <!-- CADASTRO (GC / AC) -->
-          <li v-if="canSee('cmig') || canSee('pg')"
+          <li v-if="canSee('cmig') || canSee('pg') || canSee('pessoas')"
               class="nav-item" :class="{ 'menu-open': sections.contas }">
             <a href="#" class="nav-link" @click.prevent="toggle('contas')">
               <i class="nav-icon fas fa-briefcase"></i>
               <p>Cadastro <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
+              <li v-if="canSee('pessoas')" class="nav-item">
+                <RouterLink to="/people" class="nav-link" :class="{ active: route.path.startsWith('/people') }">
+                  <i class="nav-icon fas fa-address-book"></i><p>Pessoas</p>
+                </RouterLink>
+              </li>
               <li v-if="canSee('cmig')" class="nav-item">
                 <RouterLink to="/cmigs" class="nav-link" :class="{ active: route.path.startsWith('/cmigs') }">
                   <i class="nav-icon fas fa-id-card"></i><p>Contas MIG (CMIG)</p>
@@ -280,19 +285,14 @@
             </ul>
           </li>
 
-          <!-- FISCAL (sem Entradas — foi para Compras) -->
-          <li v-if="canSee('pessoas') || canSee('fiscal_saidas') || canSee('fiscal_cfop') || canSee('fiscal_config') || canSee('fiscal_transicao')"
+          <!-- FISCAL (sem Entradas — foi para Compras; Pessoas foi para Cadastro) -->
+          <li v-if="canSee('fiscal_saidas') || canSee('fiscal_cfop') || canSee('fiscal_config') || canSee('fiscal_transicao')"
               class="nav-item" :class="{ 'menu-open': sections.fiscal }">
             <a href="#" class="nav-link" @click.prevent="toggle('fiscal')">
               <i class="nav-icon fas fa-file-invoice-dollar"></i>
               <p>Fiscal <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
-              <li v-if="canSee('pessoas')" class="nav-item">
-                <RouterLink to="/people" class="nav-link" :class="{ active: route.path.startsWith('/people') }">
-                  <i class="nav-icon fas fa-address-book"></i><p>Pessoas</p>
-                </RouterLink>
-              </li>
               <li v-if="canSee('fiscal_entradas') || canSee('fiscal_saidas')" class="nav-item">
                 <RouterLink to="/fiscal/notas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/notas') }">
                   <i class="nav-icon fas fa-file-invoice"></i><p>Notas Fiscais</p>
@@ -551,7 +551,7 @@ function toggle(key) {
 function sectionForPath(path) {
   if (/^\/(cmig-reports|relatorios)/.test(path)) return 'relatorios'
   if (path.startsWith('/integrations') || path.startsWith('/full-cnpjs')) return 'admin'
-  if (/^\/(cmigs|cmig-products|pg)/.test(path)) return 'contas'
+  if (/^\/(cmigs|cmig-products|pg|people)/.test(path)) return 'contas'
   if (/^\/(anuncios|catalog|messages|campanha-ads|simulator|analysis\/competitor)/.test(path)) return 'anuncios'
   if (path.startsWith('/financial')) return 'financeiro'
   if (path.startsWith('/orders') || path.startsWith('/manual-orders')) return 'venda'
@@ -560,7 +560,7 @@ function sectionForPath(path) {
   if (path.startsWith('/estoque')) return 'estoque'
   if (path === '/inventario' || path.startsWith('/inventario/')) return 'estoque'
   if (path.startsWith('/separacao')) return 'logistica'
-  if (path.startsWith('/people') || path.startsWith('/fiscal/')) return 'fiscal'
+  if (path.startsWith('/fiscal/')) return 'fiscal'
   if (path.startsWith('/integracao/')) return 'integracao'
   if (path.startsWith('/monitoring')) return 'monitoramento'
   if (path.startsWith('/goes/')) return 'gestao'

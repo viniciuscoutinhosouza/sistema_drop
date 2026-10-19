@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-10-19 — feat(ui): move "Pessoas" de Fiscal para Cadastro (topo)
+
+`AppSidebar.vue`: item **Pessoas** (`/people`) movido do grupo **Fiscal** para **Cadastro**, como
+primeiro item (acima de Contas MIG). Gate `pessoas` preservado; grupo Cadastro passa a aparecer/abrir
+também com `pessoas`; `sectionForPath('/people')`→Cadastro; `pessoas` removido do gate do grupo Fiscal.
+`npm run build` ✓. (Follow-up separado: compartilhamento de Pessoas por Galpão — decisão do dono.)
+
+---
+
 ## 2026-10-19 — feat(ui/sales): ajustes de menu + carrinho em barra lateral no Pedido Manual
 
 Sobre o menu reorganizado (`e30ff8d`, outra sessão):
