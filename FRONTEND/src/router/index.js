@@ -16,6 +16,14 @@ const MarketplaceDashboardView = () => import('@/views/MarketplaceDashboardView.
 
 // Financial
 const FinancialView = () => import('@/views/financial/FinancialView.vue')
+const ConciliacaoView = () => import('@/views/financial/ConciliacaoView.vue')
+
+// Purchases
+const PurchaseReturnsView = () => import('@/views/purchases/PurchaseReturnsView.vue')
+
+// Stock extras (placeholders)
+const WarehouseMovementView = () => import('@/views/stock/WarehouseMovementView.vue')
+const ProductDiscardView = () => import('@/views/stock/ProductDiscardView.vue')
 
 // Products
 const ProductListView = () => import('@/views/products/ProductListView.vue')
@@ -178,6 +186,10 @@ const routes = [
       },
 
       { path: 'financial', component: FinancialView, meta: { title: 'Financeiro' } },
+      { path: 'financial/conciliacao', component: ConciliacaoView, meta: { title: 'Conciliar Pedido - Pagamento' } },
+
+      // Compras
+      { path: 'compras/devolucoes', component: PurchaseReturnsView, meta: { title: 'Registrar Devolução de Compra' } },
 
       { path: 'products', component: ProductListView, meta: { title: 'Meus Produtos' } },
       { path: 'products/new', component: ProductCreateView, meta: { title: 'Cadastrar Produto' } },
@@ -204,6 +216,8 @@ const routes = [
       { path: 'estoque', component: StockControlView, meta: { title: 'Controle de Estoque', role: ['ugo', 'ac'] } },
       { path: 'rastreabilidade', component: TraceabilityView, meta: { title: 'Rastreabilidade', role: ['ugo', 'ac', 'go', 'admin'] } },
       { path: 'estoque/movimentacao', component: ProductLedgerView, meta: { title: 'Extrato de Movimentação', role: ['ugo', 'ac'] } },
+      { path: 'estoque/armazenagem', component: WarehouseMovementView, meta: { title: 'Movimentação de Armazenagem' } },
+      { path: 'estoque/descarte', component: ProductDiscardView, meta: { title: 'Registrar Descarte de Produto' } },
       { path: 'full-cnpjs', component: FullCnpjsView, meta: { title: 'CNPJs FULL', role: 'ac' } },
 
       { path: 'notifications', component: NotificationsView, meta: { title: 'Notificações' } },

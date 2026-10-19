@@ -47,20 +47,6 @@
             </RouterLink>
           </li>
 
-          <li class="nav-item">
-            <RouterLink to="/simulator" class="nav-link" :class="{ active: route.path === '/simulator' }">
-              <i class="nav-icon fas fa-calculator"></i>
-              <p>Simulador ML</p>
-            </RouterLink>
-          </li>
-
-          <li class="nav-item">
-            <RouterLink to="/analysis/competitor" class="nav-link" :class="{ active: route.path === '/analysis/competitor' }">
-              <i class="nav-icon fas fa-search-dollar"></i>
-              <p>Análise de Concorrência</p>
-            </RouterLink>
-          </li>
-
           <!-- ══ MENUS DINÂMICOS (perfil de acesso) — recolhíveis ════════════ -->
 
           <!-- CADASTRO (GC / AC) -->
@@ -105,25 +91,25 @@
             </ul>
           </li>
 
-          <!-- OPERAÇÕES (GC / AC) -->
-          <li v-if="canSee('anuncios') || canSee('campanha_ads') || canSee('atendimento') || canSee('financeiro') || canSee('pedidos') || canSee('catalog') || canSee('pedido_manual') || canSee('devolucoes') || canSee('estoque')"
-              class="nav-item" :class="{ 'menu-open': sections.operacoes }">
-            <a href="#" class="nav-link" @click.prevent="toggle('operacoes')">
-              <i class="nav-icon fas fa-tasks"></i>
-              <p>Operações
-                <span v-if="unreadMessages > 0 && !sections.operacoes" class="badge badge-danger badge-pill right mr-3">{{ unreadMessages }}</span>
+          <!-- ANÚNCIOS (GC / AC) -->
+          <li v-if="canSee('anuncios') || canSee('catalog') || canSee('atendimento') || canSee('campanha_ads')"
+              class="nav-item" :class="{ 'menu-open': sections.anuncios }">
+            <a href="#" class="nav-link" @click.prevent="toggle('anuncios')">
+              <i class="nav-icon fas fa-tag"></i>
+              <p>Anúncios
+                <span v-if="unreadMessages > 0 && !sections.anuncios" class="badge badge-danger badge-pill right mr-3">{{ unreadMessages }}</span>
                 <i class="right fas fa-angle-left"></i>
               </p>
             </a>
             <ul class="nav nav-treeview">
-              <li v-if="canSee('anuncios')" class="nav-item">
-                <RouterLink to="/anuncios" class="nav-link" :class="{ active: route.path.startsWith('/anuncios') }">
-                  <i class="nav-icon fas fa-tag"></i><p>Anúncios</p>
+              <li v-if="canSee('catalog')" class="nav-item">
+                <RouterLink to="/catalog" class="nav-link" :class="{ active: route.path.startsWith('/catalog') }">
+                  <i class="nav-icon fas fa-store"></i><p>Catálogo</p>
                 </RouterLink>
               </li>
-              <li v-if="canSee('campanha_ads')" class="nav-item">
-                <RouterLink to="/campanha-ads" class="nav-link" :class="{ active: route.path.startsWith('/campanha-ads') }">
-                  <i class="nav-icon fas fa-bullhorn"></i><p>Campanha ADS</p>
+              <li v-if="canSee('anuncios')" class="nav-item">
+                <RouterLink to="/anuncios" class="nav-link" :class="{ active: route.path.startsWith('/anuncios') }">
+                  <i class="nav-icon fas fa-wrench"></i><p>Manutenção</p>
                 </RouterLink>
               </li>
               <li v-if="canSee('atendimento')" class="nav-item">
@@ -132,39 +118,92 @@
                   <p>Atendimento <span v-if="unreadMessages > 0" class="badge badge-danger badge-pill right">{{ unreadMessages }}</span></p>
                 </RouterLink>
               </li>
-              <li v-if="canSee('financeiro')" class="nav-item">
-                <RouterLink to="/financial" class="nav-link" :class="{ active: route.path.startsWith('/financial') }">
-                  <i class="nav-icon fas fa-dollar-sign"></i><p>Financeiro</p>
+              <li v-if="canSee('campanha_ads')" class="nav-item">
+                <RouterLink to="/campanha-ads" class="nav-link" :class="{ active: route.path.startsWith('/campanha-ads') }">
+                  <i class="nav-icon fas fa-bullhorn"></i><p>Campanha ADS</p>
                 </RouterLink>
               </li>
+              <li class="nav-item">
+                <RouterLink to="/simulator" class="nav-link" :class="{ active: route.path === '/simulator' }">
+                  <i class="nav-icon fas fa-calculator"></i><p>Simulador de Custo</p>
+                </RouterLink>
+              </li>
+              <li class="nav-item">
+                <RouterLink to="/analysis/competitor" class="nav-link" :class="{ active: route.path === '/analysis/competitor' }">
+                  <i class="nav-icon fas fa-search-dollar"></i><p>Análise de Concorrentes</p>
+                </RouterLink>
+              </li>
+            </ul>
+          </li>
+
+          <!-- FINANCEIRO (GC / AC) -->
+          <li v-if="canSee('financeiro')"
+              class="nav-item" :class="{ 'menu-open': sections.financeiro }">
+            <a href="#" class="nav-link" @click.prevent="toggle('financeiro')">
+              <i class="nav-icon fas fa-dollar-sign"></i>
+              <p>Financeiro <i class="right fas fa-angle-left"></i></p>
+            </a>
+            <ul class="nav nav-treeview">
+              <li v-if="canSee('financeiro')" class="nav-item">
+                <RouterLink to="/financial" class="nav-link" :class="{ active: route.path === '/financial' }">
+                  <i class="nav-icon fas fa-file-invoice-dollar"></i><p>Extrato de Crédito</p>
+                </RouterLink>
+              </li>
+              <li v-if="canSee('financeiro')" class="nav-item">
+                <RouterLink to="/financial/conciliacao" class="nav-link" :class="{ active: route.path === '/financial/conciliacao' }">
+                  <i class="nav-icon fas fa-balance-scale"></i><p>Conciliar Pedido - Pagamento</p>
+                </RouterLink>
+              </li>
+            </ul>
+          </li>
+
+          <!-- VENDA (GC / AC) -->
+          <li v-if="canSee('pedidos') || canSee('pedido_manual') || canSee('devolucoes')"
+              class="nav-item" :class="{ 'menu-open': sections.venda }">
+            <a href="#" class="nav-link" @click.prevent="toggle('venda')">
+              <i class="nav-icon fas fa-shopping-cart"></i>
+              <p>Venda <i class="right fas fa-angle-left"></i></p>
+            </a>
+            <ul class="nav nav-treeview">
               <li v-if="canSee('pedidos')" class="nav-item">
                 <RouterLink to="/orders" class="nav-link" :class="{ active: route.path.startsWith('/orders') }">
-                  <i class="nav-icon fas fa-shopping-cart"></i><p>Pedidos</p>
-                </RouterLink>
-              </li>
-              <li v-if="canSee('catalog')" class="nav-item">
-                <RouterLink to="/catalog" class="nav-link" :class="{ active: route.path.startsWith('/catalog') }">
-                  <i class="nav-icon fas fa-store"></i><p>Catálogo</p>
+                  <i class="nav-icon fas fa-shopping-cart"></i><p>Pedidos Importados</p>
                 </RouterLink>
               </li>
               <li v-if="canSee('pedido_manual')" class="nav-item">
                 <RouterLink to="/manual-orders" class="nav-link" :class="{ active: route.path.startsWith('/manual-orders') }">
-                  <i class="nav-icon fas fa-hand-paper"></i><p>Pedido Manual</p>
+                  <i class="nav-icon fas fa-hand-paper"></i><p>Emitir Pedido de Venda - Manual</p>
                 </RouterLink>
               </li>
               <li v-if="canSee('devolucoes')" class="nav-item">
                 <RouterLink to="/returns" class="nav-link" :class="{ active: route.path.startsWith('/returns') && route.path !== '/returns/aguardando-retorno' }">
-                  <i class="nav-icon fas fa-undo"></i><p>Devoluções</p>
+                  <i class="nav-icon fas fa-undo"></i><p>Devolução de Venda</p>
                 </RouterLink>
               </li>
-              <li v-if="canSee('estoque')" class="nav-item">
-                <RouterLink to="/estoque" class="nav-link" :class="{ active: route.path === '/estoque' }">
-                  <i class="nav-icon fas fa-boxes"></i><p>Controle de Estoque</p>
+              <li v-if="canSee('devolucoes')" class="nav-item">
+                <RouterLink to="/returns" class="nav-link">
+                  <i class="nav-icon fas fa-ban"></i><p>Cancelamento de Pedido</p>
                 </RouterLink>
               </li>
-              <li v-if="canSee('estoque')" class="nav-item">
-                <RouterLink to="/estoque/movimentacao" class="nav-link" :class="{ active: route.path === '/estoque/movimentacao' }">
-                  <i class="nav-icon fas fa-stream"></i><p>Extrato de Movimentação</p>
+            </ul>
+          </li>
+
+          <!-- COMPRAS (GC / AC) -->
+          <li v-if="canSee('fiscal_entradas')"
+              class="nav-item" :class="{ 'menu-open': sections.compras }">
+            <a href="#" class="nav-link" @click.prevent="toggle('compras')">
+              <i class="nav-icon fas fa-shopping-bag"></i>
+              <p>Compras <i class="right fas fa-angle-left"></i></p>
+            </a>
+            <ul class="nav nav-treeview">
+              <li v-if="canSee('fiscal_entradas')" class="nav-item">
+                <RouterLink to="/fiscal/entradas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/entradas') }">
+                  <i class="nav-icon fas fa-arrow-down"></i><p>Registrar Entrada de Compra</p>
+                </RouterLink>
+              </li>
+              <li v-if="canSee('fiscal_entradas')" class="nav-item">
+                <RouterLink to="/compras/devolucoes" class="nav-link" :class="{ active: route.path === '/compras/devolucoes' }">
+                  <i class="nav-icon fas fa-undo-alt"></i><p>Registrar Devolução de Compra</p>
                 </RouterLink>
               </li>
             </ul>
@@ -185,11 +224,11 @@
             </ul>
           </li>
 
-          <!-- SEPARAÇÃO GL -->
-          <li v-if="canSee('separacao')" class="nav-item" :class="{ 'menu-open': sections.separacao }">
-            <a href="#" class="nav-link" @click.prevent="toggle('separacao')">
+          <!-- LOGÍSTICA (ex-Separação) GL -->
+          <li v-if="canSee('separacao')" class="nav-item" :class="{ 'menu-open': sections.logistica }">
+            <a href="#" class="nav-link" @click.prevent="toggle('logistica')">
               <i class="nav-icon fas fa-dolly"></i>
-              <p>Separação <i class="right fas fa-angle-left"></i></p>
+              <p>Logística <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
               <li class="nav-item">
@@ -210,16 +249,17 @@
             </ul>
           </li>
 
-          <!-- ESTOQUE GL -->
-          <li v-if="canSee('ag_retorno') || canSee('inventario')" class="nav-item" :class="{ 'menu-open': sections.estoque }">
+          <!-- ESTOQUE (unificado — AC/GL/UGO) -->
+          <li v-if="canSee('estoque') || canSee('inventario') || canSee('ag_retorno')"
+              class="nav-item" :class="{ 'menu-open': sections.estoque }">
             <a href="#" class="nav-link" @click.prevent="toggle('estoque')">
               <i class="nav-icon fas fa-boxes"></i>
               <p>Estoque <i class="right fas fa-angle-left"></i></p>
             </a>
             <ul class="nav nav-treeview">
-              <li v-if="canSee('ag_retorno')" class="nav-item">
-                <RouterLink to="/returns/aguardando-retorno" class="nav-link" :class="{ active: route.path === '/returns/aguardando-retorno' }">
-                  <i class="nav-icon fas fa-undo-alt text-info"></i><p>Ag. Retorno Físico</p>
+              <li v-if="canSee('estoque') || canSee('inventario')" class="nav-item">
+                <RouterLink to="/estoque/armazenagem" class="nav-link" :class="{ active: route.path === '/estoque/armazenagem' }">
+                  <i class="nav-icon fas fa-exchange-alt"></i><p>Movimentação de Armazenagem</p>
                 </RouterLink>
               </li>
               <li v-if="canSee('inventario')" class="nav-item">
@@ -227,11 +267,31 @@
                   <i class="nav-icon fas fa-clipboard-list text-success"></i><p>Inventário</p>
                 </RouterLink>
               </li>
+              <li v-if="canSee('estoque') || canSee('inventario')" class="nav-item">
+                <RouterLink to="/estoque/descarte" class="nav-link" :class="{ active: route.path === '/estoque/descarte' }">
+                  <i class="nav-icon fas fa-trash-alt"></i><p>Registrar Descarte de Produto</p>
+                </RouterLink>
+              </li>
+              <li v-if="canSee('estoque')" class="nav-item">
+                <RouterLink to="/estoque/movimentacao" class="nav-link" :class="{ active: route.path === '/estoque/movimentacao' }">
+                  <i class="nav-icon fas fa-stream"></i><p>Extrato de Movimentação</p>
+                </RouterLink>
+              </li>
+              <li v-if="canSee('estoque')" class="nav-item">
+                <RouterLink to="/estoque" class="nav-link" :class="{ active: route.path === '/estoque' }">
+                  <i class="nav-icon fas fa-boxes"></i><p>Controle de Estoque</p>
+                </RouterLink>
+              </li>
+              <li v-if="canSee('ag_retorno')" class="nav-item">
+                <RouterLink to="/returns/aguardando-retorno" class="nav-link" :class="{ active: route.path === '/returns/aguardando-retorno' }">
+                  <i class="nav-icon fas fa-undo-alt text-info"></i><p>Ag. Retorno Físico</p>
+                </RouterLink>
+              </li>
             </ul>
           </li>
 
-          <!-- FISCAL -->
-          <li v-if="canSee('pessoas') || canSee('fiscal_entradas') || canSee('fiscal_saidas') || canSee('fiscal_cfop') || canSee('fiscal_config') || canSee('fiscal_transicao')"
+          <!-- FISCAL (sem Entradas — foi para Compras) -->
+          <li v-if="canSee('pessoas') || canSee('fiscal_saidas') || canSee('fiscal_cfop') || canSee('fiscal_config') || canSee('fiscal_transicao')"
               class="nav-item" :class="{ 'menu-open': sections.fiscal }">
             <a href="#" class="nav-link" @click.prevent="toggle('fiscal')">
               <i class="nav-icon fas fa-file-invoice-dollar"></i>
@@ -246,11 +306,6 @@
               <li v-if="canSee('fiscal_entradas') || canSee('fiscal_saidas')" class="nav-item">
                 <RouterLink to="/fiscal/notas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/notas') }">
                   <i class="nav-icon fas fa-file-invoice"></i><p>Notas Fiscais</p>
-                </RouterLink>
-              </li>
-              <li v-if="canSee('fiscal_entradas')" class="nav-item">
-                <RouterLink to="/fiscal/entradas" class="nav-link" :class="{ active: route.path.startsWith('/fiscal/entradas') }">
-                  <i class="nav-icon fas fa-arrow-down"></i><p>Entradas</p>
                 </RouterLink>
               </li>
               <li v-if="canSee('fiscal_saidas')" class="nav-item">
@@ -476,9 +531,12 @@ function loadSavedSections() {
 
 const sections = reactive({
   contas: false,
-  operacoes: false,
+  anuncios: false,
+  financeiro: false,
+  venda: false,
+  compras: false,
   operacao: false,
-  separacao: false,
+  logistica: false,
   estoque: false,
   fiscal: false,
   integracao: false,
@@ -504,11 +562,15 @@ function sectionForPath(path) {
   if (/^\/(cmig-reports|relatorios)/.test(path)) return 'relatorios'
   if (path.startsWith('/integrations') || path.startsWith('/full-cnpjs')) return 'admin'
   if (/^\/(cmigs|cmig-products)/.test(path)) return 'contas'
-  if (/^\/(anuncios|campanha-ads|messages|financial|orders|catalog|manual-orders|estoque)/.test(path)) return 'operacoes'
-  if (path.startsWith('/returns')) return path === '/returns/aguardando-retorno' ? 'estoque' : 'operacoes'
+  if (/^\/(anuncios|catalog|messages|campanha-ads|simulator|analysis\/competitor)/.test(path)) return 'anuncios'
+  if (path.startsWith('/financial')) return 'financeiro'
+  if (path.startsWith('/orders') || path.startsWith('/manual-orders')) return 'venda'
+  if (path.startsWith('/returns')) return path === '/returns/aguardando-retorno' ? 'estoque' : 'venda'
+  if (path === '/fiscal/entradas' || path.startsWith('/fiscal/entradas/') || path.startsWith('/compras/')) return 'compras'
+  if (path.startsWith('/estoque')) return 'estoque'
   if (path === '/inventario' || path.startsWith('/inventario/')) return 'estoque'
   if (path.startsWith('/pg')) return 'operacao'
-  if (path.startsWith('/separacao')) return 'separacao'
+  if (path.startsWith('/separacao')) return 'logistica'
   if (path.startsWith('/people') || path.startsWith('/fiscal/')) return 'fiscal'
   if (path.startsWith('/integracao/')) return 'integracao'
   if (path.startsWith('/monitoring')) return 'monitoramento'
