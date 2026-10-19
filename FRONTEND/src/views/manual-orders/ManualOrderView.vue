@@ -134,41 +134,9 @@
         </div>
       </div>
 
-      <!-- 3) Cliente -->
-      <div class="card mb-3">
-        <div class="card-header">
-          <h3 class="card-title"><i class="fas fa-user mr-2"></i> Cliente</h3>
-        </div>
-        <div class="card-body">
-          <div v-if="!selectedPerson" class="d-flex flex-wrap" style="gap:.5rem">
-            <button class="btn btn-outline-primary" @click="showSearch = true">
-              <i class="fas fa-search mr-1"></i> Buscar cliente
-            </button>
-            <button class="btn btn-success" @click="showForm = true">
-              <i class="fas fa-user-plus mr-1"></i> Novo cliente
-            </button>
-          </div>
-          <div v-else class="d-flex justify-content-between align-items-start">
-            <div>
-              <strong>{{ selectedPerson.name }}</strong>
-              <small v-if="selectedPerson.trade_name" class="d-block text-muted">
-                {{ selectedPerson.trade_name }}
-              </small>
-              <small class="d-block text-muted">
-                {{ selectedPerson.document }}
-                <span v-if="selectedPerson.city">— {{ selectedPerson.city }}/{{ selectedPerson.state }}</span>
-              </small>
-            </div>
-            <button class="btn btn-sm btn-outline-secondary" @click="selectedPerson = null">
-              <i class="fas fa-exchange-alt mr-1"></i> Trocar
-            </button>
-          </div>
-        </div>
-      </div>
+        </div><!-- /col-esquerda (produtos) -->
 
-        </div><!-- /col-esquerda (produtos + cliente) -->
-
-        <!-- Sidebar direita: Carrinho -->
+        <!-- Sidebar direita: Carrinho + Cliente -->
         <div class="col-lg-4 col-xl-3">
       <!-- 4) Carrinho (sidebar direita) -->
       <div class="card mb-3 cart-sidebar">
@@ -265,7 +233,39 @@
           </button>
         </div>
       </div>
-        </div><!-- /col-direita (carrinho) -->
+
+      <!-- 3) Cliente (abaixo do Carrinho) -->
+      <div class="card mb-3">
+        <div class="card-header">
+          <h3 class="card-title"><i class="fas fa-user mr-2"></i> Cliente</h3>
+        </div>
+        <div class="card-body">
+          <div v-if="!selectedPerson" class="d-flex flex-wrap" style="gap:.5rem">
+            <button class="btn btn-outline-primary" @click="showSearch = true">
+              <i class="fas fa-search mr-1"></i> Buscar cliente
+            </button>
+            <button class="btn btn-success" @click="showForm = true">
+              <i class="fas fa-user-plus mr-1"></i> Novo cliente
+            </button>
+          </div>
+          <div v-else class="d-flex justify-content-between align-items-start">
+            <div>
+              <strong>{{ selectedPerson.name }}</strong>
+              <small v-if="selectedPerson.trade_name" class="d-block text-muted">
+                {{ selectedPerson.trade_name }}
+              </small>
+              <small class="d-block text-muted">
+                {{ selectedPerson.document }}
+                <span v-if="selectedPerson.city">— {{ selectedPerson.city }}/{{ selectedPerson.state }}</span>
+              </small>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" @click="selectedPerson = null">
+              <i class="fas fa-exchange-alt mr-1"></i> Trocar
+            </button>
+          </div>
+        </div>
+      </div>
+        </div><!-- /col-direita (carrinho + cliente) -->
       </div><!-- /row -->
     </template>
 
