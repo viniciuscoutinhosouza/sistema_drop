@@ -61,46 +61,22 @@
 
           <!-- NF-e Configs -->
           <div class="col-md-8">
+            <!-- Emissor de NF-e agora é por CONTA (ADR-0030): Administração ▸ Integrações ▸ editar
+                 conta ▸ "Emissão de NF-e". O quadro antigo "por método de envio" foi aposentado
+                 (não tinha efeito no roteamento). -->
             <div class="card">
-              <div class="card-header d-flex align-items-center">
-                <h3 class="card-title flex-grow-1"><i class="fas fa-file-invoice mr-2"></i>Configurações de NF-e por CM</h3>
-                <button v-if="isAC" class="btn btn-sm btn-primary" @click="showNFeModal = true">
-                  <i class="fas fa-plus mr-1"></i> Nova Regra
-                </button>
+              <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-file-invoice mr-2"></i>Emissão de NF-e</h3>
               </div>
-              <div class="card-body p-0">
-                <div v-if="loadingNfe" class="text-center py-3">
-                  <i class="fas fa-spinner fa-spin text-muted"></i>
+              <div class="card-body">
+                <div class="alert alert-info mb-0 py-2">
+                  <i class="fas fa-info-circle mr-1"></i>
+                  A escolha entre <strong>emissão própria (SEFAZ)</strong> e <strong>pelo marketplace
+                  (Faturador ML)</strong> agora é feita <strong>por conta de marketplace</strong>, em
+                  <strong>Administração ▸ Integrações</strong> (editar a conta → "Emissão de NF-e").
+                  Requer certificado A1 + série na <em>Configuração Fiscal</em> abaixo. Pedidos FULL
+                  seguem sempre pelo Mercado Livre.
                 </div>
-                <table v-else class="table table-sm mb-0">
-                  <thead>
-                    <tr>
-                      <th>CM</th>
-                      <th>Método de Envio</th>
-                      <th>Emissor</th>
-                      <th v-if="isAC">Ações</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-if="nfeConfigs.length === 0">
-                      <td :colspan="isAC ? 4 : 3" class="text-center text-muted py-3">Nenhuma regra NF-e configurada.</td>
-                    </tr>
-                    <tr v-for="cfg in nfeConfigs" :key="cfg.id">
-                      <td>CM #{{ cfg.cm_id }}</td>
-                      <td>{{ cfg.shipping_method }}</td>
-                      <td>
-                        <span class="badge" :class="cfg.issuer === 'system' ? 'badge-primary' : 'badge-warning'">
-                          {{ cfg.issuer === 'system' ? 'Sistema' : 'Marketplace' }}
-                        </span>
-                      </td>
-                      <td v-if="isAC">
-                        <button class="btn btn-sm btn-outline-danger" @click="deleteNfe(cfg)" title="Remover">
-                          <i class="fas fa-trash"></i>
-                        </button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
               </div>
             </div>
 

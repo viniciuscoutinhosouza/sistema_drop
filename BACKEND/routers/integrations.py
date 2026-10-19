@@ -116,6 +116,7 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
         "platform_username": acc.platform_username,
         "is_active": acc.is_active,
         "is_official_store": bool(acc.is_official_store),
+        "nfe_emission_mode": acc.nfe_emission_mode or "marketplace",
         "otp_verified": acc.otp_verified,
         "is_owner": is_owner,
         "cmig_id": acc.cmig_id,
@@ -608,8 +609,70 @@ async def update_account(
         account.cmig_id = body["cmig_id"] or None
     if "is_official_store" in body:
         account.is_official_store = bool(body["is_official_store"])
+    if "nfe_emission_mode" in body:
+        await _set_nfe_emission_mode(account, body["nfe_emission_mode"], current_user, db)
     await db.commit()
     return {"ok": True}
+
+
+async def _set_nfe_emission_mode(
+    account: MarketplaceAccount, raw, current_user: User, db: AsyncSession
+) -> None:
+    """Valida e aplica o modo de emissão de NF-e da conta (migration 151).
+
+    É decisão FISCAL (passa a transmitir à SEFAZ sob o certificado da CMIG) → exige papel
+    fiscal (ac/admin), não só o menu 'integrations'. 'own' só é aceito para conta CNPJ com
+    certificado A1 + série configurados na CMIGFiscalConfig (senão 422, falha alto). CPF segue
+    sempre DC-e própria (ADR-0017); rastreável segue forçando própria (ADR-0027) — o toggle não
+    afeta esses.
+    """
+    mode = (raw or "marketplace").strip().lower()
+    if mode not in ("marketplace", "own"):
+        raise HTTPException(status_code=400, detail="Modo de emissão inválido (use 'marketplace' ou 'own').")
+    if (account.nfe_emission_mode or "marketplace") == mode:
+        return  # no-op
+    if current_user.role not in ("ac", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Apenas Gestor de Conta (AC) ou Admin pode alterar o modo de emissão de NF-e.",
+        )
+    if mode == "own":
+        if not account.cmig_id:
+            raise HTTPException(
+                status_code=422, detail="Vincule a conta a uma CMIG antes de habilitar a emissão própria."
+            )
+        cmig = (
+            await db.execute(select(CMIG).where(CMIG.id == account.cmig_id))
+        ).scalar_one_or_none()
+        if not cmig:
+            raise HTTPException(status_code=404, detail="CMIG da conta não encontrada.")
+        if not cmig.cnpj:
+            raise HTTPException(
+                status_code=422,
+                detail="Emissão própria de NF-e é só para CMIG com CNPJ. Conta CPF já emite DC-e própria.",
+            )
+        from models.fiscal import CMIGFiscalConfig
+
+        cfg = (
+            await db.execute(
+                select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == account.cmig_id)
+            )
+        ).scalar_one_or_none()
+        missing: list[str] = []
+        if not (cfg and cfg.cert_path and cfg.cert_pass_encrypted):
+            missing.append("certificado A1 (.pfx)")
+        if not (cfg and cfg.manual_nfe_serie):
+            missing.append("série da NF-e")
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Configuração fiscal da CMIG incompleta para emissão própria: falta "
+                    + ", ".join(missing)
+                    + ". Configure em Configuração Fiscal."
+                ),
+            )
+    account.nfe_emission_mode = mode
 
 
 @router.delete("/{account_id}", status_code=204)

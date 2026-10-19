@@ -202,6 +202,19 @@
               <small class="text-muted">Ative apenas para contas com <em>family_name</em> — permite editar o título do anúncio via API.</small>
             </div>
 
+            <!-- Modo de emissão de NF-e (migration 151) — só CNPJ; CPF é sempre DC-e própria -->
+            <div class="form-group" v-if="editCmigIsCnpj">
+              <label><i class="fas fa-file-invoice-dollar mr-1 text-info"></i> Emissão de NF-e (pedidos não-FULL)</label>
+              <select v-model="editForm.nfe_emission_mode" class="form-control">
+                <option value="marketplace">Pelo Marketplace (Faturador do Mercado Livre)</option>
+                <option value="own">Própria — emitir pelo sistema (SEFAZ)</option>
+              </select>
+              <small class="text-muted d-block">
+                "Própria" exige certificado A1 + série na Configuração Fiscal da CMIG. A NF-e é
+                emitida pelo sistema e informada ao marketplace. Pedidos FULL seguem sempre pelo ML.
+              </small>
+            </div>
+
             <!-- Capacidades de Envio (só ML) -->
             <div v-if="editTarget && editTarget.platform === 'mercadolivre'" class="form-group mb-0">
               <hr class="mt-3 mb-2" />
@@ -371,7 +384,12 @@ const savingNewConta = ref(false)
 
 // Editar CONTA
 const editTarget = ref(null)
-const editForm   = ref({ cmig_id: '', description: '', is_official_store: false, has_flex_override: null, has_full_override: null })
+const editForm   = ref({ cmig_id: '', description: '', is_official_store: false, has_flex_override: null, has_full_override: null, nfe_emission_mode: 'marketplace' })
+// Emissão de NF-e local × marketplace só faz sentido em conta CNPJ (CPF é sempre DC-e própria).
+const editCmigIsCnpj = computed(() => {
+  const c = cmigs.value.find(c => c.id === editForm.value.cmig_id)
+  return !!(c && c.cnpj)
+})
 // Estado das capacidades detectadas (lado direito do override) carregadas ao abrir o modal
 const capsState = ref({ has_flex_detected: false, has_full_detected: false })
 const capsLoading = ref(false)
@@ -432,6 +450,7 @@ async function openEditModal(acc) {
     is_official_store: !!acc.is_official_store,
     has_flex_override: null,
     has_full_override: null,
+    nfe_emission_mode: acc.nfe_emission_mode || 'marketplace',
   }
   editError.value = ''
   capsState.value = { has_flex_detected: false, has_full_detected: false }
@@ -474,11 +493,14 @@ async function saveEdit() {
   savingEdit.value = true
   editError.value = ''
   try {
-    await api.put(`/accounts/${editTarget.value.id}`, {
+    const payload = {
       cmig_id: editForm.value.cmig_id || null,
       description: editForm.value.description,
       is_official_store: editForm.value.is_official_store,
-    })
+    }
+    // Modo de emissão de NF-e: só envia p/ conta CNPJ (CPF é sempre DC-e própria).
+    if (editCmigIsCnpj.value) payload.nfe_emission_mode = editForm.value.nfe_emission_mode
+    await api.put(`/accounts/${editTarget.value.id}`, payload)
     // Override de capacidades é endpoint separado — só envia se conta é ML
     if (editTarget.value.platform === 'mercadolivre') {
       await api.put(`/accounts/${editTarget.value.id}/shipping-capabilities`, {

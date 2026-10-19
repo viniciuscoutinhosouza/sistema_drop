@@ -292,6 +292,36 @@ async def emit_nfe(access_token: str, seller_id: str, order_ids: list) -> dict:
     return resp.json()
 
 
+async def upload_own_invoice_xml(access_token: str, shipment_id: str, xml_bytes: bytes) -> dict:
+    """Informa ao ML a NF-e PRÓPRIA (emitida fora do Faturador) de um envio NÃO-FULL.
+
+    POST /shipments/{id}/invoice_data?siteId=MLB, Content-Type application/xml, body = XML
+    AUTORIZADO da NF-e. No Brasil (MLB) é este endpoint (não /packs/.../fiscal_documents, que
+    exclui o MLB). O ML libera etiqueta/despacho quando EXISTE uma NF-e informada — não precisa
+    ter sido emitida por ele. Falha alto se o ML recusar (Content-Type/assinatura inválida):
+    um 2xx não garante aceite, então o chamador deve reconferir via get_shipment_invoice_data.
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"{ML_API_BASE}/shipments/{shipment_id}/invoice_data",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/xml",
+            },
+            params={"siteId": "MLB"},
+            content=xml_bytes,
+        )
+    if resp.status_code not in (200, 201, 204):
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"ML recusou a NF-e própria (invoice_data): {resp.text[:400]}",
+        )
+    try:
+        return resp.json()
+    except Exception:
+        return {"ok": True, "status_code": resp.status_code}
+
+
 async def get_shipment_invoice_data(access_token: str, shipment_id: str) -> dict:
     """Return invoice data from GET /shipments/{id}/invoice_data?siteId=MLB (or {} on error)."""
     try:

@@ -494,7 +494,7 @@
                   style="font-size:.78rem"
                   :disabled="nfeEmitting[order.id]"
                   @click="emitNfe(order)"
-                  title="Emitir NF-e via Faturador ML"
+                  title="Emitir NF-e do pedido (própria/SEFAZ ou Faturador ML, conforme a configuração da conta)"
                 >
                   <i class="fas fa-file-invoice mr-1"></i>
                   {{ nfeEmitting[order.id] ? 'Emitindo…' : 'Emitir NF-e' }}
@@ -740,6 +740,62 @@
         </div>
       </div>
     </div>
+
+    <!-- Confirmação da emissão PRÓPRIA (resumo irretratável antes de transmitir à SEFAZ) -->
+    <div v-if="nfeConfirm.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5);z-index:1061">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header py-2">
+            <h6 class="modal-title"><i class="fas fa-file-invoice-dollar mr-2"></i>Confirmar emissão da NF-e (própria)</h6>
+            <button type="button" class="close" :disabled="nfeConfirm.saving" @click="nfeConfirm.show = false"><span>&times;</span></button>
+          </div>
+          <div class="modal-body" style="font-size:.85rem">
+            <div v-if="nfeConfirm.ambiente === 'homolog'" class="alert alert-warning py-2">
+              <i class="fas fa-exclamation-triangle mr-1"></i>
+              <strong>AMBIENTE DE HOMOLOGAÇÃO — SEM VALOR FISCAL.</strong> Esta nota é um teste: não libera etiqueta/despacho e não é enviada ao marketplace.
+            </div>
+            <div v-else class="alert alert-danger py-2">
+              <i class="fas fa-bolt mr-1"></i>
+              <strong>Produção.</strong> Ao confirmar, a NF-e é transmitida à SEFAZ — ato irreversível (correção só por cancelamento/nota nova). Confira os dados.
+            </div>
+            <div class="row" v-if="nfeConfirm.summary">
+              <div class="col-md-6 mb-2">
+                <div><strong>Destinatário:</strong> {{ nfeConfirm.summary.destinatario?.nome || '—' }}</div>
+                <div><strong>Documento:</strong> {{ nfeConfirm.summary.destinatario?.documento || '—' }} <span v-if="nfeConfirm.summary.destinatario?.uf">({{ nfeConfirm.summary.destinatario.uf }})</span></div>
+              </div>
+              <div class="col-md-6 mb-2">
+                <div><strong>Natureza:</strong> {{ nfeConfirm.summary.natureza_operacao || '—' }}</div>
+                <div><strong>Série:</strong> {{ nfeConfirm.summary.serie ?? '—' }}</div>
+              </div>
+            </div>
+            <table class="table table-sm table-bordered mb-2" v-if="nfeConfirm.summary">
+              <thead><tr><th>#</th><th>Descrição</th><th>NCM</th><th>CFOP</th><th>CST/CSOSN</th><th class="text-right">Qtd</th><th class="text-right">Total</th></tr></thead>
+              <tbody>
+                <tr v-for="it in nfeConfirm.summary.itens" :key="it.item">
+                  <td>{{ it.item }}</td>
+                  <td>{{ it.descricao }}</td>
+                  <td>{{ it.ncm || '—' }}</td>
+                  <td>{{ it.cfop || '—' }}</td>
+                  <td>{{ it.cst_csosn || '—' }}</td>
+                  <td class="text-right">{{ it.quantidade }}</td>
+                  <td class="text-right">R$ {{ Number(it.valor_total).toFixed(2) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="text-right" v-if="nfeConfirm.summary">
+              <strong>Total da nota: R$ {{ Number(nfeConfirm.summary.total_nota).toFixed(2) }}</strong>
+            </div>
+          </div>
+          <div class="modal-footer py-2">
+            <button class="btn btn-sm btn-secondary" :disabled="nfeConfirm.saving" @click="nfeConfirm.show = false">Cancelar</button>
+            <button class="btn btn-sm" :class="nfeConfirm.ambiente === 'homolog' ? 'btn-warning' : 'btn-danger'" :disabled="nfeConfirm.saving" @click="confirmEmitNfe">
+              <i class="fas mr-1" :class="nfeConfirm.saving ? 'fa-spinner fa-spin' : 'fa-paper-plane'"></i>
+              {{ nfeConfirm.saving ? 'Transmitindo…' : (nfeConfirm.ambiente === 'homolog' ? 'Transmitir (homologação)' : 'Confirmar e Transmitir') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <ConfirmModal
@@ -816,6 +872,8 @@ const syncingRange = ref(false)
 const syncRangeResult = ref(null)
 const syncRange = ref({ date_from: '', date_to: '', platform: 'all' })
 const nfeEmitting = ref({})
+// Confirmação da emissão PRÓPRIA (resumo irretratável antes de transmitir à SEFAZ)
+const nfeConfirm = ref({ show: false, order: null, summary: null, ambiente: null, invoiceId: null, saving: false })
 const shopeeFiscalBusy = ref({})  // { [orderId]: bool } — anexo/consulta de NF-e na Shopee
 const shopeeLogBusy = ref({})     // { [orderId]: bool } — despacho/etiqueta/rastreio Shopee
 const showInvoicesModal = ref(false)
@@ -1366,23 +1424,64 @@ async function runSyncRange() {
   }
 }
 
+function _applyNfeResult(order, data) {
+  if (data.nfe_status) order.nfe_status = data.nfe_status
+  if (data.nfe_key) order.nfe_key = data.nfe_key
+  if (data.nfe_url) order.nfe_url = data.nfe_url
+  if (data.attached_shopee) order.shopee_invoice_status = 'uploaded'
+  const warns = Array.isArray(data.warnings) ? data.warnings : []
+  if (data.mode === 'own') {
+    if (data.nfe_status === 'authorized') {
+      if (data.ambiente === 'homolog') {
+        warns.forEach(w => toast.warning(w))
+        if (!warns.length) toast.warning('Emitida em HOMOLOGAÇÃO — sem valor fiscal.')
+      } else {
+        const extra = (data.uploaded_to_ml ? ' Informada ao Mercado Livre.' : '')
+          + (data.attached_shopee ? ' Anexada na Shopee.' : '')
+        toast.success('NF-e própria autorizada pela SEFAZ.' + extra)
+        warns.forEach(w => toast.warning(w))
+      }
+    } else {
+      toast.info('NF-e própria em processamento.')
+      warns.forEach(w => toast.warning(w))
+    }
+  } else {
+    if (data.nfe_status === 'authorized') toast.success('NF-e já autorizada — clique em Imprimir DANFE.')
+    else if (data.already_existed) toast.info('NF-e já estava em processamento no ML — aguarde a autorização.')
+    else toast.success('NF-e enviada para o Faturador ML. Aguarde a autorização.')
+  }
+}
+
 async function emitNfe(order) {
   nfeEmitting.value[order.id] = true
   try {
     const { data } = await api.post(`/orders/${order.id}/emit-nfe`)
-    order.nfe_status = data.nfe_status
-    order.nfe_key = data.nfe_key
-    order.nfe_url = data.nfe_url
-    if (data.nfe_status === 'authorized') {
-      toast.success('NF-e já autorizada — clique em Imprimir DANFE.')
-    } else if (data.already_existed) {
-      toast.info('NF-e já estava em processamento no ML — aguarde a autorização.')
-    } else {
-      toast.success('NF-e enviada para o Faturador ML. Aguarde a autorização.')
+    // Modo próprio: o backend devolve um resumo p/ confirmar antes de transmitir (ato irreversível).
+    if (data.needs_confirmation) {
+      nfeConfirm.value = { show: true, order, summary: data.summary, ambiente: data.ambiente, invoiceId: data.invoice_id, saving: false }
+      return
     }
+    _applyNfeResult(order, data)
   } catch (err) {
     toast.error(err.response?.data?.detail || 'Erro ao emitir NF-e')
   } finally {
+    nfeEmitting.value[order.id] = false
+  }
+}
+
+async function confirmEmitNfe() {
+  const order = nfeConfirm.value.order
+  if (!order) return
+  nfeConfirm.value.saving = true
+  nfeEmitting.value[order.id] = true
+  try {
+    const { data } = await api.post(`/orders/${order.id}/emit-nfe`, { confirm: true })
+    _applyNfeResult(order, data)
+    nfeConfirm.value.show = false
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao transmitir NF-e')
+  } finally {
+    nfeConfirm.value.saving = false
     nfeEmitting.value[order.id] = false
   }
 }

@@ -46,6 +46,11 @@ class MarketplaceAccount(Base):
     is_official_store = Column(
         Boolean, nullable=False, default=False
     )  # Loja Oficial ML — permite editar título
+    # Modo de emissão de NF-e por conta (migration 151) — CNPJ-only:
+    #   'marketplace' (padrão) = Faturador do Mercado Livre
+    #   'own'                  = emissão própria SEFAZ (ADR-0015/0028) + informa o ML (invoice_data)
+    # Roteia o comando de emissão em Pedidos não-FULL (services/fiscal/emission_router.py).
+    nfe_emission_mode = Column(String(12), nullable=False, default="marketplace")
     otp_verified = Column(Boolean, nullable=False, default=False)
     requires_reauth = Column(Boolean, nullable=False, default=False)
     last_sync_at = Column(TIMESTAMP(timezone=True))

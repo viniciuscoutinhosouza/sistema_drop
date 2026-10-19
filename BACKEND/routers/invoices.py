@@ -2087,6 +2087,10 @@ async def _apply_stock_on_authorization(inv: Invoice, db: AsyncSession) -> bool:
     """
     if inv.status != "authorized" or inv.stock_updated:
         return True
+    # Homologação (tpAmb=2) NÃO tem valor fiscal → nunca movimenta estoque real. Sem isto, uma
+    # emissão de teste baixaria o estoque de verdade, contradizendo o aviso ao usuário (ADR-0030).
+    if (inv.environment or "").lower() == "homolog":
+        return True
     try:
         stock = await _apply_stock_movement(inv, db)
         await db.commit()
@@ -3695,6 +3699,33 @@ async def _sync_ml_fiscal_account(account_id: int, cmig_id: int, year: int, mont
                             "Saída do Faturador ML sem pedido casado — revisar "
                             "(bonificação/brinde/comodato/amostra?)."
                         )
+
+                # Guard anti-duplicação (modo 'own', migration 151): se o pedido casado já tem NF-e
+                # de VENDA PRÓPRIA viva, NÃO materializa a nota do Faturador (evita própria+ML no
+                # mesmo pedido). Quarentena explícita + log — nunca baixa estoque nem cria em silêncio.
+                if direction == "out" and purpose == "venda" and matched_order_id:
+                    _own_dup = (
+                        await db.execute(
+                            select(Invoice.id).where(
+                                Invoice.order_id == matched_order_id,
+                                Invoice.direction == "out",
+                                Invoice.purpose == "venda",
+                                or_(Invoice.source.is_(None), Invoice.source == "fiscal_own"),
+                                # Só nota VIVA já transmitida/autorizada bloqueia a captura do
+                                # Faturador — um rascunho (draft) abandonado NÃO suprime a nota real
+                                # do ML (senão uma prévia nunca confirmada descartaria a NF-e do ML).
+                                Invoice.status.in_(("processing", "transmitida", "authorized")),
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if _own_dup:
+                        logger.warning(
+                            "[sync-ml-fiscal] nota ...%s IGNORADA: pedido %s já tem NF-e própria "
+                            "(conta em modo 'own') — conflito; não materializa nem move estoque.",
+                            access_key[-6:], matched_order_id,
+                        )
+                        descartadas += 1
+                        continue
 
                 person = (
                     await _upsert_recipient(party, cmig_id, db)

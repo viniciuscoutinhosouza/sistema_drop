@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-10-16 — feat(fiscal): emissão de NF-e roteada por conta (própria SEFAZ × Faturador ML) — ADR-0030
+
+O sistema passa a permitir, **por conta de marketplace (CNPJ)**, escolher se a NF-e de pedidos
+**não-FULL** é emitida **pelo próprio sistema (SEFAZ)** ou **pelo Faturador do ML**, e roteia o
+comando de emissão em Pedidos conforme isso. Projetado + revisado por 3 especialistas (ML, fiscal,
+consistência) e auditado pelo trio (adr ✅; quality 2 HIGH corrigidos; consistency 1 inconsistência
+corrigida). **Prova real pendente** (homologação/produção — DEV não fala com SEFAZ/ML).
+
+- **Config**: `marketplace_accounts.nfe_emission_mode` (`marketplace`|`own`, CNPJ-only) — migration
+  151 (coluna+CHECK + índice funcional único `uq_invoice_order_sale_live` = 1 pedido ↔ 1 NF-e de
+  venda viva). `update_account`/`_set_nfe_emission_mode` (gate fiscal ac/admin; 'own' só com
+  CNPJ+cert+série, senão 422). Toggle no modal da conta (IntegrationsView, CNPJ-only).
+- **Roteador único** `emit_order_nfe` (orders.py): FULL→400 · Shopee→própria+anexo (CPF→msg Invoice
+  Issuer) · ML CPF→DC-e · ML CNPJ own→própria 1-clique · marketplace→Faturador. `_emit_nfe_for_label`
+  respeita o modo 'own' (não auto-emite ML). Rastreável segue forçando própria (ADR-0027).
+- **Própria 1-clique com confirmação** (`_emit_own_nfe`): reusa create-from-order + transmit (núcleo
+  fiscal intocado); sem confirm devolve **resumo irretratável**; com confirm transmite. **Writeback**
+  no pedido só em produção. Anti-duplicação nos 2 sentidos (emissão + captura). `ml_service.upload_own_invoice_xml`
+  (POST invoice_data) informa o XML ao ML; Shopee anexa via upload-invoice — só em produção.
+- **Homologação**: não baixa estoque (`_apply_stock_on_authorization` pula `environment=homolog`),
+  não escreve estado fiscal no pedido, não informa ML/Shopee, não libera etiqueta; UI avisa.
+- **Aposentado**: quadro "Configurações de NF-e por CM" (`NFeConfig.issuer`, inerte) saiu da UI do
+  CmigDetailView (aviso aponta pro novo ajuste por conta).
+- **ADR-0030**. Verificação: backend importa + `pytest` 286 ✓ (2 pré-existentes); `npm run build` ✓.
+- **Follow-ups**: teste ao vivo do POST invoice_data; permissão fiscal nomeada no emit; recuperação
+  N-6 pelo 1-clique; one-click Shopee na UI; segregar série própria × Faturador.
+
+---
+
 ## 2026-10-08 — feat(ui): reorg do menu (Cadastro/Administração), Produtos por CMIG e exclusão de conta
 
 O sistema (antes 100% marketplace) passa a servir venda manual → reorganização do menu lateral + exclusão real de conta de marketplace. Auditado pelo trio (quality-guardian 1 HIGH corrigido, consistency-auditor 1 MEDIUM corrigido, adr-consistency-checker aprovado).

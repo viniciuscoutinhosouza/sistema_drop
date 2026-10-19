@@ -1395,18 +1395,179 @@ def _extract_nfe_fields(invoice: dict) -> tuple[str | None, str | None, str | No
     return nfe_key, nfe_status, nfe_url
 
 
+async def _emit_own_nfe(order: Order, account, current_user: User, db: AsyncSession, confirm: bool) -> dict:
+    """Emissão PRÓPRIA (SEFAZ) 1-clique de um pedido não-FULL (migration 151).
+
+    Reusa os endpoints oficiais (create-from-order + transmit) — não duplica o núcleo fiscal
+    (ADR-0015/0028) e herda o mapeamento de exceções SEFAZ→HTTP. Fluxo:
+      1) garante o rascunho (idempotente: 409 se já houver vínculo);
+      2) sem `confirm` → devolve o RESUMO irretratável p/ a tela confirmar (decisão do dono);
+      3) com `confirm` → transmite, ESCREVE DE VOLTA no pedido (status/chave — paridade com o
+         fluxo ML e idempotência), informa o ML (invoice_data) / anexa na Shopee EM PRODUÇÃO, e
+         bloqueia o pós-fluxo de envio quando for HOMOLOGAÇÃO (sem valor fiscal).
+    """
+    from sqlalchemy.orm import selectinload
+
+    from models.fiscal import CMIGFiscalConfig, Invoice
+    from models.person import Person
+    from routers.invoices import (
+        _get_fiscal_config,
+        _validate_ready_to_transmit,
+        create_invoice_from_order,
+        transmit_invoice,
+    )
+    from services.fiscal.emission_router import build_emission_summary
+
+    # 1) Rascunho (idempotente — create_invoice_from_order dá 409 se já houver vínculo).
+    if not order.invoice_id:
+        await create_invoice_from_order(order.id, db=db, current_user=current_user)
+        await db.refresh(order)
+    inv = (
+        await db.execute(
+            select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == order.invoice_id)
+        )
+    ).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=500, detail="Falha ao preparar a NF-e do pedido")
+
+    # Guard anti-duplicação no sentido EMISSÃO (HIGH): se o pedido JÁ tem NF-e de venda do
+    # Faturador ML viva (a captura seta Invoice.order_id, mas NÃO order.invoice_id), não emitir
+    # própria — senão ficam 2 notas de venda. (Nossa própria já-autorizada cai no ramo abaixo via
+    # order.invoice_id.) Mensagem clara em vez do 409 enganoso de série/número.
+    _fat = (
+        await db.execute(
+            select(Invoice.id).where(
+                Invoice.order_id == order.id,
+                Invoice.direction == "out",
+                Invoice.purpose == "venda",
+                Invoice.source == "ml_faturador",
+                Invoice.status.in_(("processing", "transmitida", "authorized")),
+            )
+        )
+    ).scalar_one_or_none()
+    if _fat:
+        raise HTTPException(
+            status_code=409,
+            detail="Este pedido já tem NF-e do Faturador do Mercado Livre — não é possível emitir outra pelo sistema.",
+        )
+
+    cfg = await _get_fiscal_config(inv.cmig_id, db)
+    # Ambiente REAL da emissão = cfg.environment (o que sefaz_service.emitir fixa em inv.environment),
+    # não production_released. Alinha o resumo, o gate de pós-fluxo e o guard de estoque.
+    ambiente = (getattr(cfg, "environment", None) or "homolog").lower()
+    person = None
+    if inv.person_id:
+        person = (
+            await db.execute(select(Person).where(Person.id == inv.person_id))
+        ).scalar_one_or_none()
+
+    async def _post_authorization(out: dict) -> dict:
+        """Efeitos colaterais quando a NF-e está AUTORIZADA — rodam tanto na transmissão quanto
+        no caso já-autorizado (p/ a Shopee anexar mesmo em re-clique). HOMOLOGAÇÃO não dispara
+        nada (sem valor fiscal, não libera envio)."""
+        warnings: list[str] = []
+        if inv.status == "authorized" and ambiente == "production":
+            if order.platform == "mercadolivre" and order.shipment_id and inv.xml_local_path:
+                try:
+                    xml_bytes = Path(inv.xml_local_path).read_bytes()
+                    await _ml.upload_own_invoice_xml(
+                        account.access_token, order.shipment_id, xml_bytes
+                    )
+                    out["uploaded_to_ml"] = True
+                except Exception as e:  # noqa: BLE001 — nota já autorizada; só sinaliza
+                    warnings.append(
+                        f"NF-e autorizada, mas o ML recusou o registro (invoice_data): {e}. "
+                        "A etiqueta pode não liberar até reenviar."
+                    )
+            if order.platform == "shopee":
+                try:
+                    from routers.shopee_fiscal import upload_invoice as _shopee_upload
+                    await _shopee_upload(order.id, current_user=current_user, db=db)
+                    out["attached_shopee"] = True
+                except Exception as e:  # noqa: BLE001
+                    warnings.append(f"NF-e autorizada, mas falhou anexar na Shopee: {e}.")
+        elif inv.status == "authorized" and ambiente == "homolog":
+            warnings.append(
+                "ATENÇÃO: emitida em HOMOLOGAÇÃO — SEM VALOR FISCAL. Não libera etiqueta/despacho e "
+                "não foi enviada ao marketplace. Habilite produção na Configuração Fiscal (após o "
+                "credenciamento) para emitir com valor fiscal."
+            )
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
+    # Já autorizada → idempotente: espelha o estado, não re-emite (unicidade 1 pedido ↔ 1 venda),
+    # mas ainda roda os efeitos colaterais (ex.: Shopee anexar numa 2ª passada).
+    if inv.status == "authorized":
+        # Writeback fiscal no pedido só em PRODUÇÃO — homologação não é documento real (não deve
+        # virar status 'authorized' lido por eShip/badges/captura).
+        if ambiente == "production":
+            order.nfe_status = "authorized"
+            order.nfe_key = inv.access_key
+            await db.commit()
+        return await _post_authorization(
+            {
+                "ok": True, "mode": "own", "already_existed": True, "invoice_id": inv.id,
+                "nfe_status": order.nfe_status, "nfe_key": inv.access_key, "ambiente": ambiente,
+            }
+        )
+
+    # Prontidão (cert, série, CFOP/NCM por item) — reusa o validador oficial (falha alto com o que falta).
+    _validate_ready_to_transmit(inv, cfg, person)
+
+    # 2) Sem confirmação → devolve o resumo irretratável (ato de transmitir é irreversível).
+    if not confirm:
+        return {
+            "ok": True, "mode": "own", "needs_confirmation": True,
+            "invoice_id": inv.id, "ambiente": ambiente,
+            "summary": build_emission_summary(inv, person, cfg, ambiente),
+        }
+
+    # 3) Transmite (endpoint oficial: mapeia SefazServiceError/_SefazNetError/_SefazFiscalError e baixa estoque).
+    resp = await transmit_invoice(inv.id, db=db, current_user=current_user)
+
+    # Writeback no pedido (C2) — paridade com o fluxo ML e idempotência do re-clique. SÓ em
+    # PRODUÇÃO (homologação não é documento fiscal real; não pode virar 'authorized' no pedido).
+    await db.refresh(inv)
+    if ambiente == "production":
+        order.nfe_status = "authorized" if inv.status == "authorized" else inv.status
+        order.nfe_key = inv.access_key
+        await db.commit()
+
+    out = {
+        "ok": True, "mode": "own", "invoice_id": inv.id,
+        "nfe_status": order.nfe_status, "nfe_key": order.nfe_key, "ambiente": ambiente,
+    }
+    if isinstance(resp, dict) and resp.get("stock_pending"):
+        out["stock_pending"] = True
+    return await _post_authorization(out)
+
+
 @router.post("/{order_id}/emit-nfe")
 async def emit_order_nfe(
     order_id: int,
+    body: dict | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Emit NF-e for an ML order via the ML Faturador API."""
+    """Roteador ÚNICO de emissão de NF-e de um pedido NÃO-FULL (migration 151).
+
+    - FULL → 400 (a NF-e de venda é emitida pelo Mercado Livre, ADR-0010/0022).
+    - Shopee → emissão PRÓPRIA + anexo (a Shopee não tem Faturador).
+    - ML conta CPF → DC-e (emissor ML) — inalterado.
+    - ML conta CNPJ: modo 'own' → emissão própria SEFAZ 1-clique (com confirmação);
+      modo 'marketplace' → Faturador ML (comportamento atual). Rastreável segue bloqueando o ML.
+
+    Body: `{"confirm": true}` transmite de fato no modo próprio; sem ele, devolve o resumo."""
+    body = body or {}
+    confirm = bool(body.get("confirm"))
     order = await _get_order_checked(db, order_id, current_user)
-    if order.platform != "mercadolivre":
+
+    from services.fiscal.emission_router import account_nfe_mode, is_full_order
+
+    if is_full_order(order):
         raise HTTPException(
-            status_code=400,
-            detail="Emissão via Faturador ML disponível apenas para pedidos do Mercado Livre",
+            status_code=400, detail="Pedido FULL — a NF-e de venda é emitida pelo Mercado Livre."
         )
 
     acc_result = await db.execute(
@@ -1416,24 +1577,38 @@ async def emit_order_nfe(
     if not account:
         raise HTTPException(status_code=404, detail="Conta de marketplace não encontrada")
 
-    # Conta pessoa física (CPF) não emite NF-e — o ML aguarda a DC-e. Não tentar
-    # Faturador (evita o erro enganoso "erro na emissão da NFe").
+    # Shopee: nunca tem Faturador — sempre emissão própria + anexo. CPF não emite NF-e modelo 55
+    # (modo Invoice Issuer: a Shopee emite sob o CNPJ da MIG) — falha com mensagem clara.
+    if order.platform == "shopee":
+        if await _order_issuer_type(db, order) == "cpf":
+            raise HTTPException(
+                status_code=400,
+                detail="Conta CPF na Shopee: a NF-e é emitida no modo Invoice Issuer (Shopee) — emissão própria modelo 55 não se aplica.",
+            )
+        return await _emit_own_nfe(order, account, current_user, db, confirm)
+
+    if order.platform != "mercadolivre":
+        raise HTTPException(
+            status_code=400, detail="Emissão de NF-e disponível para Mercado Livre e Shopee."
+        )
+
+    # Conta CPF → DC-e (o ML aguarda a DC-e). Inalterado.
     if await _order_issuer_type(db, order) == "cpf":
         raise HTTPException(status_code=400, detail=_DCE_PENDING_MSG)
 
-    # Se o status local já indica nota autorizada/em processo, sincroniza o estado
-    # real do ML antes de bloquear — o banco pode estar desatualizado.
+    # Conta CNPJ em modo próprio → emissão própria SEFAZ.
+    if account_nfe_mode(account) == "own":
+        return await _emit_own_nfe(order, account, current_user, db, confirm)
+
+    # ── Modo MARKETPLACE (Faturador ML) — comportamento atual ──
     if order.nfe_status in ("authorized", "pending", "in_process"):
         try:
             await fetch_and_cache_order_invoices(db, order, account)
         except Exception:
             pass
         return {
-            "ok": True,
-            "already_existed": True,
-            "nfe_status": order.nfe_status,
-            "nfe_key": order.nfe_key,
-            "nfe_url": _ml_nfe_url(order),
+            "ok": True, "already_existed": True, "mode": "marketplace",
+            "nfe_status": order.nfe_status, "nfe_key": order.nfe_key, "nfe_url": _ml_nfe_url(order),
         }
 
     try:
@@ -1472,6 +1647,7 @@ async def emit_order_nfe(
     return {
         "ok": True,
         "already_existed": already_processing,
+        "mode": "marketplace",
         "nfe_status": order.nfe_status,
         "nfe_key": order.nfe_key,
         "nfe_url": _ml_nfe_url(order),
@@ -2995,6 +3171,17 @@ async def _emit_nfe_for_label(order: Order, account, db) -> None:
     """
     if order.nfe_status in ("authorized", "pending", "in_process"):
         return
+    # Conta em emissão PRÓPRIA (migration 151): o ML NÃO emite — a NF-e sai pelo nosso sistema e é
+    # informada ao ML (invoice_data), o que libera a etiqueta. Não chamar o Faturador aqui.
+    from services.fiscal.emission_router import account_nfe_mode
+    if account_nfe_mode(account) == "own":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Conta configurada para emissão própria de NF-e. Emita a NF-e no pedido "
+                "(botão 'Emitir NF-e') — ela é enviada ao Mercado Livre e libera a etiqueta."
+            ),
+        )
     try:
         ml_order_id = int(order.platform_order_id)
     except (TypeError, ValueError):
