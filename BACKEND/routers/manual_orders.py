@@ -1,6 +1,6 @@
 import json
 import secrets
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,7 +17,6 @@ from models.payment import PaymentCharge
 from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
-from models.warehouse import WarehouseBankAccount
 from services.file_naming import TIPO_ETIQUETA, order_download_filename
 from services.product_mode import assert_product_group_allowed
 from services.shipping_mode import MODE_COMBINADO
@@ -240,10 +239,16 @@ async def create_manual_order(
 
     from datetime import UTC as _UTC
     from datetime import datetime as _datetime
+    from uuid import uuid4
     order = Order(
         dropshipper_id=current_user.id,
         cmig_id=cmig_id,
         platform="manual",
+        # platform_order_id NÃO pode ficar NULL: o índice único (platform, platform_order_id,
+        # dropshipper) não aceita 2 linhas ('manual', NULL, dropshipper) — o 2º pedido manual do
+        # mesmo vendedor batia ORA-00001. Placeholder único só p/ passar o INSERT; vira str(id)
+        # logo após o flush (estável, único por pedido; o eShip já usava `... or str(id)`).
+        platform_order_id=f"MANUAL-TMP-{uuid4().hex}",
         status="paid" if is_fully_cmig else "downloaded",
         payment_status="paid" if is_fully_cmig else "pending",
         paid_at=_datetime.now(_UTC) if is_fully_cmig else None,
@@ -259,6 +264,7 @@ async def create_manual_order(
     )
     db.add(order)
     await db.flush()
+    order.platform_order_id = str(order.id)
 
     for n in normalized:
         item_kwargs = {
