@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
+from models.cmig import CMIGProductImage
 from models.order import Order, OrderItem
+from models.product import CatalogProductImage
 
 router = APIRouter()
 
@@ -35,7 +37,7 @@ def _mask_name(name: str | None) -> str:
     return f"{parts[0]} {parts[-1][0]}."
 
 
-def _item_view(it: OrderItem) -> dict:
+def _item_view(it: OrderItem, images: dict[int, str] | None = None) -> dict:
     unit = Decimal(str(it.unit_price or 0))
     lst = Decimal(str(it.list_price)) if it.list_price is not None else None
     return {
@@ -47,7 +49,43 @@ def _item_view(it: OrderItem) -> dict:
         "list_price": float(lst) if lst is not None else None,
         "has_discount": bool(lst is not None and unit < lst),
         "line_total": float(unit * (it.quantity or 0)),
+        # Foto do produto (página do cliente): CMIG via cmig_product_images, PG via
+        # catalog_product_images — primária primeiro. None se o produto não tem imagem.
+        "image_url": (images or {}).get(it.id),
     }
+
+
+async def _resolve_item_images(db: AsyncSession, order: Order) -> dict[int, str]:
+    """`{order_item_id: url da imagem principal}`. Resolve por `catalog_source`: item CMIG usa a
+    imagem do CMIGProduct; item PG usa a do CatalogProduct. Primária (is_primary) → menor sort_order.
+    Imagem de produto não é dado sensível — ok expor na página pública."""
+    cmig_ids = {i.cmig_product_id for i in order.items if i.catalog_source == "cmig" and i.cmig_product_id}
+    pg_ids = {i.catalog_product_id for i in order.items if i.catalog_source != "cmig" and i.catalog_product_id}
+    cmig_img: dict[int, str] = {}
+    pg_img: dict[int, str] = {}
+    if cmig_ids:
+        rows = (await db.execute(
+            select(CMIGProductImage)
+            .where(CMIGProductImage.cmig_product_id.in_(cmig_ids))
+            .order_by(CMIGProductImage.is_primary.desc(), CMIGProductImage.sort_order)
+        )).scalars().all()
+        for r in rows:
+            cmig_img.setdefault(r.cmig_product_id, r.url)
+    if pg_ids:
+        rows = (await db.execute(
+            select(CatalogProductImage)
+            .where(CatalogProductImage.product_id.in_(pg_ids))
+            .order_by(CatalogProductImage.is_primary.desc(), CatalogProductImage.sort_order)
+        )).scalars().all()
+        for r in rows:
+            pg_img.setdefault(r.product_id, r.url)
+    out: dict[int, str] = {}
+    for i in order.items:
+        if i.catalog_source == "cmig" and i.cmig_product_id in cmig_img:
+            out[i.id] = cmig_img[i.cmig_product_id]
+        elif i.catalog_product_id in pg_img:
+            out[i.id] = pg_img[i.catalog_product_id]
+    return out
 
 
 async def _live_charge_view(db: AsyncSession, order: Order) -> dict | None:
@@ -66,7 +104,7 @@ async def _live_charge_view(db: AsyncSession, order: Order) -> dict | None:
     }
 
 
-def _serialize_public(order: Order, charge: dict | None) -> dict:
+def _serialize_public(order: Order, charge: dict | None, images: dict[int, str] | None = None) -> dict:
     from services import charge_service
 
     items = sorted(order.items, key=lambda x: x.id)
@@ -75,7 +113,7 @@ def _serialize_public(order: Order, charge: dict | None) -> dict:
     charge_paid = bool(charge and (charge.get("status") or "").upper() in charge_service.PAID_CHARGE)
     return {
         "buyer_name": _mask_name(order.buyer_name),
-        "items": [_item_view(i) for i in items],
+        "items": [_item_view(i, images) for i in items],
         "items_total": round(items_total, 2),
         "shipping_cost": shipping,
         "total": round(items_total + shipping, 2),
@@ -115,7 +153,9 @@ def _recompute_totals(order: Order) -> None:
 @router.get("/checkout/{token}")
 async def public_get_checkout(token: str, db: AsyncSession = Depends(get_db)):
     order = await _load_by_token(token, db)
-    return _serialize_public(order, await _live_charge_view(db, order))
+    return _serialize_public(
+        order, await _live_charge_view(db, order), await _resolve_item_images(db, order)
+    )
 
 
 @router.patch("/checkout/{token}/items/{item_id}")
@@ -168,7 +208,9 @@ async def public_edit_item(
     await charge_service.cancel_live_stale_charge(db, order)
     # Recarrega (expire_on_commit=True zera os atributos pós-commit; evita lazy-load async).
     fresh = await _load_by_token(token, db)
-    return _serialize_public(fresh, await _live_charge_view(db, fresh))
+    return _serialize_public(
+        fresh, await _live_charge_view(db, fresh), await _resolve_item_images(db, fresh)
+    )
 
 
 @router.post("/checkout/{token}/pay")
@@ -191,4 +233,6 @@ async def public_pay(token: str, body: dict | None = None, db: AsyncSession = De
     )
     # Recarrega (get_or_create commita; expire_on_commit=True zera os atributos → evita lazy-load async).
     fresh = await _load_by_token(token, db)
-    return _serialize_public(fresh, await _live_charge_view(db, fresh))
+    return _serialize_public(
+        fresh, await _live_charge_view(db, fresh), await _resolve_item_images(db, fresh)
+    )

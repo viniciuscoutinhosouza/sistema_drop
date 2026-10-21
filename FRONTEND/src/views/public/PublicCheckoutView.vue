@@ -133,6 +133,8 @@ onMounted(load)
 
         <ul class="item-list">
           <li v-for="it in data.items" :key="it.id" class="item">
+            <img v-if="it.image_url" :src="it.image_url" :alt="it.title" class="item-thumb" loading="lazy" />
+            <div v-else class="item-thumb item-thumb--empty"><i class="fas fa-image"></i></div>
             <div class="item-info">
               <span class="item-title">{{ it.title }}</span>
               <span v-if="it.has_discount" class="badge bg-success ms-1">desconto</span>
@@ -227,6 +229,22 @@ onMounted(load)
   gap: 8px;
   padding: 10px 0;
   border-bottom: 1px solid #eee;
+}
+.item-thumb {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex-shrink: 0;
+  background: #f1f1f1;
+  border: 1px solid #eee;
+}
+.item-thumb--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #bbb;
+  font-size: 1.1rem;
 }
 .item-info {
   flex: 1;
