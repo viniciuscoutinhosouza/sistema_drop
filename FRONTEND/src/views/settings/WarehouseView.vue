@@ -126,6 +126,35 @@
                 </div>
               </div>
 
+              <!-- Config de recebimento / checkout (Fase 1 — regra aplicada nas próximas fases) -->
+              <hr />
+              <h6 class="text-muted text-uppercase mb-2"><small>Recebimento e Checkout</small></h6>
+              <div class="custom-control custom-switch mb-2">
+                <input id="wh-pg-prepaid" v-model="form.pg_requires_prepaid" type="checkbox" class="custom-control-input" />
+                <label class="custom-control-label" for="wh-pg-prepaid">
+                  Venda de PG exige a CMIG pagar/ter crédito antes da entrega
+                </label>
+              </div>
+              <div class="custom-control custom-switch mb-2">
+                <input id="wh-manual-pay" v-model="form.manual_sale_requires_payment" type="checkbox" class="custom-control-input" />
+                <label class="custom-control-label" for="wh-manual-pay">
+                  Venda manual exige pagamento do cliente para dar continuidade
+                </label>
+              </div>
+              <small class="text-muted d-block mb-3">
+                <i class="fas fa-info-circle"></i>
+                A configuração é salva agora; a <strong>regra</strong> passa a valer quando o checkout/crédito
+                for ativado (próxima fase).
+              </small>
+
+              <!-- Bancos / recebimento (ASAAS) — só quando o galpão já existe -->
+              <div v-if="form.id" class="mb-3">
+                <WarehouseBankAccountsCard :key="form.id" :warehouse-id="Number(form.id)" />
+              </div>
+              <div v-else class="alert alert-light border small mb-3">
+                Salve o galpão para cadastrar as contas de recebimento (bancos).
+              </div>
+
               <!-- Marca e Tema -->
               <hr />
               <h6 class="text-muted text-uppercase mb-3"><small>Marca e Tema</small></h6>
@@ -266,6 +295,7 @@ import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import { useUiStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
+import WarehouseBankAccountsCard from '@/components/settings/WarehouseBankAccountsCard.vue'
 
 const { add: toast } = useToast()
 const feedback = useToast()
@@ -286,6 +316,7 @@ const form = ref({
   zip_code: '', street: '', number: '', complement: '',
   neighborhood: '', city: '', state: '',
   pix_key_type: '', pix_key: '',
+  pg_requires_prepaid: false, manual_sale_requires_payment: false,
   notes: '',
   logo_url: '',
   theme_sidebar: '', theme_accent: '', theme_topbar: '',
@@ -295,7 +326,9 @@ const form = ref({
 onMounted(async () => {
   try {
     const { data } = await api.get('/warehouse')
-    if (data) Object.assign(form.value, data)
+    // GET /warehouse retorna LISTA (0..N) — esta tela edita o galpão do próprio GO: pega o 1º.
+    const w = Array.isArray(data) ? data[0] : data
+    if (w) Object.assign(form.value, w)
   } catch {
     // Sem galpão cadastrado ainda — formulário vazio
   } finally {

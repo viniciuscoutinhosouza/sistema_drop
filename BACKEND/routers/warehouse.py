@@ -1,16 +1,18 @@
 import os
 import re
 import uuid as _uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user, require_menu_permission
 from models.go import GO
 from models.user import User
-from models.warehouse import Warehouse
+from models.warehouse import Warehouse, WarehouseBankAccount
+from services import crypto
 
 # Upload de logo — só raster (SVG serve inline em /static e viraria XSS). Valida por magic bytes
 # (a extensão do nome do usuário é ignorada — o tipo real vem de _sniff_image_ext).
@@ -117,6 +119,8 @@ def _serialize(w: Warehouse) -> dict:
         "state": w.state,
         "pix_key_type": w.pix_key_type,
         "pix_key": w.pix_key,
+        "pg_requires_prepaid": bool(w.pg_requires_prepaid),
+        "manual_sale_requires_payment": bool(w.manual_sale_requires_payment),
         "notes": w.notes,
         "logo_url": w.logo_url,
         "theme_sidebar": w.theme_sidebar,
@@ -206,6 +210,8 @@ async def create_warehouse(
         state=body.get("state"),
         pix_key_type=body.get("pix_key_type"),
         pix_key=body.get("pix_key"),
+        pg_requires_prepaid=bool(body.get("pg_requires_prepaid", False)),
+        manual_sale_requires_payment=bool(body.get("manual_sale_requires_payment", False)),
         notes=body.get("notes"),
         theme_sidebar=_norm_color(body.get("theme_sidebar")),
         theme_accent=_norm_color(body.get("theme_accent")),
@@ -281,14 +287,19 @@ async def update_warehouse(
         "state",
         "pix_key_type",
         "pix_key",
+        "pg_requires_prepaid",
+        "manual_sale_requires_payment",
         "notes",
     ]
+    _BOOL_FIELDS = ("pg_requires_prepaid", "manual_sale_requires_payment")
     for field in fields:
         if field in body:
             if field == "zip_code":
                 val = _norm_cep(body[field])
             elif field == "work_type":
                 val = _norm_work_type(body[field])
+            elif field in _BOOL_FIELDS:
+                val = bool(body[field])
             else:
                 val = body[field]
             setattr(warehouse, field, val)
@@ -372,3 +383,244 @@ def _delete_logo_file(logo_url: str | None) -> None:
             os.remove(path)
     except (OSError, ValueError):
         pass
+
+
+# ─── Contas bancárias / recebimento do Galpão (migration 152, ADR-0031) ─────────
+
+_VALID_BANK_PROVIDERS = {"asaas"}
+_BANK_PIX_TYPES = {"cpf", "cnpj", "email", "phone", "random"}
+# Limite de cada coluna string — valida fail-loud (400) em vez de estourar ORA-12899 (500).
+_BANK_MAXLEN = {
+    "provider": 20, "bank_code": 10, "name": 200, "wallet_id": 100,
+    "chart_account_label": 255, "agency": 20, "account_number": 30,
+    "pix_key": 255, "holder_name": 255, "holder_document": 20, "notes": 2000,
+}
+
+
+def _check_bank_len(field: str, value) -> None:
+    if value is not None and len(str(value)) > _BANK_MAXLEN[field]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Campo '{field}' excede o limite de {_BANK_MAXLEN[field]} caracteres.",
+        )
+
+
+async def _get_warehouse_for_user(warehouse_id: int, user: User, db: AsyncSession) -> Warehouse:
+    """Carrega o galpão e aplica o isolamento por galpão (ADR-0026). 404/403 se não puder."""
+    w = (
+        await db.execute(select(Warehouse).where(Warehouse.id == warehouse_id))
+    ).scalar_one_or_none()
+    if not w:
+        raise HTTPException(status_code=404, detail="Galpão não encontrado")
+    if not _can_access_warehouse(user, w, await _owned_go_id(user, db)):
+        raise HTTPException(status_code=403, detail="Acesso negado a este Galpão")
+    return w
+
+
+def _serialize_bank(b: WarehouseBankAccount) -> dict:
+    """NUNCA devolve a API Key — só o flag `api_key_set` (espelha csc_token_set do fiscal)."""
+    return {
+        "id": b.id,
+        "warehouse_id": b.warehouse_id,
+        "provider": b.provider,
+        "bank_code": b.bank_code,
+        "name": b.name,
+        "api_key_set": bool(b.api_key_encrypted),
+        "wallet_id": b.wallet_id,
+        "chart_account_label": b.chart_account_label,
+        "is_sandbox": bool(b.is_sandbox),
+        "is_active": bool(b.is_active),
+        "is_primary": bool(b.is_primary),
+        "agency": b.agency,
+        "account_number": b.account_number,
+        "pix_key_type": b.pix_key_type,
+        "pix_key": b.pix_key,
+        "holder_name": b.holder_name,
+        "holder_document": b.holder_document,
+        "opening_balance": float(b.opening_balance) if b.opening_balance is not None else 0,
+        "opening_balance_date": b.opening_balance_date.isoformat() if b.opening_balance_date else None,
+        "notes": b.notes,
+        "created_at": b.created_at.isoformat() if b.created_at else None,
+    }
+
+
+def _norm_bank_provider(v) -> str:
+    p = (v or "asaas").strip().lower()
+    if p not in _VALID_BANK_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provedor inválido '{p}'. Suportado: {', '.join(sorted(_VALID_BANK_PROVIDERS))}.",
+        )
+    return p
+
+
+def _norm_bank_pix_type(v):
+    if v is None or str(v).strip() == "":
+        return None
+    t = str(v).strip().lower()
+    if t not in _BANK_PIX_TYPES:
+        raise HTTPException(status_code=400, detail="Tipo de chave Pix inválido.")
+    return t
+
+
+def _parse_opening_date(v):
+    if not v:
+        return None
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Data do saldo inicial inválida (use AAAA-MM-DD).")
+
+
+def _parse_opening_balance(v):
+    if v in (None, ""):
+        return 0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Saldo inicial inválido.")
+
+
+def _apply_bank_fields(bank: WarehouseBankAccount, body: dict) -> None:
+    """Aplica os campos editáveis (exceto api_key, tratada à parte)."""
+    if "provider" in body:
+        bank.provider = _norm_bank_provider(body.get("provider"))
+    for f in (
+        "bank_code", "name", "wallet_id", "chart_account_label", "agency",
+        "account_number", "pix_key", "holder_name", "holder_document", "notes",
+    ):
+        if f in body:
+            _check_bank_len(f, body[f])
+            setattr(bank, f, body[f])
+    if "pix_key_type" in body:
+        bank.pix_key_type = _norm_bank_pix_type(body.get("pix_key_type"))
+    for f in ("is_sandbox", "is_active", "is_primary"):
+        if f in body:
+            setattr(bank, f, bool(body[f]))
+    if "opening_balance" in body:
+        bank.opening_balance = _parse_opening_balance(body.get("opening_balance"))
+    if "opening_balance_date" in body:
+        bank.opening_balance_date = _parse_opening_date(body.get("opening_balance_date"))
+
+
+async def _demote_other_primaries(warehouse_id: int, keep_id: int, db: AsyncSession) -> None:
+    """Garante no máximo 1 conta `is_primary` por galpão."""
+    await db.execute(
+        update(WarehouseBankAccount)
+        .where(
+            WarehouseBankAccount.warehouse_id == warehouse_id,
+            WarehouseBankAccount.id != keep_id,
+        )
+        .values(is_primary=False)
+    )
+
+
+@router.get("/{warehouse_id}/bank-accounts")
+async def list_bank_accounts(
+    warehouse_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
+):
+    """Lista as contas de recebimento do galpão (sem a API Key).
+
+    Gated por `go_empresa` (igual à escrita): a lista traz dado pessoal do titular (CPF/CNPJ,
+    chave Pix) — não é exposta a quem não administra a empresa/galpão.
+    """
+    await _get_warehouse_for_user(warehouse_id, current_user, db)
+    rows = (
+        await db.execute(
+            select(WarehouseBankAccount)
+            .where(WarehouseBankAccount.warehouse_id == warehouse_id)
+            .order_by(WarehouseBankAccount.id)
+        )
+    ).scalars().all()
+    return [_serialize_bank(b) for b in rows]
+
+
+@router.post("/{warehouse_id}/bank-accounts", status_code=201)
+async def create_bank_account(
+    warehouse_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
+):
+    """Cadastra uma conta de recebimento (ex.: ASAAS) no galpão. API Key cifrada."""
+    await _get_warehouse_for_user(warehouse_id, current_user, db)
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Nome/rótulo da conta é obrigatório")
+
+    bank = WarehouseBankAccount(warehouse_id=warehouse_id, name=name)
+    _apply_bank_fields(bank, body)
+    bank.name = name
+    api_key = (body.get("api_key") or "").strip()
+    if api_key:
+        try:
+            bank.api_key_encrypted = crypto.encrypt(api_key)
+        except crypto.CryptoError as e:
+            raise HTTPException(status_code=400, detail=f"Não foi possível cifrar a API Key: {e}")
+    db.add(bank)
+    await db.flush()
+    if bank.is_primary:
+        await _demote_other_primaries(warehouse_id, bank.id, db)
+    await db.commit()
+    await db.refresh(bank)
+    return _serialize_bank(bank)
+
+
+@router.put("/{warehouse_id}/bank-accounts/{bank_id}")
+async def update_bank_account(
+    warehouse_id: int,
+    bank_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
+):
+    """Edita uma conta de recebimento. API Key: em branco/ausente mantém a atual (remover = excluir)."""
+    await _get_warehouse_for_user(warehouse_id, current_user, db)
+    # Anti-IDOR: filtra pelo PAR (id, warehouse_id) — não basta o galpão do path.
+    bank = (
+        await db.execute(
+            select(WarehouseBankAccount).where(
+                WarehouseBankAccount.id == bank_id,
+                WarehouseBankAccount.warehouse_id == warehouse_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail="Conta bancária não encontrada neste Galpão")
+
+    _apply_bank_fields(bank, body)
+    if "api_key" in body and (body.get("api_key") or "").strip():
+        try:
+            bank.api_key_encrypted = crypto.encrypt(body["api_key"].strip())
+        except crypto.CryptoError as e:
+            raise HTTPException(status_code=400, detail=f"Não foi possível cifrar a API Key: {e}")
+    if bank.is_primary:
+        await _demote_other_primaries(warehouse_id, bank.id, db)
+    await db.commit()
+    await db.refresh(bank)
+    return _serialize_bank(bank)
+
+
+@router.delete("/{warehouse_id}/bank-accounts/{bank_id}", status_code=204)
+async def delete_bank_account(
+    warehouse_id: int,
+    bank_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
+):
+    """Remove uma conta de recebimento do galpão."""
+    await _get_warehouse_for_user(warehouse_id, current_user, db)
+    bank = (
+        await db.execute(
+            select(WarehouseBankAccount).where(
+                WarehouseBankAccount.id == bank_id,
+                WarehouseBankAccount.warehouse_id == warehouse_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail="Conta bancária não encontrada neste Galpão")
+    db.delete(bank)
+    await db.commit()

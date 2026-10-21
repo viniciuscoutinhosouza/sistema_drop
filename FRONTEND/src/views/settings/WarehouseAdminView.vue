@@ -133,6 +133,36 @@
                   <input v-model="form.pix_key" class="form-control" placeholder="Chave PIX para receber dos Gestores de Conta" />
                 </div>
               </div>
+
+              <!-- Config de recebimento / checkout (Fase 1 — regra aplicada nas próximas fases) -->
+              <hr />
+              <h6 class="text-muted text-uppercase mb-2"><small>Recebimento e Checkout</small></h6>
+              <div class="custom-control custom-switch mb-2">
+                <input id="wha-pg-prepaid" v-model="form.pg_requires_prepaid" type="checkbox" class="custom-control-input" />
+                <label class="custom-control-label" for="wha-pg-prepaid">
+                  Venda de PG exige a CMIG pagar/ter crédito antes da entrega
+                </label>
+              </div>
+              <div class="custom-control custom-switch mb-2">
+                <input id="wha-manual-pay" v-model="form.manual_sale_requires_payment" type="checkbox" class="custom-control-input" />
+                <label class="custom-control-label" for="wha-manual-pay">
+                  Venda manual exige pagamento do cliente para dar continuidade
+                </label>
+              </div>
+              <small class="text-muted d-block mb-3">
+                <i class="fas fa-info-circle"></i>
+                A configuração é salva agora; a <strong>regra</strong> passa a valer quando o checkout/crédito
+                for ativado (próxima fase).
+              </small>
+
+              <!-- Bancos / recebimento (ASAAS) — só quando o galpão já existe -->
+              <div v-if="form.id" class="mb-3">
+                <WarehouseBankAccountsCard :key="form.id" :warehouse-id="Number(form.id)" />
+              </div>
+              <div v-else class="alert alert-light border small mb-3">
+                Salve o galpão para cadastrar as contas de recebimento (bancos).
+              </div>
+
               <hr />
               <h6 class="text-muted text-uppercase mb-3"><small>Marca e Tema</small></h6>
               <div class="card">
@@ -272,6 +302,7 @@
 import { ref, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
+import WarehouseBankAccountsCard from '@/components/settings/WarehouseBankAccountsCard.vue'
 
 const toast = useToast()
 
@@ -292,7 +323,9 @@ function emptyForm() {
     phone: '', whatsapp: '', email: '',
     zip_code: '', street: '', number: '', complement: '',
     neighborhood: '', city: '', state: '',
-    pix_key_type: '', pix_key: '', notes: '',
+    pix_key_type: '', pix_key: '',
+    pg_requires_prepaid: false, manual_sale_requires_payment: false,
+    notes: '',
     logo_url: '',
     theme_sidebar: '', theme_accent: '', theme_topbar: '',
     theme_sidebar_text: '', theme_link: '',

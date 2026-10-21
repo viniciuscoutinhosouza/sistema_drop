@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-10-21 — feat(warehouse): Fase 1 recebimento por Galpão — banco (ASAAS) + 2 flags (ADR-0031)
+
+Fase 1 (de 4) do subsistema de recebimento/checkout. Só config (sem enforcement). Auditado pelo trio
+(quality-guardian 0 CRITICAL/HIGH; consistency-auditor achou e corrigimos 1 bloqueador no load do
+WarehouseView; adr-consistency-checker aprovado).
+
+- **Migration 152** (idempotente): `warehouses.pg_requires_prepaid` + `manual_sale_requires_payment`
+  (NUMBER(1), INERTES nesta fase); tabela `warehouse_bank_accounts` (N por galpão; `api_key_encrypted`
+  cifrada Fernet; `ON DELETE CASCADE`; campos estilo ASAAS).
+- **Backend**: `models/warehouse.py` (2 flags + WarehouseBankAccount); `services/crypto.py` (reexporta
+  cert_crypto/Fernet); `routers/warehouse.py` — flags em serialize/create/PUT; CRUD de bancos
+  `/warehouse/{id}/bank-accounts[/{bank_id}]` (gated `go_empresa` nas mutações **e no GET** por PII;
+  anti-IDOR por par (id,warehouse_id); API Key nunca retornada (só `api_key_set`), blank-to-keep;
+  `is_primary` ≤1 por galpão (app-level); validações fail-loud incl. comprimento de campo → 400).
+- **Frontend**: `WarehouseBankAccountsCard.vue` (lista + modal ASAAS) nas 2 telas de galpão (admin +
+  a do GO), só com galpão salvo; 2 switches com nota de que a regra vale na próxima fase; nota do Pix
+  legado × banco. **Fix**: load do WarehouseView tratava a lista do `GET /warehouse` como objeto
+  (form.id não hidratava → card não aparecia e save duplicava galpão) — corrigido (`data[0]`).
+- **ADR-0031** (padrão novo: credencial de gateway cifrada por galpão; marca Fases 2-4). Verificação:
+  backend importa + `pytest` 286 ✓ (2 pré-existentes); `npm run build` ✓.
+- **Fases futuras**: 2) integração ASAAS + webhook; 3) checkout da venda manual (estados + página
+  pública por token + re-análise de desconto); 4) crédito CMIG×Galpão (PG pré-pago).
+
+---
+
 ## 2026-10-19 — feat(ui): move "Pessoas" de Fiscal para Cadastro (topo)
 
 `AppSidebar.vue`: item **Pessoas** (`/people`) movido do grupo **Fiscal** para **Cadastro**, como
