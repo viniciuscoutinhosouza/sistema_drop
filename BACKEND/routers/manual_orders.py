@@ -231,11 +231,18 @@ async def create_manual_order(
             raise HTTPException(status_code=400, detail="shipping_cost deve ser >= 0")
 
     # Itens CMIG ja sao propriedade da Conta CMIG do vendedor — nao geram debito.
-    # Pedido 100% CMIG SEM frete a pagar entra direto como pago (nao tem o que cobrar).
+    # Pedido 100% CMIG SEM frete a pagar entra direto como pago (nao tem o que cobrar do dropshipper)
+    # — EXCETO quando o galpão exige pagamento do cliente (manual_sale_requires_payment, ADR-0031/
+    # 0033): aí a venda nasce PENDENTE p/ o cliente aprovar e pagar via link público (ASAAS/crédito),
+    # e só vira paga quando ele pagar. Flag OFF (default) = comportamento atual intacto.
     pg_cost_total = sum(
         n["unit_cost"] * n["quantity"] for n in normalized if n["kind"] == "pg"
     )
     is_fully_cmig = pg_cost_total == 0 and shipping_cost == 0
+    requires_payment = bool(
+        cmig_obj.warehouse.manual_sale_requires_payment
+    ) if (cmig_obj and cmig_obj.warehouse) else False
+    auto_paid = is_fully_cmig and not requires_payment
 
     from datetime import UTC as _UTC
     from datetime import datetime as _datetime
@@ -249,9 +256,9 @@ async def create_manual_order(
         # mesmo vendedor batia ORA-00001. Placeholder único só p/ passar o INSERT; vira str(id)
         # logo após o flush (estável, único por pedido; o eShip já usava `... or str(id)`).
         platform_order_id=f"MANUAL-TMP-{uuid4().hex}",
-        status="paid" if is_fully_cmig else "downloaded",
-        payment_status="paid" if is_fully_cmig else "pending",
-        paid_at=_datetime.now(_UTC) if is_fully_cmig else None,
+        status="paid" if auto_paid else "downloaded",
+        payment_status="paid" if auto_paid else "pending",
+        paid_at=_datetime.now(_UTC) if auto_paid else None,
         buyer_person_id=person.id if person else None,
         buyer_name=buyer_name,
         buyer_email=buyer_email,
