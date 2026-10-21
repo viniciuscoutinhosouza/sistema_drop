@@ -80,6 +80,9 @@ class WarehouseBankAccount(Base):
     bank_code = Column(String(10))
     name = Column(String(200), nullable=False)
     api_key_encrypted = Column(String(2000))
+    # SHA-256 (hex) do authToken do webhook ASAAS desta conta (migration 153) — valida o header
+    # `asaas-access-token`. Nunca guardamos o token em claro.
+    webhook_token_hash = Column(String(64))
     wallet_id = Column(String(100))
     chart_account_label = Column(String(255))  # texto livre — não há Plano de Contas ainda
     is_sandbox = Column(Boolean, nullable=False, server_default=text("0"))

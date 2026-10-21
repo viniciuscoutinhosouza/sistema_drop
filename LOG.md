@@ -4,6 +4,69 @@
 
 ---
 
+## 2026-10-21 — feat(sales): Fases 3 e 4 checkout público + crédito CMIG×Galpão + endurecimento Fase 2 (ADR-0033/0034)
+
+Sessão autônoma. Fases 3 e 4 do subsistema de recebimento/checkout + correções da auditoria da Fase 2.
+Trio auditou cada fase (0 CRITICAL/BLOQUEADOR). **Não deployado** (pagamento/público/crédito exigem
+credencial ASAAS real + exercício do dono). Verificado: import de `main` OK, `pytest` 286 ✓ (2 pré-
+existentes), `npm run build` ✓.
+
+- **Endurecimento Fase 2 (pós-auditoria):** `charge_service.py` virou **ponto único** de cobrança —
+  valor = `sale_amount + shipping_cost` (frete entrava de fora: cliente sub-cobrado), **lock FOR UPDATE**
+  anti-TOCTOU, cancela+recria cobrança se o valor mudar, `apply_status_to_order` (fim da decisão
+  "pago/estornado" duplicada entre webhook e reconcile). `asaas_service.ensure_webhook` **idempotente**
+  (lista+apaga antes de criar → sem tempestade de 401) + `cancel_payment`. Webhook grava `processed_at`,
+  trata `PAYMENT_REFUNDED` (reverte), **notifica** o AC. `delete_bank_account` bloqueia (409) se há
+  cobranças (preserva histórico). Constraint única nomeada na migration 153.
+- **Fase 3 — Checkout público (ADR-0033, migration 154):** `orders.public_token`/`public_token_created_at`/
+  `needs_price_review` + `order_items.list_price` (snapshot do `suggested_price`). Router **público sem JWT**
+  `routers/public_checkout.py` — acesso só pelo token opaco (`token_urlsafe(32)`, escopo `platform='manual'`):
+  GET (nome mascarado, sem CPF), PATCH item (muda qtd / remove, teto de qtd, recomputa total), POST pay
+  (reusa `charge_service`). Mexer em item **com desconto** marca `needs_price_review` e **bloqueia o
+  pagamento** até o operador liberar. Editar cancela a cobrança velha (não cobra valor defasado). Operador:
+  `checkout-info`, `public-link` (gerar/regenerar/**revogar** via DELETE), `price-review/approve`,
+  `charges/{id}/cancel`. Frontend: `PublicCheckoutView.vue` (rota `/checkout/:token`, fora do layout, usa
+  `fetch`); `OrderDetailView` ganhou link do cliente + banner de re-análise + cancelar cobrança; `alert()`
+  legado do `payOrder` → `toast`.
+- **Fase 4 — Crédito CMIG×Galpão (ADR-0034, migration 155):** razão append-only `cmig_warehouse_credits`
+  (`credit`/`debit` por par); saldo **derivado** (Σcred − Σdéb) em `services/credit_service`; `routers/credits.py`
+  (GET saldo+lançamentos, POST lançar — escopado por galpão/CMIG, ADR-0026); tela **Extrato de Crédito**
+  (`/financial/credito`, menu "Crédito CMIG × Galpão"). Enforcement de PG pré-pago na entrega = guarda
+  pronta, **adiada** junto com os estados Separação/Enviado/Entregue (adiados pelo dono).
+- **Pendências p/ o dono:** rodar migrations 152-155; deploy; conta ASAAS real + Configurar webhook;
+  exercitar o fluxo. Follow-ups: adicionar produto na página pública, rate-limit/expiração do token,
+  editar preço na re-análise, wire do `assert_pg_prepaid`, débito automático do crédito na entrega.
+
+---
+
+## 2026-10-21 — feat(payment): Fase 2 integração ASAAS — cobrança da venda manual + webhook (ADR-0032)
+
+Fase 2 (de 4) do subsistema de recebimento/checkout. Cliente ASAAS + cobrança do pedido manual +
+webhook público de confirmação de pagamento.
+
+- **Migration 153** (idempotente): `warehouse_bank_accounts.webhook_token_hash` (SHA-256 do authToken
+  do webhook); tabela `payment_charges` (cobrança↔pedido↔galpão; `asaas_payment_id` UNIQUE = âncora;
+  billing_type/value/status/invoice_url/bank_slip_url/pix_payload/due_date; `ON DELETE CASCADE` no banco).
+- **Backend**: `services/asaas_service.py` (resolve conta primária do galpão, decifra key, base por
+  sandbox; `test_connection`/`ensure_webhook`/`upsert_customer`/`create_payment`/`get_pix_qr`/
+  `get_payment`; erros→`AsaasError`→400/409); `models/payment.py` (PaymentCharge). `routers/warehouse.py`:
+  `.../test-connection` + `.../configure-webhook` (auto-registra webhook por conta no ASAAS, guarda só
+  o hash). `routers/manual_orders.py`: `create-charge` (reentrante; resolve galpão por
+  `order.cmig→warehouse`; Pix/boleto/link), `charges` (GET), `charges/{id}/refresh` (reconcilia status).
+  `routers/webhooks.py`: `POST /webhooks/asaas` **público** — âncora na cobrança (nunca no order_id do
+  corpo), autentica header `asaas-access-token` por hash constant-time contra a conta daquela cobrança
+  (401 se não bater), idempotência via `webhook_events`, flipa **só** `payment_status=paid` (+paid_at),
+  2xx rápido.
+- **Frontend**: `WarehouseBankAccountsCard.vue` (botões Testar conexão + Configurar webhook, verde
+  quando configurado); `OrderDetailView.vue` (card "Pagamento (ASAAS)" no pedido manual: seletor
+  Pix/boleto/link + "Gerar link de pagamento" + tabela de cobranças com link/boleto/copiar-Pix/refresh).
+- **ADR-0032**. Verificação: backend importa OK; `npm run build` ✓. **Não deployado** — pagamento/
+  webhook exigem credencial ASAAS real e exercício do dono (DEV não valida credencial).
+- **Fases futuras**: 3) checkout público por token (editar itens + re-análise de desconto); 4) crédito
+  CMIG×Galpão.
+
+---
+
 ## 2026-10-21 — feat(warehouse): Fase 1 recebimento por Galpão — banco (ASAAS) + 2 flags (ADR-0031)
 
 Fase 1 (de 4) do subsistema de recebimento/checkout. Só config (sem enforcement). Auditado pelo trio

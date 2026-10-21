@@ -17,6 +17,7 @@ const MarketplaceDashboardView = () => import('@/views/MarketplaceDashboardView.
 // Financial
 const FinancialView = () => import('@/views/financial/FinancialView.vue')
 const ConciliacaoView = () => import('@/views/financial/ConciliacaoView.vue')
+const CreditStatementView = () => import('@/views/financial/CreditStatementView.vue')
 
 // Purchases
 const PurchaseReturnsView = () => import('@/views/purchases/PurchaseReturnsView.vue')
@@ -171,6 +172,12 @@ const routes = [
     component: OAuthSuccessView,
   },
 
+  // Checkout público da venda manual (sem login, sem layout) — ADR-0033 Fase 3.
+  {
+    path: '/checkout/:token',
+    component: () => import('@/views/public/PublicCheckoutView.vue'),
+  },
+
   // Authenticated routes (with AdminLTE layout)
   {
     path: '/',
@@ -187,6 +194,7 @@ const routes = [
 
       { path: 'financial', component: FinancialView, meta: { title: 'Financeiro' } },
       { path: 'financial/conciliacao', component: ConciliacaoView, meta: { title: 'Conciliar Pedido - Pagamento' } },
+      { path: 'financial/credito', component: CreditStatementView, meta: { title: 'Extrato de Crédito' } },
 
       // Compras
       { path: 'compras/devolucoes', component: PurchaseReturnsView, meta: { title: 'Registrar Devolução de Compra' } },

@@ -426,6 +426,7 @@ def _serialize_bank(b: WarehouseBankAccount) -> dict:
         "bank_code": b.bank_code,
         "name": b.name,
         "api_key_set": bool(b.api_key_encrypted),
+        "webhook_configured": bool(b.webhook_token_hash),
         "wallet_id": b.wallet_id,
         "chart_account_label": b.chart_account_label,
         "is_sandbox": bool(b.is_sandbox),
@@ -622,5 +623,84 @@ async def delete_bank_account(
     ).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail="Conta bancária não encontrada neste Galpão")
+    # Falha alto: a conta tem FK ON DELETE CASCADE em payment_charges — excluir apagaria o
+    # histórico financeiro (cobranças/estornos) em silêncio. Bloqueia e manda desativar.
+    from models.payment import PaymentCharge
+
+    has_charges = (
+        await db.execute(
+            select(PaymentCharge.id).where(PaymentCharge.bank_account_id == bank_id).limit(1)
+        )
+    ).first()
+    if has_charges:
+        raise HTTPException(
+            status_code=409,
+            detail="Conta tem cobranças registradas e não pode ser excluída. "
+            "Desative-a (is_active=false) para preservar o histórico financeiro.",
+        )
     db.delete(bank)
     await db.commit()
+
+
+async def _get_bank_for_user(
+    warehouse_id: int, bank_id: int, user: User, db: AsyncSession
+) -> WarehouseBankAccount:
+    """Carrega a conta bancária com isolamento por galpão + anti-IDOR (par id, warehouse_id)."""
+    await _get_warehouse_for_user(warehouse_id, user, db)
+    bank = (
+        await db.execute(
+            select(WarehouseBankAccount).where(
+                WarehouseBankAccount.id == bank_id,
+                WarehouseBankAccount.warehouse_id == warehouse_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail="Conta bancária não encontrada neste Galpão")
+    return bank
+
+
+@router.post("/{warehouse_id}/bank-accounts/{bank_id}/test-connection")
+async def test_bank_connection(
+    warehouse_id: int,
+    bank_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
+):
+    """Valida a API Key da conta ASAAS (GET /myAccount). Falha alto com mensagem clara."""
+    bank = await _get_bank_for_user(warehouse_id, bank_id, current_user, db)
+    if bank.provider != "asaas":
+        raise HTTPException(status_code=400, detail="Teste disponível apenas para contas ASAAS.")
+    from services import asaas_service
+    try:
+        return await asaas_service.test_connection(bank)
+    except asaas_service.AsaasError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{warehouse_id}/bank-accounts/{bank_id}/configure-webhook")
+async def configure_bank_webhook(
+    warehouse_id: int,
+    bank_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("go_empresa")),
+):
+    """Registra no ASAAS o webhook desta conta (URL pública do sistema) com um authToken gerado
+    por nós; guarda só o HASH do token (valida o header `asaas-access-token` no recebimento)."""
+    bank = await _get_bank_for_user(warehouse_id, bank_id, current_user, db)
+    if bank.provider != "asaas":
+        raise HTTPException(status_code=400, detail="Webhook disponível apenas para contas ASAAS.")
+    from config import get_settings
+    from services import asaas_service
+
+    base = (get_settings().FRONTEND_URL or "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=400, detail="URL pública (FRONTEND_URL) não configurada no servidor.")
+    webhook_url = f"{base}/api/v1/webhooks/asaas"
+    try:
+        token = await asaas_service.ensure_webhook(bank, webhook_url)
+    except asaas_service.AsaasError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    bank.webhook_token_hash = asaas_service.token_hash(token)
+    await db.commit()
+    return {"ok": True, "webhook_url": webhook_url, "webhook_configured": True}

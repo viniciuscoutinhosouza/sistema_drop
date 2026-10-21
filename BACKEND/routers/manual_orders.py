@@ -1,4 +1,6 @@
 import json
+import secrets
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,9 +13,11 @@ from database import get_db
 from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.order import Order, OrderItem
+from models.payment import PaymentCharge
 from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
+from models.warehouse import WarehouseBankAccount
 from services.file_naming import TIPO_ETIQUETA, order_download_filename
 from services.product_mode import assert_product_group_allowed
 from services.shipping_mode import MODE_COMBINADO
@@ -151,7 +155,7 @@ async def create_manual_order(
         kind = raw.get("kind")
         pid = int(raw.get("id") or 0)
         qty = int(raw.get("quantity") or 0)
-        if qty <= 0:
+        if qty <= 0 or qty > 100000:
             raise HTTPException(status_code=400, detail="Quantidade invalida no carrinho")
         if kind == "pg":
             prod = pg_map.get(pid)
@@ -168,6 +172,10 @@ async def create_manual_order(
                 "quantity": qty,
                 "unit_price": sale_unit,
                 "unit_cost": cost_unit,
+                # Preço de referência (snapshot) p/ detectar desconto no checkout público (ADR-0033).
+                "list_price": (
+                    Decimal(str(prod.suggested_price)) if prod.suggested_price is not None else None
+                ),
             })
         elif kind == "cmig":
             prod = cmig_map.get(pid)
@@ -184,6 +192,9 @@ async def create_manual_order(
                 "quantity": qty,
                 "unit_price": sale_unit,
                 "unit_cost": cost_unit,
+                "list_price": (
+                    Decimal(str(prod.suggested_price)) if prod.suggested_price is not None else None
+                ),
             })
         else:
             raise HTTPException(status_code=400, detail=f"Tipo de item invalido: {kind}")
@@ -257,6 +268,7 @@ async def create_manual_order(
             "quantity": n["quantity"],
             "unit_price": n["unit_price"],
             "unit_cost": n["unit_cost"],
+            "list_price": n.get("list_price"),
             "catalog_source": n["kind"],  # 'pg' | 'cmig'
         }
         if n["kind"] == "pg":
@@ -402,3 +414,237 @@ async def manual_order_label_zpl(
                 f'attachment; filename="{order_download_filename(TIPO_ETIQUETA, "zpl", order=order)}"'
         },
     )
+
+
+# ─── Cobrança ASAAS do pedido manual (Fase 2, ADR-0032) ─────────────────────────
+
+
+def _serialize_charge(c: PaymentCharge) -> dict:
+    return {
+        "id": c.id,
+        "order_id": c.order_id,
+        "provider": c.provider,
+        "status": c.status,
+        "billing_type": c.billing_type,
+        "value": float(c.value) if c.value is not None else 0,
+        "invoice_url": c.invoice_url,
+        "bank_slip_url": c.bank_slip_url,
+        "pix_payload": c.pix_payload,
+        "due_date": c.due_date.isoformat() if c.due_date else None,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+
+
+async def _load_manual_order_checked(order_id: int, user: User, db: AsyncSession) -> Order:
+    """Carrega o pedido MANUAL e aplica o acesso por CMIG (admin bypassa; senao CMIGAdministrator)."""
+    order = (
+        await db.execute(
+            select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+        )
+    ).scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido nao encontrado")
+    if order.platform != "manual":
+        raise HTTPException(status_code=400, detail="Cobranca disponivel apenas para pedido manual")
+    if not order.cmig_id:
+        raise HTTPException(status_code=400, detail="Pedido sem CMIG vinculada")
+    if user.role != "admin":
+        acc = await db.execute(
+            select(CMIGAdministrator).where(
+                CMIGAdministrator.user_id == user.id,
+                CMIGAdministrator.cmig_id == order.cmig_id,
+            )
+        )
+        if not acc.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
+    return order
+
+
+@router.post("/{order_id}/create-charge")
+async def create_charge(
+    order_id: int,
+    body: dict | None = None,
+    current_user: User = Depends(require_menu_permission("pedido_manual")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gera uma cobranca no ASAAS (link/Pix/boleto) para o pedido manual, pela conta principal do
+    Galpao da CMIG do pedido. Reentrante: se ja ha cobranca viva, retorna a existente.
+    Ponto unico: services.charge_service (mesmo caminho do checkout publico)."""
+    from services import charge_service
+
+    body = body or {}
+    order = await _load_manual_order_checked(order_id, current_user, db)
+    if order.needs_price_review:
+        raise HTTPException(
+            status_code=409,
+            detail="Pedido aguardando re-analise de preco (cliente alterou itens com desconto)",
+        )
+    due_date = None
+    if body.get("due_date"):
+        try:
+            due_date = date.fromisoformat(str(body["due_date"])[:10])
+        except ValueError:
+            raise HTTPException(status_code=400, detail="due_date invalido (AAAA-MM-DD)") from None
+    charge = await charge_service.get_or_create_charge(
+        db, order, billing_type=body.get("billing_type") or "UNDEFINED", due_date=due_date
+    )
+    return _serialize_charge(charge)
+
+
+@router.get("/{order_id}/charges")
+async def list_charges(
+    order_id: int,
+    current_user: User = Depends(require_menu_permission("pedido_manual")),
+    db: AsyncSession = Depends(get_db),
+):
+    order = await _load_manual_order_checked(order_id, current_user, db)
+    rows = (
+        await db.execute(
+            select(PaymentCharge)
+            .where(PaymentCharge.order_id == order.id)
+            .order_by(PaymentCharge.id.desc())
+        )
+    ).scalars().all()
+    return [_serialize_charge(c) for c in rows]
+
+
+@router.post("/{order_id}/charges/{charge_id}/refresh")
+async def refresh_charge(
+    order_id: int,
+    charge_id: int,
+    current_user: User = Depends(require_menu_permission("pedido_manual")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reconcilia o status da cobranca com o ASAAS (o webhook e at-least-once e pode se perder)."""
+    from services import charge_service
+
+    order = await _load_manual_order_checked(order_id, current_user, db)
+    charge = (
+        await db.execute(
+            select(PaymentCharge).where(
+                PaymentCharge.id == charge_id, PaymentCharge.order_id == order.id
+            )
+        )
+    ).scalar_one_or_none()
+    if not charge:
+        raise HTTPException(status_code=404, detail="Cobranca nao encontrada neste pedido")
+    charge = await charge_service.reconcile_charge(db, order, charge)
+    return _serialize_charge(charge)
+
+
+@router.post("/{order_id}/charges/{charge_id}/cancel")
+async def cancel_charge(
+    order_id: int,
+    charge_id: int,
+    current_user: User = Depends(require_menu_permission("pedido_manual")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancela a cobranca no ASAAS (operador gerou com valor/forma errados). Bloqueia se ja paga."""
+    from services import asaas_service, charge_service
+
+    order = await _load_manual_order_checked(order_id, current_user, db)
+    charge = (
+        await db.execute(
+            select(PaymentCharge).where(
+                PaymentCharge.id == charge_id, PaymentCharge.order_id == order.id
+            )
+        )
+    ).scalar_one_or_none()
+    if not charge:
+        raise HTTPException(status_code=404, detail="Cobranca nao encontrada neste pedido")
+    if (charge.status or "").upper() in charge_service.PAID_CHARGE:
+        raise HTTPException(status_code=409, detail="Cobranca ja paga - nao pode ser cancelada")
+    bank = await charge_service.load_bank_for_charge(db, charge)
+    try:
+        await asaas_service.cancel_payment(bank, charge.asaas_payment_id)
+    except asaas_service.AsaasError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    charge.status = "CANCELLED"
+    await db.commit()
+    await db.refresh(charge)
+    return _serialize_charge(charge)
+
+
+# ─── Checkout público (Fase 3, ADR-0033) — lado do operador ─────────────────────
+
+
+def _checkout_stage(order: Order, has_live_charge: bool) -> str:
+    """Estágio derivado (sem coluna redundante). pedido → pagamento → pago.
+    Separação/Enviado/Entregue (status separated/shipped) ficam adiados pelo dono."""
+    if order.payment_status == "paid":
+        return "pago"
+    if order.public_token or has_live_charge:
+        return "pagamento"
+    return "pedido"
+
+
+def _public_checkout_url(token: str) -> str:
+    from config import get_settings
+
+    base = (get_settings().FRONTEND_URL or "").rstrip("/")
+    return f"{base}/checkout/{token}"
+
+
+@router.get("/{order_id}/checkout-info")
+async def checkout_info(
+    order_id: int,
+    current_user: User = Depends(require_menu_permission("pedido_manual")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Info do checkout do pedido manual (estágio, re-análise, link público) para a tela do operador."""
+    from services import charge_service
+
+    order = await _load_manual_order_checked(order_id, current_user, db)
+    live = await charge_service.get_live_charge(db, order.id)
+    return {
+        "stage": _checkout_stage(order, live is not None),
+        "needs_price_review": bool(order.needs_price_review),
+        "has_public_link": bool(order.public_token),
+        "public_url": _public_checkout_url(order.public_token) if order.public_token else None,
+        "payment_status": order.payment_status,
+    }
+
+
+@router.post("/{order_id}/public-link")
+async def public_link(
+    order_id: int,
+    body: dict | None = None,
+    current_user: User = Depends(require_menu_permission("pedido_manual")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gera (ou regenera, com body {regenerate:true}) o token de checkout público do pedido.
+    Regenerar invalida o link anterior."""
+    body = body or {}
+    order = await _load_manual_order_checked(order_id, current_user, db)
+    if not order.public_token or body.get("regenerate"):
+        order.public_token = secrets.token_urlsafe(32)
+        order.public_token_created_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(order)
+    return {"public_url": _public_checkout_url(order.public_token), "token": order.public_token}
+
+
+@router.delete("/{order_id}/public-link", status_code=204)
+async def revoke_public_link(
+    order_id: int,
+    current_user: User = Depends(require_menu_permission("pedido_manual")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoga o link público do pedido (ex.: vazou ou o pedido foi cancelado). Desliga o checkout."""
+    order = await _load_manual_order_checked(order_id, current_user, db)
+    order.public_token = None
+    order.public_token_created_at = None
+    await db.commit()
+
+
+@router.post("/{order_id}/price-review/approve")
+async def approve_price_review(
+    order_id: int,
+    current_user: User = Depends(require_menu_permission("pedido_manual")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Operador re-analisou o preço após o cliente alterar itens com desconto: libera o pagamento."""
+    order = await _load_manual_order_checked(order_id, current_user, db)
+    order.needs_price_review = False
+    await db.commit()
+    return {"ok": True, "needs_price_review": False}

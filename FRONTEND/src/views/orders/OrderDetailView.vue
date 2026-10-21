@@ -202,6 +202,92 @@
         </table>
       </div>
     </div>
+
+    <!-- Pagamento (ASAAS) — pedido manual -->
+    <div v-if="isManual" class="card mt-3">
+      <div class="card-header"><h3 class="card-title"><i class="fas fa-credit-card mr-2"></i>Pagamento (ASAAS)</h3></div>
+      <div class="card-body">
+        <div v-if="checkout && checkout.needs_price_review && order.payment_status !== 'paid'" class="alert alert-warning">
+          <i class="fas fa-exclamation-triangle mr-1"></i>
+          O cliente alterou itens com desconto. Revise o preço do pedido antes de liberar o pagamento.
+          <button class="btn btn-sm btn-warning ml-2" :disabled="approvingReview" @click="approvePriceReview">
+            <i class="fas" :class="approvingReview ? 'fa-spinner fa-spin' : 'fa-check'"></i> Preço revisado — liberar
+          </button>
+        </div>
+        <div v-if="order.payment_status === 'paid'" class="alert alert-success mb-0">
+          <i class="fas fa-check-circle mr-1"></i> Pedido pago.
+        </div>
+        <template v-else>
+          <div class="d-flex flex-wrap align-items-end" style="gap:.5rem">
+            <div>
+              <label class="small mb-1 d-block">Forma</label>
+              <select v-model="billingType" class="form-control form-control-sm" style="width:160px">
+                <option value="UNDEFINED">Cliente escolhe</option>
+                <option value="PIX">Pix</option>
+                <option value="BOLETO">Boleto</option>
+                <option value="CREDIT_CARD">Cartão</option>
+              </select>
+            </div>
+            <button class="btn btn-success btn-sm" :disabled="generatingCharge" @click="generateCharge">
+              <i class="fas" :class="generatingCharge ? 'fa-spinner fa-spin' : 'fa-link'"></i>
+              {{ generatingCharge ? 'Gerando…' : 'Gerar link de pagamento' }}
+            </button>
+          </div>
+          <small class="text-muted d-block mt-1">
+            Gera a cobrança na conta ASAAS principal do Galpão desta CMIG. Envie o link ao cliente;
+            o pagamento é confirmado automaticamente pelo webhook.
+          </small>
+
+          <!-- Link público do cliente (ADR-0033): ver/ajustar itens + pagar sem login -->
+          <div class="mt-3 pt-3 border-top">
+            <label class="small mb-1 d-block"><i class="fas fa-share-nodes mr-1"></i>Link do cliente</label>
+            <div v-if="checkout && checkout.has_public_link" class="input-group input-group-sm" style="max-width:520px">
+              <input type="text" class="form-control" :value="checkout.public_url" readonly>
+              <div class="input-group-append">
+                <button class="btn btn-outline-secondary" @click="copyPublicLink" title="Copiar"><i class="fas fa-copy"></i></button>
+                <a class="btn btn-outline-primary" :href="checkout.public_url" target="_blank" rel="noopener" title="Abrir"><i class="fas fa-external-link-alt"></i></a>
+                <button class="btn btn-outline-warning" :disabled="generatingLink" @click="generatePublicLink(true)" title="Gerar novo (invalida o anterior)"><i class="fas fa-rotate"></i></button>
+              </div>
+            </div>
+            <button v-else class="btn btn-outline-primary btn-sm" :disabled="generatingLink" @click="generatePublicLink(false)">
+              <i class="fas" :class="generatingLink ? 'fa-spinner fa-spin' : 'fa-link'"></i> Gerar link do cliente
+            </button>
+            <small class="text-muted d-block mt-1">
+              O cliente abre o link, confere/ajusta os itens e paga. Reduzir/remover item com desconto
+              exige sua revisão de preço antes de liberar o pagamento.
+            </small>
+          </div>
+        </template>
+
+        <div v-if="charges.length" class="table-responsive mt-3">
+          <table class="table table-sm mb-0">
+            <thead><tr><th>Forma</th><th>Valor</th><th>Status</th><th>Links</th><th></th></tr></thead>
+            <tbody>
+              <tr v-for="c in charges" :key="c.id">
+                <td>{{ billingLabel(c.billing_type) }}</td>
+                <td>{{ formatCurrency(c.value) }}</td>
+                <td><span class="badge" :class="chargeBadge(c.status)">{{ c.status || '—' }}</span></td>
+                <td class="text-nowrap">
+                  <a v-if="c.invoice_url" :href="c.invoice_url" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary">Link</a>
+                  <a v-if="c.bank_slip_url" :href="c.bank_slip_url" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary ml-1">Boleto</a>
+                  <button v-if="c.pix_payload" type="button" class="btn btn-sm btn-outline-info ml-1" @click="copyPix(c.pix_payload)">Copiar Pix</button>
+                </td>
+                <td class="text-right text-nowrap">
+                  <button type="button" class="btn btn-sm btn-outline-dark" title="Atualizar status" :disabled="refreshingId === c.id" @click="refreshCharge(c)">
+                    <i class="fas" :class="refreshingId === c.id ? 'fa-spinner fa-spin' : 'fa-sync'"></i>
+                  </button>
+                  <button v-if="!['CONFIRMED','RECEIVED','RECEIVED_IN_CASH','CANCELLED'].includes((c.status||'').toUpperCase())"
+                          type="button" class="btn btn-sm btn-outline-danger ml-1" title="Cancelar cobrança"
+                          :disabled="cancelingId === c.id" @click="cancelCharge(c)">
+                    <i class="fas" :class="cancelingId === c.id ? 'fa-spinner fa-spin' : 'fa-ban'"></i>
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div v-else class="text-center py-5">
@@ -228,6 +314,127 @@ const downloadingLabel = ref(false)
 const shippingEdit = reactive({ open: false, value: 0, saving: false })
 
 const isManual = computed(() => order.value?.platform === 'manual')
+
+// ── Pagamento ASAAS (pedido manual) ──
+const charges = ref([])
+const billingType = ref('UNDEFINED')
+const generatingCharge = ref(false)
+const refreshingId = ref(null)
+
+function billingLabel(t) {
+  return { PIX: 'Pix', BOLETO: 'Boleto', CREDIT_CARD: 'Cartão', UNDEFINED: 'Cliente escolhe' }[t] || t || '—'
+}
+function chargeBadge(s) {
+  const up = (s || '').toUpperCase()
+  if (['CONFIRMED', 'RECEIVED', 'RECEIVED_IN_CASH'].includes(up)) return 'badge-success'
+  if (['OVERDUE', 'REFUNDED', 'CHARGEBACK_REQUESTED'].includes(up)) return 'badge-danger'
+  return 'badge-warning'
+}
+async function loadCharges() {
+  if (!isManual.value) return
+  try {
+    const { data } = await api.get(`/manual-orders/${order.value.id}/charges`)
+    charges.value = Array.isArray(data) ? data : []
+  } catch { /* silencioso */ }
+}
+async function generateCharge() {
+  generatingCharge.value = true
+  try {
+    await api.post(`/manual-orders/${order.value.id}/create-charge`, { billing_type: billingType.value })
+    toast.success('Cobrança gerada no ASAAS.')
+    await loadCharges()
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao gerar a cobrança')
+  } finally {
+    generatingCharge.value = false
+  }
+}
+async function refreshCharge(c) {
+  refreshingId.value = c.id
+  try {
+    const { data } = await api.post(`/manual-orders/${order.value.id}/charges/${c.id}/refresh`)
+    const i = charges.value.findIndex(x => x.id === c.id)
+    if (i >= 0) charges.value[i] = data
+    if (['CONFIRMED', 'RECEIVED', 'RECEIVED_IN_CASH'].includes((data.status || '').toUpperCase())) {
+      order.value.payment_status = 'paid'
+    }
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao atualizar a cobrança')
+  } finally {
+    refreshingId.value = null
+  }
+}
+function copyPix(payload) {
+  try {
+    navigator.clipboard.writeText(payload)
+    toast.success('Pix copia-e-cola copiado.')
+  } catch {
+    toast.error('Não foi possível copiar.')
+  }
+}
+
+// ── Checkout público (link do cliente) + re-análise de desconto (ADR-0033) ──
+const checkout = ref(null)
+const generatingLink = ref(false)
+const approvingReview = ref(false)
+const cancelingId = ref(null)
+
+async function loadCheckoutInfo() {
+  if (!isManual.value) return
+  try {
+    const { data } = await api.get(`/manual-orders/${order.value.id}/checkout-info`)
+    checkout.value = data
+  } catch { /* silencioso */ }
+}
+async function generatePublicLink(regenerate = false) {
+  generatingLink.value = true
+  try {
+    const { data } = await api.post(`/manual-orders/${order.value.id}/public-link`, { regenerate })
+    checkout.value = { ...(checkout.value || {}), has_public_link: true, public_url: data.public_url }
+    try { await navigator.clipboard.writeText(data.public_url) } catch { /* ignore */ }
+    toast.success(regenerate ? 'Novo link gerado e copiado.' : 'Link gerado e copiado.')
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao gerar o link')
+  } finally {
+    generatingLink.value = false
+  }
+}
+function copyPublicLink() {
+  if (!checkout.value?.public_url) return
+  try {
+    navigator.clipboard.writeText(checkout.value.public_url)
+    toast.success('Link copiado.')
+  } catch {
+    toast.error('Não foi possível copiar.')
+  }
+}
+async function approvePriceReview() {
+  approvingReview.value = true
+  try {
+    await api.post(`/manual-orders/${order.value.id}/price-review/approve`)
+    toast.success('Preço revisado. Pagamento liberado.')
+    await loadOrder()
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao aprovar')
+  } finally {
+    approvingReview.value = false
+  }
+}
+async function cancelCharge(c) {
+  if (!confirm('Cancelar esta cobrança no ASAAS?')) return
+  cancelingId.value = c.id
+  try {
+    const { data } = await api.post(`/manual-orders/${order.value.id}/charges/${c.id}/cancel`)
+    const i = charges.value.findIndex(x => x.id === c.id)
+    if (i >= 0) charges.value[i] = data
+    toast.success('Cobrança cancelada.')
+    await loadCharges()
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao cancelar')
+  } finally {
+    cancelingId.value = null
+  }
+}
 
 // Valor da Venda = produtos + taxa plataforma + frete (o que o cliente paga)
 const saleValueTotal = computed(() => {
@@ -303,16 +510,21 @@ function statusColor(key) {
 async function loadOrder() {
   const { data } = await api.get(`/orders/${route.params.id}`)
   order.value = data
+  if (isManual.value) {
+    await loadCharges()
+    await loadCheckoutInfo()
+  }
 }
 
 async function payOrder() {
   if (!confirm(`Pagar pedido #${order.value.id}? O valor será debitado do seu saldo.`)) return
   paying.value = true
   try {
-    const { data } = await api.post(`/orders/${order.value.id}/pay`)
+    await api.post(`/orders/${order.value.id}/pay`)
     await loadOrder()
+    toast.success('Pedido pago.')
   } catch (err) {
-    alert(err.response?.data?.detail || 'Erro ao pagar')
+    toast.error(err.response?.data?.detail || 'Erro ao pagar')
   } finally {
     paying.value = false
   }

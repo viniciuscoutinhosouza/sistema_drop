@@ -316,3 +316,103 @@ async def shopee_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
 # NF-e própria (SEFAZ direto) é síncrona e a entrada vem da Distribuição de DFe
 # (job sync_dfe) — não há mais webhooks do Focus. Removido na Fase 3 da emissão própria.
+
+
+# ─── Webhook ASAAS (pagamento) — Fase 2 (ADR-0032) ──────────────────────────────
+
+
+@router.post("/asaas")
+async def asaas_webhook(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    asaas_token: str | None = Header(None, alias="asaas-access-token"),
+):
+    """Webhook PÚBLICO do ASAAS. Seguro por construção:
+    - a âncora é a COBRANÇA que NÓS criamos (PaymentCharge.asaas_payment_id), nunca order_id do corpo;
+    - autentica o header `asaas-access-token` por HASH contra a conta DAQUELA cobrança (constant-time);
+    - idempotente por id do evento (webhook_events, at-least-once);
+    - responde 2xx rápido; marca SÓ `order.payment_status=paid` (nao mexe em order.status).
+    """
+    from datetime import datetime
+
+    from models.order import Order
+    from models.payment import PaymentCharge
+    from models.warehouse import WarehouseBankAccount
+    from services import asaas_service, charge_service
+
+    try:
+        body = await request.json()
+    except Exception:
+        return {"status": "ignored", "reason": "invalid_json"}
+
+    event_type = (body.get("event") or "").upper()
+    payment = body.get("payment") or {}
+    asaas_payment_id = payment.get("id")
+    event_id = body.get("id") or (f"{event_type}:{asaas_payment_id}" if asaas_payment_id else None)
+    if not asaas_payment_id or not event_id:
+        return {"status": "ignored", "reason": "no_payment"}
+
+    if await webhook_service.is_already_processed(db, "asaas", event_id):
+        return {"status": "ok", "duplicate": True}
+
+    charge = (
+        await db.execute(
+            select(PaymentCharge).where(PaymentCharge.asaas_payment_id == asaas_payment_id)
+        )
+    ).scalar_one_or_none()
+    if not charge:
+        return {"status": "ignored", "reason": "unknown_charge"}
+
+    bank = (
+        await db.execute(
+            select(WarehouseBankAccount).where(WarehouseBankAccount.id == charge.bank_account_id)
+        )
+    ).scalar_one_or_none()
+    if not bank or not bank.webhook_token_hash:
+        raise HTTPException(status_code=401, detail="webhook nao autenticado")
+    incoming = asaas_service.token_hash(asaas_token or "")
+    if not hmac.compare_digest(incoming, bank.webhook_token_hash):
+        raise HTTPException(status_code=401, detail="token invalido")
+
+    evt = await webhook_service.record_webhook(db, "asaas", event_id, event_type, body)
+    if evt is None:
+        return {"status": "ok", "duplicate": True}
+
+    new_status = (payment.get("status") or "").upper() or event_type
+    charge.status = new_status
+
+    order = None
+    paid_now = False
+    if charge.order_id:
+        order = (
+            await db.execute(select(Order).where(Order.id == charge.order_id))
+        ).scalar_one_or_none()
+        if order is not None:
+            effect, changed = await charge_service.apply_status_to_order(
+                db, order, new_status, event_type
+            )
+            paid_now = effect == "paid" and changed
+
+    evt.processed = True
+    evt.processed_at = datetime.now(UTC)
+    await db.commit()
+
+    # Notifica o AC dono do pedido ao confirmar o pagamento (best-effort — nunca derruba o webhook).
+    if paid_now and order is not None:
+        try:
+            from services.notification_service import create_notification
+
+            await create_notification(
+                db,
+                order.dropshipper_id,
+                "payment_confirmed",
+                f"Pagamento confirmado - Pedido #{order.id}",
+                f"O cliente pagou R$ {float(charge.value or 0):.2f} via ASAAS.",
+                reference_type="order",
+                reference_id=order.id,
+            )
+            await db.commit()
+        except Exception:
+            pass
+
+    return {"status": "ok"}

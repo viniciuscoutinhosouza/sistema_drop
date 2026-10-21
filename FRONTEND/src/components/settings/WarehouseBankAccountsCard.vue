@@ -47,8 +47,18 @@
               </span>
               <span v-if="b.is_sandbox" class="badge badge-warning ml-1">Homolog.</span>
             </td>
-            <td class="text-right">
-              <button type="button" class="btn btn-sm btn-outline-primary" title="Editar" @click="openEdit(b)">
+            <td class="text-right text-nowrap">
+              <button type="button" class="btn btn-sm btn-outline-info" :disabled="busy[b.id]"
+                      title="Testar conexão com o ASAAS" @click="testConnection(b)">
+                <i class="fas" :class="busy[b.id] === 'test' ? 'fa-spinner fa-spin' : 'fa-plug'"></i>
+              </button>
+              <button type="button" class="btn btn-sm ml-1" :disabled="busy[b.id]"
+                      :class="b.webhook_configured ? 'btn-outline-success' : 'btn-outline-warning'"
+                      :title="b.webhook_configured ? 'Webhook configurado — reconfigurar' : 'Configurar webhook no ASAAS'"
+                      @click="configureWebhook(b)">
+                <i class="fas" :class="busy[b.id] === 'webhook' ? 'fa-spinner fa-spin' : 'fa-bolt'"></i>
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-primary ml-1" title="Editar" @click="openEdit(b)">
                 <i class="fas fa-edit"></i>
               </button>
               <button type="button" class="btn btn-sm btn-outline-danger ml-1" title="Excluir" @click="removeBank(b)">
@@ -200,6 +210,33 @@ const banks = ref([])
 const loading = ref(false)
 const saving = ref(false)
 const modal = ref(false)
+const busy = ref({})   // { [bankId]: 'test' | 'webhook' | false }
+
+async function testConnection(b) {
+  busy.value = { ...busy.value, [b.id]: 'test' }
+  try {
+    const { data } = await api.post(`/warehouse/${props.warehouseId}/bank-accounts/${b.id}/test-connection`)
+    toast.success(`Conexão OK${data.name ? ' — ' + data.name : ''}${data.sandbox ? ' (sandbox)' : ''}`)
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Falha ao conectar no ASAAS')
+  } finally {
+    busy.value = { ...busy.value, [b.id]: false }
+  }
+}
+
+async function configureWebhook(b) {
+  if (b.webhook_configured && !confirm('Já há webhook configurado. Reconfigurar (gera novo token)?')) return
+  busy.value = { ...busy.value, [b.id]: 'webhook' }
+  try {
+    await api.post(`/warehouse/${props.warehouseId}/bank-accounts/${b.id}/configure-webhook`)
+    toast.success('Webhook configurado no ASAAS.')
+    await load()
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Falha ao configurar o webhook')
+  } finally {
+    busy.value = { ...busy.value, [b.id]: false }
+  }
+}
 
 function providerLabel(p) {
   return { asaas: 'ASAAS' }[p] || (p || '').toUpperCase()

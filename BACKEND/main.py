@@ -88,6 +88,7 @@ from routers import (
     cmig_reports,
     cmigs,
     competitor_analysis,
+    credits,
     dashboard,
     financial,
     fiscal_config,
@@ -100,6 +101,7 @@ from routers import (
     listings,
     manual_orders,
     marketplace_settings,
+    public_checkout,
     media,
     message_templates,
     messages,
@@ -138,6 +140,8 @@ app.include_router(supplier_products.router, prefix=f"{PREFIX}/pg", tags=["PG - 
 app.include_router(products.router, prefix=f"{PREFIX}/products", tags=["Products"])
 app.include_router(orders.router, prefix=f"{PREFIX}/orders", tags=["Orders"])
 app.include_router(manual_orders.router, prefix=f"{PREFIX}/manual-orders", tags=["ManualOrders"])
+# Checkout público (sem JWT) — acesso só pelo token opaco do pedido (ADR-0033 Fase 3).
+app.include_router(public_checkout.router, prefix=f"{PREFIX}/public", tags=["PublicCheckout"])
 app.include_router(integrations.router, prefix=f"{PREFIX}/accounts", tags=["Accounts"])
 app.include_router(
     listings.router, prefix=f"{PREFIX}/products/{{product_id}}/listings", tags=["Listings"]
@@ -166,6 +170,8 @@ app.include_router(
 )
 app.include_router(simulator.router, prefix=f"{PREFIX}/simulator", tags=["Simulator"])
 app.include_router(competitor_analysis.router, prefix=f"{PREFIX}/competitor-analysis", tags=["CompetitorAnalysis"])
+# Extrato de crédito CMIG × Galpão (ADR-0034 Fase 4).
+app.include_router(credits.router, prefix=f"{PREFIX}/credits", tags=["Credits"])
 app.include_router(people.router, prefix=f"{PREFIX}/people", tags=["People"])
 app.include_router(
     fiscal_config.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/fiscal-config", tags=["FiscalConfig"]

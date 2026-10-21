@@ -164,6 +164,11 @@
                   <i class="nav-icon fas fa-balance-scale"></i><p>Conciliar Pedido - Pagamento</p>
                 </RouterLink>
               </li>
+              <li v-if="canSee('financeiro')" class="nav-item">
+                <RouterLink to="/financial/credito" class="nav-link" :class="{ active: route.path === '/financial/credito' }">
+                  <i class="nav-icon fas fa-hand-holding-usd"></i><p>Crédito CMIG × Galpão</p>
+                </RouterLink>
+              </li>
             </ul>
           </li>
 

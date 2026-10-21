@@ -91,6 +91,13 @@ class Order(Base):
     return_status = Column(String(30), nullable=True)  # None | 'awaiting_return' | 'returned'
     is_hidden = Column(Boolean, default=False)
     notes = Column(String)
+    # Checkout público da venda manual (Fase 3, ADR-0033). Token opaco que dá ao cliente
+    # acesso SEM login à página do próprio pedido (editar itens + pagar via ASAAS).
+    public_token = Column(String(64))
+    public_token_created_at = Column(TIMESTAMP(timezone=True))
+    # 0|1 — cliente mexeu em item com desconto: operador precisa re-analisar o preço
+    # antes de liberar o pagamento (migration 154). "Falhar alto, nunca em silêncio".
+    needs_price_review = Column(Boolean, default=False)
     paid_at = Column(TIMESTAMP(timezone=True))
     shipped_at = Column(TIMESTAMP(timezone=True))
     # Separação (módulo SEPARAÇÃO / Carrinho Gaiola)
@@ -128,6 +135,10 @@ class OrderItem(Base):
     ml_item_id = Column(String(200))
     unit_price = Column(Numeric(15, 2))
     unit_cost = Column(Numeric(15, 2))
+    # Preço de referência (suggested_price) no momento da venda — snapshot p/ detectar
+    # desconto de forma estável no checkout público (Fase 3, ADR-0033). unit_price < list_price
+    # => item com desconto.
+    list_price = Column(Numeric(15, 2))
     thumbnail_url = Column(String(1000))
     # 'pg' (Catalogo Geral) | 'cmig' (Catalogo CMIG) | NULL (pedidos historicos de marketplace)
     catalog_source = Column(String(10))
