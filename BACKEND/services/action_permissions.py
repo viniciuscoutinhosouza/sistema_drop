@@ -48,6 +48,14 @@ ACTION_PERMISSIONS: list[dict] = [
      "default_base_roles": ["admin"]},
     {"key": "anuncios_admin", "label": "Ação administrativa em Anúncios", "group": "Anúncios",
      "default_base_roles": ["admin"]},
+    # eShip (WMS) — migrados de require_role (ADR-0035 Fase 2e). default_base_roles = EXATAMENTE
+    # os papéis que o require_role liberava (preserva o comportamento no seed/fallback).
+    {"key": "eship_consultar", "label": "eShip: consultar (CMIG, saldo, produtos, push)", "group": "eShip",
+     "default_base_roles": ["admin", "ugo", "go", "ac"]},
+    {"key": "eship_operar", "label": "eShip: operar ordem (enviar/sincronizar/cancelar/conciliar)", "group": "eShip",
+     "default_base_roles": ["admin", "ugo", "go"]},
+    {"key": "eship_config", "label": "eShip: configurar galpão", "group": "eShip",
+     "default_base_roles": ["admin"]},
 ]
 
 _BY_KEY = {p["key"]: p for p in ACTION_PERMISSIONS}
