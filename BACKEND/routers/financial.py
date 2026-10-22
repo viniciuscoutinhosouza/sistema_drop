@@ -88,25 +88,10 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
-    if user.role == "admin":
-        return cmig
-    if user.role in ("ugo", "go"):
-        if cmig.warehouse_id != user.warehouse_id:
-            raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
-        return cmig
-    if user.role == "ac":
-        admin = (
-            await db.execute(
-                select(CMIGAdministrator).where(
-                    CMIGAdministrator.user_id == user.id,
-                    CMIGAdministrator.cmig_id == cmig_id,
-                )
-            )
-        ).scalar_one_or_none()
-        if not admin:
-            raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
-        return cmig
-    raise HTTPException(status_code=403, detail="Permissão insuficiente")
+    from services.data_scope import assert_cmig_access
+
+    await assert_cmig_access(cmig, user, db)
+    return cmig
 
 
 @router.get("/dre/cmigs")

@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from database import get_db, task_db
 from dependencies import get_current_user, require_menu_permission, require_permission
-from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
+from models.cmig import CMIG, CMIGProduct
 from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceEvent, InvoiceItem, NfeInutilizacao
 from models.integration import MarketplaceAccount
 from models.order import Order
@@ -61,38 +61,20 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
-    if user.role == "admin":
-        return cmig
-    if user.role in ("ugo", "go"):
-        if cmig.warehouse_id != user.warehouse_id:
-            raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
-        return cmig
-    if user.role == "ac":
-        admin = (
-            await db.execute(
-                select(CMIGAdministrator).where(
-                    and_(CMIGAdministrator.user_id == user.id, CMIGAdministrator.cmig_id == cmig_id)
-                )
-            )
-        ).scalar_one_or_none()
-        if not admin:
-            raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
-        return cmig
-    raise HTTPException(status_code=403, detail="Permissão insuficiente")
+    from services.data_scope import assert_cmig_access
+
+    await assert_cmig_access(cmig, user, db)
+    return cmig
 
 
 async def _accessible_cmig_ids(user: User, db: AsyncSession) -> list[int]:
-    if user.role == "admin":
-        rows = await db.execute(select(CMIG.id))
-    elif user.role in ("ugo", "go"):
-        rows = await db.execute(select(CMIG.id).where(CMIG.warehouse_id == user.warehouse_id))
-    elif user.role == "ac":
-        rows = await db.execute(
-            select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == user.id)
-        )
-    else:
-        return []
-    return [r[0] for r in rows.all()]
+    """CMIGs visíveis ao usuário (lista; admin = todas). Escopo via SSOT `data_scope`."""
+    from services.data_scope import accessible_cmig_ids
+
+    allowed = await accessible_cmig_ids(user, db)
+    if allowed is None:  # admin → todas (preserva o contrato de lista deste helper)
+        return [r[0] for r in (await db.execute(select(CMIG.id))).all()]
+    return list(allowed)
 
 
 def _f(v) -> float | None:

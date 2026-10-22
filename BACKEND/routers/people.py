@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user
-from models.cmig import CMIG, CMIGAdministrator
+from models.cmig import CMIG
 from models.person import Person
 from models.user import User
 from services.fiscal.cnpj_lookup import lookup_cnpj
@@ -23,36 +23,20 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
 
-    if user.role == "admin":
-        return cmig
-    if user.role in ("ugo", "go"):
-        if cmig.warehouse_id != user.warehouse_id:
-            raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
-        return cmig
-    if user.role == "ac":
-        result = await db.execute(
-            select(CMIGAdministrator).where(
-                and_(CMIGAdministrator.user_id == user.id, CMIGAdministrator.cmig_id == cmig_id)
-            )
-        )
-        if not result.scalar_one_or_none():
-            raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
-        return cmig
-    raise HTTPException(status_code=403, detail="Permissão insuficiente")
+    from services.data_scope import assert_cmig_access
+
+    await assert_cmig_access(cmig, user, db)
+    return cmig
 
 
 async def _accessible_cmig_ids(user: User, db: AsyncSession) -> list[int]:
-    if user.role == "admin":
-        rows = await db.execute(select(CMIG.id))
-    elif user.role in ("ugo", "go"):
-        rows = await db.execute(select(CMIG.id).where(CMIG.warehouse_id == user.warehouse_id))
-    elif user.role == "ac":
-        rows = await db.execute(
-            select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == user.id)
-        )
-    else:
-        return []
-    return [r[0] for r in rows.all()]
+    """CMIGs visíveis ao usuário (lista; admin = todas). Escopo via SSOT `data_scope`."""
+    from services.data_scope import accessible_cmig_ids
+
+    allowed = await accessible_cmig_ids(user, db)
+    if allowed is None:  # admin → todas (preserva o contrato de lista deste helper)
+        return [r[0] for r in (await db.execute(select(CMIG.id))).all()]
+    return list(allowed)
 
 
 def _clean_doc(s: str) -> str:

@@ -3,13 +3,13 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database import get_db
 from dependencies import get_current_user
-from models.cmig import CMIG, CMIGAdministrator
+from models.cmig import CMIG
 from models.fiscal import CMIGFiscalConfig
 from models.user import User
 from services.fiscal import cert_crypto
@@ -27,32 +27,10 @@ async def _check_cmig_access(
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
 
-    if user.role == "admin":
-        return cmig
-    if user.role in ("ugo", "go"):
-        if cmig.warehouse_id != user.warehouse_id:
-            raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
-        if require_owner:
-            raise HTTPException(
-                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
-            )
-        return cmig
-    if user.role == "ac":
-        admin = (
-            await db.execute(
-                select(CMIGAdministrator).where(
-                    and_(CMIGAdministrator.user_id == user.id, CMIGAdministrator.cmig_id == cmig_id)
-                )
-            )
-        ).scalar_one_or_none()
-        if not admin:
-            raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
-        if require_owner and not admin.is_owner:
-            raise HTTPException(
-                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
-            )
-        return cmig
-    raise HTTPException(status_code=403, detail="Permissão insuficiente")
+    from services.data_scope import assert_cmig_access
+
+    await assert_cmig_access(cmig, user, db, require_owner=require_owner)
+    return cmig
 
 
 def _serialize(cfg: CMIGFiscalConfig | None) -> dict:
