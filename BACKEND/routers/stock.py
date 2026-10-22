@@ -16,6 +16,7 @@ from models.integration import MarketplaceAccount
 from models.product import CatalogProduct, CatalogProductComponent
 from models.stock_movement import StockMovement
 from models.user import User
+from services.data_scope import is_conta, is_galpao
 from services.datetime_br import now_br
 
 logger = logging.getLogger(__name__)
@@ -84,12 +85,12 @@ async def _collect_stock_items(
 
     # GO escopado por galpão (isolamento): força o filtro de galpão no próprio warehouse,
     # ignorando qualquer warehouse_id recebido — não pode enxergar estoque de outro galpão.
-    if current_user.role == "go":
+    if is_galpao(current_user):
         warehouse_id = current_user.warehouse_id
 
     # AC só enxerga produtos das CMIGs em que é administrador
     ac_cmig_ids: list[int] | None = None
-    if current_user.role == "ac":
+    if is_conta(current_user):
         scope = "cmig"
         rows = await db.execute(
             select(CMIGAdministrator.cmig_id).where(
@@ -425,7 +426,7 @@ async def sync_full_stock_for_cmig(
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
 
-    if current_user.role == "ac":
+    if is_conta(current_user):
         allowed = await db.execute(
             select(CMIGAdministrator.id).where(
                 CMIGAdministrator.user_id == current_user.id,
@@ -434,7 +435,7 @@ async def sync_full_stock_for_cmig(
         )
         if allowed.scalar_one_or_none() is None:
             raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
-    elif current_user.role == "go" and cmig.warehouse_id != current_user.warehouse_id:
+    elif is_galpao(current_user) and cmig.warehouse_id != current_user.warehouse_id:
         # GO escopado por galpão (isolamento): só a CMIG do próprio galpão.
         raise HTTPException(status_code=403, detail="CMIG fora do escopo do seu Galpão")
 
@@ -794,7 +795,7 @@ async def stock_snapshots(
     )
 
     # AC só vê snapshots de produtos CMIG das CMIGs que administra
-    if current_user.role == "ac":
+    if is_conta(current_user):
         ac_cmig_rows = await db.execute(
             select(CMIGAdministrator.cmig_id).where(
                 CMIGAdministrator.user_id == current_user.id
@@ -808,7 +809,7 @@ async def stock_snapshots(
 
     # GO escopado por galpão (isolamento): snapshots de CMIGs do seu galpão (rows cmig)
     # ou de produtos PG do seu galpão (rows pg). Nunca de outro galpão.
-    if current_user.role == "go":
+    if is_galpao(current_user):
         go_cmig_ids = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
         go_pg_ids = select(CatalogProduct.id).where(
             CatalogProduct.warehouse_id == current_user.warehouse_id
@@ -887,7 +888,7 @@ async def stock_card(
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     # AC só vê produtos CMIG das CMIGs que administra
-    if current_user.role == "ac":
+    if is_conta(current_user):
         if product_type == "pg":
             raise HTTPException(status_code=403, detail="AC acessa apenas produtos CMIG")
         cmig_row = await db.execute(
@@ -904,7 +905,7 @@ async def stock_card(
         )
         if allowed.scalar_one_or_none() is None:
             raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
-    elif current_user.role == "go":
+    elif is_galpao(current_user):
         # GO escopado por galpão (isolamento): produto precisa ser do seu galpão.
         await _go_assert_product_in_warehouse(db, product_type, product_id, current_user)
 
@@ -925,7 +926,7 @@ async def product_movements(
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     # AC só vê movimentos de produtos de CMIGs que administra
-    if current_user.role == "ac":
+    if is_conta(current_user):
         if product_type != "cmig":
             raise HTTPException(status_code=403, detail="AC acessa apenas produtos CMIG")
         cmig_row = await db.execute(
@@ -942,7 +943,7 @@ async def product_movements(
         )
         if allowed.scalar_one_or_none() is None:
             raise HTTPException(status_code=403, detail="CMIG fora do escopo do usuário")
-    elif current_user.role == "go":
+    elif is_galpao(current_user):
         # GO escopado por galpão (isolamento): produto precisa ser do seu galpão.
         await _go_assert_product_in_warehouse(db, product_type, product_id, current_user)
 

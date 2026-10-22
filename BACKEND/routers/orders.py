@@ -31,6 +31,7 @@ from models.user import User
 from models.webhook import WebhookEvent
 from services import ml_service as _ml
 from services.content_declaration import append_declaration as _append_declaration
+from services.data_scope import is_conta, is_galpao, is_global
 from services.datetime_br import BR_TZ
 from services.file_naming import (
     TIPO_DACE,
@@ -478,11 +479,11 @@ async def list_available_cmigs(
     from models.cmig import CMIG, CMIGAdministrator
 
     base = select(CMIG).options(selectinload(CMIG.warehouse))
-    if current_user.role == "admin":
+    if is_global(current_user):
         result = await db.execute(
             base.where(CMIG.is_active == True).order_by(CMIG.trade_name)
         )
-    elif current_user.role in ("ugo", "go"):
+    elif is_galpao(current_user):
         if not current_user.warehouse_id:
             return {"items": []}
         result = await db.execute(
@@ -490,7 +491,7 @@ async def list_available_cmigs(
             .where(CMIG.warehouse_id == current_user.warehouse_id, CMIG.is_active == True)
             .order_by(CMIG.trade_name)
         )
-    elif current_user.role == "ac":
+    elif is_conta(current_user):
         subq = select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == current_user.id)
         result = await db.execute(
             base.where(CMIG.id.in_(subq), CMIG.is_active == True).order_by(CMIG.trade_name)
@@ -536,10 +537,10 @@ async def list_orders(
     query = select(Order).where(Order.is_hidden == False)
 
     # Role-based access control on CMIG
-    if current_user.role == "ac":
+    if is_conta(current_user):
         # AC só vê pedidos próprios
         query = query.where(_ac_visible_filter(current_user))
-    elif current_user.role in ("ugo", "go"):
+    elif is_galpao(current_user):
         # UGO/GO só veem pedidos das CMIGs do seu galpão (isolamento por galpão)
         ugo_cmigs_subq = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
         query = query.where(Order.cmig_id.in_(ugo_cmigs_subq))
@@ -547,7 +548,7 @@ async def list_orders(
 
     # Filtro CMIG explícito (se informado, valida acesso)
     if cmig_id:
-        if current_user.role == "ac":
+        if is_conta(current_user):
             access_check = await db.execute(
                 select(CMIGAdministrator).where(
                     CMIGAdministrator.user_id == current_user.id,
@@ -556,7 +557,7 @@ async def list_orders(
             )
             if not access_check.scalar_one_or_none():
                 raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
-        elif current_user.role in ("ugo", "go"):
+        elif is_galpao(current_user):
             cmig_check = await db.execute(
                 select(CMIG).where(
                     CMIG.id == cmig_id, CMIG.warehouse_id == current_user.warehouse_id
@@ -873,9 +874,9 @@ async def get_order(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Order).where(Order.id == order_id)
-    if current_user.role in ("ac",):
+    if is_conta(current_user):
         query = query.where(_ac_visible_filter(current_user))
-    elif current_user.role == "go":
+    elif is_galpao(current_user):
         # GO escopado por galpão (isolamento): só vê pedidos das CMIGs do seu galpão.
         from models.cmig import CMIG
 
@@ -1218,9 +1219,9 @@ async def update_order_status(
         )
 
     query = select(Order).where(Order.id == order_id)
-    if current_user.role in ("ac",):
+    if is_conta(current_user):
         query = query.where(_ac_visible_filter(current_user))
-    elif current_user.role == "go":
+    elif is_galpao(current_user):
         # GO escopado por galpão (isolamento): só age em pedidos das CMIGs do seu galpão.
         from models.cmig import CMIG
 
@@ -1304,9 +1305,9 @@ async def update_order_notes(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Order).where(Order.id == order_id)
-    if current_user.role in ("ac",):
+    if is_conta(current_user):
         query = query.where(_ac_visible_filter(current_user))
-    elif current_user.role == "go":
+    elif is_galpao(current_user):
         # GO escopado por galpão (isolamento): só age em pedidos das CMIGs do seu galpão.
         from models.cmig import CMIG
 
@@ -1343,9 +1344,9 @@ async def hide_order(
 async def _get_order_checked(db: AsyncSession, order_id: int, current_user: User) -> Order:
     """Fetch order with role-based access check."""
     query = select(Order).where(Order.id == order_id)
-    if current_user.role == "ac":
+    if is_conta(current_user):
         query = query.where(_ac_visible_filter(current_user))
-    elif current_user.role == "go":
+    elif is_galpao(current_user):
         # GO escopado por galpão, igual ao UGO: só alcança pedidos das CMIGs do seu galpão.
         from models.cmig import CMIG
 
@@ -1408,7 +1409,7 @@ async def _emit_own_nfe(order: Order, account, current_user: User, db: AsyncSess
     """
     from sqlalchemy.orm import selectinload
 
-    from models.fiscal import CMIGFiscalConfig, Invoice
+    from models.fiscal import Invoice
     from models.person import Person
     from routers.invoices import (
         _get_fiscal_config,
@@ -2082,9 +2083,9 @@ async def delete_order(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Order).where(Order.id == order_id)
-    if current_user.role == "ac":
+    if is_conta(current_user):
         query = query.where(_ac_visible_filter(current_user))
-    elif current_user.role == "go":
+    elif is_galpao(current_user):
         raise HTTPException(status_code=403, detail="GO não pode excluir pedidos")
 
     result = await db.execute(query)
@@ -2102,7 +2103,7 @@ async def bulk_delete_orders(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if current_user.role == "go":
+    if is_galpao(current_user):
         raise HTTPException(status_code=403, detail="GO não pode excluir pedidos")
 
     ids = body.get("ids", [])
@@ -2112,7 +2113,7 @@ async def bulk_delete_orders(
         raise HTTPException(status_code=400, detail="Máximo de 200 pedidos por operação")
 
     query = select(Order).where(Order.id.in_(ids))
-    if current_user.role == "ac":
+    if is_conta(current_user):
         query = query.where(_ac_visible_filter(current_user))
 
     result = await db.execute(query)
@@ -2323,9 +2324,9 @@ async def _backfill_product_links(
         .order_by(Order.id.desc())
         .limit(limit)
     )
-    if current_user.role == "ac":
+    if is_conta(current_user):
         q = q.where(_ac_visible_filter(current_user))
-    elif current_user.role in ("ugo", "go") and current_user.warehouse_id:
+    elif is_galpao(current_user) and current_user.warehouse_id:
         from models.cmig import CMIG
         ugo_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
         q = q.where(Order.cmig_id.in_(ugo_cmigs))
@@ -2406,7 +2407,7 @@ async def _backfill_order_dates(
             .limit(100)
         )
 
-    if current_user.role == "ac":
+    if is_conta(current_user):
         dq = dq.where(_ac_visible_filter(current_user))
 
     dates_orders = (await db.execute(dq)).scalars().all()
@@ -2552,7 +2553,7 @@ async def refresh_shipping_modes(
     if not ml_accounts:
         return {"ok": False, "reason": "Sem contas ML ativas"}
 
-    dropshipper_id = current_user.id if current_user.role == "ac" else None
+    dropshipper_id = current_user.id if is_conta(current_user) else None
     updated = await _refresh_shipments(
         db,
         ml_accounts,
@@ -2648,7 +2649,7 @@ async def trigger_sync(
             .order_by(Order.id.desc())
             .limit(200)
         )
-        if current_user.role == "ac":
+        if is_conta(current_user):
             q = q.where(_ac_visible_filter(current_user))
 
         nfe_result = await db.execute(q)
@@ -2697,7 +2698,7 @@ async def trigger_sync(
     ship_updated = await _refresh_shipments(
         db,
         ml_accounts,
-        dropshipper_id=current_user.id if current_user.role == "ac" else None,
+        dropshipper_id=current_user.id if is_conta(current_user) else None,
         limit=100,
     )
 
@@ -2818,7 +2819,7 @@ async def sync_range(
             .order_by(Order.id.desc())
             .limit(200)
         )
-        if current_user.role == "ac":
+        if is_conta(current_user):
             q = q.where(_ac_visible_filter(current_user))
 
         nfe_result = await db.execute(q)
@@ -2872,7 +2873,7 @@ async def sync_range(
     ship_updated = await _refresh_shipments(
         db,
         ml_accounts,
-        dropshipper_id=current_user.id if current_user.role == "ac" else None,
+        dropshipper_id=current_user.id if is_conta(current_user) else None,
         limit=100,
     )
 
@@ -2927,7 +2928,7 @@ async def sync_nfe_batch(
         .order_by(Order.id.desc())
         .limit(200)
     )
-    if current_user.role == "ac":
+    if is_conta(current_user):
         q = q.where(_ac_visible_filter(current_user))
 
     result = await db.execute(q)
