@@ -9,6 +9,7 @@ from database import get_db
 from dependencies import get_current_user
 from models.user import User
 from schemas.dashboard import KPIResponse, TopProductSchema
+from services.data_scope import is_conta, is_galpao, is_global
 from services.datetime_br import BR_TZ as BRT  # fonte única do fuso do Brasil
 
 router = APIRouter()
@@ -162,7 +163,7 @@ async def get_top_products(
         .where(CatalogProduct.is_active == True)
         .order_by(CatalogProduct.created_at.desc())
     )
-    if current_user.role in ("ugo", "go", "ac") and current_user.warehouse_id:
+    if (is_galpao(current_user) or is_conta(current_user)) and current_user.warehouse_id:
         stmt = stmt.where(CatalogProduct.warehouse_id == current_user.warehouse_id)
     result = await db.execute(stmt.limit(12))
     products = result.scalars().all()
@@ -246,14 +247,14 @@ async def get_marketplace_dashboard(
     Visitas/Perguntas/ADS saem do snapshot marketplace_metrics_daily (ML-only).
     Conversão = pedidos/visitas. Admin vê tudo; AC/UGO/GO só os próprios pedidos.
     """
-    is_global = current_user.role == "admin"
+    scope_global = is_global(current_user)
     now_brt = datetime.now(BRT)
     dt_windows, dd_windows = _date_windows(now_brt)
 
     # ----- filtros comuns (orders) -----
     base_filters = []
     params: dict = {}
-    if not is_global:
+    if not scope_global:
         base_filters.append("dropshipper_id = :uid")
         params["uid"] = current_user.id
     if account_id is not None:
@@ -296,7 +297,7 @@ async def get_marketplace_dashboard(
     if account_id is not None:
         snap_filters.append("account_id = :s_account_id")
         snap_params["s_account_id"] = account_id
-    elif not is_global:
+    elif not scope_global:
         snap_filters.append(
             "account_id IN (SELECT DISTINCT account_id FROM orders "
             "WHERE dropshipper_id = :s_uid AND account_id IS NOT NULL)"
@@ -401,7 +402,7 @@ async def get_marketplace_dashboard(
         "rows": rows,
         "extras": extras,
         "scope": {
-            "is_global": is_global,
+            "is_global": scope_global,
             "account_id": account_id,
             "platform": platform,
             "generated_at": now_brt.astimezone(UTC).isoformat(),  # contrato único: UTC

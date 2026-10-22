@@ -42,6 +42,7 @@ from models.warehouse import Warehouse
 from routers.orders import _extract_nfe_fields, _ml_nfe_url  # noqa: E402
 from services import ml_service as _ml
 from services import picking_service as ps
+from services.data_scope import is_global
 from services.file_naming import TIPO_DANFE, order_download_filename, slugify_name
 from services.label_meta import build_orders_label_meta as _order_labels_meta
 from services.label_meta import resolve_item_base as _resolve_base
@@ -93,7 +94,7 @@ def _eligibility_conditions() -> list:
 # ── Escopo ────────────────────────────────────────────────────────────────────
 def _order_warehouse_clause(user: User):
     """Predicado de visibilidade de pedidos do galpão do operador (None p/ admin)."""
-    if user.role == "admin":
+    if is_global(user):
         return None
     return Order.cmig_id.in_(
         select(CMIG.id).where(CMIG.warehouse_id == user.warehouse_id)
@@ -102,7 +103,7 @@ def _order_warehouse_clause(user: User):
 
 def _ensure_warehouse(user: User) -> None:
     """Operador não-admin precisa ter galpão atribuído para separar."""
-    if user.role != "admin" and user.warehouse_id is None:
+    if not is_global(user) and user.warehouse_id is None:
         raise HTTPException(
             status_code=403, detail="Operador sem galpão atribuído — solicite ao administrador"
         )
@@ -139,7 +140,7 @@ async def _get_cart_scoped(db: AsyncSession, cart_id: int, user: User) -> Pickin
     ).scalar_one_or_none()
     if not cart:
         raise HTTPException(status_code=404, detail="Gaiola não encontrada")
-    if user.role != "admin":
+    if not is_global(user):
         # NULL-safe: operador sem galpão NÃO acessa gaiolas (nem as de warehouse NULL)
         if user.warehouse_id is None or cart.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="Gaiola fora do seu galpão")
@@ -352,7 +353,7 @@ async def list_carts(
     db: AsyncSession = Depends(get_db),
 ):
     q = select(PickingCart).order_by(PickingCart.created_at.desc())
-    if current_user.role != "admin":
+    if not is_global(current_user):
         q = q.where(PickingCart.warehouse_id == current_user.warehouse_id)
     if status:
         q = q.where(PickingCart.status == status)

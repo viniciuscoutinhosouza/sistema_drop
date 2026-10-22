@@ -38,6 +38,7 @@ from models.order import Order
 from models.product import CatalogProduct, CatalogProductVariant
 from models.stock_movement import StockMovement
 from models.user import User
+from services.data_scope import is_conta, is_galpao, is_global
 
 # Ciclo operacional = holds de reserva + ciclo de devolução. EXCLUI 'dispatch' (a baixa física
 # da venda já aparece na razão como saída de pedido — não duplicar) e os 'full_*' (bloco próprio).
@@ -263,9 +264,9 @@ async def build_product_ledger(
     start_date: _date | None = None,
     end_date: _date | None = None,
 ) -> dict:
-    if current_user.role not in ("ugo", "admin", "ac", "go"):
+    if not (is_global(current_user) or is_galpao(current_user) or is_conta(current_user)):
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
-    is_ac = current_user.role == "ac"
+    is_ac = is_conta(current_user)
     if is_ac and product_type == "pg":
         raise HTTPException(status_code=403, detail="AC acessa apenas produtos CMIG")
 
@@ -281,7 +282,7 @@ async def build_product_ledger(
 
     # GO isolado por galpão (como o UGO): o produto tem de ser do galpão do GO — senão 403.
     # Os irmãos /stock/card e /stock/movements já fazem isso; o /ledger faltava (vazamento).
-    if current_user.role == "go":
+    if is_galpao(current_user):
         if product_type == "pg":
             _wh = pg.warehouse_id if pg else None
         else:

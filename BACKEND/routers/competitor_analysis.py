@@ -11,6 +11,7 @@ from database import get_db
 from dependencies import get_current_user
 from models.competitor_analysis import CompetitorAnalysis
 from models.user import User
+from services.data_scope import is_global
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -92,7 +93,7 @@ async def get_analysis(
     ).scalar_one_or_none()
     if not a:
         raise HTTPException(status_code=404, detail="Análise não encontrada")
-    if current_user.role != "admin" and a.requester_user_id != current_user.id:
+    if not is_global(current_user) and a.requester_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Sem acesso a este estudo")
     return _serialize(a)
 
@@ -109,7 +110,7 @@ async def list_analyses(
         CompetitorAnalysis.product_type == product_type,
         CompetitorAnalysis.product_id == product_id,
     ]
-    if current_user.role != "admin":
+    if not is_global(current_user):
         conds.append(CompetitorAnalysis.requester_user_id == current_user.id)
     rows = (
         await db.execute(
@@ -132,7 +133,7 @@ async def update_notes(
     ).scalar_one_or_none()
     if not a:
         raise HTTPException(status_code=404, detail="Análise não encontrada")
-    if current_user.role != "admin" and a.requester_user_id != current_user.id:
+    if not is_global(current_user) and a.requester_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Sem acesso a este estudo")
     if "notes" in body:
         a.notes = body.get("notes")
@@ -151,7 +152,7 @@ async def delete_analysis(
     ).scalar_one_or_none()
     if not a:
         raise HTTPException(status_code=404, detail="Análise não encontrada")
-    if current_user.role != "admin" and a.requester_user_id != current_user.id:
+    if not is_global(current_user) and a.requester_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Sem acesso a este estudo")
     if a.status == "running":
         raise HTTPException(status_code=409, detail="Estudo em andamento; aguarde concluir para excluir.")

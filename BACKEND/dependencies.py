@@ -156,8 +156,9 @@ async def get_active_ac(
     """Retorna o usuário atual se for um AC ativo com assinatura em dia."""
 
     from models.user import ACProfile
+    from services.data_scope import is_conta, is_global
 
-    if current_user.role not in ("ac", "admin"):
+    if not (is_conta(current_user) or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Acesso apenas para Gestores de Conta (AC)")
 
     result = await db.execute(select(ACProfile).where(ACProfile.user_id == current_user.id))
@@ -175,7 +176,9 @@ async def get_active_go(
     current_user: User = Depends(get_current_user),
 ) -> User:
     """Retorna o usuário atual se for um GO ativo."""
-    if current_user.role not in ("go", "admin"):
+    from services.data_scope import is_galpao, is_global
+
+    if not (is_galpao(current_user) or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Acesso apenas para Gestores Operacionais (GO)")
     return current_user
 

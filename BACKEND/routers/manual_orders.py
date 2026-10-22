@@ -17,6 +17,7 @@ from models.payment import PaymentCharge
 from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
+from services.data_scope import is_global
 from services.file_naming import TIPO_ETIQUETA, order_download_filename
 from services.product_mode import assert_product_group_allowed
 from services.shipping_mode import MODE_COMBINADO
@@ -337,7 +338,7 @@ async def _load_manual_label_data(order_id: int, current_user: User, db: AsyncSe
             )
         )
         is_admin = admin_res.scalar_one_or_none() is not None
-    if not (is_owner or is_admin or current_user.role == "admin"):
+    if not (is_owner or is_admin or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Sem acesso a este pedido")
 
     items = (
@@ -461,7 +462,7 @@ async def _load_manual_order_checked(order_id: int, user: User, db: AsyncSession
         raise HTTPException(status_code=400, detail="Cobranca disponivel apenas para pedido manual")
     if not order.cmig_id:
         raise HTTPException(status_code=400, detail="Pedido sem CMIG vinculada")
-    if user.role != "admin":
+    if not is_global(user):
         acc = await db.execute(
             select(CMIGAdministrator).where(
                 CMIGAdministrator.user_id == user.id,

@@ -16,7 +16,7 @@ from models.integration import MarketplaceAccount
 from models.product import CatalogProduct, CatalogProductComponent
 from models.stock_movement import StockMovement
 from models.user import User
-from services.data_scope import is_conta, is_galpao
+from services.data_scope import is_conta, is_galpao, is_global
 from services.datetime_br import now_br
 
 logger = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ async def _collect_stock_items(
     MESMO controle de acesso (roles; AC escopado às suas CMIGs) e o MESMO escopo de FULL por
     conta — não vazar FULL de outras contas/CMIGs.
     """
-    if current_user.role not in ("ugo", "admin", "ac", "go"):
+    if not (is_global(current_user) or is_galpao(current_user) or is_conta(current_user)):
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     # GO escopado por galpão (isolamento): força o filtro de galpão no próprio warehouse,
@@ -419,7 +419,7 @@ async def sync_full_stock_for_cmig(
     from services.datetime_br import BR_TZ
     from services.full_stock_service import resolve_full_cmig_product
 
-    if current_user.role not in ("ugo", "admin", "ac", "go"):
+    if not (is_global(current_user) or is_galpao(current_user) or is_conta(current_user)):
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
@@ -684,7 +684,7 @@ async def recompute_all_stock_endpoint(
     não cabe ao papel Galpão (isolado por galpão); só admin dispara.
     Também usada após zerar o estoque (SQL 74) para reconstruir os valores canônicos.
     """
-    if current_user.role != "admin":
+    if not is_global(current_user):
         raise HTTPException(
             status_code=403,
             detail="Apenas admin pode recalcular o estoque global de todos os produtos/galpões",
@@ -787,7 +787,7 @@ async def stock_snapshots(
 
     from models.stock_snapshot import StockSnapshot
 
-    if current_user.role not in ("ugo", "admin", "ac", "go"):
+    if not (is_global(current_user) or is_galpao(current_user) or is_conta(current_user)):
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     q = select(StockSnapshot).order_by(
@@ -884,7 +884,7 @@ async def stock_card(
     """
     if product_type not in ("pg", "cmig"):
         raise HTTPException(status_code=400, detail="product_type deve ser 'pg' ou 'cmig'")
-    if current_user.role not in ("ugo", "admin", "ac", "go"):
+    if not (is_global(current_user) or is_galpao(current_user) or is_conta(current_user)):
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     # AC só vê produtos CMIG das CMIGs que administra
@@ -922,7 +922,7 @@ async def product_movements(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if current_user.role not in ("ugo", "admin", "ac", "go"):
+    if not (is_global(current_user) or is_galpao(current_user) or is_conta(current_user)):
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     # AC só vê movimentos de produtos de CMIGs que administra
@@ -1032,7 +1032,7 @@ async def disassemble_kit(
     −N do KIT, +N×composição de cada componente. Só admin/Galpão. Exige unidades montadas suficientes
     (`stock_quantity` do kit). Registra os movimentos no extrato dos dois produtos e recomputa.
     """
-    if current_user.role not in ("admin", "ugo", "go"):
+    if not (is_galpao(current_user) or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Apenas admin ou Galpão")
     qty = int(body.get("quantity") or 0)
     if qty <= 0:

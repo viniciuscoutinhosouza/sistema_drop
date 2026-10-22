@@ -13,6 +13,7 @@ from models.go import GO
 from models.user import User
 from models.warehouse import Warehouse, WarehouseBankAccount
 from services import crypto
+from services.data_scope import is_global
 
 # Upload de logo — só raster (SVG serve inline em /static e viraria XSS). Valida por magic bytes
 # (a extensão do nome do usuário é ignorada — o tipo real vem de _sniff_image_ext).
@@ -74,7 +75,7 @@ async def _owned_go_id(user: User, db: AsyncSession) -> int | None:
     operador também) e ter `go_id` setado também não (operadores herdam o go_id do dono). Só é dono
     quem POSSUI o registro em `goes`. Isolamento: operador (não-dono) nunca alcança galpão irmão.
     """
-    if user.role == "admin":
+    if is_global(user):
         return None
     r = await db.execute(select(GO.id).where(GO.user_id == user.id))
     return r.scalar_one_or_none()
@@ -89,7 +90,7 @@ def _can_access_warehouse(user: User, warehouse: Warehouse, owned_go_id: int | N
     NUNCA um galpão de outro dono. Operador (não é dono de GO) fica restrito ao próprio warehouse_id
     mesmo que tenha `go_id` herdado.
     """
-    if user.role == "admin":
+    if is_global(user):
         return True
     if user.warehouse_id is not None and warehouse.id == user.warehouse_id:
         return True
@@ -142,7 +143,7 @@ async def list_warehouses(
     """Lista galpões. Admin vê todos; Galpão-DONO (possui registro em `goes`) vê os galpões do seu
     GO; operador/AC vê apenas o galpão vinculado. Isolamento por galpão — nunca galpão de outro dono
     (operador não-dono NÃO vê galpão irmão mesmo com go_id herdado)."""
-    if current_user.role == "admin":
+    if is_global(current_user):
         result = await db.execute(select(Warehouse))
         return [_serialize(w) for w in result.scalars().all()]
     # Galpão-DONO multi-galpão: lista os galpões do GO que ele é dono + o próprio galpão vinculado

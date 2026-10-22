@@ -21,6 +21,7 @@ from models.integration import MarketplaceAccount
 from models.messages import AIConfig, CMIGAIConfig, ConversationMessage, ConversationThread
 from models.user import User
 from services.atendimento_access import get_accessible_account_ids as _get_accessible_account_ids
+from services.data_scope import is_conta, is_global
 
 router = APIRouter(prefix="/api/v1/messages", tags=["messages"])
 logger = logging.getLogger(__name__)
@@ -379,7 +380,7 @@ async def debug_inbox(
     current_user: User = Depends(get_current_user),
 ):
     """Diagnóstico: chama o inbox pós-venda do ML direto e retorna o raw (sem salvar no BD)."""
-    if current_user.role not in ("admin", "ac"):
+    if not (is_conta(current_user) or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Acesso negado.")
 
     result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))
@@ -440,7 +441,7 @@ async def debug_questions(
     current_user: User = Depends(get_current_user),
 ):
     """Diagnóstico: chama a API ML sem filtro de data e retorna o que ela retornou (sem salvar no BD)."""
-    if current_user.role not in ("admin", "ac"):
+    if not (is_conta(current_user) or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Acesso negado.")
 
     result = await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == account_id))

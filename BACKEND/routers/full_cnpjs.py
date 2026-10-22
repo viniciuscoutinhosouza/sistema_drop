@@ -10,6 +10,7 @@ from models.cmig import CMIG, CMIGAdministrator
 from models.full_stock import FullCnpj, FullStock
 from models.integration import MarketplaceAccount
 from models.user import User
+from services.data_scope import is_conta, is_global
 
 router = APIRouter()
 
@@ -48,10 +49,10 @@ async def _check_account_belongs_to_cmig(
 
 
 async def _resolve_cmig_ids(user: User, db: AsyncSession) -> list[int]:
-    if user.role == "admin":
+    if is_global(user):
         rows = (await db.execute(select(CMIG.id))).scalars().all()
         return list(rows)
-    if user.role == "ac":
+    if is_conta(user):
         rows = (
             await db.execute(
                 select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == user.id)

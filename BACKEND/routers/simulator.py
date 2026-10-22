@@ -15,6 +15,7 @@ from dependencies import get_current_user
 from models.integration import MarketplaceAccount
 from models.user import User
 from services import ml_service
+from services.data_scope import is_galpao, is_global
 
 router = APIRouter()
 
@@ -33,7 +34,7 @@ async def _get_account_with_token(
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta de marketplace não encontrada")
-    if user.role == "go":
+    if is_galpao(user):
         # GO escopado por galpão (isolamento): a CMIG da conta precisa ser do seu galpão.
         from models.cmig import CMIG
 
@@ -44,7 +45,7 @@ async def _get_account_with_token(
             ).scalar_one_or_none()
         if cmig_wh is None or cmig_wh != user.warehouse_id:
             raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")
-    elif user.role != "admin":
+    elif not is_global(user):
         admin_ids = {a.user_id for a in account.administrators}
         if user.id not in admin_ids:
             raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")

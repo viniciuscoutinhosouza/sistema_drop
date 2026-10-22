@@ -22,6 +22,7 @@ from models.cmig import CMIG, CMIGAdministrator
 from models.integration import MarketplaceAccount
 from models.user import User
 from routers.anuncios import _get_account_or_403
+from services.data_scope import is_galpao, is_global
 from services.ml_auth import get_valid_token
 
 router = APIRouter()
@@ -35,9 +36,9 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada.")
-    if user.role == "admin":
+    if is_global(user):
         return cmig
-    if user.role == "go":
+    if is_galpao(user):
         # GO escopado por galpão (isolamento): só a CMIG do próprio galpão.
         if cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG.")

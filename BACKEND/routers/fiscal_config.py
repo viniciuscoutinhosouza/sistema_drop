@@ -12,6 +12,7 @@ from dependencies import get_current_user
 from models.cmig import CMIG
 from models.fiscal import CMIGFiscalConfig
 from models.user import User
+from services.data_scope import is_conta, is_global
 from services.fiscal import cert_crypto
 
 router = APIRouter()
@@ -118,12 +119,12 @@ async def update_fiscal_config(
     current_user: User = Depends(get_current_user),
 ):
     await _check_cmig_access(cmig_id, current_user, db, require_owner=False)
-    if current_user.role not in ("ac", "admin"):
+    if not (is_conta(current_user) or is_global(current_user)):
         raise HTTPException(
             status_code=403, detail="Apenas AC ou admin podem editar configuração fiscal"
         )
     # Autorização "por conta e ordem" (DC-e) expõe o CNPJ da MIG como assinante — só admin liga.
-    if "dce_authorized" in body and current_user.role != "admin":
+    if "dce_authorized" in body and not is_global(current_user):
         raise HTTPException(
             status_code=403,
             detail="Apenas admin pode autorizar a emissão de DC-e por conta e ordem (dce_authorized).",
@@ -220,7 +221,7 @@ async def upload_certificate(
     O .pfx é gravado em diretório RESTRITO no servidor (fora de static/) e a senha
     é arquivada CIFRADA no banco (Fernet master key). Nada vai para terceiros."""
     await _check_cmig_access(cmig_id, current_user, db)
-    if current_user.role not in ("ac", "admin"):
+    if not (is_conta(current_user) or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Apenas AC ou admin podem subir certificado")
 
     cfg = (

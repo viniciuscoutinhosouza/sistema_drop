@@ -36,6 +36,7 @@ from models.integration import AccountBalance, MarketplaceAccount
 from models.product import DropshipperProduct, ProductListing
 from models.user import AccountAdministrator, User
 from services import bling_service, ml_service, shopee_service
+from services.data_scope import is_conta, is_galpao, is_global
 
 settings = get_settings()
 router = APIRouter()
@@ -175,7 +176,7 @@ async def list_accounts(
         return acc.cmig_id is None or acc.cmig_id not in inactive_cmig_ids
 
     # Super Admin: vê TODAS as contas (incluindo as vinculadas a qualquer CMIG).
-    if current_user.role == "admin":
+    if is_global(current_user):
         result = await db.execute(
             select(MarketplaceAccount).order_by(MarketplaceAccount.created_at)
         )
@@ -183,7 +184,7 @@ async def list_accounts(
 
     # GO escopado por galpão (isolamento): vê as contas cujas CMIGs pertencem ao seu galpão,
     # e SOMENTE elas (nunca contas de outro galpão).
-    if current_user.role == "go":
+    if is_galpao(current_user):
         go_cmig_ids = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
         result = await db.execute(
             select(MarketplaceAccount)
@@ -341,7 +342,7 @@ async def _assert_owner_or_admin(
     account = acc_q.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta não encontrada")
-    if user.role == "admin":
+    if is_global(user):
         return account
     owner_q = await db.execute(
         select(AccountAdministrator).where(
@@ -365,7 +366,7 @@ async def list_account_admins(
 ):
     """Lista colaboradores desta conta (acessível ao owner, co-admins e admin)."""
     # Acesso a leitura: qualquer co-admin da conta OU admin da plataforma
-    if current_user.role != "admin":
+    if not is_global(current_user):
         await _assert_ac_can_access(account_id, current_user.id, db)
 
     result = await db.execute(
@@ -631,7 +632,7 @@ async def _set_nfe_emission_mode(
         raise HTTPException(status_code=400, detail="Modo de emissão inválido (use 'marketplace' ou 'own').")
     if (account.nfe_emission_mode or "marketplace") == mode:
         return  # no-op
-    if current_user.role not in ("ac", "admin"):
+    if not (is_conta(current_user) or is_global(current_user)):
         raise HTTPException(
             status_code=403,
             detail="Apenas Gestor de Conta (AC) ou Admin pode alterar o modo de emissão de NF-e.",

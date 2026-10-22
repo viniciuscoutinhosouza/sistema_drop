@@ -23,6 +23,7 @@ from models.integration import MarketplaceAccount
 from models.product import CatalogProduct, ProductListing, ProductMarketplaceCategory
 from models.user import User
 from services import audit_service, ml_service
+from services.data_scope import is_galpao, is_global
 from services.datetime_br import to_br
 
 
@@ -251,7 +252,7 @@ async def _get_account_or_403(account_id: int, user: User, db: AsyncSession) -> 
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="Conta de marketplace não encontrada")
-    if user.role == "go":
+    if is_galpao(user):
         # GO escopado por galpão (isolamento): só acessa contas cujas CMIGs pertencem
         # ao seu galpão. Não recebe o bypass total do UGO.
         cmig_wh = None
@@ -262,7 +263,7 @@ async def _get_account_or_403(account_id: int, user: User, db: AsyncSession) -> 
         if cmig_wh is None or cmig_wh != user.warehouse_id:
             raise HTTPException(status_code=403, detail="Sem acesso a esta conta de marketplace")
         return account
-    if user.role != "admin":
+    if not is_global(user):
         admin_ids = {a.user_id for a in account.administrators}
         if user.id not in admin_ids:
             # Fallback: colaborador CMIG tem acesso a contas vinculadas à sua CMIG
@@ -302,7 +303,7 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
     listing = result.scalar_one_or_none()
     if not listing:
         raise HTTPException(status_code=404, detail="Anúncio não encontrado")
-    if user.role == "go":
+    if is_galpao(user):
         # GO escopado por galpão (isolamento): só acessa anúncios de contas cujas CMIGs
         # pertencem ao seu galpão. Não recebe o bypass total do UGO.
         cmig_wh = None
@@ -315,7 +316,7 @@ async def _get_listing_or_404(listing_id: int, user: User, db: AsyncSession) -> 
         if cmig_wh is None or cmig_wh != user.warehouse_id:
             raise HTTPException(status_code=403, detail="Sem acesso a este anúncio")
         return listing
-    if user.role != "admin":
+    if not is_global(user):
         admin_ids = {a.user_id for a in listing.account.administrators}
         if user.id not in admin_ids:
             # Fallback: colaborador CMIG tem acesso a anúncios de contas vinculadas à sua CMIG
@@ -2315,14 +2316,14 @@ async def create_cmig_product_from_listing(
         raise HTTPException(status_code=400, detail="cmig_id é obrigatório")
 
     # Valida acesso à CMIG
-    if current_user.role == "go":
+    if is_galpao(current_user):
         # GO escopado por galpão (isolamento): a CMIG precisa pertencer ao seu galpão.
         cmig_wh = (
             await db.execute(select(CMIG.warehouse_id).where(CMIG.id == cmig_id))
         ).scalar_one_or_none()
         if cmig_wh is None or cmig_wh != current_user.warehouse_id:
             raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
-    elif current_user.role != "admin":
+    elif not is_global(current_user):
         r = await db.execute(
             select(CMIGAdministrator).where(
                 CMIGAdministrator.user_id == current_user.id,
@@ -2708,7 +2709,7 @@ async def _load_variation_product(
                 status_code=422,
                 detail=f"Produto PG #{pid} é um KIT — variações exigem produtos simples",
             )
-        if user.role != "admin" and user.warehouse_id and prod.warehouse_id and prod.warehouse_id != user.warehouse_id:
+        if not is_global(user) and user.warehouse_id and prod.warehouse_id and prod.warehouse_id != user.warehouse_id:
             raise HTTPException(
                 status_code=403, detail=f"Produto PG #{pid} não pertence ao seu galpão"
             )
@@ -3330,9 +3331,9 @@ async def _load_listings_for_group(
 
     # Valida acesso para cada listing — replica regra de _get_listing_or_404
     for listing in listings:
-        if user.role == "admin":
+        if is_global(user):
             continue
-        if user.role == "go":
+        if is_galpao(user):
             # GO escopado por galpão (isolamento): a CMIG da conta precisa pertencer ao seu galpão.
             cmig_wh = None
             if listing.account and listing.account.cmig_id:
@@ -6417,7 +6418,7 @@ async def sync_stock_to_marketplace(
         raise HTTPException(status_code=404, detail="Conta não encontrada")
 
     # Verifica acesso do usuário à conta
-    if current_user.role == "go":
+    if is_galpao(current_user):
         # GO escopado por galpão (isolamento): a CMIG da conta precisa pertencer ao seu galpão.
         cmig_wh = None
         if account.cmig_id:
@@ -6426,7 +6427,7 @@ async def sync_stock_to_marketplace(
             ).scalar_one_or_none()
         if cmig_wh is None or cmig_wh != current_user.warehouse_id:
             raise HTTPException(status_code=403, detail="Acesso negado a esta conta")
-    elif current_user.role != "admin":
+    elif not is_global(current_user):
         from models.user import AccountAdministrator
         admin = (
             await db.execute(

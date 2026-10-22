@@ -27,6 +27,7 @@ from models.product import CatalogProduct
 from models.user import User
 from services import audit_service
 from services import ml_service as _ml
+from services.data_scope import is_conta, is_global
 from services.file_naming import TIPO_DANFE, TIPO_NFE, order_download_filename
 from services.fiscal import dfe_service, sefaz_service
 from services.fiscal.icms_table import compute_difal, get_icms_rate
@@ -4228,7 +4229,7 @@ async def inutilize_nfe_range(
     Body:
       cmig_id, ano, serie, nro_ini, nro_fim, justificativa
     """
-    if current_user.role not in ("ac", "admin"):
+    if not (is_conta(current_user) or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Apenas AC ou admin podem inutilizar numeração")
 
     cmig_id = body.get("cmig_id")

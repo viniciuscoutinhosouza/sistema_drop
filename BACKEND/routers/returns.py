@@ -12,6 +12,7 @@ from database import get_db
 from dependencies import get_current_user, require_menu_permission
 from models.return_ import Return
 from models.user import User
+from services.data_scope import is_galpao, is_global
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,9 +31,9 @@ def _return_scope_filter(user: User):
       galpão. Sem warehouse_id → conjunto vazio POR REGRA (fail-closed), não por acidente.
     - demais (ac/dropshipper) → só as próprias (dropshipper_id).
     """
-    if user.role == "admin":
+    if is_global(user):
         return None
-    if user.role in ("go", "ugo"):
+    if is_galpao(user):
         if not user.warehouse_id:
             return false()
         from models.cmig import CMIG
@@ -85,9 +86,9 @@ async def _can_access_return(user: User, ret: Return, db: AsyncSession) -> bool:
 
     (Órfã sem galpão resolvível fica acessível só ao admin — visível na lista dele; ver LOG/ADR.)
     """
-    if user.role == "admin":
+    if is_global(user):
         return True
-    if user.role in ("go", "ugo"):
+    if is_galpao(user):
         if ret.dropshipper_id == user.id:  # devolução que o próprio Galpão criou (cobre órfã)
             return True
         wh = await _return_warehouse_id(ret, db)
@@ -128,7 +129,7 @@ async def list_returns(
 ):
     # Escopo por papel (ADR-0026): admin (todas, ou só as próprias se all=False); Galpão (devoluções
     # do próprio galpão); ac/dropshipper (só as próprias). O param `all` só faz sentido p/ admin.
-    if current_user.role == "admin":
+    if is_global(current_user):
         query = select(Return) if all else select(Return).where(Return.dropshipper_id == current_user.id)
     else:
         scope = _return_scope_filter(current_user)
@@ -169,7 +170,7 @@ async def create_return(
     order_id = body.get("order_id")
     # Impede injetar devolução em pedido de outro galpão/CMIG: se veio order_id, o usuário precisa
     # ter acesso à CMIG do pedido (admin=tudo; Galpão=galpão do pedido; ac=CMIG que administra).
-    if order_id and current_user.role != "admin":
+    if order_id and not is_global(current_user):
         from models.order import Order
         order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
         if not order:

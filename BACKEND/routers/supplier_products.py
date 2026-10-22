@@ -24,6 +24,7 @@ from models.product import (
 )
 from models.user import User
 from services import product_import
+from services.data_scope import is_conta, is_global
 
 router = APIRouter()
 
@@ -206,7 +207,7 @@ async def list_supplier_products(
         if not wh_ids:
             return []  # fail-closed
         stmt = stmt.where(CatalogProduct.warehouse_id.in_(wh_ids))
-        if current_user.role == "ac":
+        if is_conta(current_user):
             stmt = stmt.where(CatalogProduct.is_active == True)  # noqa: E712 — ac só vê PG ativo
     stmt = stmt.order_by(CatalogProduct.created_at.desc())
 
@@ -243,7 +244,7 @@ async def pg_import(
     Validate-all-then-insert: valida tudo, carrega os SKUs existentes (unique GLOBAL do PG) em 1
     query, cruza, e insere só as válidas num commit. Relatório por linha (criados/erros/avisos)."""
     target_wh = current_user.warehouse_id
-    if target_wh is None and current_user.role != "admin":
+    if target_wh is None and not is_global(current_user):
         raise HTTPException(status_code=422, detail="Usuário sem galpão não pode importar produtos PG.")
 
     data = await file.read(product_import.MAX_FILE_BYTES + 1)
@@ -326,7 +327,7 @@ async def _assert_pg_owned(product, current_user: User, db: AsyncSession) -> Non
 
     Ponto único de escopo (services/warehouse_scope). Impede ler/editar/duplicar/excluir PG de
     outro galpão pelo `product_id` direto — o `list` já é escopado, o acesso por id não era."""
-    if current_user.role == "admin":
+    if is_global(current_user):
         return
     from services.warehouse_scope import warehouse_ids_for
 

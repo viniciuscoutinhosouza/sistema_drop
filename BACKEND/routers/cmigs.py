@@ -48,6 +48,7 @@ from schemas.cmig import (
     NFeConfigUpdate,
 )
 from services import email_service, product_import
+from services.data_scope import is_conta, is_galpao, is_global
 
 router = APIRouter()
 
@@ -201,11 +202,11 @@ async def list_cmigs(
     # Por padrão só CMIGs ativas (todos os dropdowns seletores). A tela de gestão
     # passa include_inactive=true para ver/gerenciar as inativas também.
     base = select(CMIG) if include_inactive else select(CMIG).where(CMIG.is_active == True)  # noqa: E712
-    if current_user.role == "admin":
+    if is_global(current_user):
         result = await db.execute(base)
-    elif current_user.role in ("ugo", "go"):
+    elif is_galpao(current_user):
         result = await db.execute(base.where(CMIG.warehouse_id == current_user.warehouse_id))
-    elif current_user.role == "ac":
+    elif is_conta(current_user):
         subq = select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == current_user.id)
         result = await db.execute(base.where(CMIG.id.in_(subq)))
     else:
@@ -215,7 +216,7 @@ async def list_cmigs(
 
     # Carrega is_owner por CMIG para o usuário corrente
     owned_ids: set[int] = set()
-    if cmigs_list and current_user.role == "ac":
+    if cmigs_list and is_conta(current_user):
         ids = [c.id for c in cmigs_list]
         owned = await db.execute(
             select(CMIGAdministrator.cmig_id).where(
@@ -252,7 +253,7 @@ async def list_cmigs(
             "eship_active": bool(getattr(c, "eship_active", 0)),
             "eship_configured": bool(c.eship_base_url and c.eship_api_key),
             # is_owner: AC dono → flag em CMIGAdministrator; admin → sempre True (bypass total)
-            "is_owner": current_user.role == "admin" or c.id in owned_ids,
+            "is_owner": is_global(current_user) or c.id in owned_ids,
         }
         for c in cmigs_list
     ]
@@ -264,7 +265,7 @@ async def create_cmig(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role not in ("ac", "admin"):
+    if not (is_conta(current_user) or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Apenas AC pode criar CMIG")
 
     if body.cnpj:
@@ -340,7 +341,7 @@ async def update_cmig(
             (cmig.cpf or "").strip()
         )
         # Alterar o TIPO fiscal é tão sensível quanto criar → exige AC/admin.
-        if type_changed and current_user.role not in ("ac", "admin"):
+        if type_changed and not (is_conta(current_user) or is_global(current_user)):
             raise HTTPException(
                 status_code=403,
                 detail="Apenas AC ou admin podem alterar o tipo fiscal (CPF/CNPJ) da CMIG",
@@ -449,7 +450,7 @@ async def update_eship_config(
     """Atualiza a config eShip da CMIG. A apikey só é alterada se vier preenchida."""
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
-    if current_user.role not in ("ac", "admin"):
+    if not (is_conta(current_user) or is_global(current_user)):
         raise HTTPException(status_code=403, detail="Apenas AC ou admin podem editar a integração eShip")
 
     if "eship_base_url" in body:
@@ -816,11 +817,6 @@ async def cmig_import(
 
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
-    # Mesmas travas do create_cmig_product (papel legado ugo não cria CMIG).
-    if current_user.role == "ugo":
-        raise HTTPException(
-            status_code=403, detail="Este papel não pode criar Produtos CMIG. Use importação de PG."
-        )
     target_wh = cmig.warehouse_id
 
     data = await file.read(product_import.MAX_FILE_BYTES + 1)
@@ -956,15 +952,6 @@ async def create_cmig_product(
 ):
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
-
-    # Guard legado do antigo papel `ugo` (aposentado na unificação Galpão): o Galpão
-    # unificado usa o papel `go`, que MANTÉM a capacidade de criar Produtos CMIG do seu
-    # galpão (escopo garantido por _check_cmig_access acima). Não converter para `go` aqui —
-    # bloquearia a capacidade canônica. Mantido apenas por segurança/rollback.
-    if current_user.role == "ugo":
-        raise HTTPException(
-            status_code=403, detail="Este papel não pode criar Produtos CMIG. Use importação de PG."
-        )
 
     dup = await db.execute(
         select(CMIGProduct).where(
@@ -1565,7 +1552,7 @@ async def import_cmig_product_to_pg(
     """O Galpão importa um Produto CMIG para o PG do seu Galpão (um a um)."""
     import json as _json_imp
 
-    if current_user.role not in ("ugo", "admin", "go"):
+    if not (is_galpao(current_user) or is_global(current_user)):
         raise HTTPException(
             status_code=403, detail="Apenas o Galpão pode importar Produtos CMIG para o PG"
         )
@@ -1714,7 +1701,7 @@ async def sync_pg_from_cmig(
     current_user: User = Depends(get_current_user),
 ):
     """Atualiza os campos do PG vinculado com os dados atuais do Produto CMIG."""
-    if current_user.role not in ("ugo", "admin", "go"):
+    if not (is_galpao(current_user) or is_global(current_user)):
         raise HTTPException(
             status_code=403, detail="Apenas o Galpão pode sincronizar Produtos CMIG com PG"
         )

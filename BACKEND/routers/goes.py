@@ -11,6 +11,7 @@ from models.warehouse import Warehouse
 from routers.warehouse import _norm_cep, _norm_work_type
 from schemas.go import GOCreate, GOOut, GOUpdate
 from services.auth_service import hash_password
+from services.data_scope import is_global
 
 router = APIRouter()
 
@@ -159,7 +160,7 @@ async def get_go(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != "admin" and current_user.go_id != go_id:
+    if not is_global(current_user) and current_user.go_id != go_id:
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     result = await db.execute(
@@ -178,7 +179,7 @@ async def update_go(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != "admin" and current_user.go_id != go_id:
+    if not is_global(current_user) and current_user.go_id != go_id:
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     result = await db.execute(
@@ -221,7 +222,7 @@ async def list_go_warehouses(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != "admin" and current_user.go_id != go_id:
+    if not is_global(current_user) and current_user.go_id != go_id:
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     result = await db.execute(select(Warehouse).where(Warehouse.go_id == go_id))

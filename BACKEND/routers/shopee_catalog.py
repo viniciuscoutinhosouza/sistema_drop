@@ -19,6 +19,7 @@ from dependencies import get_current_user
 from models.integration import MarketplaceAccount
 from models.user import AccountAdministrator, User
 from services import shopee_service
+from services.data_scope import is_global
 from services.shopee_auth import get_valid_shopee_token
 
 router = APIRouter()
@@ -162,7 +163,7 @@ def _normalize_attr(attr: dict) -> dict:
 def _owned_shopee_filter(user: User):
     """Filtro de posse p/ contas Shopee acessíveis ao usuário (admin vê todas)."""
     conds = [MarketplaceAccount.platform == "shopee", MarketplaceAccount.is_active == True]  # noqa: E712
-    if user.role != "admin":
+    if not is_global(user):
         conds.append(or_(
             MarketplaceAccount.owner_id == user.id,
             MarketplaceAccount.id.in_(
@@ -181,7 +182,7 @@ async def _shopee_account(account_id: int, user: User, db: AsyncSession):
         raise HTTPException(status_code=404, detail="Conta não encontrada")
     if acc.platform != "shopee":
         raise HTTPException(status_code=400, detail="Conta não é Shopee")
-    if user.role != "admin" and acc.owner_id != user.id:
+    if not is_global(user) and acc.owner_id != user.id:
         adm = (await db.execute(
             select(AccountAdministrator).where(
                 AccountAdministrator.account_id == account_id,
