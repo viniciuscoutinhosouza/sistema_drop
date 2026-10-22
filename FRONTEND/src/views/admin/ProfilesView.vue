@@ -137,6 +137,17 @@
                 <small class="text-muted">Modo de escopo de dados (galpão/CMIG). O que o perfil <em>faz</em> vem das permissões de ação abaixo.</small>
               </div>
             </div>
+            <div class="col-md-4" v-if="modal.form.base_role === 'ac'">
+              <div class="form-group">
+                <label class="font-weight-bold">Visibilidade de PG (Conta)</label>
+                <select v-model="modal.form.conta_pg_scope" class="form-control">
+                  <option value="posse">Por posse (CMIGs que é dono)</option>
+                  <option value="administracao">Por administração (CMIGs que administra)</option>
+                  <option value="nenhum">Não vê PG</option>
+                </select>
+                <small class="text-muted">Base dos galpões cujo PG o AC enxerga. CMIG é sempre por administração.</small>
+              </div>
+            </div>
           </div>
 
           <!-- Seleção de menus -->
@@ -257,7 +268,7 @@ const modal = reactive({
   editProfile: null,
   saving: false,
   error: '',
-  form: { name: '', label: '', base_role: 'ac', menu_keys: [], action_keys: [] },
+  form: { name: '', label: '', base_role: 'ac', conta_pg_scope: 'posse', menu_keys: [], action_keys: [] },
 })
 
 // ── Agrupamento do catálogo por seção ────────────────────────────────────────
@@ -347,6 +358,7 @@ function openEdit(profile) {
     name: profile.name,
     label: profile.label,
     base_role: profile.base_role,
+    conta_pg_scope: profile.conta_pg_scope || 'posse',
     menu_keys: [...profile.menu_keys],
     action_keys: [...(profile.action_keys || [])],
   }
@@ -380,6 +392,7 @@ async function saveProfile() {
       await api.put(`/profiles/${modal.editProfile.id}`, {
         label: modal.form.label,
         base_role: modal.form.base_role,
+        conta_pg_scope: modal.form.conta_pg_scope,
         menu_keys: modal.form.menu_keys,
         action_keys: modal.form.action_keys,
       })

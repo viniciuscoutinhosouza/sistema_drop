@@ -1,6 +1,6 @@
 # ADR-0035 — Perfil único: eliminar `users.role` e mover o escopo de dados para o Perfil de Acesso
 
-**Status:** Em implementação (Fase 1 entregue — 2026-10-22)
+**Status:** Em implementação (Fases 1, 2a-2d entregues — 2026-10-22)
 **Emenda/continua:** [ADR-0025](ADR-0025-rbac-permissoes-acao-editaveis.md) (permissões de ação editáveis), [ADR-0026](ADR-0026-papel-galpao-unificado.md) (papel único "Galpão")
 
 ## Contexto
@@ -22,7 +22,12 @@ A ADR-0025 já moveu as **ações** (os `require_role` → `require_permission`)
 
 ### Plano faseado
 - **Fase 1 (entregue):** SSOT do escopo em `services/data_scope.py` (`scope_mode`, `warehouse_scope`, `accessible_cmig_ids` = tríade canônica admin/galpão/ac, `administered_cmig_ids`). Repontados os sites 1:1 equivalentes (eShip `_accessible_cmig_ids`, traceability `_scope`, inventories `_ac_cmig_ids`). **Migration 156**: backfill de `profile_id` em todos os usuários (materializa o fallback atual → zero-regressão). `scope_mode` ainda lê `user.role` — é o **único ponto** que a Fase 3 repontará para o Perfil de Acesso. O Atendimento (`atendimento_access`) **não** foi tocado: sua política (AC+admin-only, galpão=vazio) é distinta da tríade.
-- **Fase 2:** migrar as ~150 leituras `user.role ==` (escopo) para `data_scope.scope_mode(...)`/helpers; migrar os ~25 gates de ação inline e os 17 `require_role` do eShip para `require_permission` (novas chaves eShip); remover `role` do JWT; front: `meta.role`→menuKey/permissão, botões por permissão, getters na store.
+- **Fase 2 (em andamento):** migrar as ~150 leituras `user.role ==` (escopo) para `data_scope`/helpers; migrar os gates de ação + os 17 `require_role` do eShip para `require_permission`; remover `role` do JWT; front: `meta.role`→menuKey/permissão, botões por permissão, getters na store. Entregues:
+  - **2a:** `data_scope.assert_cmig_access` (ponto único do check de acesso à CMIG; `cmigs._check_cmig_access` e `eship._assert_cmig_access` delegam); `require_warehouse_scope` via `is_global/is_galpao`.
+  - **2b:** people/invoices/financial/fiscal_config — gates `_check_cmig_access` delegam a `assert_cmig_access`; `_accessible_cmig_ids` delegam ao SSOT (alinhados ao fail-closed; verificado 0 usuário/CMIG com warehouse nulo).
+  - **2c:** orders.py (zero `role`) + stock.py — dispatch de escopo via `is_global/is_galpao/is_conta`; gates de ação de stock ficam p/ 2e.
+  - **2d:** **escopo de PG do AC configurável por perfil** — `UserProfile.conta_pg_scope` (migration 157; `posse`=owner_ac_id/padrão | `administracao`=cmig_administrators | `nenhum`), lido no ponto único `services/warehouse_scope.warehouse_ids_for`; seletor na tela de Perfis. CMIG segue sempre por administração (decisão do dono). Default `posse` = zero-regressão. As ações `require_owner` (editar config fiscal, gerenciar colaboradores) viram permissões de ação no **2e**.
+  - **Pendente:** 2e (gates de ação + eShip), 2f (frontend rotas/botões/store), 2g (JWT).
 - **Fase 3:** `DROP COLUMN users.role`; `scope_mode` passa a ler do Perfil de Acesso; remover os fallbacks por `base_role`; `profile_id` NOT NULL; UI renomeia "Papel base (API)"→"Escopo de dados".
 - **Fase 4:** matriz de testes de isolamento (global/galpão/conta vê só o próprio dado em todo endpoint) + auditoria de segurança.
 

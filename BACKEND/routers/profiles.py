@@ -75,6 +75,7 @@ def _serialize_profile(p: UserProfile) -> dict:
         "name": p.name,
         "label": p.label,
         "base_role": p.base_role,
+        "conta_pg_scope": getattr(p, "conta_pg_scope", "posse") or "posse",
         "is_system": bool(p.is_system),
         "is_active": bool(p.is_active),
         "menu_keys": sorted([m.menu_key for m in (p.menu_permissions or [])]),
@@ -150,7 +151,17 @@ async def create_profile(
     else:
         action_keys = default_keys_for_base_role(base_role)
 
-    profile = UserProfile(name=name, label=label, base_role=base_role, is_system=0, is_active=1)
+    # Base de visibilidade de PG do AC (modo CONTA) — só relevante p/ base_role 'ac' (ADR-0035 2d).
+    pg_scope = (body.get("conta_pg_scope") or "posse").strip()
+    if pg_scope not in ("posse", "administracao", "nenhum"):
+        raise HTTPException(
+            status_code=422, detail="conta_pg_scope deve ser: posse, administracao ou nenhum"
+        )
+
+    profile = UserProfile(
+        name=name, label=label, base_role=base_role, conta_pg_scope=pg_scope,
+        is_system=0, is_active=1,
+    )
     db.add(profile)
     await db.flush()
 
@@ -189,6 +200,14 @@ async def update_profile(
         if new_role == "admin" and current_user.role != "admin":
             raise HTTPException(status_code=403, detail="Somente um admin pode conceder escopo admin a um perfil")
         profile.base_role = new_role
+
+    if "conta_pg_scope" in body:
+        pg_scope = (body["conta_pg_scope"] or "posse").strip()
+        if pg_scope not in ("posse", "administracao", "nenhum"):
+            raise HTTPException(
+                status_code=422, detail="conta_pg_scope deve ser: posse, administracao ou nenhum"
+            )
+        profile.conta_pg_scope = pg_scope
 
     if "is_active" in body:
         profile.is_active = 1 if body["is_active"] else 0

@@ -20,6 +20,9 @@ class UserProfile(Base):
     base_role = Column(String(20), nullable=False)   # admin | ac | ugo | go
     is_system = Column(Integer, nullable=False, default=0)
     is_active = Column(Integer, nullable=False, default=1)
+    # Base de visibilidade de PG do AC (modo CONTA), configurável por perfil (ADR-0035 Fase 2d):
+    # 'posse' (owner_ac_id — padrão/atual) | 'administracao' (cmig_administrators) | 'nenhum'.
+    conta_pg_scope = Column(String(20), nullable=False, server_default=text("'posse'"))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
 
     menu_permissions = relationship(
