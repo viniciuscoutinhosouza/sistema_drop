@@ -99,3 +99,92 @@ async def test_accessible_ac_administradas():
 async def test_administered_cmig_ids():
     db = _FakeDB([1, 2, 3])
     assert await ds.administered_cmig_ids(_user("ac"), db) == {1, 2, 3}
+
+
+# ─── assert_cmig_access ─────────────────────────────────────────────────────
+
+from fastapi import HTTPException  # noqa: E402
+
+
+class _ResultScalar:
+    def __init__(self, obj):
+        self._obj = obj
+
+    def scalar_one_or_none(self):
+        return self._obj
+
+
+class _FakeDBScalar:
+    def __init__(self, obj):
+        self._obj = obj
+        self.calls = 0
+
+    async def execute(self, *a, **k):
+        self.calls += 1
+        return _ResultScalar(self._obj)
+
+
+def _cmig(warehouse_id=5, cid=1):
+    return types.SimpleNamespace(id=cid, warehouse_id=warehouse_id)
+
+
+@pytest.mark.asyncio
+async def test_assert_admin_libera_sem_query():
+    db = _FakeDBScalar(None)
+    await ds.assert_cmig_access(_cmig(), _user("admin"), db)  # não levanta
+    assert db.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_assert_galpao_mesmo_warehouse_libera():
+    db = _FakeDBScalar(None)
+    await ds.assert_cmig_access(_cmig(warehouse_id=5), _user("go", warehouse_id=5), db)
+
+
+@pytest.mark.asyncio
+async def test_assert_galpao_outro_warehouse_403():
+    with pytest.raises(HTTPException) as e:
+        await ds.assert_cmig_access(_cmig(warehouse_id=9), _user("go", warehouse_id=5), _FakeDBScalar(None))
+    assert e.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_assert_galpao_sem_warehouse_403_fail_closed():
+    with pytest.raises(HTTPException):
+        await ds.assert_cmig_access(_cmig(warehouse_id=None), _user("go", warehouse_id=None), _FakeDBScalar(None))
+
+
+@pytest.mark.asyncio
+async def test_assert_galpao_require_owner_403():
+    # galpão nunca é "AC proprietário"
+    with pytest.raises(HTTPException):
+        await ds.assert_cmig_access(_cmig(warehouse_id=5), _user("go", warehouse_id=5), _FakeDBScalar(None),
+                                    require_owner=True)
+
+
+@pytest.mark.asyncio
+async def test_assert_ac_administrador_libera():
+    db = _FakeDBScalar(types.SimpleNamespace(is_owner=False))
+    await ds.assert_cmig_access(_cmig(), _user("ac"), db)
+
+
+@pytest.mark.asyncio
+async def test_assert_ac_sem_vinculo_403():
+    with pytest.raises(HTTPException):
+        await ds.assert_cmig_access(_cmig(), _user("ac"), _FakeDBScalar(None))
+
+
+@pytest.mark.asyncio
+async def test_assert_ac_require_owner():
+    # owner passa; não-owner com require_owner → 403
+    await ds.assert_cmig_access(_cmig(), _user("ac"), _FakeDBScalar(types.SimpleNamespace(is_owner=True)),
+                                require_owner=True)
+    with pytest.raises(HTTPException):
+        await ds.assert_cmig_access(_cmig(), _user("ac"), _FakeDBScalar(types.SimpleNamespace(is_owner=False)),
+                                    require_owner=True)
+
+
+@pytest.mark.asyncio
+async def test_assert_role_desconhecido_403():
+    with pytest.raises(HTTPException):
+        await ds.assert_cmig_access(_cmig(), _user(""), _FakeDBScalar(None))

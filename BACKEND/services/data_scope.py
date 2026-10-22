@@ -17,7 +17,8 @@ NÃO cobre a política do Atendimento (`services/atendimento_access.py`), que é
 """
 from __future__ import annotations
 
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.cmig import CMIG, CMIGAdministrator
@@ -86,3 +87,44 @@ async def accessible_cmig_ids(user: User, db: AsyncSession) -> set[int] | None:
         return set(rows)
     # CONTA (ac) e qualquer outro modo não-global → CMIGs administradas
     return await administered_cmig_ids(user, db)
+
+
+async def assert_cmig_access(
+    cmig: CMIG, user: User, db: AsyncSession, *, require_owner: bool = False
+) -> None:
+    """Valida se o usuário pode acessar a CMIG (ponto ÚNICO — era copiado em `cmigs` e `eship`).
+
+    - GLOBAL → libera.
+    - GALPAO → `cmig.warehouse_id == user.warehouse_id` (fail-closed se sem warehouse);
+      `require_owner` nunca vale p/ galpão (galpão não é "AC proprietário") → 403.
+    - CONTA  → precisa de linha em `cmig_administrators`; `require_owner` exige `is_owner`.
+    - outro  → 403.
+    """
+    if is_global(user):
+        return
+    if is_galpao(user):
+        # Fail-closed: Galpão sem warehouse_id (ou CMIG órfã) NÃO concede acesso — senão
+        # None != None seria False e liberaria CMIG sem galpão (vazamento entre galpões).
+        if not user.warehouse_id or cmig.warehouse_id != user.warehouse_id:
+            raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
+        if require_owner:
+            raise HTTPException(
+                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
+            )
+        return
+    if is_conta(user):
+        adm = (
+            await db.execute(
+                select(CMIGAdministrator).where(
+                    and_(CMIGAdministrator.user_id == user.id, CMIGAdministrator.cmig_id == cmig.id)
+                )
+            )
+        ).scalar_one_or_none()
+        if not adm:
+            raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
+        if require_owner and not adm.is_owner:
+            raise HTTPException(
+                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
+            )
+        return
+    raise HTTPException(status_code=403, detail="Permissão insuficiente")

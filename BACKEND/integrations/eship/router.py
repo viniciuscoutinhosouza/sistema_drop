@@ -5,13 +5,13 @@
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import require_role
-from models.cmig import CMIG, CMIGAdministrator
+from models.cmig import CMIG
 from models.order import Order
 from models.user import User
 from models.warehouse import Warehouse
@@ -26,28 +26,10 @@ router = APIRouter()
 
 async def _assert_cmig_access(db: AsyncSession, cmig: CMIG, user: User) -> None:
     """Garante que o usuário pode acessar a CMIG (mesmo critério de routers.cmigs).
+    Ponto único: `services/data_scope.assert_cmig_access`."""
+    from services.data_scope import assert_cmig_access
 
-    admin → tudo; Galpão (go/ugo) → CMIG do seu galpão; ac → CMIG que administra.
-    """
-    if user.role == "admin":
-        return
-    if user.role in ("ugo", "go"):
-        # warehouse_id nulo (Galpão sem galpão / CMIG órfã) NÃO concede acesso.
-        if not user.warehouse_id or cmig.warehouse_id != user.warehouse_id:
-            raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
-        return
-    if user.role == "ac":
-        adm = (
-            await db.execute(
-                select(CMIGAdministrator).where(
-                    and_(CMIGAdministrator.user_id == user.id, CMIGAdministrator.cmig_id == cmig.id)
-                )
-            )
-        ).scalar_one_or_none()
-        if not adm:
-            raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
-        return
-    raise HTTPException(status_code=403, detail="Permissão insuficiente")
+    await assert_cmig_access(cmig, user, db)
 
 
 async def _accessible_cmig_ids(db: AsyncSession, user: User) -> set[int] | None:

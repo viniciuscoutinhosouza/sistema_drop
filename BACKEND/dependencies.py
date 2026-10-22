@@ -185,9 +185,11 @@ async def require_warehouse_scope(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> bool:
-    """Valida se o UGO pertence ao galpão solicitado."""
-    if current_user.role == "admin":
+    """Valida se o usuário (Galpão) pertence ao galpão solicitado. Escopo via `data_scope`."""
+    from services.data_scope import is_galpao, is_global
+
+    if is_global(current_user):
         return True
-    if current_user.role in ("ugo", "go") and current_user.warehouse_id == warehouse_id:
+    if is_galpao(current_user) and current_user.warehouse_id == warehouse_id:
         return True
     raise HTTPException(status_code=403, detail="Acesso negado a este Galpão")

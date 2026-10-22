@@ -64,34 +64,10 @@ async def _get_cmig_or_404(cmig_id: int, db: AsyncSession) -> CMIG:
 
 
 async def _check_cmig_access(cmig: CMIG, user: User, db: AsyncSession, require_owner: bool = False):
-    """Valida se o usuário pode acessar a CMIG."""
-    if user.role == "admin":
-        return
-    if user.role in ("ugo", "go"):
-        # Fail-closed: Galpão sem warehouse_id (ou CMIG órfã) NÃO concede acesso — senão
-        # None != None seria False e liberaria CMIG sem galpão (vazamento entre galpões).
-        if not user.warehouse_id or cmig.warehouse_id != user.warehouse_id:
-            raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
-        if require_owner:
-            raise HTTPException(
-                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
-            )
-        return
-    if user.role == "ac":
-        result = await db.execute(
-            select(CMIGAdministrator).where(
-                and_(CMIGAdministrator.user_id == user.id, CMIGAdministrator.cmig_id == cmig.id)
-            )
-        )
-        admin = result.scalar_one_or_none()
-        if not admin:
-            raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
-        if require_owner and not admin.is_owner:
-            raise HTTPException(
-                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
-            )
-        return
-    raise HTTPException(status_code=403, detail="Permissão insuficiente")
+    """Valida se o usuário pode acessar a CMIG. Ponto único: `services/data_scope`."""
+    from services.data_scope import assert_cmig_access
+
+    await assert_cmig_access(cmig, user, db, require_owner=require_owner)
 
 
 # ── Helpers de Produto Composto ────────────────────────────────────────────────
