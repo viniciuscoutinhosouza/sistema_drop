@@ -21,6 +21,7 @@ from models.cmig import CMIG, CMIGProduct
 from models.inventory import Inventory, InventoryItem
 from models.product import CatalogProduct
 from models.user import User
+from services.data_scope import is_conta, is_galpao
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -85,14 +86,14 @@ async def list_inventories(
     q = select(Inventory).order_by(Inventory.number.desc())
     if status:
         q = q.where(Inventory.status == status)
-    if current_user.role == "ac":
+    if is_conta(current_user):
         cmig_ids = await _ac_cmig_ids(current_user, db)
         if not cmig_ids:
             return []
         q = q.where(
             Inventory.catalog_type.in_(("cmig", "full")), Inventory.cmig_id.in_(cmig_ids)
         )
-    elif current_user.role == "go":
+    elif is_galpao(current_user):
         # GO isolado por galpão: inventários do próprio galpão (por warehouse_id ou pela CMIG dele)
         wh_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
         q = q.where(
@@ -166,7 +167,7 @@ async def create_inventory(
         cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
         if not cmig:
             raise HTTPException(status_code=404, detail="CMIG não encontrada")
-        if current_user.role == "ac" and cmig_id not in await _ac_cmig_ids(current_user, db):
+        if is_conta(current_user) and cmig_id not in await _ac_cmig_ids(current_user, db):
             raise HTTPException(status_code=403, detail="CMIG fora do seu escopo")
         warehouse_id = cmig.warehouse_id
     else:

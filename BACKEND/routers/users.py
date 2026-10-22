@@ -12,6 +12,7 @@ from models.user import AccessPlan, ACProfile, User, UserInvite
 from models.warehouse import Warehouse
 from schemas.user import AddressSchema, PreferencesUpdate, ProfileOut, ProfileUpdate
 from services import image_upload
+from services.data_scope import is_conta, is_galpao, is_global
 from services.viacep_service import fetch_address
 
 _AVATAR_DIR = "static/uploads/user-avatars"
@@ -254,10 +255,10 @@ async def list_users(
     usuários (go/ugo/ac) do PRÓPRIO galpão (isolamento por warehouse_id); Admin lista todos."""
     query = select(User).where(User.is_active == True)
 
-    if current_user.role == "ac":
+    if is_conta(current_user):
         # AC só pode listar outros ACs (para selecionar colaboradores), excluindo a si mesmo
         query = query.where(User.role == "ac", User.id != current_user.id)
-    elif current_user.role in ("go", "ugo"):
+    elif is_galpao(current_user):
         # Galpão unificado: lista apenas usuários do seu próprio galpão (nunca de outro galpão).
         query = query.where(
             User.warehouse_id == current_user.warehouse_id,
@@ -355,7 +356,7 @@ async def update_user(
             setattr(user, field, value)
 
     # Vincula perfil de acesso se informado (apenas admin)
-    if "profile_id" in body and current_user.role == "admin":
+    if "profile_id" in body and is_global(current_user):
         new_pid = body["profile_id"]
         if new_pid is not None:
             from models.user import UserProfile

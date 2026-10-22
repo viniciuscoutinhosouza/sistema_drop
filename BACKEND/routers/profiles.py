@@ -13,6 +13,7 @@ from services.action_permissions import (
     VALID_ACTION_KEYS,
     default_keys_for_base_role,
 )
+from services.data_scope import is_global
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -130,7 +131,7 @@ async def create_profile(
     if base_role not in ("admin", "ac", "ugo", "go"):
         raise HTTPException(status_code=422, detail="base_role deve ser: admin, ac, ugo ou go")
     # Escopo admin só pode ser concedido por um admin de verdade (perfis_gerenciar é delegável).
-    if base_role == "admin" and current_user.role != "admin":
+    if base_role == "admin" and not is_global(current_user):
         raise HTTPException(status_code=403, detail="Somente um admin pode criar perfil com escopo admin")
 
     existing = await db.execute(select(UserProfile).where(UserProfile.name == name))
@@ -197,7 +198,7 @@ async def update_profile(
         if new_role not in ("admin", "ac", "ugo", "go"):
             raise HTTPException(status_code=422, detail="base_role deve ser: admin, ac, ugo ou go")
         # Escopo admin só pode ser concedido por um admin de verdade.
-        if new_role == "admin" and current_user.role != "admin":
+        if new_role == "admin" and not is_global(current_user):
             raise HTTPException(status_code=403, detail="Somente um admin pode conceder escopo admin a um perfil")
         profile.base_role = new_role
 

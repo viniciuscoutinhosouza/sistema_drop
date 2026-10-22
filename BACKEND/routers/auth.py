@@ -27,6 +27,7 @@ from services.auth_service import (
     verify_password,
     verify_token,
 )
+from services.data_scope import is_galpao, is_global
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -158,7 +159,7 @@ async def register_ugo(
     # O Galpão dono só cria operadores em seus próprios Galpões; o operador herda o go_id do dono
     # (necessário para o isolamento/gestão por galpão). NÃO gera registro em `goes` (não é dono).
     warehouse_id = body.warehouse_id
-    go_id = current_user.go_id if current_user.role == "go" else None
+    go_id = current_user.go_id if is_galpao(current_user) else None
 
     user = User(
         email=body.email,
@@ -219,7 +220,7 @@ async def register_user(
 
     # O Galpão pode criar operadores do seu galpão (papel `go`), mas NÃO pode escalar para admin.
     # (GO-dono não é mais um papel — é o registro em `goes` + permissões de perfil; ver goes.py.)
-    if current_user.role != "admin" and role == "admin":
+    if not is_global(current_user) and role == "admin":
         raise HTTPException(
             status_code=403, detail="Sem permissão para criar usuários com este perfil"
         )
@@ -237,7 +238,7 @@ async def register_user(
         whatsapp=body.whatsapp,
         role=role,
         warehouse_id=body.warehouse_id,
-        go_id=current_user.go_id if current_user.role == "go" else None,
+        go_id=current_user.go_id if is_galpao(current_user) else None,
         profile_id=profile_id,
         cpf_cnpj=cpf_cnpj,
     )

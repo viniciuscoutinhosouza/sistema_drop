@@ -13,6 +13,7 @@ from models.user import User
 from schemas.dre import DREEntryIn, DREEntryUpdate, DRESyncRequest
 from schemas.financial import BalanceOut, PIXDepositRequest
 from services import dre_service
+from services.data_scope import is_galpao, is_global
 from services.financial_service import credit_balance, get_balance, get_transactions
 
 router = APIRouter()
@@ -100,9 +101,9 @@ async def list_dre_cmigs(
     db: AsyncSession = Depends(get_db),
 ):
     """CMIGs visíveis ao usuário para o seletor da DRE."""
-    if current_user.role == "admin":
+    if is_global(current_user):
         result = await db.execute(select(CMIG).where(CMIG.is_active == True))  # noqa: E712
-    elif current_user.role in ("ugo", "go"):
+    elif is_galpao(current_user):
         result = await db.execute(
             select(CMIG).where(CMIG.warehouse_id == current_user.warehouse_id)
         )
