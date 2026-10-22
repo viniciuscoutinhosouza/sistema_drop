@@ -39,10 +39,10 @@ async def _ac_cmig_ids(user: User, db: AsyncSession) -> list[int]:
 
 async def _check_view_scope(inv: Inventory, user: User, db: AsyncSession) -> None:
     """AC só enxerga inventários das CMIGs que administra (cmig e full); GO, só do seu galpão."""
-    if user.role == "ac":
+    if is_conta(user):
         if inv.catalog_type not in ("cmig", "full") or inv.cmig_id not in await _ac_cmig_ids(user, db):
             raise HTTPException(status_code=403, detail="Inventário fora do seu escopo")
-    elif user.role == "go":
+    elif is_galpao(user):
         ok = inv.warehouse_id == user.warehouse_id
         if not ok and inv.cmig_id:
             cmig_wh = (

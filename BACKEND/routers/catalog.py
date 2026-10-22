@@ -8,6 +8,7 @@ from dependencies import get_current_user, require_menu_permission
 from models.cmig import CMIGProduct
 from models.product import CatalogProduct, CatalogProductImage, Category, ProductListing
 from models.user import User
+from services.data_scope import is_global
 from services.warehouse_scope import sellable_pg_warehouse_ids, warehouse_ids_for
 
 router = APIRouter()
@@ -170,7 +171,7 @@ async def list_catalog(
 # Isolamento de categorias por GALPÃO (migration 145): admin gerencia/vê todas; demais só os galpões
 # a que pertencem (ADR-0026). Fail-closed: quem não resolve nenhum galpão não vê nem cria/edita.
 def _is_admin(user: User) -> bool:
-    return user.role == "admin"
+    return is_global(user)
 
 
 async def _load_category(category_id: int, db: AsyncSession) -> Category:

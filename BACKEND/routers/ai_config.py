@@ -16,6 +16,7 @@ from dependencies import get_current_user, require_permission
 from models.cmig import CMIG, CMIGAdministrator
 from models.messages import AIConfig, CMIGAIConfig
 from models.user import User
+from services.data_scope import is_global
 
 router = APIRouter(prefix="/api/v1/ai-config", tags=["ai-config"])
 logger = logging.getLogger(__name__)
@@ -195,7 +196,7 @@ async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession):
     cmig = result.scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada.")
-    if user.role == "admin":
+    if is_global(user):
         return cmig
     result2 = await db.execute(
         select(CMIGAdministrator).where(

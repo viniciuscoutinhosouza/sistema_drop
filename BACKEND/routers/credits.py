@@ -19,6 +19,7 @@ from models.user import User
 from models.warehouse import Warehouse
 from routers.warehouse import _can_access_warehouse, _owned_go_id
 from services import credit_service
+from services.data_scope import is_global
 
 router = APIRouter()
 
@@ -38,7 +39,7 @@ def _serialize(e) -> dict:
 
 async def _warehouse_side(user: User, warehouse_id: int, db: AsyncSession) -> bool:
     """True se o usuário é admin ou tem acesso ao Galpão (operador/dono) — ADR-0026."""
-    if user.role == "admin":
+    if is_global(user):
         return True
     w = (
         await db.execute(select(Warehouse).where(Warehouse.id == warehouse_id))
