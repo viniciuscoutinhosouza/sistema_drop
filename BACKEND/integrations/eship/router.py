@@ -51,22 +51,11 @@ async def _assert_cmig_access(db: AsyncSession, cmig: CMIG, user: User) -> None:
 
 
 async def _accessible_cmig_ids(db: AsyncSession, user: User) -> set[int] | None:
-    """IDs de CMIG que o usuário pode ver. None = todas (admin)."""
-    if user.role == "admin":
-        return None
-    if user.role in ("ugo", "go"):
-        if not user.warehouse_id:
-            return set()  # Galpão sem galpão não vê nenhuma CMIG
-        rows = (
-            await db.execute(select(CMIG.id).where(CMIG.warehouse_id == user.warehouse_id))
-        ).all()
-        return {r[0] for r in rows}
-    rows = (
-        await db.execute(
-            select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == user.id)
-        )
-    ).all()
-    return {r[0] for r in rows}
+    """IDs de CMIG que o usuário pode ver. None = todas (admin). Delega ao SSOT de escopo
+    (`services/data_scope`) — mesma tríade (admin / galpão-por-warehouse / ac-por-CMIG)."""
+    from services.data_scope import accessible_cmig_ids
+
+    return await accessible_cmig_ids(user, db)
 
 
 def _serialize(wh: Warehouse, cfg: EShipConfig | None) -> dict:

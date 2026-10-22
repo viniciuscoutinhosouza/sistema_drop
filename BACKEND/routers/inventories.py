@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import require_menu_permission
-from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
+from models.cmig import CMIG, CMIGProduct
 from models.inventory import Inventory, InventoryItem
 from models.product import CatalogProduct
 from models.user import User
@@ -30,12 +30,10 @@ router = APIRouter()
 
 
 async def _ac_cmig_ids(user: User, db: AsyncSession) -> list[int]:
-    rows = (
-        await db.execute(
-            select(CMIGAdministrator.cmig_id).where(CMIGAdministrator.user_id == user.id)
-        )
-    ).scalars().all()
-    return list(rows)
+    """CMIGs administradas pelo AC. Delega ao SSOT de escopo (`services/data_scope`)."""
+    from services.data_scope import administered_cmig_ids
+
+    return list(await administered_cmig_ids(user, db))
 
 
 async def _check_view_scope(inv: Inventory, user: User, db: AsyncSession) -> None:

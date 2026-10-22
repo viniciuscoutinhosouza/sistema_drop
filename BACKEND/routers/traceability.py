@@ -16,8 +16,10 @@ router = APIRouter()
 
 
 def _scope(user: User):
-    """Galpão do usuário para escopo; None só para admin (vê tudo)."""
-    return None if user.role == "admin" else user.warehouse_id
+    """Galpão do usuário para escopo; None só para admin (vê tudo). SSOT: data_scope."""
+    from services.data_scope import warehouse_scope
+
+    return warehouse_scope(user)
 
 
 @router.get("/lots")
