@@ -346,7 +346,7 @@ function openCreate() {
   modal.isEdit = false
   modal.editProfile = null
   modal.error = ''
-  modal.form = { name: '', label: '', base_role: 'ac', menu_keys: [], action_keys: [] }
+  modal.form = { name: '', label: '', base_role: 'ac', conta_pg_scope: 'posse', menu_keys: [], action_keys: [] }
   modal.show = true
 }
 
