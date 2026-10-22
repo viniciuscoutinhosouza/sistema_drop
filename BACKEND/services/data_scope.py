@@ -32,11 +32,13 @@ CONTA = "ac"
 def scope_mode(user: User) -> str:
     """Modo de escopo canônico do usuário.
 
-    Fonte ATUAL: `user.role` (que hoje é cópia de `UserProfile.base_role`). Na Fase 3 do plano,
-    quando `users.role` for removido, SÓ esta função muda (passa a ler do Perfil de Acesso) —
-    é o valor do desacoplamento: um único ponto a repontar.
+    Fonte (ADR-0035 Fase 3): o base_role do PERFIL DE ACESSO, carimbado por `get_current_user` em
+    `user._scope_base_role`. Fallback para `user.role` (a coluna legada, enquanto existir) — p/
+    objetos sem o carimbo (ex.: testes com namespace simples, ou Users de outras queries). Quando
+    `users.role` for removido, o perfil é a única fonte.
     """
-    r = (user.role or "").strip().lower()
+    base = getattr(user, "_scope_base_role", None) or getattr(user, "role", None)
+    r = (base or "").strip().lower()
     if r == "ugo":  # papel de galpão aposentado (ADR-0026) → Galpão
         return GALPAO
     return r

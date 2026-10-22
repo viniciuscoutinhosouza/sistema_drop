@@ -2,6 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from models.user import User, UserProfile
@@ -23,7 +24,9 @@ async def get_current_user(
         )
 
     user_id = payload.get("sub")
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    result = await db.execute(
+        select(User).options(selectinload(User.user_profile)).where(User.id == int(user_id))
+    )
     user = result.scalar_one_or_none()
 
     if not user or not user.is_active:
@@ -31,6 +34,12 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuário não encontrado ou inativo",
         )
+    # ADR-0035 Fase 3: o escopo de dados passa a derivar do PERFIL DE ACESSO. Carimbamos o
+    # base_role do perfil num atributo simples (fallback para a coluna `user.role` enquanto ela
+    # existe), p/ `data_scope.scope_mode` lê-lo sem disparar lazy-load em contexto async. Quando a
+    # coluna `users.role` for removida, só este fallback some — o escopo já vem do perfil.
+    up = user.user_profile
+    user._scope_base_role = (up.base_role if up is not None else None) or getattr(user, "role", None)
     return user
 
 
