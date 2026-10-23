@@ -71,6 +71,27 @@ def default_keys_for_base_role(base_role: str) -> list[str]:
     return [p["key"] for p in ACTION_PERMISSIONS if base_role in p["default_base_roles"]]
 
 
+async def system_profile_id_for(base_role: str, db) -> int | None:
+    """id do perfil-SISTEMA (is_system=1, is_active=1) do `base_role` — para ATRIBUIR na criação de
+    usuário (ADR-0035 Fase 3: o usuário nasce com Perfil de Acesso; `role` deriva dele). O mais
+    antigo (MIN id), espelhando o fallback de resolução. None se não houver perfil casável."""
+    from sqlalchemy import select
+
+    from models.user import UserProfile
+
+    return (
+        await db.execute(
+            select(UserProfile.id)
+            .where(
+                UserProfile.is_system == 1,
+                UserProfile.is_active == 1,
+                UserProfile.base_role == base_role,
+            )
+            .order_by(UserProfile.id)
+        )
+    ).scalars().first()
+
+
 def roles_for_keys(keys) -> set[str]:
     """União dos `default_base_roles` das chaves — fallback p/ usuário SEM perfil (legado)."""
     out: set[str] = set()

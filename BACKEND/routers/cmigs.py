@@ -531,6 +531,7 @@ async def list_collaborator_candidates(
     rows = (
         await db.execute(
             select(User)
+            .options(selectinload(User.user_profile))
             .where(User.role == "ac", User.is_active == True)  # noqa: E712
             .order_by(User.full_name)
         )
@@ -554,7 +555,7 @@ async def add_cmig_admin(
 
     # Valida o usuário: existe, é AC e está ativo (evita erro genérico de FK).
     target = (
-        await db.execute(select(User).where(User.id == body.user_id))
+        await db.execute(select(User).options(selectinload(User.user_profile)).where(User.id == body.user_id))
     ).scalar_one_or_none()
     if not target:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
@@ -600,7 +601,7 @@ async def invite_collaborator(
         raise HTTPException(status_code=422, detail="Informe um e-mail válido")
 
     existing_user = (
-        await db.execute(select(User).where(func.lower(User.email) == email))
+        await db.execute(select(User).options(selectinload(User.user_profile)).where(func.lower(User.email) == email))
     ).scalar_one_or_none()
     if existing_user:
         if existing_user.role == "ac" and existing_user.is_active:

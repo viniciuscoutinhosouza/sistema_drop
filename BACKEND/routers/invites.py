@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models.cmig import CMIG
 from models.user import User, UserInvite
+from services.action_permissions import system_profile_id_for
 from services.auth_service import hash_password
 
 router = APIRouter()
@@ -77,6 +78,7 @@ async def register_via_invite(token: str, body: dict, db: AsyncSession = Depends
         full_name=full_name,
         whatsapp=whatsapp,
         role="ac",
+        profile_id=await system_profile_id_for("ac", db),
         is_active=False,  # aguarda liberação do administrador geral
         warehouse_id=inviter.warehouse_id if inviter else None,
         go_id=inviter.go_id if inviter else None,

@@ -7,6 +7,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_permission
@@ -20,6 +21,7 @@ from schemas.auth import (
     RegisterUserRequest,
     TokenResponse,
 )
+from services.action_permissions import system_profile_id_for
 from services.auth_service import (
     create_access_token,
     create_refresh_token,
@@ -104,7 +106,9 @@ async def _resolve_user_menu_permissions(user: User, db: AsyncSession) -> tuple[
 @router.post("/login", response_model=TokenResponse)
 async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):
     _check_rate_limit(request.client.host if request.client else "unknown")
-    result = await db.execute(select(User).where(User.email == body.email))
+    result = await db.execute(
+        select(User).options(selectinload(User.user_profile)).where(User.email == body.email)
+    )
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(body.password, user.password_hash):
@@ -167,6 +171,7 @@ async def register_ugo(
         full_name=body.full_name,
         whatsapp=body.whatsapp,
         role="go",
+        profile_id=await system_profile_id_for("go", db),
         warehouse_id=warehouse_id,
         go_id=go_id,
     )
@@ -239,7 +244,7 @@ async def register_user(
         role=role,
         warehouse_id=body.warehouse_id,
         go_id=current_user.go_id if is_galpao(current_user) else None,
-        profile_id=profile_id,
+        profile_id=profile_id or await system_profile_id_for(role, db),
         cpf_cnpj=cpf_cnpj,
     )
     db.add(user)
@@ -307,6 +312,7 @@ async def register_ac(
         whatsapp=body.whatsapp,
         cpf_cnpj=body.cpf_cnpj,
         role="ac",
+        profile_id=await system_profile_id_for("ac", db),
         warehouse_id=current_user.warehouse_id,  # herda o galpão do UGO que cadastra
         go_id=current_user.go_id,
     )
@@ -366,7 +372,9 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
     if expires_at and expires_at < datetime.now(UTC):
         raise HTTPException(status_code=401, detail="Refresh token expirado")
 
-    result = await db.execute(select(User).where(User.id == db_token.user_id))
+    result = await db.execute(
+        select(User).options(selectinload(User.user_profile)).where(User.id == db_token.user_id)
+    )
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Usuário inativo")

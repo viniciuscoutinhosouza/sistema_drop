@@ -10,6 +10,7 @@ from models.user import User
 from models.warehouse import Warehouse
 from routers.warehouse import _norm_cep, _norm_work_type
 from schemas.go import GOCreate, GOOut, GOUpdate
+from services.action_permissions import system_profile_id_for
 from services.auth_service import hash_password
 from services.data_scope import is_global
 
@@ -102,6 +103,7 @@ async def create_go(
         email=body.user_email,
         password_hash=hash_password(body.password),
         role="go",
+        profile_id=await system_profile_id_for("go", db),
         full_name=body.full_name,
         whatsapp=body.user_whatsapp,
         is_active=True,

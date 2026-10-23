@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_menu_permission, require_permission
@@ -253,7 +254,7 @@ async def list_users(
 ):
     """Lista usuários. AC lista apenas outros ACs (exceto ele mesmo); Galpão (go/ugo) lista os
     usuários (go/ugo/ac) do PRÓPRIO galpão (isolamento por warehouse_id); Admin lista todos."""
-    query = select(User).where(User.is_active == True)
+    query = select(User).options(selectinload(User.user_profile)).where(User.is_active == True)
 
     if is_conta(current_user):
         # AC só pode listar outros ACs (para selecionar colaboradores), excluindo a si mesmo
@@ -292,7 +293,7 @@ async def get_user(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).options(selectinload(User.user_profile)).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
@@ -338,7 +339,7 @@ async def update_user(
     current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
     """Atualiza dados de um usuário (nome, whatsapp, warehouse_id, is_active)."""
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).options(selectinload(User.user_profile)).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
@@ -392,7 +393,7 @@ async def deactivate_user(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("config_usuarios")),
 ):
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).options(selectinload(User.user_profile)).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")

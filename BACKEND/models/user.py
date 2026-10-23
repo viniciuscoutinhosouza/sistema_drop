@@ -1,4 +1,16 @@
-from sqlalchemy import TIMESTAMP, Boolean, Column, Date, ForeignKey, Integer, Numeric, String, text
+from sqlalchemy import (
+    TIMESTAMP,
+    Boolean,
+    Column,
+    Date,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    select,
+    text,
+)
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship, selectinload  # noqa: F401 — re-exported for convenience
 
 from database import Base
@@ -70,7 +82,8 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     email = Column(String(255), nullable=False, unique=True)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False, default="ac")  # ugo | ac | admin | go
+    # ADR-0035 Fase 3: `role` DEIXOU de ser coluna — é derivado do Perfil de Acesso (base_role).
+    # Ver o hybrid `role` no fim da classe. A coluna users.role é removida pela migration 159.
     full_name = Column(String(255), nullable=False)
     whatsapp = Column(String(20))
     cpf_cnpj = Column(String(18), unique=True)
@@ -89,6 +102,41 @@ class User(Base):
 
     profile = relationship("ACProfile", back_populates="user", uselist=False)
     user_profile = relationship("UserProfile", back_populates="users", foreign_keys=[profile_id])
+
+    # ── role: derivado do Perfil de Acesso (ADR-0035 Fase 3) ──────────────────
+    @hybrid_property
+    def role(self):
+        """Papel/modo de escopo = base_role do Perfil de Acesso. NUNCA dispara lazy-load:
+        usa o carimbo de get_current_user; senão o perfil se já carregado; senão o valor
+        transitório setado no construtor; senão None."""
+        stamped = self.__dict__.get("_scope_base_role")
+        if stamped:
+            return stamped
+        from sqlalchemy import inspect as _sa_inspect
+
+        try:
+            unloaded = _sa_inspect(self).unloaded
+        except Exception:  # noqa: BLE001 — objeto transitório/avulso
+            unloaded = set()
+        if "user_profile" not in unloaded:
+            up = self.user_profile
+            if up is not None:
+                return up.base_role
+        return self.__dict__.get("_role_transient")
+
+    @role.setter
+    def role(self, value):
+        # Escritas legadas (`User(role=...)`, `user.role = ...`) NÃO quebram: guardam um valor
+        # transitório. O escopo REAL vem do Perfil (profile_id) — re-carimbado a cada request.
+        self.__dict__["_role_transient"] = value
+
+    @role.expression
+    def role(cls):
+        return (
+            select(UserProfile.base_role)
+            .where(UserProfile.id == cls.profile_id)
+            .scalar_subquery()
+        )
     refresh_tokens = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
