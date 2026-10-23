@@ -4446,3 +4446,20 @@ Não há flag booleana por anúncio. A tentativa de `PUT /items` com `shipping.t
 - Estoque dos CMIGProducts é atualizado mesmo sem transmissão à SEFAZ — útil para devoluções manuais, ajustes e controles internos.
 
 ---
+
+## 2026-10-22 — ADR-0035 Fase 3: eliminada a coluna `users.role` (PERFIL)
+
+Fim da classificação "PERFIL" (`users.role`): o papel/escopo passa a derivar exclusivamente do
+**Perfil de Acesso** (`UserProfile.base_role`).
+
+- `services/data_scope.scope_mode` repontado para o Perfil (carimbo `_scope_base_role` gravado por
+  `get_current_user` via `selectinload(user_profile)`).
+- `User.role` virou **hybrid_property** derivada do perfil (getter: carimbo→perfil→transiente;
+  setter no-op; expression=subquery). Criação de usuário atribui `profile_id`
+  (`system_profile_id_for`); login/refresh/listas/queries ganharam `selectinload(user_profile)`.
+- **Migration 159**: `DROP COLUMN users.role` (remove CHECK `CHK_USERS_ROLE`, NOT NULL e DEFAULT
+  `'dropshipper'` que passaram a bloquear a criação de usuário com a coluna desmapeada);
+  `profile_id` NOT NULL.
+- **Verificado em produção**: 17 usuários, 0 divergências role(hybrid)×profile.base_role; criação
+  (`role='go'`), `/me` (`role='ac'`) e login (`role='ac'`) retornam o role correto; health 200.
+- Commits: `d4b5559` (hybrid + prep) · `6dc4b0f` (migration 159). ADR-0035 atualizada.

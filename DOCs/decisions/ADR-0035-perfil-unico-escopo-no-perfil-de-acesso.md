@@ -1,6 +1,6 @@
 # ADR-0035 — Perfil único: eliminar `users.role` e mover o escopo de dados para o Perfil de Acesso
 
-**Status:** Em implementação (Fases 1, 2a-2d entregues — 2026-10-22)
+**Status:** Em implementação (Fases 1, 2a-2d e **3 entregues** — coluna `users.role` removida em produção, 2026-10-22). Pendentes: 2e (gates de ação + eShip), 2f (frontend), 4 (matriz de isolamento)
 **Emenda/continua:** [ADR-0025](ADR-0025-rbac-permissoes-acao-editaveis.md) (permissões de ação editáveis), [ADR-0026](ADR-0026-papel-galpao-unificado.md) (papel único "Galpão")
 
 ## Contexto
@@ -28,7 +28,7 @@ A ADR-0025 já moveu as **ações** (os `require_role` → `require_permission`)
   - **2c:** orders.py (zero `role`) + stock.py — dispatch de escopo via `is_global/is_galpao/is_conta`; gates de ação de stock ficam p/ 2e.
   - **2d:** **escopo de PG do AC configurável por perfil** — `UserProfile.conta_pg_scope` (migration 157; `posse`=owner_ac_id/padrão | `administracao`=cmig_administrators | `nenhum`), lido no ponto único `services/warehouse_scope.warehouse_ids_for`; seletor na tela de Perfis. CMIG segue sempre por administração (decisão do dono). Default `posse` = zero-regressão. As ações `require_owner` (editar config fiscal, gerenciar colaboradores) viram permissões de ação no **2e**.
   - **Pendente:** 2e (gates de ação + eShip), 2f (frontend rotas/botões/store), 2g (JWT).
-- **Fase 3:** `DROP COLUMN users.role`; `scope_mode` passa a ler do Perfil de Acesso; remover os fallbacks por `base_role`; `profile_id` NOT NULL; UI renomeia "Papel base (API)"→"Escopo de dados".
+- **Fase 3 (entregue — 2026-10-22):** `scope_mode` repontado para o Perfil de Acesso (lê o carimbo `_scope_base_role` que `get_current_user` grava a partir de `user_profile.base_role`, com `selectinload`). `User.role` deixou de ser coluna: virou **`hybrid_property`** derivada do `base_role` do perfil — getter seguro sem lazy-load (carimbo → perfil carregado → transiente do setter), setter no-op (escritas legadas não quebram), expression = subquery (`select(User.role).where(...)` funciona nos filtros). As criações de usuário passaram a atribuir `profile_id` (`system_profile_id_for`), e login/refresh/listas/queries-de-outro-usuário ganharam `selectinload(user_profile)` p/ o role derivar na resposta. **Migration 159**: `DROP COLUMN users.role` — remove de uma vez a `CHECK CHK_USERS_ROLE` (`role IN ('ugo','ac','admin','go')`), o `NOT NULL` e o `DEFAULT 'dropshipper'` (que, com a coluna já desmapeada, passaram a **bloquear** a criação de usuário); `profile_id` vira `NOT NULL`. Verificado em produção: 17 usuários com 0 divergências entre `role(hybrid)` e `profile.base_role`; criação/`/me`/login devolvem o role correto; health 200. Follow-up: remover os 4 reads residuais de `role` em `dependencies.py` (hoje passam pelo carimbo/hybrid — inócuos) e renomear na UI "Papel base (API)"→"Escopo de dados".
 - **Fase 4:** matriz de testes de isolamento (global/galpão/conta vê só o próprio dado em todo endpoint) + auditoria de segurança.
 
 ## Consequências
