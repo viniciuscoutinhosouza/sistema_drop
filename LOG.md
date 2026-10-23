@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-10-22 — refactor(rbac): tela de Usuários alinhada ao Perfil de Acesso (ADR-0035 Fase 2f)
+
+Remoção dos resquícios do `role` antigo na listagem de Usuários (`UsersView.vue`):
+- Coluna "Perfil" → **"Perfil de Acesso"** (o badge já mostrava o label do Perfil de Acesso).
+- Filtro "Todos os perfis" deixou de listar papéis (`Galpão`/`Gestor de Conta`, filtrando `user.role`) e
+  passou a listar os **Perfis de Acesso reais** (`profiles`), filtrando por `profile_id` (`filterRole`→
+  `filterProfileId`). `npm run build` ✓.
+
+---
+
 ## 2026-10-21 — feat(sales): Fases 3 e 4 checkout público + crédito CMIG×Galpão + endurecimento Fase 2 (ADR-0033/0034)
 
 Sessão autônoma. Fases 3 e 4 do subsistema de recebimento/checkout + correções da auditoria da Fase 2.

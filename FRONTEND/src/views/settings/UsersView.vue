@@ -8,10 +8,9 @@
         </button>
       </div>
       <div class="d-flex align-items-center gap-2">
-        <select v-model="filterRole" class="form-control form-control-sm" style="width:180px">
+        <select v-model="filterProfileId" class="form-control form-control-sm" style="width:200px">
           <option value="">Todos os perfis</option>
-          <option value="go">Galpão</option>
-          <option value="ac">Gestor de Conta</option>
+          <option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.label }}</option>
         </select>
         <input v-model="search" class="form-control form-control-sm ml-2" placeholder="Buscar nome ou e-mail…" style="width:220px" />
       </div>
@@ -30,7 +29,7 @@
               <th>Nome</th>
               <th>E-mail</th>
               <th>WhatsApp</th>
-              <th>Perfil</th>
+              <th>Perfil de Acesso</th>
               <th>Galpão</th>
               <th>Status</th>
               <th>Cadastro</th>
@@ -254,7 +253,7 @@ const plans      = ref([])
 const warehouses = ref([])
 const loading    = ref(false)
 const search     = ref('')
-const filterRole = ref('')
+const filterProfileId = ref('')
 
 const isAdmin = computed(() => authStore.user?.role === 'admin')
 
@@ -285,7 +284,7 @@ const createBaseRole = computed(() => {
 
 const filteredUsers = computed(() => {
   let list = users.value
-  if (filterRole.value) list = list.filter(u => u.role === filterRole.value)
+  if (filterProfileId.value) list = list.filter(u => u.profile_id === Number(filterProfileId.value))
   if (search.value) {
     const q = search.value.toLowerCase()
     list = list.filter(u => u.full_name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q))
