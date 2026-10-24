@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-10-24 — refactor(rbac): "Papel base (API)" → "Escopo de dados" no form de Perfil (ADR-0035 Fase 2f)
+
+Esclarece o campo que confundia no editor de Perfil de Acesso (`ProfilesView.vue`): o `base_role` virou,
+no ADR-0035, o **modo de escopo de dados** (não mais o "papel"). Por isso só há 3 opções — são as 3
+estratégias de isolamento. Renomeado o label e as opções: "Papel base (API)" → **"Escopo de dados"**;
+`Conta Loja (ac)/Galpão (go)/Admin (admin)` → **Global / Por Galpão / Por Conta-CMIG** (valores
+`admin/go/ac` inalterados). Badge do perfil (`roleLabel`) alinhado aos mesmos termos. Só apresentação;
+`npm run build` ✓.
+
+---
+
 ## 2026-10-22 — refactor(rbac): tela de Usuários alinhada ao Perfil de Acesso (ADR-0035 Fase 2f)
 
 Remoção dos resquícios do `role` antigo na listagem de Usuários (`UsersView.vue`):

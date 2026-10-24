@@ -128,13 +128,13 @@
             </div>
             <div class="col-md-4">
               <div class="form-group">
-                <label class="font-weight-bold">Papel base (API) <span class="text-danger">*</span></label>
+                <label class="font-weight-bold">Escopo de dados <span class="text-danger">*</span></label>
                 <select v-model="modal.form.base_role" class="form-control">
-                  <option value="ac">Conta Loja (ac)</option>
-                  <option value="go">Galpão (go)</option>
-                  <option value="admin">Admin (admin)</option>
+                  <option value="admin">Global (vê tudo)</option>
+                  <option value="go">Por Galpão</option>
+                  <option value="ac">Por Conta-CMIG</option>
                 </select>
-                <small class="text-muted">Modo de escopo de dados (galpão/CMIG). O que o perfil <em>faz</em> vem das permissões de ação abaixo.</small>
+                <small class="text-muted">Qual fatia de dados este perfil enxerga (isolamento). São só 3 estratégias possíveis. O que o perfil <em>pode fazer</em> vem das permissões de ação abaixo.</small>
               </div>
             </div>
             <div class="col-md-4" v-if="modal.form.base_role === 'ac'">
@@ -312,8 +312,8 @@ function actionLabel(key) {
 }
 
 function roleLabel(role) {
-  // `ugo` aposentado na unificação; mapeado para 'Galpão' caso apareça em perfil legado.
-  return { admin: 'Admin', ac: 'Conta Loja', ugo: 'Galpão', go: 'Galpão' }[role] || role
+  // base_role = modo de escopo de dados (ADR-0035). `ugo` aposentado → 'Por Galpão' (legado).
+  return { admin: 'Global', ac: 'Por Conta-CMIG', ugo: 'Por Galpão', go: 'Por Galpão' }[role] || role
 }
 
 function roleClass(role) {
