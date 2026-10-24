@@ -36,7 +36,7 @@ from models.integration import AccountBalance, MarketplaceAccount
 from models.product import DropshipperProduct, ProductListing
 from models.user import AccountAdministrator, User
 from services import bling_service, ml_service, shopee_service
-from services.data_scope import is_conta, is_galpao, is_global
+from services.data_scope import is_galpao, is_global
 
 settings = get_settings()
 router = APIRouter()

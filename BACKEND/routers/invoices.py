@@ -27,7 +27,6 @@ from models.product import CatalogProduct
 from models.user import User
 from services import audit_service
 from services import ml_service as _ml
-from services.data_scope import is_conta, is_global
 from services.file_naming import TIPO_DANFE, TIPO_NFE, order_download_filename
 from services.fiscal import dfe_service, sefaz_service
 from services.fiscal.icms_table import compute_difal, get_icms_rate
