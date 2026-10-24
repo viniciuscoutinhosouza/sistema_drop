@@ -16,7 +16,6 @@ from schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
     RefreshRequest,
-    RegisterACRequest,
     RegisterUGORequest,
     RegisterUserRequest,
     TokenResponse,
@@ -284,67 +283,6 @@ async def register_user(
     except IntegrityError:
         await db.rollback()
         logger.exception("IntegrityError no commit ao cadastrar usuário")
-        raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
-
-    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role}
-
-
-@router.post("/register/ac", response_model=TokenResponse, status_code=201)
-async def register_ac(
-    body: RegisterACRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_permission("criar_ac")),
-):
-    """Cadastra um novo Gestor de Conta (AC). Apenas UGO ou Admin podem executar."""
-    result = await db.execute(select(User).where(User.email == body.email))
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="E-mail já cadastrado")
-
-    if body.cpf_cnpj:
-        result = await db.execute(select(User).where(User.cpf_cnpj == body.cpf_cnpj))
-        if result.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="CPF/CNPJ já cadastrado")
-
-    user = User(
-        email=body.email,
-        password_hash=hash_password(body.password),
-        full_name=body.full_name,
-        whatsapp=body.whatsapp,
-        cpf_cnpj=body.cpf_cnpj,
-        role="ac",
-        profile_id=await system_profile_id_for("ac", db),
-        warehouse_id=current_user.warehouse_id,  # herda o galpão do UGO que cadastra
-        go_id=current_user.go_id,
-    )
-    db.add(user)
-    try:
-        await db.flush()
-    except IntegrityError as e:
-        await db.rollback()
-        err_str = str(e).lower()
-        if "unique" in err_str or "dup_val" in err_str:
-            raise HTTPException(status_code=400, detail="E-mail ou CPF/CNPJ já cadastrado")
-        logger.exception("IntegrityError no flush ao cadastrar AC")
-        raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
-
-    profile = ACProfile(
-        user_id=user.id,
-        zip_code=body.zip_code,
-        street=body.street,
-        address_number=body.number,
-        complement=body.complement,
-        neighborhood=body.neighborhood,
-        city=body.city,
-        state=body.state,
-        plan_id=body.plan_id,
-    )
-    db.add(profile)
-    try:
-        await db.commit()
-        await db.refresh(user)
-    except IntegrityError:
-        await db.rollback()
-        logger.exception("IntegrityError no commit do perfil AC")
         raise HTTPException(status_code=500, detail="Erro interno ao cadastrar usuário")
 
     return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role}

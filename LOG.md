@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-10-24 — chore(rbac): remove permissão/endpoint legado "Cadastrar Gestor de Conta (AC)"
+
+Limpeza de legado (pedido do dono). A permissão de ação `criar_ac` e o endpoint `POST /auth/register/ac`
+eram de um fluxo antigo (o Galpão cadastrava o próprio AC por rota separada); **nenhuma tela usava**.
+Hoje o cadastro de qualquer usuário (inclusive Gestor de Conta) é por `POST /auth/register/user` + o
+**Perfil de Acesso** escolhido (tela Usuários). Removidos: a função `register_ac` e o import em
+`routers/auth.py`, a classe `RegisterACRequest` em `schemas/auth.py`, e a entrada `criar_ac` do catálogo
+`services/action_permissions.py`. **Migration 160** (idempotente) apaga os grants órfãos de `criar_ac`
+em `profile_action_permissions`. Auditado (quality-guardian + consistency-auditor: 0 CRITICAL/HIGH/
+BLOQUEADOR). `pytest` 310 ✓ (2 pré-existentes); fluxo vivo `register/user`/`register/ugo` (gate
+`usuarios_criar`) intacto.
+
+---
+
 ## 2026-10-24 — refactor(rbac): "Papel base (API)" → "Escopo de dados" no form de Perfil (ADR-0035 Fase 2f)
 
 Esclarece o campo que confundia no editor de Perfil de Acesso (`ProfilesView.vue`): o `base_role` virou,
