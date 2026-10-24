@@ -77,8 +77,7 @@ const UsersView     = () => import('@/views/settings/UsersView.vue')
 const WarehouseView = () => import('@/views/settings/WarehouseView.vue')
 const WarehouseAdminView = () => import('@/views/settings/WarehouseAdminView.vue')
 
-// GOs (admin only)
-const GoListView = () => import('@/views/go/GoListView.vue')
+// Minha Empresa — autoatendimento do dono (edição da própria empresa/galpão)
 const GoFormView = () => import('@/views/go/GoFormView.vue')
 
 // CMIGs (AC + UGO)
@@ -262,10 +261,9 @@ const routes = [
       // Galpões — gestão pelo Administrador Geral
       { path: 'admin/galpoes', component: WarehouseAdminView, meta: { title: 'Galpões', role: 'admin' } },
 
-      // GOs — somente admin
-      { path: 'goes', component: GoListView, meta: { title: 'Gestores Operacionais', role: 'admin' } },
-      { path: 'goes/new', component: GoFormView, meta: { title: 'Novo GO', role: 'admin' } },
-      { path: 'goes/:id/edit', component: GoFormView, meta: { title: 'Editar GO', role: 'admin' } },
+      // Minha Empresa — autoatendimento do dono do Galpão (gated pelo menu go_empresa; o backend
+      // PUT /goes/{id} valida posse). O cadastro de dono foi mesclado na tela Galpões.
+      { path: 'minha-empresa/:id/edit', component: GoFormView, meta: { title: 'Minha Empresa', menuKey: 'go_empresa' } },
 
       // CMIGs — AC e UGO
       { path: 'cmigs', component: CmigListView, meta: { title: 'Contas MIG' } },

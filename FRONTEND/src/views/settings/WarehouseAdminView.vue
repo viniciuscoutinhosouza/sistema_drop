@@ -21,15 +21,71 @@
             <div class="card-body">
               <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
+              <!-- Dono do Galpão -->
+              <div class="card bg-light mb-3">
+                <div class="card-body py-2">
+                  <!-- No cadastro: escolher entre dono existente ou criar um dono novo.
+                       Criar dono novo é ação de admin (a tela é admin-only). -->
+                  <template v-if="!form.id">
+                    <div class="btn-group btn-group-sm mb-2" role="group">
+                      <button type="button" class="btn" :class="ownerMode === 'existing' ? 'btn-primary' : 'btn-outline-primary'" @click="ownerMode = 'existing'">
+                        <i class="fas fa-user mr-1"></i> Dono existente
+                      </button>
+                      <button type="button" class="btn" :class="ownerMode === 'new' ? 'btn-primary' : 'btn-outline-primary'" @click="ownerMode = 'new'">
+                        <i class="fas fa-user-plus mr-1"></i> Novo dono
+                      </button>
+                    </div>
+
+                    <div v-if="ownerMode === 'existing'" class="form-group mb-0">
+                      <label>Dono do Galpão <span class="text-danger">*</span></label>
+                      <select v-model.number="form.go_id" class="form-control">
+                        <option :value="null" disabled>Selecione o dono…</option>
+                        <option v-for="g in goes" :key="g.id" :value="g.id">{{ goLabel(g) }}</option>
+                      </select>
+                    </div>
+
+                    <div v-else>
+                      <p class="text-sm text-muted mb-2">
+                        <i class="fas fa-info-circle"></i>
+                        Cria o <strong>login do dono</strong> junto com este galpão. Ele usa o e-mail e a senha abaixo para entrar.
+                      </p>
+                      <div class="row">
+                        <div class="col-md-6 form-group">
+                          <label>Nome do responsável <span class="text-danger">*</span></label>
+                          <input v-model="form.owner_full_name" class="form-control" placeholder="Nome completo" />
+                        </div>
+                        <div class="col-md-6 form-group">
+                          <label>E-mail de login <span class="text-danger">*</span></label>
+                          <input v-model="form.owner_email" type="email" class="form-control" placeholder="dono@empresa.com" />
+                        </div>
+                      </div>
+                      <div class="row">
+                        <div class="col-md-4 form-group">
+                          <label>WhatsApp do responsável</label>
+                          <input v-model="form.owner_whatsapp" class="form-control" placeholder="(11) 90000-0000" />
+                        </div>
+                        <div class="col-md-4 form-group">
+                          <label>Senha <span class="text-danger">*</span></label>
+                          <input v-model="form.owner_password" type="password" class="form-control" autocomplete="new-password" />
+                        </div>
+                        <div class="col-md-4 form-group">
+                          <label>Confirmar senha <span class="text-danger">*</span></label>
+                          <input v-model="form.owner_password_confirm" type="password" class="form-control" autocomplete="new-password" />
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- Na edição: o dono é fixo (mostra só o nome). -->
+                  <div v-else class="form-group mb-0">
+                    <label>Dono do Galpão</label>
+                    <input class="form-control" :value="goNameById(form.go_id)" disabled />
+                  </div>
+                </div>
+              </div>
+
               <div class="row">
                 <div class="col-md-5 form-group">
-                  <label>GO dono <span class="text-danger">*</span></label>
-                  <select v-model.number="form.go_id" class="form-control" required>
-                    <option :value="null" disabled>Selecione o Gestor Operacional…</option>
-                    <option v-for="g in goes" :key="g.id" :value="g.id">{{ goLabel(g) }}</option>
-                  </select>
-                </div>
-                <div class="col-md-4 form-group">
                   <label>Nome do Galpão <span class="text-danger">*</span></label>
                   <input v-model="form.name" class="form-control" required placeholder="Ex: Galpão Central MIG" />
                 </div>
@@ -37,7 +93,7 @@
                   <label>CNPJ <span class="text-danger">*</span></label>
                   <input v-model="form.cnpj" class="form-control" required placeholder="00.000.000/0000-00" />
                 </div>
-                <div class="col-md-5 form-group">
+                <div class="col-md-4 form-group">
                   <label>Tipo de trabalho <span class="text-danger">*</span></label>
                   <select v-model="form.work_type" class="form-control" required>
                     <option value="dropship">Dropship — contas vendem Produto Geral + a própria CMIG</option>
@@ -315,6 +371,8 @@ const warehouses = ref([])
 const goes = ref([])
 const uploadingLogo = ref(false)
 const logoInput = ref(null)
+// 'existing' = vincular a um dono já cadastrado; 'new' = criar o login do dono junto (admin-only).
+const ownerMode = ref('existing')
 
 function emptyForm() {
   return {
@@ -329,6 +387,9 @@ function emptyForm() {
     logo_url: '',
     theme_sidebar: '', theme_accent: '', theme_topbar: '',
     theme_sidebar_text: '', theme_link: '',
+    // Dono novo (só no cadastro, quando ownerMode === 'new')
+    owner_full_name: '', owner_email: '', owner_whatsapp: '',
+    owner_password: '', owner_password_confirm: '',
   }
 }
 const form = ref(emptyForm())
@@ -404,6 +465,7 @@ async function load() {
 
 function newWarehouse() {
   form.value = emptyForm()
+  ownerMode.value = 'existing'
   error.value = ''
   showForm.value = true
 }
@@ -419,14 +481,38 @@ function cancelForm() {
 
 async function save() {
   error.value = ''
-  if (!form.value.go_id) { error.value = 'Selecione o GO dono do galpão.'; return }
+  // Monta o payload só com os campos do galpão (sem os owner_* de UI).
+  const { owner_full_name, owner_email, owner_whatsapp, owner_password, owner_password_confirm, ...wh } = form.value
+  let payload = wh
+
+  if (!form.value.id && ownerMode.value === 'new') {
+    if (!owner_full_name || !owner_email || !owner_password) {
+      error.value = 'Informe nome, e-mail e senha do dono.'; return
+    }
+    if (owner_password !== owner_password_confirm) {
+      error.value = 'As senhas do dono não coincidem.'; return
+    }
+    payload = {
+      ...wh,
+      go_id: null,
+      owner: {
+        full_name: owner_full_name,
+        email: owner_email,
+        user_whatsapp: owner_whatsapp,
+        password: owner_password,
+      },
+    }
+  } else if (!form.value.go_id) {
+    error.value = 'Selecione o dono do galpão.'; return
+  }
+
   saving.value = true
   try {
     if (form.value.id) {
-      await api.put(`/warehouse/${form.value.id}`, form.value)
+      await api.put(`/warehouse/${form.value.id}`, payload)
       toast.success('Galpão atualizado com sucesso!')
     } else {
-      await api.post('/warehouse', form.value)
+      await api.post('/warehouse', payload)
       toast.success('Galpão cadastrado com sucesso!')
     }
     showForm.value = false

@@ -4,14 +4,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from dependencies import get_current_user, require_permission
+from dependencies import get_current_user, require_menu_permission
 from models.go import GO
 from models.user import User
 from models.warehouse import Warehouse
-from routers.warehouse import _norm_cep, _norm_work_type
-from schemas.go import GOCreate, GOOut, GOUpdate
-from services.action_permissions import system_profile_id_for
-from services.auth_service import hash_password
+from routers.warehouse import _norm_cep, _norm_work_type, _owned_go_id
+from schemas.go import GOOut, GOUpdate
 from services.data_scope import is_global
 
 router = APIRouter()
@@ -75,85 +73,19 @@ def _go_to_out(go: GO) -> dict:
 @router.get("", response_model=list[GOOut])
 async def list_goes(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_permission("go_gerenciar")),
+    current_user: User = Depends(require_menu_permission("config_galpoes")),
 ):
+    """Lista os donos de Galpão. Alimenta o seletor "Dono existente" da tela Galpões
+    (admin-only na prática). O bootstrap de dono NOVO foi mesclado em `POST /warehouse`
+    (bloco `owner`), então este router não cria mais donos — só leitura + autoatendimento
+    da própria empresa (`GET/PUT /goes/{id}`)."""
+    # A lista cruza TODOS os galpões (CNPJ/telefone/e-mail/Pix de cada dono). Sob ADR-0026
+    # "só admin é global" — gate `is_global` por construção (LGPD), não só pelo menu config_galpoes.
+    if not is_global(current_user):
+        raise HTTPException(status_code=403, detail="Apenas o administrador pode listar os donos de Galpão.")
     result = await db.execute(select(GO).options(selectinload(GO.warehouse), selectinload(GO.user)))
     goes = result.scalars().all()
     return [_go_to_out(g) for g in goes]
-
-
-@router.post("", status_code=201, response_model=GOOut)
-async def create_go(
-    body: GOCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_permission("go_gerenciar")),
-):
-    # Verificar CNPJ duplicado em warehouses
-    dup_cnpj = await db.execute(select(Warehouse).where(Warehouse.cnpj == body.cnpj))
-    if dup_cnpj.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="CNPJ já cadastrado")
-
-    # Verificar e-mail duplicado em users
-    dup_email = await db.execute(select(User).where(User.email == body.user_email))
-    if dup_email.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="E-mail já cadastrado")
-
-    # Criar usuário role=go (pessoa física)
-    user = User(
-        email=body.user_email,
-        password_hash=hash_password(body.password),
-        role="go",
-        profile_id=await system_profile_id_for("go", db),
-        full_name=body.full_name,
-        whatsapp=body.user_whatsapp,
-        is_active=True,
-    )
-    db.add(user)
-    await db.flush()
-
-    # Criar GO (sem campos de empresa — ficam no Warehouse)
-    go = GO(user_id=user.id, is_active=True)
-    db.add(go)
-    await db.flush()
-
-    # Criar Warehouse (empresa jurídica / galpão físico)
-    warehouse = Warehouse(
-        go_id=go.id,
-        name=body.trade_name or body.company_name,
-        work_type=_norm_work_type(getattr(body, "work_type", None)),
-        cnpj=body.cnpj,
-        company_name=body.company_name,
-        trade_name=body.trade_name,
-        phone=body.phone,
-        whatsapp=body.whatsapp,
-        email=body.email,
-        zip_code=_norm_cep(body.zip_code),
-        street=body.street,
-        number=body.number,
-        complement=body.complement,
-        neighborhood=body.neighborhood,
-        city=body.city,
-        state=body.state,
-        pix_key_type=body.pix_key_type,
-        pix_key=body.pix_key,
-        notes=body.notes,
-    )
-    db.add(warehouse)
-    await db.flush()
-
-    # Vincular GO e User ao Warehouse
-    go.warehouse_id = warehouse.id
-    user.go_id = go.id
-    user.warehouse_id = warehouse.id
-
-    await db.commit()
-
-    # Recarregar com relacionamentos
-    result = await db.execute(
-        select(GO).where(GO.id == go.id).options(selectinload(GO.warehouse), selectinload(GO.user))
-    )
-    go = result.scalar_one()
-    return _go_to_out(go)
 
 
 @router.get("/{go_id}", response_model=GOOut)
@@ -162,7 +94,9 @@ async def get_go(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not is_global(current_user) and current_user.go_id != go_id:
+    # Posse REAL (registro em `goes`), não `go_id` herdado — operador herda o go_id do dono e NÃO
+    # pode ler/editar a empresa (CNPJ/endereço/chave PIX) dele. Espelha o _can_access do warehouse.py.
+    if not is_global(current_user) and await _owned_go_id(current_user, db) != go_id:
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     result = await db.execute(
@@ -181,7 +115,9 @@ async def update_go(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not is_global(current_user) and current_user.go_id != go_id:
+    # Posse REAL (registro em `goes`), não `go_id` herdado — operador herda o go_id do dono e NÃO
+    # pode ler/editar a empresa (CNPJ/endereço/chave PIX) dele. Espelha o _can_access do warehouse.py.
+    if not is_global(current_user) and await _owned_go_id(current_user, db) != go_id:
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     result = await db.execute(
@@ -224,7 +160,9 @@ async def list_go_warehouses(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not is_global(current_user) and current_user.go_id != go_id:
+    # Posse REAL (registro em `goes`), não `go_id` herdado — operador herda o go_id do dono e NÃO
+    # pode ler/editar a empresa (CNPJ/endereço/chave PIX) dele. Espelha o _can_access do warehouse.py.
+    if not is_global(current_user) and await _owned_go_id(current_user, db) != go_id:
         raise HTTPException(status_code=403, detail="Permissão insuficiente")
 
     result = await db.execute(select(Warehouse).where(Warehouse.go_id == go_id))

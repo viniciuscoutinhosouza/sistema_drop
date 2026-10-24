@@ -5,6 +5,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -187,10 +188,46 @@ async def create_warehouse(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("go_empresa")),
 ):
-    """Cria um Galpão. Admin ou GO podem executar."""
+    """Cria um Galpão.
+
+    Dois caminhos:
+      - **Dono NOVO** (bloco `owner{full_name,email,password,...}`): bootstrap completo
+        User(go)+GO+Warehouse pelo ponto único `go_service.create_owner_with_warehouse`.
+        Só **admin** (cadastrar um dono novo é ação global — antes era gated por `go_gerenciar`).
+      - **Dono existente** (`go_id`): cria só o Galpão sob aquele GO. Não-admin só pode no
+        PRÓPRIO GO (posse via `_owned_go_id`) — fecha o IDOR do antigo `go_id or current_user.go_id`.
+    """
+    owner = body.get("owner")
+    if owner:
+        if not is_global(current_user):
+            raise HTTPException(
+                status_code=403,
+                detail="Apenas o administrador pode cadastrar um novo dono de Galpão.",
+            )
+        from services.go_service import create_owner_with_warehouse
+
+        go = await create_owner_with_warehouse(db, owner=owner, warehouse=body)
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Corrida com outra criação concorrente (UNIQUE de CNPJ/e-mail) — 409 limpo, não 500.
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="CNPJ ou e-mail já cadastrado")
+        created = (
+            await db.execute(select(Warehouse).where(Warehouse.id == go.warehouse_id))
+        ).scalar_one()
+        return _serialize(created)
+
     go_id = body.get("go_id") or current_user.go_id
     if not go_id:
-        raise HTTPException(status_code=422, detail="go_id é obrigatório")
+        raise HTTPException(status_code=422, detail="Selecione o dono do Galpão (go_id).")
+    # Isolamento por galpão (ADR-0026): não-admin só cria galpão sob o GO que ELE possui.
+    if not is_global(current_user):
+        owned = await _owned_go_id(current_user, db)
+        if owned is None or go_id != owned:
+            raise HTTPException(
+                status_code=403, detail="Você só pode cadastrar galpões no seu próprio GO."
+            )
 
     warehouse = Warehouse(
         go_id=go_id,

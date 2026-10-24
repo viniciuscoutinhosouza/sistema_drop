@@ -23,8 +23,9 @@ ACTION_PERMISSIONS: list[dict] = [
      "default_base_roles": ["admin", "go"]},
     {"key": "perfis_gerenciar", "label": "Gerenciar perfis de acesso", "menu": "config_perfis",
      "default_base_roles": ["admin"]},
-    {"key": "go_gerenciar", "label": "Gerenciar Gestores Operacionais (GO)", "menu": None,
-     "default_base_roles": ["admin"]},
+    # (removido) `go_gerenciar` — a tela "Gestores Operacionais" foi aposentada; o cadastro de dono
+    # de Galpão virou o bloco `owner` de `POST /warehouse` (admin-only), dentro da tela Galpões.
+    # Migration 161 limpa os grants órfãos desta chave.
     {"key": "api_console", "label": "Console de API (diagnóstico)", "menu": "config_api_console",
      "default_base_roles": ["admin"]},
     # Fiscal

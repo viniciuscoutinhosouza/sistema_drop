@@ -2,25 +2,11 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '@/composables/useApi'
 
+// Store do autoatendimento "Minha Empresa" (o dono edita a própria empresa/galpão).
+// O cadastro de dono (createGo) e a listagem (fetchGoes) foram aposentados junto com a tela
+// "Gestores Operacionais" — o cadastro vive agora na tela Galpões (POST /warehouse com bloco owner).
 export const useGoStore = defineStore('go', () => {
   const goes = ref([])
-  const loading = ref(false)
-
-  async function fetchGoes() {
-    loading.value = true
-    try {
-      const { data } = await api.get('/goes')
-      goes.value = data
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function createGo(payload) {
-    const { data } = await api.post('/goes', payload)
-    goes.value.unshift(data)
-    return data
-  }
 
   async function updateGo(id, payload) {
     const { data } = await api.put(`/goes/${id}`, payload)
@@ -29,5 +15,5 @@ export const useGoStore = defineStore('go', () => {
     return data
   }
 
-  return { goes, loading, fetchGoes, createGo, updateGo }
+  return { goes, updateGo }
 })

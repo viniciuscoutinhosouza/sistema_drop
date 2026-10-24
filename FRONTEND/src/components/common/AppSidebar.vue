@@ -364,7 +364,7 @@
             </a>
             <ul class="nav nav-treeview">
               <li v-if="canSee('go_empresa') && authStore.user?.go_id" class="nav-item">
-                <RouterLink :to="`/goes/${authStore.user?.go_id}/edit`" class="nav-link" :class="{ active: route.path.includes('/goes/') && route.path.includes('/edit') }">
+                <RouterLink :to="`/minha-empresa/${authStore.user?.go_id}/edit`" class="nav-link" :class="{ active: route.path.includes('/minha-empresa/') }">
                   <i class="nav-icon fas fa-building"></i><p>Minha Empresa</p>
                 </RouterLink>
               </li>
@@ -568,7 +568,7 @@ function sectionForPath(path) {
   if (path.startsWith('/fiscal/')) return 'fiscal'
   if (path.startsWith('/integracao/')) return 'integracao'
   if (path.startsWith('/monitoring')) return 'monitoramento'
-  if (path.startsWith('/goes/')) return 'gestao'
+  if (path.startsWith('/minha-empresa/')) return 'gestao'
   if (path.startsWith('/settings') || path.startsWith('/admin')) return 'admin'
   return null
 }

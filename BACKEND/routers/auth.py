@@ -274,8 +274,9 @@ async def register_user(
         )
     # Unificação Galpão: o papel `go` agora é o operador de galpão (default deste cadastro), NÃO o
     # GO-dono. Por isso NÃO criamos registro em `goes` aqui — senão todo operador viraria "GO dono"
-    # e poluiria o seletor de dono. O registro em `goes` nasce só no fluxo dedicado (routers/goes.py
-    # create_go) e na promoção por admin (routers/users.py update, admin-gated). Ver services/go_service.
+    # e poluiria o seletor de dono. O registro em `goes` nasce só no bootstrap dedicado
+    # (go_service.create_owner_with_warehouse, via tela Galpões) e na promoção por admin
+    # (routers/users.py update, admin-gated). Ver services/go_service.
 
     try:
         await db.commit()

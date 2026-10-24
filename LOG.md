@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-10-24 — refactor(galpao): aposenta tela "Gestores Operacionais (GO)" e mescla cadastro do dono na tela Galpões
+
+Pedido do dono: a tela "Gestores Operacionais" ficou confusa e redundante — mesclar o cadastro do
+dono de Galpão na tela **Galpões** (Administração). Verificado antes que **não dava pra só apagar**:
+a tela Galpões dependia do `GET /goes` e não criava o login do dono; `goes.py:create_go` era o único
+caminho vivo de bootstrap (User+GO+Warehouse). Nível Full — avaliado antes (consistency-auditor no
+plano, 3 HIGH incorporados) e fechado com a trinca (quality + consistency + adr), 0 CRITICAL/HIGH
+após correções.
+
+- **Backend** `services/go_service.py`: NOVO ponto único `create_owner_with_warehouse(db, *, owner, warehouse)`
+  — cria `User(role='go')` + `GO` + `Warehouse` linkados. Fail-loud: 422 (campos obrigatórios), 409
+  (CNPJ/e-mail duplicado), normaliza CEP/work_type/cores; persiste `pg_requires_prepaid`,
+  `manual_sale_requires_payment` e `theme_*` (paridade com o ramo "dono existente"). Import tardio de
+  `_norm_*` (evita ciclo). NÃO commita (segue a transação do chamador).
+- **Backend** `routers/warehouse.py`: `create_warehouse` ganhou ramo **"dono novo"** (bloco `owner`,
+  **admin-only** via `is_global`, 403 senão) + fechou o IDOR do ramo "dono existente" (valida `go_id`
+  contra `_owned_go_id`, não `current_user.go_id`); `IntegrityError → 409` no commit.
+- **Backend** `routers/goes.py`: removido `POST /goes` (create_go); `GET /goes` re-gated p/
+  `config_galpoes` **+ gate `is_global`** (LGPD); `get_go`/`update_go`/`list_go_warehouses` passam a
+  checar posse por `_owned_go_id` (operador herda `go_id` do dono e **não** pode mais ler/editar a
+  empresa do dono — chave PIX etc.). `GET/PUT /goes/{id}` mantidos p/ "Minha Empresa".
+- **Backend** `services/action_permissions.py`: removida a permissão `go_gerenciar`. `schemas/go.py`:
+  removida `GOCreate` (morta).
+- **Migration** `Scripts SQL/161_drop_go_gerenciar_permission.sql`: limpa grants órfãos (rodar JUNTO
+  com o deploy — senão `GET /profiles` devolve chave inválida e trava a edição de Perfil).
+- **Frontend** `WarehouseAdminView.vue`: seção "Dono" com rádio **Dono existente** × **Novo dono**
+  (nome/e-mail/senha/whatsapp); payload com bloco `owner` aninhado (sem vazar `owner_*`). Edição
+  mostra o dono fixo. `router/index.js`: removidas `/goes` e `/goes/new`; edição vira
+  `/minha-empresa/:id/edit` com `menuKey: 'go_empresa'` (não bloqueia o dono). `GoFormView.vue`
+  reescrita como "Minha Empresa" (edit-only, sem termo "GO"). `GoListView.vue` apagada. `stores/go.js`
+  sem `createGo`/`fetchGoes`. `AppSidebar.vue` repontado.
+- Verificação local: import OK, pytest 310 passed / 2 pré-existentes, `npm run build` OK.
+
+---
+
 ## 2026-10-24 — feat(rbac): tela de Perfil reorganizada como árvore do menu + ações (CRUD) por menu
 
 Reorg de UX da tela de Perfil de Acesso (pedido do dono: "apresentar exatamente como a árvore do

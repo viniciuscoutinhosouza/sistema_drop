@@ -375,7 +375,8 @@ async def update_user(
         # Unificação Galpão: base_role='go' é o papel do OPERADOR (não do dono). Atribuir um perfil
         # "Galpão" NÃO deve criar registro em `goes` (senão todo operador viraria "GO-dono" e poluiria
         # o seletor de dono + o critério de posse em warehouse._owned_go_id). O GO-dono nasce só no
-        # fluxo dedicado goes.py:create_go. Por isso NÃO chamamos ensure_go_record aqui.
+        # bootstrap dedicado (go_service.create_owner_with_warehouse, via tela Galpões). Por isso
+        # NÃO chamamos ensure_go_record aqui.
 
     await db.commit()
     return {
