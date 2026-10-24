@@ -150,60 +150,55 @@
             </div>
           </div>
 
-          <!-- Seleção de menus -->
-          <div class="font-weight-bold mb-2">
-            <i class="fas fa-list-ul mr-1"></i>Menus permitidos
-            <small class="text-muted ml-2">({{ modal.form.menu_keys.length }} selecionado(s))</small>
-            <button class="btn btn-xs btn-outline-secondary ml-2" @click="selectAll">Todos</button>
-            <button class="btn btn-xs btn-outline-secondary ml-1" @click="selectNone">Nenhum</button>
-          </div>
-
-          <div v-for="(items, section) in menuCatalogBySectionFiltered" :key="section" class="mb-3">
-            <div class="text-muted font-weight-bold mb-1" style="font-size:11px;text-transform:uppercase;border-bottom:1px solid #dee2e6;padding-bottom:3px">
-              {{ section }}
+          <!-- Acesso por menu (árvore igual ao menu lateral) + ações (CRUD) de cada menu -->
+          <div class="d-flex align-items-center mb-2">
+            <span class="font-weight-bold"><i class="fas fa-sitemap mr-1"></i>Acesso por menu</span>
+            <small class="text-muted ml-2">
+              {{ modal.form.menu_keys.length }} menu(s) · {{ modal.form.action_keys.length }} ação(ões)
+            </small>
+            <div class="ml-auto">
+              <button class="btn btn-xs btn-outline-secondary" @click="selectAll">Marcar tudo</button>
+              <button class="btn btn-xs btn-outline-secondary ml-1" @click="selectNone">Limpar tudo</button>
             </div>
-            <div class="row">
-              <div v-for="item in items" :key="item.key" class="col-md-4 col-sm-6">
-                <div class="custom-control custom-checkbox mb-1">
+          </div>
+          <p class="text-muted small mb-3">
+            Marque os menus que este perfil enxerga — na mesma ordem do menu lateral. Dentro de cada
+            menu, marque as <strong>ações</strong> <i class="fas fa-bolt text-warning"></i> (o que ele
+            pode fazer). As ações são <em>independentes</em> do menu: dá para liberar a ação sem exibir
+            o menu. O escopo de dados (galpão/CMIG) vem do campo acima; admin sempre pode tudo.
+          </p>
+
+          <div v-for="sec in menuTree" :key="sec.section" class="mb-3">
+            <div class="menu-section-header">{{ sec.section }}</div>
+            <div v-for="menu in sec.menus" :key="menu.key" class="menu-row">
+              <div class="custom-control custom-checkbox">
+                <input type="checkbox" class="custom-control-input"
+                       :id="`mk_${menu.key}`" :value="menu.key" v-model="modal.form.menu_keys" />
+                <label class="custom-control-label menu-name" :for="`mk_${menu.key}`">{{ menu.label }}</label>
+              </div>
+              <div v-if="menu.actions.length" class="menu-actions">
+                <div v-for="act in menu.actions" :key="act.key"
+                     class="custom-control custom-checkbox mb-1">
                   <input type="checkbox" class="custom-control-input"
-                         :id="`mk_${item.key}`"
-                         :value="item.key"
-                         v-model="modal.form.menu_keys" />
-                  <label class="custom-control-label small" :for="`mk_${item.key}`">
-                    {{ item.label }}
+                         :id="`ak_${act.key}`" :value="act.key" v-model="modal.form.action_keys" />
+                  <label class="custom-control-label small" :for="`ak_${act.key}`">
+                    <i class="fas fa-bolt text-warning mr-1" style="font-size:9px"></i>{{ act.label }}
                   </label>
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- Permissões de ação (o que o perfil pode FAZER) -->
-          <hr class="my-3">
-          <div class="font-weight-bold mb-2">
-            <i class="fas fa-key mr-1"></i>Permissões de ação
-            <small class="text-muted ml-2">({{ modal.form.action_keys.length }} de {{ actionCatalog.length }})</small>
-            <button class="btn btn-xs btn-outline-secondary ml-2" @click="selectAllActions">Todas</button>
-            <button class="btn btn-xs btn-outline-secondary ml-1" @click="selectNoneActions">Nenhuma</button>
-          </div>
-          <p class="text-muted small mb-2">
-            Controle fino do que este perfil executa (emitir NF-e, gerenciar usuários, etc.).
-            Independem dos menus visíveis. O papel base define apenas o <em>escopo de dados</em>
-            (galpão/CMIG); admin sempre pode tudo.
-          </p>
-          <div v-for="(items, group) in actionCatalogByGroup" :key="group" class="mb-3">
-            <div class="text-muted font-weight-bold mb-1" style="font-size:11px;text-transform:uppercase;border-bottom:1px solid #dee2e6;padding-bottom:3px">
-              {{ group }}
-            </div>
-            <div class="row">
-              <div v-for="item in items" :key="item.key" class="col-md-6">
-                <div class="custom-control custom-checkbox mb-1">
+          <!-- Ações sem menu próprio -->
+          <div v-if="orphanActions.length" class="mb-3">
+            <div class="menu-section-header">Outras ações</div>
+            <div class="menu-row">
+              <div class="menu-actions" style="margin-left:0">
+                <div v-for="act in orphanActions" :key="act.key" class="custom-control custom-checkbox mb-1">
                   <input type="checkbox" class="custom-control-input"
-                         :id="`ak_${item.key}`"
-                         :value="item.key"
-                         v-model="modal.form.action_keys" />
-                  <label class="custom-control-label small" :for="`ak_${item.key}`">
-                    {{ item.label }}
-                    <code class="text-muted ml-1" style="font-size:10px">{{ item.key }}</code>
+                         :id="`ak_${act.key}`" :value="act.key" v-model="modal.form.action_keys" />
+                  <label class="custom-control-label small" :for="`ak_${act.key}`">
+                    <i class="fas fa-bolt text-warning mr-1" style="font-size:9px"></i>{{ act.label }}
                   </label>
                 </div>
               </div>
@@ -257,7 +252,7 @@ const toast = useToast()
 const profiles = ref([])
 const loading = ref(true)
 const menuCatalog = ref([])   // [{key, label, section}]
-const actionCatalog = ref([]) // [{key, label, group, default_base_roles}]
+const actionCatalog = ref([]) // [{key, label, menu, default_base_roles}]
 
 const deleteTarget = ref(null)
 const deleting = ref(false)
@@ -271,14 +266,27 @@ const modal = reactive({
   form: { name: '', label: '', base_role: 'ac', conta_pg_scope: 'posse', menu_keys: [], action_keys: [] },
 })
 
-// ── Agrupamento do catálogo por seção ────────────────────────────────────────
-const menuCatalogBySectionFiltered = computed(() => {
-  const sections = {}
-  for (const item of menuCatalog.value) {
-    if (!sections[item.section]) sections[item.section] = []
-    sections[item.section].push(item)
+// ── Árvore (seção → menu → ações do menu), na ordem do catálogo = ordem do menu lateral ──
+const menuTree = computed(() => {
+  const sections = []
+  const bySection = {}
+  for (const m of menuCatalog.value) {
+    if (!bySection[m.section]) {
+      bySection[m.section] = { section: m.section, menus: [] }
+      sections.push(bySection[m.section])
+    }
+    bySection[m.section].menus.push({
+      ...m,
+      actions: actionCatalog.value.filter(a => a.menu === m.key),
+    })
   }
   return sections
+})
+
+// Ações sem menu (menu=null) ou cujo menu não existe no catálogo → "Outras ações".
+const orphanActions = computed(() => {
+  const valid = new Set(menuCatalog.value.map(m => m.key))
+  return actionCatalog.value.filter(a => !a.menu || !valid.has(a.menu))
 })
 
 function groupedMenus(keys) {
@@ -295,17 +303,6 @@ function groupedMenus(keys) {
 function menuLabel(key) {
   return menuCatalog.value.find(m => m.key === key)?.label || key
 }
-
-// ── Catálogo de permissões de ação agrupado ──────────────────────────────────
-const actionCatalogByGroup = computed(() => {
-  const groups = {}
-  for (const item of actionCatalog.value) {
-    const g = item.group || 'Geral'
-    if (!groups[g]) groups[g] = []
-    groups[g].push(item)
-  }
-  return groups
-})
 
 function actionLabel(key) {
   return actionCatalog.value.find(a => a.key === key)?.label || key
@@ -365,17 +362,13 @@ function openEdit(profile) {
   modal.show = true
 }
 
-// ── Selecionar / deselecionar todos ─────────────────────────────────────────
+// ── Marcar / limpar tudo (menus + ações) ─────────────────────────────────────
 function selectAll() {
   modal.form.menu_keys = menuCatalog.value.map(m => m.key)
+  modal.form.action_keys = actionCatalog.value.map(a => a.key)
 }
 function selectNone() {
   modal.form.menu_keys = []
-}
-function selectAllActions() {
-  modal.form.action_keys = actionCatalog.value.map(a => a.key)
-}
-function selectNoneActions() {
   modal.form.action_keys = []
 }
 
@@ -429,3 +422,35 @@ async function doDelete() {
   }
 }
 </script>
+
+<style scoped>
+.menu-section-header {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: #6c757d;
+  background: #f4f6f9;
+  border-left: 3px solid #007bff;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  border-radius: 2px;
+}
+.menu-row {
+  padding: 4px 0 4px 6px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.menu-row:last-child {
+  border-bottom: none;
+}
+.menu-name {
+  font-weight: 600;
+}
+/* Ações aninhadas sob o menu (apenas visual — a ação é independente do menu) */
+.menu-actions {
+  margin-left: 26px;
+  margin-top: 2px;
+  padding-left: 10px;
+  border-left: 2px dashed #e0e0e0;
+}
+</style>

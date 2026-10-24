@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-10-24 — feat(rbac): tela de Perfil reorganizada como árvore do menu + ações (CRUD) por menu
+
+Reorg de UX da tela de Perfil de Acesso (pedido do dono: "apresentar exatamente como a árvore do
+menu, com as ações de cada menu aninhadas"). Nível Full — avaliado antes (consistency-auditor no
+plano) e fechado com a trinca (quality + consistency + adr: 0 CRITICAL/HIGH/BLOQUEADOR).
+
+- **Backend** `routers/profiles.py`: `MENU_CATALOG` **re-seccionado e reordenado** para espelhar o
+  `AppSidebar.vue` (seções = grupos colapsáveis do sidebar, na mesma ordem: Cadastro → Relatórios →
+  Anúncios → Financeiro → Venda/Saída → Compra/Entrada → Logística → Estoque → Fiscal → Integração →
+  Monitoramento → Gestão → Administração). **Adicionado `config_eship`** (bug pré-existente: era
+  gated no sidebar mas não existia como menu configurável). Novo guard (`raise`, não `assert`) que
+  valida no load que todo `menu` das ações ∈ VALID_KEYS∪{None}.
+- **Backend** `services/action_permissions.py`: campo `group` (texto livre) **substituído por `menu`**
+  (o menu_key ao qual a ação pertence), p/ aninhar a ação sob o menu. `go_gerenciar` → menu=None
+  (cai em "Outras ações"). `default_base_roles`/seed/`VALID_ACTION_KEYS` inalterados.
+- **Frontend** `ProfilesView.vue`: modal reescrito como **árvore Seção → Menu (checkbox de acesso) →
+  Ações/CRUD do menu (checkbox)**, aninhamento **só visual** (ação independente do menu — dá p/ liberar
+  a ação com o menu desmarcado). Grupo "Outras ações" p/ órfãs; "Marcar/Limpar tudo" cobre menus+ações;
+  CSS novo. Removidos computed/funções mortos (`menuCatalogBySectionFiltered`, `actionCatalogByGroup`,
+  `selectAll/NoneActions`).
+- **Contrato de save intacto** (menu_keys + action_keys em arrays separados; ADR-0025/0035 preservados:
+  `menu` é só dica de UI, não participa da autorização). Verificação: backend importa, `pytest` 310 ✓
+  (2 pré-existentes), `npm run build` ✓. Dívida registrada: `inventario_criar` grantável mas não
+  gateia o sidebar; subgrupo "Integrações" da Administração foi achatado (1 nível de seção).
+
+---
+
 ## 2026-10-24 — chore(rbac): remove permissão/endpoint legado "Cadastrar Gestor de Conta (AC)"
 
 Limpeza de legado (pedido do dono). A permissão de ação `criar_ac` e o endpoint `POST /auth/register/ac`

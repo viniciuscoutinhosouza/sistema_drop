@@ -20,54 +20,74 @@ router = APIRouter()
 
 # ── Catálogo de menu_keys disponíveis ────────────────────────────────────────
 # Cada entrada: (key, label, section)
+# A ORDEM e as SEÇÕES espelham a árvore do menu lateral (AppSidebar.vue) — a tela de Perfil
+# apresenta os menus "exatamente como a árvore é mostrada". Uma `section` por grupo colapsável
+# do sidebar; a ordem da lista = a ordem dos grupos/itens no sidebar.
 MENU_CATALOG: list[dict] = [
-    # Seção AC
-    {"key": "cmig",             "label": "Contas MIG (CMIG)",        "section": "MINHAS CONTAS"},
-    {"key": "integrations",     "label": "Contas Marketplace (CM)",  "section": "MINHAS CONTAS"},
-    {"key": "cmig_reports",     "label": "Relatórios em PDF",        "section": "RELATÓRIOS"},
-    {"key": "relatorio_vendas", "label": "Vendas do Mês",            "section": "RELATÓRIOS"},
-    {"key": "full_cnpjs",       "label": "CNPJs FULL",               "section": "MINHAS CONTAS"},
-    {"key": "anuncios",         "label": "Anúncios",                 "section": "OPERAÇÕES"},
-    {"key": "campanha_ads",     "label": "Campanha ADS",             "section": "OPERAÇÕES"},
-    {"key": "atendimento",      "label": "Atendimento",              "section": "OPERAÇÕES"},
-    {"key": "financeiro",       "label": "Financeiro",               "section": "OPERAÇÕES"},
-    {"key": "pedidos",          "label": "Pedidos",                  "section": "OPERAÇÕES"},
-    {"key": "catalog",          "label": "Catálogo",                 "section": "OPERAÇÕES"},
-    {"key": "pedido_manual",    "label": "Pedido Manual",            "section": "OPERAÇÕES"},
-    {"key": "devolucoes",       "label": "Devoluções",               "section": "OPERAÇÕES"},
-    {"key": "estoque",          "label": "Controle de Estoque",      "section": "OPERAÇÕES"},
-    {"key": "pessoas",            "label": "Pessoas",                  "section": "FISCAL"},
-    {"key": "fiscal_entradas",    "label": "Entradas (NF-e)",          "section": "FISCAL"},
-    {"key": "fiscal_saidas",      "label": "Saídas (NF-e)",            "section": "FISCAL"},
-    {"key": "fiscal_cfop",        "label": "Cadastro de CFOPs",        "section": "FISCAL"},
-    {"key": "fiscal_config",      "label": "Configuração Fiscal",      "section": "FISCAL"},
-    {"key": "fiscal_transicao",   "label": "Transição Tributária",     "section": "FISCAL"},
-    # Seção UGO
-    {"key": "pg",               "label": "Produto Geral (PG)",       "section": "OPERAÇÃO (GL)"},
-    {"key": "separacao",        "label": "Separação (Gaiola)",       "section": "SEPARAÇÃO (GL)"},
-    {"key": "ag_retorno",       "label": "Ag. Retorno Físico",       "section": "ESTOQUE (GL)"},
-    {"key": "inventario",       "label": "Inventário (ver)",         "section": "ESTOQUE (GL)"},
-    {"key": "inventario_criar", "label": "Inventário (criar)",       "section": "ESTOQUE (GL)"},
-    # Integração
-    {"key": "integracao_envio", "label": "Envio de Produtos (eShip)", "section": "INTEGRAÇÃO"},
-    # Monitoramento
-    {"key": "rotinas",          "label": "Rotinas Automatizadas",    "section": "MONITORAMENTO"},
-    # GO
-    {"key": "go_empresa",       "label": "Minha Empresa",            "section": "GESTÃO (GO)"},
-    {"key": "go_usuarios",      "label": "Usuários (GO)",            "section": "GESTÃO (GO)"},
-    # Administração
-    {"key": "config_usuarios",    "label": "Usuários",               "section": "ADMINISTRAÇÃO"},
-    {"key": "config_galpoes",     "label": "Galpões",                "section": "ADMINISTRAÇÃO"},
-    {"key": "config_aprovacoes",  "label": "Aprovações de Cadastro", "section": "ADMINISTRAÇÃO"},
-    {"key": "config_email",       "label": "Servidor de E-mail",     "section": "ADMINISTRAÇÃO"},
-    {"key": "config_ncm",         "label": "Tabela NCM",             "section": "ADMINISTRAÇÃO"},
-    {"key": "config_ai",          "label": "Configuração de IA",     "section": "ADMINISTRAÇÃO"},
-    {"key": "config_marketplaces","label": "Config. de Marketplaces","section": "ADMINISTRAÇÃO"},
-    {"key": "config_api_console", "label": "Console de API",         "section": "ADMINISTRAÇÃO"},
-    {"key": "config_perfis",      "label": "Gestão de Perfis",       "section": "ADMINISTRAÇÃO"},
+    # ── Cadastro ──
+    {"key": "pessoas",            "label": "Pessoas",                   "section": "Cadastro"},
+    {"key": "cmig",               "label": "Contas MIG (CMIG)",         "section": "Cadastro"},
+    {"key": "pg",                 "label": "Produto Geral (PG)",        "section": "Cadastro"},
+    # ── Relatórios ──
+    {"key": "cmig_reports",       "label": "Relatórios em PDF",         "section": "Relatórios"},
+    {"key": "relatorio_vendas",   "label": "Vendas do Mês",             "section": "Relatórios"},
+    # ── Anúncios ──
+    {"key": "catalog",            "label": "Catálogo",                  "section": "Anúncios"},
+    {"key": "anuncios",           "label": "Anúncios (manutenção)",     "section": "Anúncios"},
+    {"key": "atendimento",        "label": "Atendimento",               "section": "Anúncios"},
+    {"key": "campanha_ads",       "label": "Campanha ADS",              "section": "Anúncios"},
+    # ── Financeiro ──
+    {"key": "financeiro",         "label": "Financeiro",                "section": "Financeiro"},
+    # ── Venda / Saída ──
+    {"key": "pedidos",            "label": "Pedidos Importados",        "section": "Venda / Saída"},
+    {"key": "pedido_manual",      "label": "Pedido de Venda - Manual",  "section": "Venda / Saída"},
+    {"key": "devolucoes",         "label": "Devoluções / Cancelamento", "section": "Venda / Saída"},
+    # ── Compra / Entrada ──
+    {"key": "fiscal_entradas",    "label": "Entradas (NF-e) de Compra", "section": "Compra / Entrada"},
+    # ── Logística ──
+    {"key": "separacao",          "label": "Separação (Gaiola)",        "section": "Logística"},
+    # ── Estoque ──
+    {"key": "estoque",            "label": "Controle de Estoque",       "section": "Estoque"},
+    {"key": "inventario",         "label": "Inventário (ver)",          "section": "Estoque"},
+    {"key": "inventario_criar",   "label": "Inventário (criar)",        "section": "Estoque"},
+    {"key": "ag_retorno",         "label": "Ag. Retorno Físico",        "section": "Estoque"},
+    # ── Fiscal ──
+    {"key": "fiscal_saidas",      "label": "Saídas (NF-e)",             "section": "Fiscal"},
+    {"key": "fiscal_cfop",        "label": "Cadastro de CFOPs",         "section": "Fiscal"},
+    {"key": "fiscal_config",      "label": "Configuração Fiscal",       "section": "Fiscal"},
+    {"key": "fiscal_transicao",   "label": "Transição Tributária",      "section": "Fiscal"},
+    # ── Integração ──
+    {"key": "integracao_envio",   "label": "Envio de Produtos (eShip)", "section": "Integração"},
+    # ── Monitoramento ──
+    {"key": "rotinas",            "label": "Rotinas Automatizadas",     "section": "Monitoramento"},
+    # ── Gestão (GO) ──
+    {"key": "go_empresa",         "label": "Minha Empresa",             "section": "Gestão"},
+    # ── Administração ──
+    {"key": "integrations",       "label": "Contas Marketplace (CM)",   "section": "Administração"},
+    {"key": "full_cnpjs",         "label": "CNPJs FULL",                "section": "Administração"},
+    {"key": "config_marketplaces","label": "Config. de Marketplaces",   "section": "Administração"},
+    {"key": "config_eship",       "label": "Integração eShip",          "section": "Administração"},
+    {"key": "config_api_console", "label": "Console de API",            "section": "Administração"},
+    {"key": "config_aprovacoes",  "label": "Aprovações de Cadastro",    "section": "Administração"},
+    {"key": "config_usuarios",    "label": "Usuários",                  "section": "Administração"},
+    {"key": "go_usuarios",        "label": "Usuários (Galpão)",         "section": "Administração"},
+    {"key": "config_galpoes",     "label": "Galpões",                   "section": "Administração"},
+    {"key": "config_email",       "label": "Servidor de E-mail",        "section": "Administração"},
+    {"key": "config_ncm",         "label": "Tabela NCM",                "section": "Administração"},
+    {"key": "config_ai",          "label": "Configuração de IA",        "section": "Administração"},
+    {"key": "config_perfis",      "label": "Gestão de Perfis",          "section": "Administração"},
 ]
 
 VALID_KEYS = {m["key"] for m in MENU_CATALOG}
+
+# Falha alto: todo `menu` do catálogo de ações deve apontar para um menu válido (ou None).
+# Pega typo no mapeamento ação→menu na subida do app, não em produção.
+_bad_action_menus = [
+    a["key"] for a in ACTION_PERMISSIONS
+    if a.get("menu") is not None and a["menu"] not in VALID_KEYS
+]
+if _bad_action_menus:  # raise (não assert — assert some sob python -O)
+    raise RuntimeError(f"ACTION_PERMISSIONS com menu inválido: {_bad_action_menus}")
 
 
 def _serialize_profile(p: UserProfile) -> dict:

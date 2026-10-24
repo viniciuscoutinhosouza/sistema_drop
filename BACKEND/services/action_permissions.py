@@ -11,48 +11,50 @@ continua no `base_role` (modo de escopo). Aqui só entra "o que a pessoa pode FA
 """
 from __future__ import annotations
 
-# key, label (default), group, default_base_roles (papéis que o require_role liberava)
+# key, label (default), menu (menu_key ao qual a ação pertence — aninha a ação sob o menu na
+# tela de Perfil; None = ação sem menu próprio, cai em "Outras ações"), default_base_roles
+# (papéis que o require_role liberava). `menu` referencia VALID_KEYS (menus), não VALID_ACTION_KEYS;
+# é validado no load de routers/profiles.py (falha alto em typo).
 ACTION_PERMISSIONS: list[dict] = [
-    # Administração
-    {"key": "usuarios_gerenciar", "label": "Gerenciar usuários", "group": "Administração",
+    # Administração / Usuários / Perfis
+    {"key": "usuarios_gerenciar", "label": "Gerenciar usuários", "menu": "config_usuarios",
      "default_base_roles": ["admin"]},
-    {"key": "perfis_gerenciar", "label": "Gerenciar perfis de acesso", "group": "Administração",
-     "default_base_roles": ["admin"]},
-    {"key": "go_gerenciar", "label": "Gerenciar Gestores Operacionais (GO)", "group": "Administração",
-     "default_base_roles": ["admin"]},
-    {"key": "api_console", "label": "Console de API (diagnóstico)", "group": "Administração",
-     "default_base_roles": ["admin"]},
-    # Usuários — criação (register/user + register/ugo)
-    {"key": "usuarios_criar", "label": "Cadastrar usuário (Galpão)", "group": "Usuários",
+    {"key": "usuarios_criar", "label": "Cadastrar usuário (Galpão)", "menu": "config_usuarios",
      "default_base_roles": ["admin", "go"]},
+    {"key": "perfis_gerenciar", "label": "Gerenciar perfis de acesso", "menu": "config_perfis",
+     "default_base_roles": ["admin"]},
+    {"key": "go_gerenciar", "label": "Gerenciar Gestores Operacionais (GO)", "menu": None,
+     "default_base_roles": ["admin"]},
+    {"key": "api_console", "label": "Console de API (diagnóstico)", "menu": "config_api_console",
+     "default_base_roles": ["admin"]},
     # Fiscal
     {"key": "nfe_gerenciar", "label": "Ações fiscais de NF-e (finalizar/cancelar/inutilizar)",
-     "group": "Fiscal", "default_base_roles": ["ac", "admin"]},
-    {"key": "cfop_gerenciar", "label": "Gerenciar CFOPs", "group": "Fiscal",
+     "menu": "fiscal_saidas", "default_base_roles": ["ac", "admin"]},
+    {"key": "cfop_gerenciar", "label": "Gerenciar CFOPs", "menu": "fiscal_cfop",
      "default_base_roles": ["admin"]},
-    {"key": "ncm_gerenciar", "label": "Gerenciar NCM", "group": "Fiscal",
+    {"key": "ncm_gerenciar", "label": "Gerenciar NCM", "menu": "config_ncm",
      "default_base_roles": ["admin"]},
     # Configurações
-    {"key": "config_marketplace", "label": "Configuração por marketplace", "group": "Configurações",
+    {"key": "config_marketplace", "label": "Configuração por marketplace", "menu": "config_marketplaces",
      "default_base_roles": ["admin"]},
-    {"key": "config_email", "label": "Configuração de e-mail", "group": "Configurações",
+    {"key": "config_email", "label": "Configuração de e-mail", "menu": "config_email",
      "default_base_roles": ["admin"]},
-    {"key": "ia_config", "label": "Configuração de IA", "group": "Configurações",
+    {"key": "ia_config", "label": "Configuração de IA", "menu": "config_ai",
      "default_base_roles": ["admin"]},
     # Relatórios / Produtos / Anúncios
-    {"key": "relatorio_vendas", "label": "Relatório de vendas", "group": "Relatórios",
+    {"key": "relatorio_vendas", "label": "Relatório de vendas", "menu": "relatorio_vendas",
      "default_base_roles": ["admin", "ac", "go"]},
-    {"key": "pg_admin", "label": "Ação administrativa no Produto Geral", "group": "Produtos",
+    {"key": "pg_admin", "label": "Ação administrativa no Produto Geral", "menu": "pg",
      "default_base_roles": ["admin"]},
-    {"key": "anuncios_admin", "label": "Ação administrativa em Anúncios", "group": "Anúncios",
+    {"key": "anuncios_admin", "label": "Ação administrativa em Anúncios", "menu": "anuncios",
      "default_base_roles": ["admin"]},
     # eShip (WMS) — migrados de require_role (ADR-0035 Fase 2e). default_base_roles = EXATAMENTE
     # os papéis que o require_role liberava (preserva o comportamento no seed/fallback).
-    {"key": "eship_consultar", "label": "eShip: consultar (CMIG, saldo, produtos, push)", "group": "eShip",
+    {"key": "eship_consultar", "label": "eShip: consultar (CMIG, saldo, produtos, push)", "menu": "integracao_envio",
      "default_base_roles": ["admin", "ugo", "go", "ac"]},
-    {"key": "eship_operar", "label": "eShip: operar ordem (enviar/sincronizar/cancelar/conciliar)", "group": "eShip",
+    {"key": "eship_operar", "label": "eShip: operar ordem (enviar/sincronizar/cancelar/conciliar)", "menu": "integracao_envio",
      "default_base_roles": ["admin", "ugo", "go"]},
-    {"key": "eship_config", "label": "eShip: configurar galpão", "group": "eShip",
+    {"key": "eship_config", "label": "eShip: configurar galpão", "menu": "config_eship",
      "default_base_roles": ["admin"]},
 ]
 
