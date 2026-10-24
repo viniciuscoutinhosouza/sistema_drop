@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-10-24 — feat(rbac): capacidades CMIG/fiscal/PG/estoque viram permissões de Perfil (ADR-0036)
+
+Pedido do dono: o usuário dono de galpão (`go.harmonyexpress`) não conseguia **criar conta CMIG** nem
+**enviar o certificado digital (A1)** em "Contas MIG", e isso não aparecia configurável na tela de
+Perfil de Acesso. Exigência: **toda lógica que depende de tipo de usuário/perfil tem que ser
+configurável no Perfil**. Diagnóstico: essas capacidades estavam amarradas no **helper de ESCOPO**
+(`is_conta/is_global`) dentro do handler — não eram `require_permission`, logo invisíveis à tela de
+Perfil. Nível Full — Avaliação Prévia (consistency-auditor sobre o plano; 3 CRÍTICOS + 3 ALTOS
+incorporados: CRUD do dono, canal de ação no front, `create_cmig` sem validar galpão, espelhos PG,
+DC-e legal).
+
+- **Princípio (ADR-0036):** capacidade = permissão de ação (editável por Perfil); escopo = escopo
+  (`data_scope`, intocado). Autorização = **permissão AND `assert_cmig_access`** (qual CMIG).
+- **Catálogo** `services/action_permissions.py`: +7 chaves (`cmig_gerenciar`, `cmig_tipo_fiscal`,
+  `cmig_fiscal_config`, `cmig_dce_authorized` [default admin], `pg_importar`, `pg_sincronizar`,
+  `estoque_movimentar`), aninhadas sob os menus `cmig`/`fiscal_config`/`pg`/`estoque`.
+- **Gates trocados** por `require_permission`/`user_has_permission` (novo helper inline em
+  `dependencies.py`): `cmigs.py` (criar, tipo fiscal, eship-config, co-admin/convite, import/sync PG),
+  `fiscal_config.py` (config fiscal, certificado, DC-e), `integrations.py` (modo de emissão NF-e),
+  `invoices.py /inutilize` (reusa `nfe_gerenciar`), `stock.py` (desmontar KIT).
+- **Dono de galpão = proprietário:** `data_scope.assert_cmig_access(require_owner=True)` agora honra a
+  posse em `goes` (ADR-0026) — antes recusava todo galpão. Modelo AC (owner via `cmig_administrators`)
+  intocado. `create_cmig` virou scope-aware (galpão forçado ao próprio `warehouse_id`; sem
+  `CMIGAdministrator` fantasma).
+- **Canal de ação no front:** `auth.py` devolve `action_permissions` no login/refresh; `schemas/auth.py`
+  (+campo); `stores/auth.js` persiste + `hasAction()/hasMenu()` (bypass admin); guard do router ganhou
+  `meta.actionKey`. Views migradas de `role===` p/ capacidade: CmigListView, CmigFiscalConfigCard,
+  CmigDetailView, CfopView, NcmView, UsersView. Rotas migradas: cmigs/new+edit (actionKey), fiscal/config
+  + rotas admin de config (menuKey).
+- **Migration 162** (`162_seed_cmig_fiscal_action_permissions.sql`): semeia as chaves nos perfis-SISTEMA
+  conforme o comportamento atual → **zero-regressão** (molde da 158, bloco PL/SQL idempotente).
+- **Emendas:** ADR-0018 (tipo fiscal vira permissão editável, default ac/admin) e ADR-0017 (DC-e vira
+  permissão, default admin, com aviso).
+- **Follow-up documentado** (exige verificar seed por item p/ não trancar — guard fail-closed): rotas de
+  operador ainda em `meta.role` (returns/estoque/monitoring/anuncios-AC/campanha/full-cnpjs/settings-users
+  /warehouse/cmig-products) e views CmigProductListView/IntegrationsView/CollaboratorsModal.
+- **Verificação local:** `py_compile` OK; pytest `tests/test_data_scope.py` 18 ok (invariante galpão
+  dono atualizado); suíte `-m "not integration"` 309 ok + 2 pré-existentes (test_orders). **Migration
+  162 ainda NÃO rodada em produção.**
+
+---
+
 ## 2026-10-24 — refactor(galpao): aposenta tela "Gestores Operacionais (GO)" e mescla cadastro do dono na tela Galpões
 
 Pedido do dono: a tela "Gestores Operacionais" ficou confusa e redundante — mesclar o cadastro do

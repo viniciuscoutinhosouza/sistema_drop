@@ -142,7 +142,7 @@
               </div>
 
               <!-- Perfil de Acesso — define os acessos do usuário (só admin) -->
-              <div class="form-group" v-if="isAdmin">
+              <div class="form-group" v-if="canManageUsers">
                 <label>Perfil de Acesso <span v-if="!modal.editing" class="text-danger">*</span></label>
                 <select v-model="form.profile_id" class="form-control" :required="!modal.editing">
                   <option value="">
@@ -255,7 +255,9 @@ const loading    = ref(false)
 const search     = ref('')
 const filterProfileId = ref('')
 
-const isAdmin = computed(() => authStore.user?.role === 'admin')
+// Gestão plena de usuários (atribuir galpão/perfil) = capacidade por Perfil (ADR-0036). O cadastro
+// simples de operador segue `usuarios_criar`; isto controla ver/escolher galpão e perfil.
+const canManageUsers = computed(() => authStore.hasAction('usuarios_gerenciar'))
 
 const profiles = ref([])
 async function loadProfiles() {
@@ -299,7 +301,7 @@ function warehouseName(id) {
 
 onMounted(async () => {
   const tasks = [loadUsers(), loadPlans(), loadWarehouses()]
-  if (isAdmin.value) tasks.push(loadProfiles())
+  if (canManageUsers.value) tasks.push(loadProfiles())
   await Promise.all(tasks)
 })
 
@@ -361,7 +363,7 @@ async function submitForm() {
         is_active:    form.value.is_active,
       }
       // Só admin pode alterar profile_id; backend valida o role além disso.
-      if (isAdmin.value) {
+      if (canManageUsers.value) {
         payload.profile_id = form.value.profile_id === '' ? null : Number(form.value.profile_id)
       }
       await api.put(`/users/${modal.value.editId}`, payload)

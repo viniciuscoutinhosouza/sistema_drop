@@ -59,6 +59,7 @@ export const useAuthStore = defineStore('auth', () => {
       profile_id: data.profile_id ?? null,
       profile_name: data.profile_name ?? null,
       menu_permissions: data.menu_permissions ?? [],
+      action_permissions: data.action_permissions ?? [],
     }
     saveToStorage()
     if (data.dark_mode) {
@@ -112,6 +113,7 @@ export const useAuthStore = defineStore('auth', () => {
         profile_id: data.profile_id ?? null,
         profile_name: data.profile_name ?? null,
         menu_permissions: data.menu_permissions ?? [],
+        action_permissions: data.action_permissions ?? [],
       }
     }
     saveToStorage()
@@ -127,6 +129,24 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  // ── Autorização na UI (mesma régua do backend — ADR-0025/0036) ──────────────
+  // Admin sempre passa (espelha o bypass do require_permission/require_menu_permission).
+  // hasMenu  = visibilidade de menu/rota (menu_permissions).
+  // hasAction = capacidade de uma AÇÃO (action_permissions) — p/ esconder botões cujo
+  //             backend gateia por require_permission (senão o botão aparece e o clique toma 403).
+  function hasMenu(key) {
+    const u = user.value
+    if (!u) return false
+    if (u.role === 'admin') return true
+    return (u.menu_permissions || []).includes(key)
+  }
+  function hasAction(key) {
+    const u = user.value
+    if (!u) return false
+    if (u.role === 'admin') return true
+    return (u.action_permissions || []).includes(key)
+  }
+
   return {
     user,
     accessToken,
@@ -138,5 +158,7 @@ export const useAuthStore = defineStore('auth', () => {
     logout,
     doRefresh,
     setAvatar,
+    hasMenu,
+    hasAction,
   }
 })

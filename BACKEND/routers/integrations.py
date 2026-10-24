@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database import get_db
-from dependencies import get_current_user, require_menu_permission
+from dependencies import get_current_user, require_menu_permission, user_has_permission
 from models.cmig import CMIG, CMIGAdministrator
 from models.integration import AccountBalance, MarketplaceAccount
 from models.product import DropshipperProduct, ProductListing
@@ -632,10 +632,10 @@ async def _set_nfe_emission_mode(
         raise HTTPException(status_code=400, detail="Modo de emissão inválido (use 'marketplace' ou 'own').")
     if (account.nfe_emission_mode or "marketplace") == mode:
         return  # no-op
-    if not (is_conta(current_user) or is_global(current_user)):
+    if not await user_has_permission(current_user, db, "cmig_fiscal_config"):
         raise HTTPException(
             status_code=403,
-            detail="Apenas Gestor de Conta (AC) ou Admin pode alterar o modo de emissão de NF-e.",
+            detail="Seu perfil não permite alterar o modo de emissão de NF-e (configuração fiscal da CMIG).",
         )
     if mode == "own":
         if not account.cmig_id:

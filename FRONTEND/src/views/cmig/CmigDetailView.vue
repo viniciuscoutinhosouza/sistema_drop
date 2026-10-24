@@ -10,7 +10,7 @@
             <RouterLink to="/cmigs" class="btn btn-secondary mr-2">
               <i class="fas fa-arrow-left mr-1"></i> Voltar
             </RouterLink>
-            <RouterLink v-if="isAC" :to="`/cmigs/${cmig?.id}/edit`" class="btn btn-primary mr-2">
+            <RouterLink v-if="canManageCmig" :to="`/cmigs/${cmig?.id}/edit`" class="btn btn-primary mr-2">
               <i class="fas fa-edit mr-1"></i> Editar
             </RouterLink>
             <RouterLink :to="`/cmig-products?cmig_id=${cmig?.id}`" class="btn btn-info">
@@ -87,7 +87,7 @@
             <CmigEShipConfigCard v-if="cmig" :cmig-id="Number(cmig.id)" />
 
             <!-- Colaboradores -->
-            <div class="card" v-if="isAC">
+            <div class="card" v-if="canManageCmig">
               <div class="card-header">
                 <h3 class="card-title"><i class="fas fa-users mr-2"></i>Colaboradores</h3>
               </div>
@@ -110,7 +110,7 @@
             />
 
             <!-- IA de Atendimento -->
-            <div class="card" v-if="isAC || isAdmin">
+            <div class="card" v-if="canManageCmig">
               <div class="card-header">
                 <h3 class="card-title"><i class="fas fa-robot mr-2 text-success"></i>IA de Atendimento</h3>
               </div>
@@ -222,8 +222,8 @@ const showCollab = ref(false)
 
 const nfeForm = ref({ cm_id: '', shipping_method: 'FULL_ML', issuer: 'marketplace', notes: '' })
 
-const isAC = computed(() => authStore.user?.role === 'ac')
-const isAdmin = computed(() => authStore.user?.role === 'admin')
+// Capacidade por Perfil (ADR-0036) — gerenciar CMIG. Admin passa (bypass no store).
+const canManageCmig = computed(() => authStore.hasAction('cmig_gerenciar'))
 const cmigId = computed(() => route.params.id)
 
 const aiConfig = ref({ auto_respond: false, custom_instructions: '' })

@@ -6,7 +6,7 @@
           <div class="col-sm-6">
             <h1 class="m-0">Contas MIG (CMIG)</h1>
           </div>
-          <div class="col-sm-6 text-right" v-if="isAC">
+          <div class="col-sm-6 text-right" v-if="canManageCmig">
             <RouterLink to="/cmigs/new" class="btn btn-primary">
               <i class="fas fa-plus mr-1"></i> Nova CMIG
             </RouterLink>
@@ -63,10 +63,10 @@
                     <RouterLink :to="`/cmigs/${cmig.id}`" class="btn btn-sm btn-outline-info mr-1" title="Detalhes">
                       <i class="fas fa-eye"></i>
                     </RouterLink>
-                    <RouterLink v-if="isAC || isAdmin" :to="`/cmigs/${cmig.id}/edit`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
+                    <RouterLink v-if="canManageCmig" :to="`/cmigs/${cmig.id}/edit`" class="btn btn-sm btn-outline-primary mr-1" title="Editar">
                       <i class="fas fa-edit"></i>
                     </RouterLink>
-                    <RouterLink v-if="isAC || isAdmin" :to="`/integrations?cmig_id=${cmig.id}`" class="btn btn-sm btn-outline-success mr-1" title="Marketplaces desta CMIG">
+                    <RouterLink v-if="canManageCmig" :to="`/integrations?cmig_id=${cmig.id}`" class="btn btn-sm btn-outline-success mr-1" title="Marketplaces desta CMIG">
                       <i class="fas fa-plug"></i>
                     </RouterLink>
                     <button v-if="canManage(cmig)" class="btn btn-sm btn-outline-secondary"
@@ -106,11 +106,13 @@ const cmigStore = useCmigStore()
 const authStore = useAuthStore()
 const { allCmigs: cmigs, loading } = storeToRefs(cmigStore)
 
-const isAC    = computed(() => authStore.user?.role === 'ac')
-const isAdmin = computed(() => authStore.user?.role === 'admin')
+// Capacidade por Perfil (ADR-0036), não mais papel cru. Admin passa (bypass no store).
+const canManageCmig = computed(() => authStore.hasAction('cmig_gerenciar'))
 
 function canManage(cmig) {
-  return isAdmin.value || (isAC.value && cmig.is_owner === true)
+  // Gerenciar colaboradores = capacidade + ser proprietário (admin ou dono da CMIG).
+  if (!authStore.hasAction('cmig_gerenciar')) return false
+  return authStore.user?.role === 'admin' || cmig.is_owner === true
 }
 
 const collabModal = ref({ visible: false, id: null, label: '' })

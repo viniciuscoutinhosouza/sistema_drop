@@ -8,7 +8,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db, task_db
-from dependencies import get_current_user, require_menu_permission
+from dependencies import get_current_user, require_menu_permission, user_has_permission
 from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
 from models.fiscal import Invoice
 from models.full_stock import FullStock
@@ -1032,8 +1032,8 @@ async def disassemble_kit(
     −N do KIT, +N×composição de cada componente. Só admin/Galpão. Exige unidades montadas suficientes
     (`stock_quantity` do kit). Registra os movimentos no extrato dos dois produtos e recomputa.
     """
-    if not (is_galpao(current_user) or is_global(current_user)):
-        raise HTTPException(status_code=403, detail="Apenas admin ou Galpão")
+    if not await user_has_permission(current_user, db, "estoque_movimentar"):
+        raise HTTPException(status_code=403, detail="Seu perfil não permite movimentar estoque físico")
     qty = int(body.get("quantity") or 0)
     if qty <= 0:
         raise HTTPException(status_code=400, detail="Informe uma quantidade a desmontar (> 0)")

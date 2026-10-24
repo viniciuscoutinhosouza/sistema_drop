@@ -110,9 +110,24 @@ async def assert_cmig_access(
         if not user.warehouse_id or cmig.warehouse_id != user.warehouse_id:
             raise HTTPException(status_code=403, detail="CMIG não pertence ao seu Galpão")
         if require_owner:
-            raise HTTPException(
-                status_code=403, detail="Apenas o AC proprietário pode realizar esta ação"
-            )
+            # ADR-0026/0036: o DONO do galpão (posse de registro em `goes` do próprio galpão) é o
+            # proprietário da CMIG do galpão — pode as ações de proprietário. Operador (go sem posse)
+            # não. A CAPACIDADE já foi checada antes por `require_permission`; aqui é só a POSSE.
+            from models.go import GO
+
+            owns = (
+                await db.execute(
+                    select(GO.id).where(
+                        GO.user_id == user.id,
+                        GO.warehouse_id == user.warehouse_id,
+                        GO.is_active == True,  # noqa: E712
+                    )
+                )
+            ).first()
+            if not owns:
+                raise HTTPException(
+                    status_code=403, detail="Apenas o dono do Galpão pode realizar esta ação"
+                )
         return
     if is_conta(user):
         adm = (

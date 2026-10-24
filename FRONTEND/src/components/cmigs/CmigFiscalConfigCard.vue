@@ -119,7 +119,7 @@
           </div>
 
           <!-- DC-e (conta pessoa física / CPF): autorização por conta e ordem — só admin -->
-          <div class="row mt-2" v-if="isAdmin">
+          <div class="row mt-2" v-if="canAuthorizeDce">
             <div class="col-md-12">
               <div class="custom-control custom-switch">
                 <input type="checkbox" class="custom-control-input" id="dceAuth"
@@ -327,8 +327,9 @@ const form = reactive({
   default_origin: null,
 })
 
-const canEdit = computed(() => ['ac', 'admin'].includes(authStore.user?.role))
-const isAdmin = computed(() => authStore.user?.role === 'admin')
+// Capacidades por Perfil (ADR-0036), não mais papel cru. Admin passa (bypass no store).
+const canEdit = computed(() => authStore.hasAction('cmig_fiscal_config'))
+const canAuthorizeDce = computed(() => authStore.hasAction('cmig_dce_authorized'))
 
 const daysToExpire = computed(() => {
   if (!config.value.certificate_expires_at) return null
@@ -407,7 +408,7 @@ async function save() {
   try {
     // dce_authorized só é editável por admin — não enviar no payload de AC (backend rejeita).
     const payload = { ...form }
-    if (!isAdmin.value) delete payload.dce_authorized
+    if (!canAuthorizeDce.value) delete payload.dce_authorized
     const { data } = await api.patch(`/cmigs/${props.cmigId}/fiscal-config`, payload)
     config.value = data
     toast.success('Configuração fiscal salva')

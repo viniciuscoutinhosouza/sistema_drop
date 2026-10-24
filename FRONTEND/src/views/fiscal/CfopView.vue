@@ -7,7 +7,7 @@
             <h1 class="m-0"><i class="fas fa-list-ol text-primary mr-2"></i>Cadastro de CFOPs</h1>
             <small class="text-muted">Códigos Fiscais de Operações e Prestações</small>
           </div>
-          <div class="col-sm-6 text-right" v-if="isAdmin">
+          <div class="col-sm-6 text-right" v-if="canManageCfop">
             <button class="btn btn-primary" @click="openNew">
               <i class="fas fa-plus mr-1"></i> Novo CFOP
             </button>
@@ -63,12 +63,12 @@
                   <th>Descrição</th>
                   <th style="width:100px">Direção</th>
                   <th style="width:80px">Status</th>
-                  <th v-if="isAdmin" style="width:100px"></th>
+                  <th v-if="canManageCfop" style="width:100px"></th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="filtered.length === 0">
-                  <td :colspan="isAdmin ? 5 : 4" class="text-center text-muted py-4">
+                  <td :colspan="canManageCfop ? 5 : 4" class="text-center text-muted py-4">
                     Nenhum CFOP encontrado.
                   </td>
                 </tr>
@@ -88,7 +88,7 @@
                       {{ c.is_active ? 'Ativo' : 'Inativo' }}
                     </span>
                   </td>
-                  <td v-if="isAdmin" class="text-right">
+                  <td v-if="canManageCfop" class="text-right">
                     <button class="btn btn-xs btn-outline-secondary mr-1" @click="openEdit(c)">
                       <i class="fas fa-edit"></i>
                     </button>
@@ -181,7 +181,8 @@ const modalError = ref('')
 const filters = reactive({ q: '', direction: '', activeOnly: true })
 let searchTimer = null
 
-const isAdmin = computed(() => authStore.user?.role === 'admin')
+// Capacidade por Perfil (ADR-0036) — mesma chave do backend require_permission("cfop_gerenciar").
+const canManageCfop = computed(() => authStore.hasAction('cfop_gerenciar'))
 
 const form = reactive({ code: '', direction: 'out', description: '', notes: '', is_active: true })
 

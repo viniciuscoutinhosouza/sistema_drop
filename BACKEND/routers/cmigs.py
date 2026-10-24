@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
-from dependencies import get_current_user
+from dependencies import get_current_user, require_permission, user_has_permission
 from models.cmig import (
     CMIG,
     CMIGAdministrator,
@@ -263,10 +263,16 @@ async def list_cmigs(
 async def create_cmig(
     body: CMIGCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("cmig_gerenciar")),
 ):
-    if not (is_conta(current_user) or is_global(current_user)):
-        raise HTTPException(status_code=403, detail="Apenas AC pode criar CMIG")
+    # CAPACIDADE: `require_permission("cmig_gerenciar")` (configurável por Perfil — ADR-0036),
+    # não mais um gate fixo `is_conta/is_global`. ESCOPO (ADR-0026): o GALPÃO só cria CMIG no
+    # PRÓPRIO galpão — força o warehouse_id do usuário (fail-closed se não tiver vínculo), senão
+    # com a permissão ele poderia criar CMIG dentro de galpão alheio (vazamento entre galpões).
+    if is_galpao(current_user):
+        if not current_user.warehouse_id:
+            raise HTTPException(status_code=403, detail="Seu usuário não está vinculado a um Galpão")
+        body.warehouse_id = current_user.warehouse_id
 
     if body.cnpj:
         dup = await db.execute(select(CMIG).where(CMIG.cnpj == body.cnpj))
@@ -289,9 +295,12 @@ async def create_cmig(
     db.add(cmig)
     await db.flush()
 
-    # Registrar como administrador proprietário
-    admin_entry = CMIGAdministrator(user_id=current_user.id, cmig_id=cmig.id, is_owner=True)
-    db.add(admin_entry)
+    # Co-administração via `cmig_administrators` é do modelo CONTA (AC). O GALPÃO deriva a posse da
+    # CMIG pelo `warehouse_id` (o escopo galpão NUNCA consulta esta tabela) — não cria linha-fantasma
+    # com is_owner=True p/ um usuário de galpão. Só AC/admin viram administrador-proprietário aqui.
+    if not is_galpao(current_user):
+        admin_entry = CMIGAdministrator(user_id=current_user.id, cmig_id=cmig.id, is_owner=True)
+        db.add(admin_entry)
     await db.commit()
     await db.refresh(cmig)
     return cmig
@@ -317,6 +326,10 @@ async def update_cmig(
 ):
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
+    # CAPACIDADE (ADR-0036): editar a CMIG exige `cmig_gerenciar` — espelha create_cmig/eship-config
+    # e a rota do front (actionKey). O ESCOPO (qual CMIG) já foi checado acima.
+    if not await user_has_permission(current_user, db, "cmig_gerenciar"):
+        raise HTTPException(status_code=403, detail="Seu perfil não permite editar esta CMIG")
 
     updates = body.model_dump(exclude_none=True)
     sent = body.model_fields_set
@@ -340,11 +353,12 @@ async def update_cmig(
         type_changed = bool(new_cnpj) != bool((cmig.cnpj or "").strip()) or bool(new_cpf) != bool(
             (cmig.cpf or "").strip()
         )
-        # Alterar o TIPO fiscal é tão sensível quanto criar → exige AC/admin.
-        if type_changed and not (is_conta(current_user) or is_global(current_user)):
+        # Alterar o TIPO fiscal é sensível (ADR-0018) → capacidade própria `cmig_tipo_fiscal`
+        # (configurável por Perfil — ADR-0036; default ac/admin preserva o comportamento).
+        if type_changed and not await user_has_permission(current_user, db, "cmig_tipo_fiscal"):
             raise HTTPException(
                 status_code=403,
-                detail="Apenas AC ou admin podem alterar o tipo fiscal (CPF/CNPJ) da CMIG",
+                detail="Seu perfil não permite alterar o tipo fiscal (CPF/CNPJ) da CMIG",
             )
 
         # Unicidade
@@ -450,8 +464,8 @@ async def update_eship_config(
     """Atualiza a config eShip da CMIG. A apikey só é alterada se vier preenchida."""
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db)
-    if not (is_conta(current_user) or is_global(current_user)):
-        raise HTTPException(status_code=403, detail="Apenas AC ou admin podem editar a integração eShip")
+    if not await user_has_permission(current_user, db, "cmig_gerenciar"):
+        raise HTTPException(status_code=403, detail="Seu perfil não permite editar a integração eShip desta CMIG")
 
     if "eship_base_url" in body:
         cmig.eship_base_url = (body.get("eship_base_url") or "").strip() or None
@@ -510,7 +524,7 @@ async def list_cmig_admins(
 async def list_collaborator_candidates(
     cmig_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("cmig_gerenciar")),
 ):
     """Lista ACs ativos elegíveis para virar colaboradores desta CMIG.
 
@@ -548,7 +562,7 @@ async def add_cmig_admin(
     cmig_id: int,
     body: CMIGAdminAdd,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("cmig_gerenciar")),
 ):
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db, require_owner=True)
@@ -586,7 +600,7 @@ async def invite_collaborator(
     cmig_id: int,
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("cmig_gerenciar")),
 ):
     """Convida um colaborador por e-mail. O convidado se cadastra por um link e o
     administrador geral libera o acesso; depois o dono vincula pela lista de ACs.
@@ -682,7 +696,7 @@ async def remove_cmig_admin(
     cmig_id: int,
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("cmig_gerenciar")),
 ):
     cmig = await _get_cmig_or_404(cmig_id, db)
     await _check_cmig_access(cmig, current_user, db, require_owner=True)
@@ -1553,9 +1567,9 @@ async def import_cmig_product_to_pg(
     """O Galpão importa um Produto CMIG para o PG do seu Galpão (um a um)."""
     import json as _json_imp
 
-    if not (is_galpao(current_user) or is_global(current_user)):
+    if not await user_has_permission(current_user, db, "pg_importar"):
         raise HTTPException(
-            status_code=403, detail="Apenas o Galpão pode importar Produtos CMIG para o PG"
+            status_code=403, detail="Seu perfil não permite importar Produtos CMIG para o PG"
         )
 
     cmig = await _get_cmig_or_404(cmig_id, db)
@@ -1702,9 +1716,9 @@ async def sync_pg_from_cmig(
     current_user: User = Depends(get_current_user),
 ):
     """Atualiza os campos do PG vinculado com os dados atuais do Produto CMIG."""
-    if not (is_galpao(current_user) or is_global(current_user)):
+    if not await user_has_permission(current_user, db, "pg_sincronizar"):
         raise HTTPException(
-            status_code=403, detail="Apenas o Galpão pode sincronizar Produtos CMIG com PG"
+            status_code=403, detail="Seu perfil não permite sincronizar Produtos CMIG com PG"
         )
 
     cmig = await _get_cmig_or_404(cmig_id, db)

@@ -46,7 +46,7 @@
                   <span v-if="dbCount === 0" class="badge badge-warning ml-1">pendente</span>
                 </a>
               </li>
-              <li class="nav-item" v-if="isAdmin">
+              <li class="nav-item" v-if="canManageNcm">
                 <a class="nav-link" :class="{ active: tab === 'new' }"
                    href="#" @click.prevent="openNew">
                   <i class="fas fa-plus mr-1"></i>Novo NCM
@@ -114,7 +114,7 @@
                       <th style="width:80px" class="text-center">Cap.</th>
                       <th style="width:80px" class="text-center">IPI %</th>
                       <th style="width:70px" class="text-center">Status</th>
-                      <th v-if="isAdmin" style="width:80px"></th>
+                      <th v-if="canManageNcm" style="width:80px"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -134,7 +134,7 @@
                           {{ ncm.is_active ? 'Ativo' : 'Inativo' }}
                         </span>
                       </td>
-                      <td v-if="isAdmin" class="text-right">
+                      <td v-if="canManageNcm" class="text-right">
                         <button class="btn btn-xs btn-outline-secondary" @click="openEdit(ncm)">
                           <i class="fas fa-edit"></i>
                         </button>
@@ -720,7 +720,7 @@ import { useToast } from '@/composables/useToast'
 const authStore = useAuthStore()
 const toast = useToast()
 
-const isAdmin = computed(() => authStore.user?.role === 'admin')
+const canManageNcm = computed(() => authStore.hasAction('ncm_gerenciar'))
 const PAGE_SIZE = 50
 
 // ── Estado geral ──────────────────────────────────────────────────────────────

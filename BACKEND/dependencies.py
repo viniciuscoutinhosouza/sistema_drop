@@ -131,6 +131,22 @@ async def _resolve_user_action_keys(user: User, db: AsyncSession) -> set[str]:
     return set()
 
 
+async def user_has_permission(user: User, db: AsyncSession, *keys: str) -> bool:
+    """Versão INLINE de `require_permission` (para checagens DENTRO do corpo do handler, ex.: um
+    campo sensível no PATCH, ou um ramo condicional). Mesma semântica: admin passa; senão exige
+    ALGUMA das `keys` no perfil; fallback por base_role só quando o perfil não tem ação seeda."""
+    if user.role == "admin":
+        return True
+    granted = await _resolve_user_action_keys(user, db)
+    if any(k in granted for k in keys):
+        return True
+    if not granted:
+        from services.action_permissions import roles_for_keys
+        if user.role in roles_for_keys(keys):
+            return True
+    return False
+
+
 def require_permission(*keys: str):
     """Autoriza por PERMISSÃO DE AÇÃO do perfil do usuário (substitui `require_role`).
 

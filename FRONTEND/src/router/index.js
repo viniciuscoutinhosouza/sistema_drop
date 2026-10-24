@@ -259,7 +259,7 @@ const routes = [
       },
 
       // Galpões — gestão pelo Administrador Geral
-      { path: 'admin/galpoes', component: WarehouseAdminView, meta: { title: 'Galpões', role: 'admin' } },
+      { path: 'admin/galpoes', component: WarehouseAdminView, meta: { title: 'Galpões', menuKey: 'config_galpoes' } },
 
       // Minha Empresa — autoatendimento do dono do Galpão (gated pelo menu go_empresa; o backend
       // PUT /goes/{id} valida posse). O cadastro de dono foi mesclado na tela Galpões.
@@ -267,9 +267,9 @@ const routes = [
 
       // CMIGs — AC e UGO
       { path: 'cmigs', component: CmigListView, meta: { title: 'Contas MIG' } },
-      { path: 'cmigs/new', component: CmigFormView, meta: { title: 'Nova CMIG', role: 'ac' } },
+      { path: 'cmigs/new', component: CmigFormView, meta: { title: 'Nova CMIG', actionKey: 'cmig_gerenciar' } },
       { path: 'cmigs/:id', component: CmigDetailView, meta: { title: 'CMIG' } },
-      { path: 'cmigs/:id/edit', component: CmigFormView, meta: { title: 'Editar CMIG', role: ['ac', 'admin'] } },
+      { path: 'cmigs/:id/edit', component: CmigFormView, meta: { title: 'Editar CMIG', actionKey: 'cmig_gerenciar' } },
 
       // Produtos CMIG
       { path: 'cmig-products',                        component: CmigProductListView,   meta: { title: 'Produtos CMIG' } },
@@ -292,30 +292,30 @@ const routes = [
       { path: 'messages', component: MessagesView, meta: { title: 'Central de Atendimento' } },
 
       // Configuração IA — Admin
-      { path: 'settings/ai-config', component: AIConfigView, meta: { title: 'Configuração de IA', role: 'admin' } },
+      { path: 'settings/ai-config', component: AIConfigView, meta: { title: 'Configuração de IA', menuKey: 'config_ai' } },
 
       // Configuração de Marketplaces — Super Admin
-      { path: 'settings/marketplaces', component: MarketplaceSettingsView, meta: { title: 'Config. de Marketplaces', role: 'admin' } },
+      { path: 'settings/marketplaces', component: MarketplaceSettingsView, meta: { title: 'Config. de Marketplaces', menuKey: 'config_marketplaces' } },
 
       // Certificado do Marketplace (A1 central p/ DC-e) — Super Admin
-      { path: 'settings/marketplace-certificate', component: MarketplaceCertificateView, meta: { title: 'Certificado do Marketplace (DC-e)', role: 'admin' } },
+      { path: 'settings/marketplace-certificate', component: MarketplaceCertificateView, meta: { title: 'Certificado do Marketplace (DC-e)', menuKey: 'config_marketplaces' } },
 
       // Servidor de E-mail (SMTP) — Admin
-      { path: 'settings/email', component: EmailConfigView, meta: { title: 'Servidor de E-mail', role: 'admin' } },
+      { path: 'settings/email', component: EmailConfigView, meta: { title: 'Servidor de E-mail', menuKey: 'config_email' } },
 
       // Integração eShip (WMS) — Admin
-      { path: 'settings/eship', component: EShipConfigView, meta: { title: 'Integração eShip', role: 'admin' } },
+      { path: 'settings/eship', component: EShipConfigView, meta: { title: 'Integração eShip', menuKey: 'config_eship' } },
 
       // Integração > Produtos (eShip por empresa)
       { path: 'integracao/envio-produtos', component: EnvioProdutosView, meta: { title: 'Produtos (eShip)' } },
 
       // Tabela NCM — Admin
-      { path: 'settings/ncm', component: NcmView, meta: { title: 'Tabela NCM', role: 'admin' } },
+      { path: 'settings/ncm', component: NcmView, meta: { title: 'Tabela NCM', menuKey: 'config_ncm' } },
 
       // Console de API do Marketplace — Admin only
-      { path: 'admin/api-console', component: ApiConsoleView, meta: { title: 'Console de API', role: 'admin' } },
-      { path: 'admin/profiles',    component: ProfilesView,   meta: { title: 'Gestão de Perfis', role: 'admin' } },
-      { path: 'admin/user-approvals', component: UserApprovalsView, meta: { title: 'Aprovações de Cadastro', role: 'admin' } },
+      { path: 'admin/api-console', component: ApiConsoleView, meta: { title: 'Console de API', menuKey: 'config_api_console' } },
+      { path: 'admin/profiles',    component: ProfilesView,   meta: { title: 'Gestão de Perfis', menuKey: 'config_perfis' } },
+      { path: 'admin/user-approvals', component: UserApprovalsView, meta: { title: 'Aprovações de Cadastro', menuKey: 'config_aprovacoes' } },
 
       // Simulador ML — todos os usuários
       { path: 'simulator', component: SimuladorView, meta: { title: 'Simulador ML' } },
@@ -338,7 +338,7 @@ const routes = [
       { path: 'fiscal/invoices/:id',      component: InvoiceDetailView, meta: { title: 'NF-e' } },
       { path: 'fiscal/invoices/:id/edit', component: InvoiceFormView,   meta: { title: 'Editar NF-e' } },
       { path: 'fiscal/cfop',              component: CfopView,                meta: { title: 'Cadastro de CFOPs' } },
-      { path: 'fiscal/config',            component: FiscalConfigView,        meta: { title: 'Configuração Fiscal', role: 'ac' } },
+      { path: 'fiscal/config',            component: FiscalConfigView,        meta: { title: 'Configuração Fiscal', menuKey: 'fiscal_config' } },
       { path: 'fiscal/transicao',         component: TransicaoTributariaView, meta: { title: 'Transição Tributária' } },
     ],
   },
@@ -374,6 +374,19 @@ router.beforeEach((to, from, next) => {
     if (role !== 'admin') {
       const perms = Array.isArray(user?.menu_permissions) ? user.menu_permissions : []
       if (!perms.includes(to.meta.menuKey)) {
+        return next('/dashboard')
+      }
+    }
+  }
+
+  // Gate por action_permission (alinhado com backend require_permission — ADR-0036). Para rotas
+  // cuja ABERTURA depende de uma CAPACIDADE (ex.: criar/editar CMIG), não só da visibilidade do menu.
+  if (to.meta.actionKey) {
+    const user = JSON.parse(stored || '{}').user
+    const role = user?.role
+    if (role !== 'admin') {
+      const acts = Array.isArray(user?.action_permissions) ? user.action_permissions : []
+      if (!acts.includes(to.meta.actionKey)) {
         return next('/dashboard')
       }
     }

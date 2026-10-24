@@ -74,6 +74,7 @@ class TokenResponse(BaseModel):
     profile_id: int | None = None
     profile_name: str | None = None
     menu_permissions: list[str] = []
+    action_permissions: list[str] = []
 
 
 class RefreshRequest(BaseModel):

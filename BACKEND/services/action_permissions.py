@@ -28,6 +28,29 @@ ACTION_PERMISSIONS: list[dict] = [
     # Migration 161 limpa os grants órfãos desta chave.
     {"key": "api_console", "label": "Console de API (diagnóstico)", "menu": "config_api_console",
      "default_base_roles": ["admin"]},
+    # CMIG (Contas MIG) — capacidades decompostas dos gates `is_conta/is_global` que estavam
+    # amarrados no helper de ESCOPO (ADR-0036). Agora quem gerencia CMIG/fiscal é definido por
+    # PERFIL (capacidade) + acesso à CMIG (escopo, via `assert_cmig_access` — NÃO mexido).
+    # default_base_roles = papéis que o gate inline liberava → ZERO-REGRESSÃO no seed/fallback.
+    {"key": "cmig_gerenciar", "label": "Gerenciar CMIG (criar/editar/co-admin/convidar/integração)",
+     "menu": "cmig", "default_base_roles": ["ac", "admin"]},
+    {"key": "cmig_tipo_fiscal", "label": "Alterar tipo fiscal da CMIG (CPF ⇄ CNPJ)",
+     "menu": "cmig", "default_base_roles": ["ac", "admin"]},
+    {"key": "cmig_fiscal_config", "label": "Configuração fiscal da CMIG + certificado digital (A1)",
+     "menu": "fiscal_config", "default_base_roles": ["ac", "admin"]},
+    {"key": "cmig_dce_authorized",
+     "label": "Autorizar emissão de DC-e por conta e ordem (expõe o CNPJ da MIG — ADR-0017)",
+     "menu": "fiscal_config", "default_base_roles": ["admin"]},
+    # PG — espelho galpão-flavored do mesmo anti-padrão (import/sync CMIG→PG estavam em
+    # `is_galpao/is_global`). default = os papéis que o gate liberava (galpão canônico `go` + admin).
+    {"key": "pg_importar", "label": "Importar produto CMIG para o Produto Geral (PG)",
+     "menu": "pg", "default_base_roles": ["go", "admin"]},
+    {"key": "pg_sincronizar", "label": "Sincronizar dados do Produto CMIG para o PG vinculado",
+     "menu": "pg", "default_base_roles": ["go", "admin"]},
+    # Estoque — movimentação física que era galpão-only inline (desmontar KIT etc.). O menu
+    # `estoque` já controla a visibilidade; esta ação discrimina quem MOVIMENTA (galpão/admin).
+    {"key": "estoque_movimentar", "label": "Movimentar estoque físico (desmontar KIT, ajustes manuais)",
+     "menu": "estoque", "default_base_roles": ["go", "admin"]},
     # Fiscal
     {"key": "nfe_gerenciar", "label": "Ações fiscais de NF-e (finalizar/cancelar/inutilizar)",
      "menu": "fiscal_saidas", "default_base_roles": ["ac", "admin"]},

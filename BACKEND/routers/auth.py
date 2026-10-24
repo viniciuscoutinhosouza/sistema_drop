@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database import get_db
-from dependencies import get_current_user, require_permission
+from dependencies import _resolve_user_action_keys, get_current_user, require_permission
 from models.user import ACProfile, RefreshToken, User, UserProfile
 from schemas.auth import (
     ChangePasswordRequest,
@@ -102,6 +102,22 @@ async def _resolve_user_menu_permissions(user: User, db: AsyncSession) -> tuple[
     return None, None, []
 
 
+async def _resolve_user_action_permissions(user: User, db: AsyncSession) -> list[str]:
+    """Permissões de AÇÃO EFETIVAS do usuário, para o front gatear botões pela MESMA régua do
+    backend (`require_permission`/`user_has_permission`): perfil próprio → fallback perfil-sistema
+    do base_role; se nada foi semeado (legado/sem perfil), cai nos defaults do base_role. Admin
+    recebe TODAS (espelha o bypass admin). Ordenado para payload estável."""
+    from services.action_permissions import ACTION_PERMISSIONS
+
+    if user.role == "admin":
+        return sorted(p["key"] for p in ACTION_PERMISSIONS)
+    keys = await _resolve_user_action_keys(user, db)
+    if keys:
+        return sorted(keys)
+    # Fallback legado (perfil sem ação seeda): defaults por base_role do catálogo.
+    return sorted(p["key"] for p in ACTION_PERMISSIONS if user.role in p["default_base_roles"])
+
+
 @router.post("/login", response_model=TokenResponse)
 async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):
     _check_rate_limit(request.client.host if request.client else "unknown")
@@ -130,6 +146,7 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
     await db.commit()
 
     profile_id, profile_name, menu_permissions = await _resolve_user_menu_permissions(user, db)
+    action_permissions = await _resolve_user_action_permissions(user, db)
 
     return TokenResponse(
         access_token=access_token,
@@ -145,6 +162,7 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
         profile_id=profile_id,
         profile_name=profile_name,
         menu_permissions=menu_permissions,
+        action_permissions=action_permissions,
     )
 
 
@@ -326,6 +344,7 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
     await db.commit()
 
     profile_id_refresh, profile_name_refresh, menu_permissions_refresh = await _resolve_user_menu_permissions(user, db)
+    action_permissions_refresh = await _resolve_user_action_permissions(user, db)
 
     return TokenResponse(
         access_token=access_token,
@@ -340,6 +359,7 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
         profile_id=profile_id_refresh,
         profile_name=profile_name_refresh,
         menu_permissions=menu_permissions_refresh,
+        action_permissions=action_permissions_refresh,
     )
 
 

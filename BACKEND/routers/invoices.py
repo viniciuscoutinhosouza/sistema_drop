@@ -4222,16 +4222,15 @@ async def create_invoice_from_order(
 async def inutilize_nfe_range(
     body: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("nfe_gerenciar")),
 ):
     """Inutiliza faixa de numeração NFe que não foi emitida (evita gaps).
 
     Body:
       cmig_id, ano, serie, nro_ini, nro_fim, justificativa
     """
-    if not (is_conta(current_user) or is_global(current_user)):
-        raise HTTPException(status_code=403, detail="Apenas AC ou admin podem inutilizar numeração")
-
+    # Capacidade por Perfil (ADR-0036): mesma chave `nfe_gerenciar` das demais ações fiscais
+    # (finalizar/cancelar/inutilizar), em vez do gate inline `is_conta/is_global`.
     cmig_id = body.get("cmig_id")
     if not cmig_id:
         raise HTTPException(status_code=422, detail="cmig_id obrigatório")
@@ -4253,6 +4252,11 @@ async def inutilize_nfe_range(
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
+    # ESCOPO (ADR-0036): além da capacidade `nfe_gerenciar`, a inutilização de numeração SEFAZ é
+    # escrita fiscal por CMIG — só nas CMIGs acessíveis (admin=todas), como os irmãos sync/backfill.
+    accessible = await _accessible_cmig_ids(current_user, db)
+    if int(cmig_id) not in accessible:
+        raise HTTPException(status_code=403, detail="Acesso negado a esta CMIG")
     cfg = await _get_fiscal_config(cmig_id, db)
     if not (cfg.cert_path and cfg.cert_pass_encrypted):
         raise HTTPException(status_code=400, detail="CMIG sem certificado A1 configurado")

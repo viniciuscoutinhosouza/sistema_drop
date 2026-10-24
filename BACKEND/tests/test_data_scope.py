@@ -113,6 +113,10 @@ class _ResultScalar:
     def scalar_one_or_none(self):
         return self._obj
 
+    def first(self):
+        # usado pela query de POSSE do galpão (GO) em assert_cmig_access (ADR-0036)
+        return self._obj
+
 
 class _FakeDBScalar:
     def __init__(self, obj):
@@ -155,11 +159,19 @@ async def test_assert_galpao_sem_warehouse_403_fail_closed():
 
 
 @pytest.mark.asyncio
-async def test_assert_galpao_require_owner_403():
-    # galpão nunca é "AC proprietário"
+async def test_assert_galpao_require_owner_sem_posse_403():
+    # ADR-0036: galpão SEM posse (nenhum registro em `goes` do galpão) → 403 em require_owner.
+    # O FakeDB retorna None para a query de posse (GO) → operador, não dono.
     with pytest.raises(HTTPException):
         await ds.assert_cmig_access(_cmig(warehouse_id=5), _user("go", warehouse_id=5), _FakeDBScalar(None),
                                     require_owner=True)
+
+
+@pytest.mark.asyncio
+async def test_assert_galpao_require_owner_dono_libera():
+    # ADR-0036: galpão DONO (posse de registro em `goes` do próprio galpão) passa em require_owner.
+    db = _FakeDBScalar(types.SimpleNamespace(id=1))  # query de posse (GO) retorna uma linha
+    await ds.assert_cmig_access(_cmig(warehouse_id=5), _user("go", warehouse_id=5), db, require_owner=True)
 
 
 @pytest.mark.asyncio
