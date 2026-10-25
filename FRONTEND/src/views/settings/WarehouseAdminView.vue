@@ -320,7 +320,7 @@
         <div class="card">
           <div class="card-header d-flex align-items-center">
             <h3 class="card-title flex-grow-1">Galpões cadastrados</h3>
-            <button v-if="!showForm" class="btn btn-sm btn-primary" @click="newWarehouse">
+            <button v-if="!showForm && isAdmin" class="btn btn-sm btn-primary" @click="newWarehouse">
               <i class="fas fa-plus mr-1"></i> Novo Galpão
             </button>
           </div>
@@ -339,7 +339,7 @@
                   <td>{{ w.city ? `${w.city}/${w.state || ''}` : '—' }}</td>
                   <td class="text-right">
                     <button class="btn btn-sm btn-outline-primary mr-1" @click="editWarehouse(w)"><i class="fas fa-edit"></i></button>
-                    <button class="btn btn-sm btn-outline-danger" :disabled="deletingId === w.id" @click="removeWarehouse(w)">
+                    <button v-if="isAdmin" class="btn btn-sm btn-outline-danger" :disabled="deletingId === w.id" @click="removeWarehouse(w)">
                       <i class="fas" :class="deletingId === w.id ? 'fa-spinner fa-spin' : 'fa-trash'"></i>
                     </button>
                   </td>
@@ -355,12 +355,17 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
 import WarehouseBankAccountsCard from '@/components/settings/WarehouseBankAccountsCard.vue'
 
 const toast = useToast()
+const authStore = useAuthStore()
+// Criar galpão / cadastrar dono novo é ação de ADMIN (escopo global). O dono de galpão abre esta
+// tela escopada ao PRÓPRIO galpão (ADR-0036) e só edita o seu — sem criar nem excluir.
+const isAdmin = computed(() => authStore.user?.role === 'admin')
 
 const loading = ref(true)
 const saving = ref(false)

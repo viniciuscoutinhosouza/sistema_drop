@@ -3,6 +3,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -141,21 +142,34 @@ async def create_profile(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("perfis_gerenciar")),
 ):
-    name = (body.get("name") or "").strip()
     label = (body.get("label") or "").strip()
     base_role = (body.get("base_role") or "").strip()
     menu_keys: list[str] = body.get("menu_keys") or []
 
-    if not name or not label:
-        raise HTTPException(status_code=422, detail="name e label são obrigatórios")
+    if not label:
+        raise HTTPException(status_code=422, detail="label é obrigatório")
     if base_role not in ("admin", "ac", "ugo", "go"):
         raise HTTPException(status_code=422, detail="base_role deve ser: admin, ac, ugo ou go")
     # Escopo admin só pode ser concedido por um admin de verdade (perfis_gerenciar é delegável).
     if base_role == "admin" and not is_global(current_user):
         raise HTTPException(status_code=403, detail="Somente um admin pode criar perfil com escopo admin")
 
-    existing = await db.execute(select(UserProfile).where(UserProfile.name == name))
-    if existing.scalar_one_or_none():
+    # `name` é só o identificador interno (unique, NOT NULL). A UI não o pede mais — derivamos um
+    # slug do label e garantimos unicidade. (Compat: se o cliente ainda mandar `name`, respeitamos.)
+    name = (body.get("name") or "").strip()
+    if not name:
+        import re as _re
+
+        base_slug = _re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:40] or "perfil"
+        name = base_slug
+        _n = 1
+        while (
+            await db.execute(select(UserProfile).where(UserProfile.name == name))
+        ).scalar_one_or_none():
+            _suffix = f"_{_n}"
+            name = base_slug[: 50 - len(_suffix)] + _suffix
+            _n += 1
+    elif (await db.execute(select(UserProfile).where(UserProfile.name == name))).scalar_one_or_none():
         raise HTTPException(status_code=409, detail=f"Já existe um perfil com o nome '{name}'")
 
     invalid = [k for k in menu_keys if k not in VALID_KEYS]
@@ -191,7 +205,13 @@ async def create_profile(
     for key in action_keys:
         db.add(ProfileActionPermission(profile_id=profile.id, permission_key=key))
 
-    await db.commit()
+    # TOCTOU: dois creates concorrentes podem derivar o mesmo slug e colidir no UNIQUE de `name`.
+    # Trata como 409 limpo (espelha create_warehouse) em vez de 500.
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Já existe um perfil com esse nome. Tente outro.")
     await db.refresh(profile)
     return _serialize_profile(profile)
 

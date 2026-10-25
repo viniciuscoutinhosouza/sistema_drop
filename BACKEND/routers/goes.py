@@ -79,13 +79,21 @@ async def list_goes(
     (admin-only na prática). O bootstrap de dono NOVO foi mesclado em `POST /warehouse`
     (bloco `owner`), então este router não cria mais donos — só leitura + autoatendimento
     da própria empresa (`GET/PUT /goes/{id}`)."""
-    # A lista cruza TODOS os galpões (CNPJ/telefone/e-mail/Pix de cada dono). Sob ADR-0026
-    # "só admin é global" — gate `is_global` por construção (LGPD), não só pelo menu config_galpoes.
-    if not is_global(current_user):
-        raise HTTPException(status_code=403, detail="Apenas o administrador pode listar os donos de Galpão.")
-    result = await db.execute(select(GO).options(selectinload(GO.warehouse), selectinload(GO.user)))
-    goes = result.scalars().all()
-    return [_go_to_out(g) for g in goes]
+    # Admin (escopo global) vê TODOS os donos. O dono de galpão (posse de registro em `goes`) vê só
+    # o PRÓPRIO registro — a tela Galpões fica escopada p/ ele (ADR-0026/0036), sem expor outros
+    # donos/CNPJ/Pix (LGPD). Operador sem posse → 403.
+    if is_global(current_user):
+        result = await db.execute(select(GO).options(selectinload(GO.warehouse), selectinload(GO.user)))
+        return [_go_to_out(g) for g in result.scalars().all()]
+    owned_go_id = await _owned_go_id(current_user, db)
+    if owned_go_id is not None:
+        result = await db.execute(
+            select(GO).where(GO.id == owned_go_id).options(selectinload(GO.warehouse), selectinload(GO.user))
+        )
+        return [_go_to_out(g) for g in result.scalars().all()]
+    # Não-dono (operador sem posse): degrada para lista VAZIA — igual a `list_warehouses` — em vez
+    # de 403, pra não quebrar o `Promise.all` da tela. Continua sem expor outros donos (LGPD).
+    return []
 
 
 @router.get("/{go_id}", response_model=GOOut)

@@ -110,23 +110,14 @@
         <div class="modal-body">
           <!-- Dados básicos -->
           <div class="row">
-            <div class="col-md-4">
+            <div class="col-md-6">
               <div class="form-group">
-                <label class="font-weight-bold">Nome (slug) <span class="text-danger">*</span></label>
-                <input v-model="modal.form.name" type="text" class="form-control"
-                       placeholder="ex: gc_avancado" maxlength="50"
-                       :disabled="modal.isEdit" />
-                <small class="text-muted">Identificador único, sem espaços</small>
-              </div>
-            </div>
-            <div class="col-md-4">
-              <div class="form-group">
-                <label class="font-weight-bold">Label (exibição) <span class="text-danger">*</span></label>
+                <label class="font-weight-bold">Nome do perfil <span class="text-danger">*</span></label>
                 <input v-model="modal.form.label" type="text" class="form-control"
                        placeholder="ex: Gestor de Conta Avançado" maxlength="100" />
               </div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-6">
               <div class="form-group">
                 <label class="font-weight-bold">Escopo de dados <span class="text-danger">*</span></label>
                 <select v-model="modal.form.base_role" class="form-control">
@@ -375,8 +366,8 @@ function selectNone() {
 // ── Salvar ────────────────────────────────────────────────────────────────────
 async function saveProfile() {
   modal.error = ''
-  if (!modal.form.name.trim() || !modal.form.label.trim()) {
-    modal.error = 'Nome e label são obrigatórios'
+  if (!modal.form.label.trim()) {
+    modal.error = 'O nome do perfil é obrigatório'
     return
   }
   modal.saving = true
