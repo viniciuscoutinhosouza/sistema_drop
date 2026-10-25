@@ -11,13 +11,13 @@ from sqlalchemy.orm import selectinload
 
 from database import get_db
 from dependencies import get_current_user, require_menu_permission
-from models.cmig import CMIG, CMIGAdministrator, CMIGProduct
+from models.cmig import CMIG, CMIGProduct
 from models.order import Order, OrderItem
 from models.payment import PaymentCharge
 from models.person import Person
 from models.product import CatalogProduct
 from models.user import User
-from services.data_scope import is_global
+from services.data_scope import assert_cmig_access
 from services.file_naming import TIPO_ETIQUETA, order_download_filename
 from services.product_mode import assert_product_group_allowed
 from services.shipping_mode import MODE_COMBINADO
@@ -57,15 +57,13 @@ async def create_manual_order(
     if not items_in:
         raise HTTPException(status_code=400, detail="O carrinho esta vazio")
 
-    # Acesso a CMIG: AC precisa ser administrador (proprietario ou colaborador).
-    cmig_access = await db.execute(
-        select(CMIGAdministrator).where(
-            CMIGAdministrator.user_id == current_user.id,
-            CMIGAdministrator.cmig_id == cmig_id,
-        )
-    )
-    if not cmig_access.scalar_one_or_none():
-        raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
+    # Acesso a CMIG pelo SSOT de escopo (data_scope.assert_cmig_access): admin (global), galpao
+    # (CMIG do proprio warehouse) ou AC administrador. Antes era so CMIGAdministrator -> barrava
+    # indevidamente admin e dono/operador de galpao que acessam a CMIG pelo escopo (ADR-0026/0036).
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
+    if not cmig:
+        raise HTTPException(status_code=404, detail="CMIG nao encontrada")
+    await assert_cmig_access(cmig, current_user, db)
 
     # Cliente (opcional)
     person: Person | None = None
@@ -327,19 +325,15 @@ async def _load_manual_label_data(order_id: int, current_user: User, db: AsyncSe
             detail="Etiqueta direta disponivel apenas para pedidos manuais",
         )
 
-    # Permissao: dono direto OU admin da CMIG do pedido
-    is_owner = order.dropshipper_id == current_user.id
-    is_admin = False
-    if not is_owner and order.cmig_id:
-        admin_res = await db.execute(
-            select(CMIGAdministrator).where(
-                CMIGAdministrator.user_id == current_user.id,
-                CMIGAdministrator.cmig_id == order.cmig_id,
-            )
-        )
-        is_admin = admin_res.scalar_one_or_none() is not None
-    if not (is_owner or is_admin or is_global(current_user)):
-        raise HTTPException(status_code=403, detail="Sem acesso a este pedido")
+    # Permissao: dono direto OU acesso a CMIG do pedido pelo SSOT de escopo (admin/galpao/AC) —
+    # mesmo criterio da criacao, para o galpao que cria tambem conseguir imprimir a etiqueta.
+    if order.dropshipper_id != current_user.id:
+        if not order.cmig_id:
+            raise HTTPException(status_code=403, detail="Sem acesso a este pedido")
+        cmig = (await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))).scalar_one_or_none()
+        if not cmig:
+            raise HTTPException(status_code=404, detail="CMIG nao encontrada")
+        await assert_cmig_access(cmig, current_user, db)
 
     items = (
         await db.execute(
@@ -450,7 +444,7 @@ def _serialize_charge(c: PaymentCharge) -> dict:
 
 
 async def _load_manual_order_checked(order_id: int, user: User, db: AsyncSession) -> Order:
-    """Carrega o pedido MANUAL e aplica o acesso por CMIG (admin bypassa; senao CMIGAdministrator)."""
+    """Carrega o pedido MANUAL e aplica o acesso por CMIG via SSOT de escopo (admin/galpao/AC)."""
     order = (
         await db.execute(
             select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
@@ -462,15 +456,11 @@ async def _load_manual_order_checked(order_id: int, user: User, db: AsyncSession
         raise HTTPException(status_code=400, detail="Cobranca disponivel apenas para pedido manual")
     if not order.cmig_id:
         raise HTTPException(status_code=400, detail="Pedido sem CMIG vinculada")
-    if not is_global(user):
-        acc = await db.execute(
-            select(CMIGAdministrator).where(
-                CMIGAdministrator.user_id == user.id,
-                CMIGAdministrator.cmig_id == order.cmig_id,
-            )
-        )
-        if not acc.scalar_one_or_none():
-            raise HTTPException(status_code=403, detail="Sem acesso a esta CMIG")
+    # Mesmo SSOT de escopo da criacao (admin/galpao/AC) — antes so admin + CMIGAdministrator.
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))).scalar_one_or_none()
+    if not cmig:
+        raise HTTPException(status_code=404, detail="CMIG nao encontrada")
+    await assert_cmig_access(cmig, user, db)
     return order
 
 
