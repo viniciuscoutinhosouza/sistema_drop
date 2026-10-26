@@ -1,4 +1,4 @@
-from sqlalchemy import TIMESTAMP, Column, ForeignKey, Integer, String, text
+from sqlalchemy import TIMESTAMP, Column, ForeignKey, Integer, String, Text, text
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -43,6 +43,8 @@ class PickingCartOrder(Base):
     label_printed_by = Column(Integer, ForeignKey("users.id"))
     nfe_printed_at = Column(TIMESTAMP(timezone=True))
     nfe_printed_by = Column(Integer, ForeignKey("users.id"))
+    # Fotos da separação (webcam) — JSON array de URLs em static/uploads (migration 166).
+    separation_photos_json = Column(Text)
 
     cart = relationship("PickingCart", back_populates="orders")
     items = relationship(

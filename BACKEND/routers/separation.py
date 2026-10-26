@@ -68,16 +68,25 @@ _SHIPMENT_DONE = ("shipped", "delivered", "not_delivered", "cancelled")
 _STATUS_DONE = ("separated", "shipped", "cancelled")
 
 
+def _is_manual(order: Order) -> bool:
+    """Pedido tratado como 'manual' na separação: venda direta ou ML sem shipment (sem etiqueta
+    oficial do ML). Mesmo predicado usado na geração de etiqueta (cart_labels). ML-com-shipment
+    é o único que exige 'Pronto p/ Envio' (ready_to_ship) para entrar na gaiola."""
+    return not (order.platform == "mercadolivre" and order.shipment_id)
+
+
 def _eligibility_conditions() -> list:
     """Condições de elegibilidade de um pedido para a tela de Separação.
 
-    Critério: NÃO-FULL, ainda não despachado no marketplace (shipment_status),
+    Critério: PAGO, NÃO-FULL, ainda não despachado no marketplace (shipment_status),
     não cancelado/separado por nós, e fora de qualquer gaiola.
     Baseia-se em shipment_status (fonte de verdade do ML), não no Order.status,
     que permanece 'paid'/'downloaded' mesmo após a entrega.
     """
     return [
         Order.is_hidden == False,  # noqa: E712
+        # Só separa pedido PAGO (regra do dono). Cobre a lista E add_orders_to_cart (que reusa isto).
+        Order.payment_status == "paid",
         # Shopee tem despacho próprio (rede Shopee, routers/shopee_logistics.py) — NÃO entra na
         # Separação/Carrinho Gaiola do ML. Filtro aditivo/protetor (mantém ML + manual + NULL).
         or_(Order.platform == None, Order.platform != "shopee"),  # noqa: E711
@@ -467,17 +476,17 @@ async def add_orders_to_cart(
     added = []
     skipped = []
     for oid in order_ids:
-        # Só "Pronto p/ Envio" pode entrar na gaiola
-        q = select(Order).where(
-            Order.id == oid,
-            Order.shipment_status == "ready_to_ship",
-            *_eligibility_conditions(),
-        )
+        q = select(Order).where(Order.id == oid, *_eligibility_conditions())
         if wh is not None:
             q = q.where(wh)
         order = (await db.execute(q)).scalar_one_or_none()
         if not order:
-            skipped.append(oid)  # não está pronto p/ envio / inacessível / já em gaiola
+            skipped.append(oid)  # não pago / inacessível / já em gaiola / FULL / despachado
+            continue
+        # ML-com-shipment exige "Pronto p/ Envio" (etiqueta do ML). Manual (venda direta) já basta
+        # estar pago (elegibilidade) — não tem shipment_status do marketplace.
+        if not _is_manual(order) and order.shipment_status != "ready_to_ship":
+            skipped.append(oid)
             continue
 
         # Evita violar UNIQUE(cart_id, order_id) em duplo clique / corrida
@@ -901,6 +910,14 @@ async def cart_labels(
 
     if not targets:
         raise HTTPException(status_code=404, detail="Sem pedidos para etiquetar")
+
+    # Gate de pagamento (regra do dono): a etiqueta só pode ser impressa após o pagamento confirmado.
+    unpaid = [o.id for _, o in targets if (o.payment_status or "") != "paid"]
+    if unpaid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Pague o pedido antes de imprimir a etiqueta. Não pago(s): {unpaid}",
+        )
 
     ml = [(p, o) for p, o in targets if o.platform == "mercadolivre" and o.shipment_id]
     manual_t = [(p, o) for p, o in targets if not (o.platform == "mercadolivre" and o.shipment_id)]
