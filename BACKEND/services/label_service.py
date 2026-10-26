@@ -7,10 +7,12 @@ Quando o pedido tem mais de 4 itens, o PDF tem multiplas paginas.
 Conteudo de cada etiqueta:
   - Cabecalho: VENDA DIRETA - sem marketplace + razao social/CNPJ da CMIG
   - Numero do pedido (Order.id) em texto grande + barcode CODE128
-  - SKU do produto + barcode CODE128
-  - EAN do produto + barcode EAN13 (apenas quando 13 digitos numericos)
-  - Nome do produto
   - Nome do cliente + endereco completo
+
+A identificacao do produto (nome, SKU, EAN e seus codigos de barras) NAO vai na
+etiqueta de envio: o transportador nao pode saber o conteudo do volume. O produto
+so aparece na etiqueta de CONFERENCIA interna do pedido ML (header ML_CONF_HEADER),
+que fica no galpao e nao acompanha a carga.
 """
 
 from __future__ import annotations
@@ -184,36 +186,8 @@ def _draw_label(
         c.drawString(ix, y_addr, line[:55])
         y_addr -= 2.6 * mm
 
-    # --- Produto ---
-    y_prod = y_addr - 2 * mm
-    c.setStrokeColorRGB(0.6, 0.6, 0.6)
-    c.setLineWidth(0.3)
-    c.line(ix, y_prod, ix + iw, y_prod)
-    c.setFont("Helvetica", 6)
-    c.drawString(ix, y_prod - 3 * mm, "PRODUTO")
-    c.setFont("Helvetica-Bold", 7.5)
-    title = (item.title or item_meta.get("title") or "")[:55]
-    c.drawString(ix, y_prod - 6 * mm, title)
-    c.setFont("Helvetica", 6.5)
-    c.drawString(ix, y_prod - 9 * mm, f"Qtd: {item.quantity}")
-
-    # SKU + EAN (lado a lado)
-    sku = (item.sku or "").strip()
-    ean = (item_meta.get("ean") or "").strip()
-    y_sku = y_prod - 12 * mm
-    half_w = (iw - 2 * mm) / 2
-
-    c.setFont("Helvetica", 6)
-    c.drawString(ix, y_sku, f"SKU: {sku or '-'}")
-    if sku:
-        png_sku = _barcode_png(sku, "code128")
-        _draw_barcode(c, ix, y_sku - 7.5 * mm, half_w, 6.5 * mm, png_sku)
-
-    x_ean = ix + half_w + 2 * mm
-    c.drawString(x_ean, y_sku, f"EAN: {ean or '-'}")
-    if ean:
-        png_ean = _barcode_png(ean, "ean13") or _barcode_png(ean, "code128")
-        _draw_barcode(c, x_ean, y_sku - 7.5 * mm, half_w, 6.5 * mm, png_ean)
+    # Identificacao do produto (nome/SKU/EAN) foi intencionalmente REMOVIDA da
+    # etiqueta de envio — o transportador nao pode saber o conteudo do volume.
 
 
 def render_manual_order_label(*, order, items, cmig, items_meta: list[dict]) -> bytes:
@@ -336,31 +310,8 @@ def _draw_thermal_label(c: canvas.Canvas, *, order, item, item_meta, cmig, volum
         c.drawString(ix, y_addr, line[:60])
         y_addr -= 4 * mm
 
-    # Produto
-    y_prod = y_addr - 4 * mm
-    c.setLineWidth(0.4)
-    c.line(ix, y_prod, ix + iw, y_prod)
-    c.setFont("Helvetica", 8)
-    c.drawString(ix, y_prod - 5 * mm, "PRODUTO")
-    c.setFont("Helvetica-Bold", 9.5)
-    title = (item.title or item_meta.get("title") or "")[:60]
-    c.drawString(ix, y_prod - 10 * mm, title)
-    c.setFont("Helvetica", 8.5)
-    c.drawString(ix, y_prod - 14 * mm, f"Qtd: {item.quantity}")
-
-    sku = (item.sku or "").strip()
-    ean = (item_meta.get("ean") or "").strip()
-    y_sku = y_prod - 20 * mm
-    half_w = (iw - 4 * mm) / 2
-    c.setFont("Helvetica", 8)
-    c.drawString(ix, y_sku, f"SKU: {sku or '-'}")
-    if sku:
-        _draw_barcode(c, ix, y_sku - 9 * mm, half_w, 8 * mm, _barcode_png(sku, "code128"))
-    x_ean = ix + half_w + 4 * mm
-    c.drawString(x_ean, y_sku, f"EAN: {ean or '-'}")
-    if ean:
-        png = _barcode_png(ean, "ean13") or _barcode_png(ean, "code128")
-        _draw_barcode(c, x_ean, y_sku - 9 * mm, half_w, 8 * mm, png)
+    # Identificacao do produto (nome/SKU/EAN) foi intencionalmente REMOVIDA da
+    # etiqueta de envio — o transportador nao pode saber o conteudo do volume.
 
 
 def _render_10x15(orders_meta: list[dict]) -> bytes:
@@ -447,7 +398,13 @@ def _zpl_one_label(
     *, order, item, item_meta: dict, cmig, volume_idx: int, total_volumes: int,
     header_label: str = "VENDA DIRETA - sem marketplace",
 ) -> str:
-    """Monta 1 etiqueta ZPL (10x15) de um volume."""
+    """Monta 1 etiqueta ZPL (10x15) de um volume.
+
+    O produto (nome/SKU/EAN + barcodes) só sai na etiqueta de CONFERÊNCIA interna do
+    pedido ML (header_label == ML_CONF_HEADER); na etiqueta de envio (VENDA DIRETA) ele
+    é omitido — o transportador não pode saber o conteúdo do volume.
+    """
+    show_product = header_label == ML_CONF_HEADER
     p: list[str] = ["^XA", "^CI28", f"^PW{ZPL_W}", f"^LL{ZPL_H}", "^LH0,0"]
     empresa = (cmig.company_name if cmig else "") or ""
     cnpj = (cmig.cnpj if cmig else "") or ""
@@ -473,29 +430,30 @@ def _zpl_one_label(
     for line in _format_address(order.shipping_address)[:5]:
         p.append(_zpl_text(20, y, 24, line[:52]))
         y += 30
-    y += 6
-    p.append(f"^FO20,{y}^GB760,2,2^FS")
-    y += 16
 
-    # Produto
-    p.append(_zpl_text(20, y, 22, "PRODUTO"))
-    y += 28
-    title = (item.title or item_meta.get("title") or "")[:46]
-    p.append(_zpl_text(20, y, 26, title))
-    y += 32
-    p.append(_zpl_text(20, y, 24, f"Qtd: {item.quantity}"))
-    y += 42
+    # Produto — só na etiqueta de CONFERÊNCIA interna (ML); omitido no envio ao transportador.
+    if show_product:
+        y += 6
+        p.append(f"^FO20,{y}^GB760,2,2^FS")
+        y += 16
+        p.append(_zpl_text(20, y, 22, "PRODUTO"))
+        y += 28
+        title = (item.title or item_meta.get("title") or "")[:46]
+        p.append(_zpl_text(20, y, 26, title))
+        y += 32
+        p.append(_zpl_text(20, y, 24, f"Qtd: {item.quantity}"))
+        y += 42
 
-    sku = (item.sku or "").strip()
-    ean = (item_meta.get("ean") or "").strip()
-    p.append(_zpl_text(20, y, 22, f"SKU: {sku or '-'}"))
-    if sku:
-        p.append(_zpl_barcode128(20, y + 26, 70, sku))
-    p.append(_zpl_text(420, y, 22, f"EAN: {ean or '-'}"))
-    if ean:
-        bc = _zpl_barcode_ean(420, y + 26, 70, ean) or _zpl_barcode128(420, y + 26, 70, ean)
-        if bc:
-            p.append(bc)
+        sku = (item.sku or "").strip()
+        ean = (item_meta.get("ean") or "").strip()
+        p.append(_zpl_text(20, y, 22, f"SKU: {sku or '-'}"))
+        if sku:
+            p.append(_zpl_barcode128(20, y + 26, 70, sku))
+        p.append(_zpl_text(420, y, 22, f"EAN: {ean or '-'}"))
+        if ean:
+            bc = _zpl_barcode_ean(420, y + 26, 70, ean) or _zpl_barcode128(420, y + 26, 70, ean)
+            if bc:
+                p.append(bc)
 
     p.append("^XZ")
     return "".join(part for part in p if part)

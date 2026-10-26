@@ -91,12 +91,29 @@ def test_zpl_ean_barcode_validation():
 
 def test_zpl_invalid_ean_falls_back_to_code128():
     # EAN inválido não deve emitir ^BEN, mas ainda gera Code128 (^BCN) para o campo.
-    zpl = render_manual_order_label_zpl(
-        order=_order(), items=[_item(sku="")], cmig=_cmig(),
-        items_meta=[{"ean": "12", "title": "x"}],
+    # O produto só sai na CONFERÊNCIA (venda direta não traz produto), então testamos lá.
+    zpl = render_shipping_labels_zpl(
+        [{"order": _order(), "items": [_item(sku="")], "cmig": _cmig(),
+          "items_meta": [{"ean": "12", "title": "x"}]}],
+        header_label="CONFERENCIA DE PRODUTO (pedido ML)",
     ).decode("utf-8")
     assert "^BEN" not in zpl
     assert "^BCN" in zpl  # fallback do EAN inválido para Code128
+
+
+def test_venda_direta_label_omits_product():
+    # A etiqueta de ENVIO (venda direta) NÃO pode identificar o produto (transportador).
+    zpl = render_manual_order_label_zpl(
+        order=_order(), items=[_item(sku="SEGREDO-123", title="Bola de Pilates")],
+        cmig=_cmig(), items_meta=[{"ean": "7890991747854", "title": "Bola de Pilates"}],
+    ).decode("utf-8")
+    assert "PRODUTO" not in zpl
+    assert "SEGREDO-123" not in zpl
+    assert "Bola de Pilates" not in zpl
+    assert "7890991747854" not in zpl
+    assert "^BEN" not in zpl  # sem barcode de EAN do produto
+    # mas segue sendo uma etiqueta válida com o pedido e o destinatário
+    assert "#123" in zpl and "Fulano de Tal" in zpl and "^BCN" in zpl
 
 
 def test_zpl_header_label_is_parametrizable():
