@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     # baixar a imagem por HTTP. Em prod: "https://ecommerce.madeingroup.com.br".
     PUBLIC_BASE_URL: str = ""
 
+    # Google Drive (armazenamento de imagens — OAuth2 de usuário, escopo drive.file).
+    # CLIENT_ID/SECRET vêm do app OAuth do Google Console (NÃO commitar — só no .env do servidor).
+    # REDIRECT_URI tem de bater EXATAMENTE com o cadastrado no Console.
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/integrations/google-drive/callback"
+    # Nome da pasta raiz no Drive — o sistema cria/usa esta pasta e organiza subpastas por área.
+    GOOGLE_DRIVE_ROOT_FOLDER: str = "Ecommerce_Imagens"
+
     # Mercado Livre
     ML_APP_ID: str = "6712718703908494"
     ML_CLIENT_SECRET: str = ""

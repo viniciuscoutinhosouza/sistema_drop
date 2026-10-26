@@ -372,7 +372,7 @@
           </li>
 
           <!-- ADMINISTRAÇÃO -->
-          <li v-if="canSee('integrations') || canSee('full_cnpjs') || canSee('config_usuarios') || canSee('go_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_galpoes') || canSee('config_api_console') || canSee('config_perfis')"
+          <li v-if="canSee('integrations') || canSee('full_cnpjs') || canSee('config_usuarios') || canSee('go_usuarios') || canSee('config_aprovacoes') || canSee('config_email') || canSee('config_google_drive') || canSee('config_eship') || canSee('config_ncm') || canSee('config_ai') || canSee('config_marketplaces') || canSee('config_galpoes') || canSee('config_api_console') || canSee('config_perfis')"
               class="nav-item" :class="{ 'menu-open': sections.admin }">
             <a href="#" class="nav-link" :class="{ active: route.path.startsWith('/settings') || route.path.startsWith('/admin') || route.path.startsWith('/integrations') || route.path.startsWith('/full-cnpjs') }" @click.prevent="toggle('admin')">
               <i class="nav-icon fas fa-cog"></i>
@@ -441,6 +441,11 @@
               <li v-if="canSee('config_email')" class="nav-item">
                 <RouterLink to="/settings/email" class="nav-link" :class="{ active: route.path === '/settings/email' }">
                   <i class="far fa-circle nav-icon"></i><p>Servidor de E-mail</p>
+                </RouterLink>
+              </li>
+              <li v-if="canSee('config_google_drive')" class="nav-item">
+                <RouterLink to="/settings/google-drive" class="nav-link" :class="{ active: route.path === '/settings/google-drive' }">
+                  <i class="fab fa-google-drive nav-icon"></i><p>Google Drive</p>
                 </RouterLink>
               </li>
               <li v-if="canSee('config_ncm')" class="nav-item">

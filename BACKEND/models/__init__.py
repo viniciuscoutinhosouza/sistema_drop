@@ -23,6 +23,7 @@ from models.fiscal import (  # noqa: F401
 )
 from models.full_stock import FullCnpj, FullStock  # noqa: F401
 from models.go import GO  # noqa: F401
+from models.google_drive import GoogleDriveAccount  # noqa: F401
 from models.integration import (  # noqa: F401
     AccountBalance,
     AccountTransaction,

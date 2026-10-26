@@ -74,6 +74,7 @@ MENU_CATALOG: list[dict] = [
     {"key": "go_usuarios",        "label": "Usuários (Galpão)",         "section": "Administração"},
     {"key": "config_galpoes",     "label": "Galpões",                   "section": "Administração"},
     {"key": "config_email",       "label": "Servidor de E-mail",        "section": "Administração"},
+    {"key": "config_google_drive","label": "Google Drive",              "section": "Administração"},
     {"key": "config_ncm",         "label": "Tabela NCM",                "section": "Administração"},
     {"key": "config_ai",          "label": "Configuração de IA",        "section": "Administração"},
     {"key": "config_perfis",      "label": "Gestão de Perfis",          "section": "Administração"},

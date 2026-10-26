@@ -95,6 +95,7 @@ from routers import (
     fiscal_config,
     full_cnpjs,
     goes,
+    google_drive,
     integrations,
     inventories,
     invites,
@@ -210,6 +211,8 @@ app.include_router(
 from integrations.eship.router import router as eship_router  # noqa: E402
 
 app.include_router(eship_router, prefix=f"{PREFIX}/integrations/eship", tags=["eShip"])
+# Google Drive (armazenamento de imagens).
+app.include_router(google_drive.router, prefix=f"{PREFIX}/integrations/google-drive", tags=["GoogleDrive"])
 
 
 _os.makedirs("static/uploads/cmig-products", exist_ok=True)

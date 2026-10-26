@@ -125,6 +125,7 @@ const MessagesView = () => import('@/views/messages/MessagesView.vue')
 // Configuração IA
 const AIConfigView = () => import('@/views/settings/AIConfigView.vue')
 const EmailConfigView = () => import('@/views/settings/EmailConfigView.vue')
+const GoogleDriveView = () => import('@/views/settings/GoogleDriveView.vue')
 const MarketplaceSettingsView = () => import('@/views/settings/MarketplaceSettingsView.vue')
 const MarketplaceCertificateView = () => import('@/views/settings/MarketplaceCertificateView.vue')
 const EShipConfigView = () => import('@/views/integrations/eship/EShipConfigView.vue')
@@ -302,6 +303,7 @@ const routes = [
 
       // Servidor de E-mail (SMTP) — Admin
       { path: 'settings/email', component: EmailConfigView, meta: { title: 'Servidor de E-mail', menuKey: 'config_email' } },
+      { path: 'settings/google-drive', component: GoogleDriveView, meta: { title: 'Google Drive', menuKey: 'config_google_drive' } },
 
       // Integração eShip (WMS) — Admin
       { path: 'settings/eship', component: EShipConfigView, meta: { title: 'Integração eShip', menuKey: 'config_eship' } },
