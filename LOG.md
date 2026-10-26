@@ -4602,3 +4602,26 @@ Fim da classificação "PERFIL" (`users.role`): o papel/escopo passa a derivar e
 - **Verificado em produção**: 17 usuários, 0 divergências role(hybrid)×profile.base_role; criação
   (`role='go'`), `/me` (`role='ac'`) e login (`role='ac'`) retornam o role correto; health 200.
 - Commits: `d4b5559` (hybrid + prep) · `6dc4b0f` (migration 159). ADR-0035 atualizada.
+
+## 2026-10-26 — feat(venda-direta): cancelamento + crédito do cliente + NF-e de devolução (ADR-0037)
+
+Pedido do dono, três partes, em produção:
+1. **Etiqueta sem produto** — removido o bloco PRODUTO (nome/SKU/EAN+barcodes) das etiquetas de
+   envio de venda direta (PDF A4, PDF térmico, ZPL); produto mantido só na conferência interna ML.
+2. **Cancelar pedido** — `POST /orders/{id}/cancel` (soft, status=cancelled): sem NF-e e não
+   despachado libera reserva + cancela cobrança ASAAS + (se pago) gera crédito ao cliente; com
+   NF-e autorizada retorna 409 `requires_devolution`. Permissão `pedido_cancelar`.
+3. **Crédito do cliente** — 3º razão `customer_credits` (migration 163, append-only por
+   cmig+person, UNIQUE order_id+entry_type) + `services/customer_credit_service` + `GET/POST
+   /api/v1/customer-credits` (permissão `credito_cliente_gerenciar`). Seed migration 164.
+4. **NF-e de devolução** — `POST /orders/{id}/devolution-nfe` (rascunho entrada finalidade=4, CFOP
+   1202/2202, snapshot fiscal clonado, refNFe via `invoices.referenced_access_key` migration 165).
+   BLOQUEADOR corrigido (ADR-0009): devolução `stock_updated=False`, inerte ao replay.
+   Front OrderDetailView: botão "Cancelar pedido" + fluxo (oferece devolução, mostra crédito).
+- **Auditoria trio:** 2 CRITICAL + 3 HIGH corrigidos (guards pré-release-reservation; UNIQUE
+  anti-TOCTOU; order_id cross-scope no POST manual; clone fiscal drift-proof difal/cbs/ibs;
+  fail-loud do crédito). adr-checker APROVADO.
+- **Verificado em produção:** migrations 163-165 aplicadas (0 erro); pytest 317 ok (2 pré-existentes
+  MockResult); health 200; rotas no OpenAPI; frontend buildado; site público 200.
+- **A validar em homologação (dono/contabilidade):** transmissão SEFAZ da devolução.
+- Commits: `4a0010a` (etiqueta) · `16bffe2` (feature) · `7fe7729` (correções da auditoria).
