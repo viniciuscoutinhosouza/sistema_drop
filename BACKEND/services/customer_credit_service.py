@@ -83,6 +83,40 @@ async def add_entry(
     return entry
 
 
+async def credit_for_order(db, order, *, reason: str, created_by=None, commit: bool = False):
+    """Ponto ÚNICO do crédito do cliente ao reverter um pedido PAGO (cancelamento/devolução).
+
+    Idempotente por `order_id` (o índice único uq_customer_credit_order é o backstop anti-TOCTOU).
+    Fail-loud: se pago sem cliente/CMIG, NÃO credita em silêncio — devolve (None, aviso) para o
+    chamador surfaçar (bloquear ou avisar, conforme o fluxo). Valor = venda + frete (charge_value).
+    Retorna (entry|None, warning|None)."""
+    from services import charge_service
+
+    if (order.payment_status or "") != "paid":
+        return None, None
+    if not order.buyer_person_id:
+        return None, "Pedido pago sem cliente vinculado — crédito ao cliente NÃO gerado."
+    if not order.cmig_id:
+        return None, "Pedido pago sem CMIG — crédito ao cliente NÃO gerado."
+    if await entry_exists_for_order(db, order.id, "credit"):
+        return None, None
+    amount = charge_service.charge_value(order)
+    if amount <= 0:
+        return None, None
+    entry = await add_entry(
+        db,
+        cmig_id=order.cmig_id,
+        person_id=order.buyer_person_id,
+        entry_type="credit",
+        amount=amount,
+        order_id=order.id,
+        description=reason,
+        created_by=created_by,
+        commit=commit,
+    )
+    return entry, None
+
+
 async def list_entries(db, cmig_id: int, person_id: int, limit: int = 100, offset: int = 0):
     rows = (
         await db.execute(

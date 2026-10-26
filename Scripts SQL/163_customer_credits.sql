@@ -38,3 +38,17 @@ EXCEPTION
   WHEN e_obj_exists THEN NULL;
 END;
 /
+
+-- Idempotência DURA do lançamento automático amarrado a pedido (anti-TOCTOU/duplo-clique):
+-- no máx. UM (order_id, entry_type) por pedido. Lançamentos manuais (order_id NULL) ficam livres
+-- — no Oracle, linhas com a 1ª coluna indexada NULL não colidem entre si.
+DECLARE
+  e_obj_exists EXCEPTION;
+  PRAGMA EXCEPTION_INIT(e_obj_exists, -955);
+BEGIN
+  EXECUTE IMMEDIATE
+    'CREATE UNIQUE INDEX uq_customer_credit_order ON customer_credits (order_id, entry_type)';
+EXCEPTION
+  WHEN e_obj_exists THEN NULL;
+END;
+/

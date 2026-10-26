@@ -96,13 +96,26 @@ async def add_entry(
         raise HTTPException(status_code=400, detail="amount inválido") from None
     if amount <= 0:
         raise HTTPException(status_code=400, detail="amount deve ser maior que zero")
+    # Se amarrar a um pedido, ele TEM de ser da mesma CMIG (senão envenena a idempotência por
+    # order_id e vincula o razão a pedido de outro escopo). Fail-closed.
+    order_id = body.get("order_id")
+    if order_id is not None:
+        from models.order import Order
+
+        ok = (
+            await db.execute(
+                select(Order.id).where(Order.id == order_id, Order.cmig_id == cmig_id)
+            )
+        ).scalar_one_or_none()
+        if not ok:
+            raise HTTPException(status_code=400, detail="Pedido não pertence a esta CMIG")
     entry = await customer_credit_service.add_entry(
         db,
         cmig_id=cmig_id,
         person_id=person_id,
         entry_type=entry_type,
         amount=amount,
-        order_id=body.get("order_id"),
+        order_id=order_id,
         description=(body.get("description") or None),
         created_by=current_user.id,
     )

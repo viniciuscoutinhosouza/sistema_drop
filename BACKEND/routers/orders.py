@@ -2167,6 +2167,23 @@ async def _authorized_outbound_invoice(db: AsyncSession, order: Order):
     ).scalars().first()
 
 
+# Campos definidos pelo chamador ao clonar um item p/ a devolução (os demais são copiados 1:1).
+_DEVOLUTION_ITEM_OVERRIDE = {"id", "invoice_id", "item_number", "cfop", "inbound_item_id"}
+
+
+def _clone_invoice_item_values(src) -> dict:
+    """Copia TODOS os campos fiscais de um InvoiceItem (drift-proof: pega as colunas do modelo, não
+    uma lista manual — quando a ADR-0028 adicionar grupos IBS/CBS, a devolução não perde campo),
+    exceto os que o chamador redefine (invoice/item_number/cfop/inbound_item_id)."""
+    from models.fiscal import InvoiceItem
+
+    return {
+        c.name: getattr(src, c.name)
+        for c in InvoiceItem.__table__.columns
+        if c.name not in _DEVOLUTION_ITEM_OVERRIDE
+    }
+
+
 @router.post("/{order_id}/cancel")
 async def cancel_order(
     order_id: int,
@@ -2217,6 +2234,17 @@ async def cancel_order(
 
     paid = (order.payment_status or "") == "paid"
 
+    # Fail-loud ANTES de qualquer mutação: pedido pago precisa de cliente+CMIG para gerar o crédito.
+    # (release_reservation commita internamente — validar antes evita liberar reserva de um pedido
+    # que depois aborta por 409 e segue 'ativo'.)
+    if paid and not order.buyer_person_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Pedido pago sem cliente cadastrado — vincule um cliente para gerar o crédito.",
+        )
+    if paid and not order.cmig_id:
+        raise HTTPException(status_code=409, detail="Pedido pago sem CMIG — não é possível gerar crédito.")
+
     # 1) Libera a reserva de estoque (idempotente por StockMovement; commita internamente).
     await stock_reservation_service.release_reservation(db, order)
 
@@ -2224,37 +2252,21 @@ async def cancel_order(
     try:
         await charge_service.cancel_open_charges(db, order)
     except Exception:  # noqa: BLE001
-        pass
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "cancel_open_charges falhou no cancelamento do pedido %s", order.id, exc_info=True
+        )
 
     # 3) Se pago, gera crédito ao cliente (idempotente por order_id) para devolução futura do valor.
-    credit_info = None
-    if paid:
-        if not order.buyer_person_id:
-            raise HTTPException(
-                status_code=409,
-                detail="Pedido pago sem cliente cadastrado — vincule um cliente para gerar o crédito.",
-            )
-        if not order.cmig_id:
-            raise HTTPException(status_code=409, detail="Pedido sem CMIG — não é possível gerar crédito.")
-        if not await customer_credit_service.entry_exists_for_order(db, order.id, "credit"):
-            amount = charge_service.charge_value(order)
-            if amount > 0:
-                entry = await customer_credit_service.add_entry(
-                    db,
-                    cmig_id=order.cmig_id,
-                    person_id=order.buyer_person_id,
-                    entry_type="credit",
-                    amount=amount,
-                    order_id=order.id,
-                    description=f"Cancelamento do pedido #{order.id}",
-                    created_by=current_user.id,
-                    commit=False,
-                )
-                credit_info = {
-                    "person_id": order.buyer_person_id,
-                    "cmig_id": order.cmig_id,
-                    "amount": float(entry.amount),
-                }
+    entry, _warn = await customer_credit_service.credit_for_order(
+        db, order, reason=f"Cancelamento do pedido #{order.id}", created_by=current_user.id, commit=False
+    )
+    credit_info = (
+        {"person_id": order.buyer_person_id, "cmig_id": order.cmig_id, "amount": float(entry.amount)}
+        if entry
+        else None
+    )
 
     # 4) Soft-cancel + persiste (cobranças canceladas + crédito + status numa transação).
     order.status = "cancelled"
@@ -2283,11 +2295,13 @@ async def create_devolution_nfe(
     from models.fiscal import Invoice, InvoiceItem
     from models.person import Person
     from routers.invoices import _recompute_totals
-    from services import charge_service, customer_credit_service, stock_reservation_service
+    from services import customer_credit_service, stock_reservation_service
 
     order = await _load_scoped_order(order_id, current_user, db)
     if (order.platform or "") != "manual":
         raise HTTPException(status_code=409, detail="Devolução disponível apenas para venda direta.")
+    if (order.shipping_mode or "") == "full":
+        raise HTTPException(status_code=409, detail="Pedido FULL tem fluxo fiscal próprio (ADR-0022).")
 
     orig = await _authorized_outbound_invoice(db, order)
     if not orig:
@@ -2363,45 +2377,9 @@ async def create_devolution_nfe(
             InvoiceItem(
                 invoice_id=dev.id,
                 item_number=i,
-                cmig_product_id=it.cmig_product_id,
-                catalog_product_id=it.catalog_product_id,
-                sku=it.sku,
-                source_type=it.source_type,
                 cfop=dev_cfop,
-                ncm=it.ncm,
-                cest=it.cest,
-                description=it.description,
-                ean=it.ean,
-                unit=it.unit,
-                quantity=it.quantity,
-                unit_value=it.unit_value,
-                total_value=it.total_value,
-                discount=it.discount,
-                origin=it.origin,
-                icms_cst=it.icms_cst,
-                icms_csosn=it.icms_csosn,
-                icms_base=it.icms_base,
-                icms_aliquota=it.icms_aliquota,
-                icms_value=it.icms_value,
-                icms_reducao_bc=it.icms_reducao_bc,
-                fcp_aliquota=it.fcp_aliquota,
-                fcp_value=it.fcp_value,
-                mot_des_icms=it.mot_des_icms,
-                cbenef=it.cbenef,
-                icms_st_base=it.icms_st_base,
-                icms_st_aliquota=it.icms_st_aliquota,
-                icms_st_value=it.icms_st_value,
-                ipi_cst=it.ipi_cst,
-                ipi_aliquota=it.ipi_aliquota,
-                ipi_value=it.ipi_value,
-                ipi_cenq=it.ipi_cenq,
-                pis_cst=it.pis_cst,
-                pis_aliquota=it.pis_aliquota,
-                pis_value=it.pis_value,
-                cofins_cst=it.cofins_cst,
-                cofins_aliquota=it.cofins_aliquota,
-                cofins_value=it.cofins_value,
                 inbound_item_id=it.id,
+                **_clone_invoice_item_values(it),
             )
         )
     await db.flush()
@@ -2414,24 +2392,12 @@ async def create_devolution_nfe(
     if not stock_reservation_service._order_was_dispatched(order):
         await stock_reservation_service.release_reservation(db, order)
 
-    # Se pago, gera crédito ao cliente (idempotente) para a devolução do valor.
-    credit_info = None
-    if (order.payment_status or "") == "paid" and order.buyer_person_id and order.cmig_id:
-        if not await customer_credit_service.entry_exists_for_order(db, order.id, "credit"):
-            amount = charge_service.charge_value(order)
-            if amount > 0:
-                entry = await customer_credit_service.add_entry(
-                    db,
-                    cmig_id=order.cmig_id,
-                    person_id=order.buyer_person_id,
-                    entry_type="credit",
-                    amount=amount,
-                    order_id=order.id,
-                    description=f"Devolução do pedido #{order.id}",
-                    created_by=current_user.id,
-                    commit=False,
-                )
-                credit_info = {"amount": float(entry.amount), "person_id": order.buyer_person_id}
+    # Se pago, gera crédito ao cliente (idempotente). Fail-loud: se pago sem cliente/CMIG, NÃO
+    # omite em silêncio — surfaça o aviso na resposta (não bloqueia o rascunho fiscal).
+    entry, credit_warning = await customer_credit_service.credit_for_order(
+        db, order, reason=f"Devolução do pedido #{order.id}", created_by=current_user.id, commit=False
+    )
+    credit_info = {"amount": float(entry.amount), "person_id": order.buyer_person_id} if entry else None
 
     order.return_status = "awaiting_return"
     await db.commit()
@@ -2443,6 +2409,7 @@ async def create_devolution_nfe(
         "referenced_access_key": dev.referenced_access_key,
         "items": len(orig_items),
         "credit_created": credit_info,
+        "credit_warning": credit_warning,
         "message": "NF-e de devolução criada como rascunho. Revise e transmita em Fiscal > Saídas.",
     }
 
