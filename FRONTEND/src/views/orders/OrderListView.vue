@@ -556,13 +556,21 @@
               @click:shipped="openSeparationInfo(order)"
             />
 
-            <!-- Pedido manual: botão ver detalhes (olho) — etiqueta esta no stepper -->
-            <RouterLink
-              v-if="order.platform === 'manual'"
-              :to="`/orders/${order.id}`"
-              class="btn btn-xs btn-outline-primary"
-              title="Ver detalhes do pedido"
-            ><i class="fas fa-eye"></i></RouterLink>
+            <!-- Pedido manual: ver detalhes (olho redondo) + cancelar — etiqueta esta no stepper -->
+            <template v-if="order.platform === 'manual'">
+              <RouterLink
+                :to="`/orders/${order.id}`"
+                class="action-circle bg-primary text-white"
+                title="Ver detalhes do pedido"
+              ><i class="fas fa-eye"></i></RouterLink>
+              <button
+                v-if="canCancelManual(order)"
+                class="action-circle bg-danger text-white border-0"
+                :disabled="cancelingId === order.id"
+                title="Cancelar pedido (sem pagamento nem NF-e)"
+                @click="cancelManualOrder(order)"
+              ><i class="fas" :class="cancelingId === order.id ? 'fa-spinner fa-spin' : 'fa-ban'"></i></button>
+            </template>
 
             <!-- eShip (WMS): enviar/sincronizar — só se há galpão eShip ativo e não é Full/manual.
                  Shopee incluído (Fases 1-2): pedido Shopee vai ao WMS com endereço + NF-e + etiqueta. -->
@@ -872,6 +880,7 @@ const syncingRange = ref(false)
 const syncRangeResult = ref(null)
 const syncRange = ref({ date_from: '', date_to: '', platform: 'all' })
 const nfeEmitting = ref({})
+const cancelingId = ref(null)  // id do pedido manual sendo cancelado no grid
 // Confirmação da emissão PRÓPRIA (resumo irretratável antes de transmitir à SEFAZ)
 const nfeConfirm = ref({ show: false, order: null, summary: null, ambiente: null, invoiceId: null, saving: false })
 const shopeeFiscalBusy = ref({})  // { [orderId]: bool } — anexo/consulta de NF-e na Shopee
@@ -1285,6 +1294,38 @@ async function deleteOrder(order) {
     selectedOrders.value = selectedOrders.value.filter(id => id !== order.id)
     toast.success('Pedido excluído. Será re-baixado na próxima sincronização.')
   } catch (err) { toast.error(err.response?.data?.detail || 'Erro ao excluir pedido') }
+}
+
+// Cancelar pedido manual direto do grid (só sem pagamento nem NF-e — ADR-0037).
+function canCancelManual(order) {
+  return canDelete.value
+    && order.platform === 'manual'
+    && order.payment_status !== 'paid'
+    && !hasNfe(order)
+    && !isCancelled(order)
+}
+async function cancelManualOrder(order) {
+  const ok = await showConfirm(
+    'Cancelar pedido',
+    `Cancelar o pedido #${order.id}? Libera o estoque reservado e cancela cobranças pendentes.`,
+    { confirmLabel: 'Cancelar pedido', confirmClass: 'btn-danger' }
+  )
+  if (!ok) return
+  cancelingId.value = order.id
+  try {
+    await api.post(`/orders/${order.id}/cancel`)
+    toast.success('Pedido cancelado.')
+    await loadOrders()
+  } catch (err) {
+    const detail = err.response?.data?.detail
+    if (detail && typeof detail === 'object' && detail.code === 'requires_devolution') {
+      toast.warning('Pedido com NF-e — abra os detalhes para emitir a devolução.')
+    } else {
+      toast.error((typeof detail === 'string' ? detail : null) || 'Erro ao cancelar o pedido')
+    }
+  } finally {
+    cancelingId.value = null
+  }
 }
 
 async function bulkDelete() {
@@ -1771,6 +1812,27 @@ onMounted(() => {
   font-size: 11px;
   flex-shrink: 0;
 }
+/* Ação redonda (ver detalhes / cancelar) no mesmo estilo dos círculos do stepper */
+.action-circle {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  flex-shrink: 0;
+  cursor: pointer;
+  text-decoration: none;
+  padding: 0;
+}
+.action-circle:hover {
+  filter: brightness(1.15);
+  transform: scale(1.1);
+  transition: transform .15s;
+  color: #fff;
+}
+.action-circle:disabled { opacity: .6; cursor: default; }
 .invoice-circle:hover {
   filter: brightness(1.15);
   transform: scale(1.1);

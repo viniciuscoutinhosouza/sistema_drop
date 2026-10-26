@@ -1,5 +1,12 @@
 <template>
   <div v-if="order">
+    <!-- Voltar -->
+    <div class="mb-2">
+      <button class="btn btn-sm btn-outline-secondary" @click="goBack">
+        <i class="fas fa-arrow-left mr-1"></i> Voltar
+      </button>
+    </div>
+
     <!-- Status Stepper -->
     <div class="card mb-3">
       <div class="card-body">
@@ -496,16 +503,19 @@ async function downloadManualLabel() {
   }
 }
 
-const steps = [
-  { key: 'downloaded',      label: 'Baixou',     icon: 'fas fa-download' },
+// Pedido manual é CRIADO no sistema (não "baixado" de marketplace).
+const steps = computed(() => [
+  isManual.value
+    ? { key: 'downloaded', label: 'Criado', icon: 'fas fa-plus-circle' }
+    : { key: 'downloaded', label: 'Baixou', icon: 'fas fa-download' },
   { key: 'paid',            label: 'Pago',       icon: 'fas fa-dollar-sign' },
   { key: 'label_generated', label: 'Etiqueta',   icon: 'fas fa-tag' },
   { key: 'label_printed',   label: 'Impressa',   icon: 'fas fa-print' },
   { key: 'separated',       label: 'Separado',   icon: 'fas fa-boxes' },
   { key: 'shipped',         label: 'Enviado',    icon: 'fas fa-truck' },
-]
+])
 
-const STATUS_ORDER = steps.map(s => s.key)
+const STATUS_ORDER = ['downloaded', 'paid', 'label_generated', 'label_printed', 'separated', 'shipped']
 
 function stepDone(key) {
   if (!order.value) return false
@@ -515,10 +525,16 @@ function stepDone(key) {
 }
 
 function statusLabel(key) {
+  if (isManual.value && key === 'downloaded') return 'Criado'
   return ORDER_STATUSES.find(s => s.key === key)?.label || key
 }
 function statusColor(key) {
   return ORDER_STATUSES.find(s => s.key === key)?.color || 'secondary'
+}
+
+function goBack() {
+  if (window.history.length > 1) router.back()
+  else router.push('/orders')
 }
 
 async function loadOrder() {

@@ -45,7 +45,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['click:delivery', 'click:pay', 'click:label', 'click:nfe', 'click:separated', 'click:shipped'])
 
-const steps = [
+const BASE_STEPS = [
   { key: 'downloaded',      label: 'Pedido Baixado',      icon: 'fas fa-download' },
   { key: 'paid',            label: 'Pedido Pago',         icon: 'fas fa-dollar-sign' },
   { key: 'label_generated', label: 'Etiqueta',            icon: 'fas fa-tag' },
@@ -53,11 +53,19 @@ const steps = [
   { key: 'separated',       label: 'Pedido Separado',     icon: 'fas fa-box-open' },
   { key: 'shipped',         label: 'Coletado p/ Entrega', icon: 'fas fa-truck' },
 ]
+// Pedido manual (venda direta) não é "baixado" de marketplace — é CRIADO no sistema.
+const steps = computed(() =>
+  props.order?.platform === 'manual'
+    ? BASE_STEPS.map((s) =>
+        s.key === 'downloaded' ? { ...s, label: 'Pedido Criado', icon: 'fas fa-plus-circle' } : s
+      )
+    : BASE_STEPS
+)
 // Em pedidos Full o ML gerencia pagamento, etiqueta, NF-e e coleta — o vendedor
 // não age nessas etapas, então exibimos só "Pedido Baixado" + o ícone de entrega.
 const HIDDEN_WHEN_FULL = ['paid', 'label_generated', 'nfe', 'separated', 'shipped']
 const visibleSteps = computed(() =>
-  props.isFull ? steps.filter((s) => !HIDDEN_WHEN_FULL.includes(s.key)) : steps
+  props.isFull ? steps.value.filter((s) => !HIDDEN_WHEN_FULL.includes(s.key)) : steps.value
 )
 
 // Ordem para isPast/isCurrent (mantém pipeline de status, NFe e label sao acoes paralelas)
