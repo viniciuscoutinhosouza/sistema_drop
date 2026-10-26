@@ -80,6 +80,11 @@ ACTION_PERMISSIONS: list[dict] = [
      "default_base_roles": ["admin", "ugo", "go"]},
     {"key": "eship_config", "label": "eShip: configurar galpão", "menu": "config_eship",
      "default_base_roles": ["admin"]},
+    # Venda / Saída + Financeiro (ADR-0037 — cancelamento de venda direta + crédito do cliente).
+    {"key": "pedido_cancelar", "label": "Cancelar pedido (venda direta)", "menu": "devolucoes",
+     "default_base_roles": ["admin", "go", "ac"]},
+    {"key": "credito_cliente_gerenciar", "label": "Gerenciar crédito do cliente (lançar/baixar)",
+     "menu": "financeiro", "default_base_roles": ["admin", "go", "ac"]},
 ]
 
 _BY_KEY = {p["key"]: p for p in ACTION_PERMISSIONS}

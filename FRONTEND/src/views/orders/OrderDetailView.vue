@@ -167,6 +167,18 @@
               <i class="fas" :class="generatingInvoice ? 'fa-spinner fa-spin' : 'fa-file-invoice'"></i>
               {{ generatingInvoice ? 'Gerando...' : 'Gerar NFe a partir do Pedido' }}
             </button>
+            <button
+              v-if="isManual && order.status !== 'cancelled'"
+              class="btn btn-outline-danger btn-sm"
+              :disabled="canceling || creatingDevolution"
+              @click="cancelOrder"
+            >
+              <i class="fas" :class="(canceling || creatingDevolution) ? 'fa-spinner fa-spin' : 'fa-ban'"></i>
+              {{ canceling ? 'Cancelando…' : (creatingDevolution ? 'Devolução…' : 'Cancelar pedido') }}
+            </button>
+          </div>
+          <div v-if="order.status === 'cancelled'" class="card-footer pt-0 border-0">
+            <span class="badge badge-danger"><i class="fas fa-ban mr-1"></i>Pedido cancelado</span>
           </div>
         </div>
       </div>
@@ -311,6 +323,8 @@ const order = ref(null)
 const paying = ref(false)
 const generatingInvoice = ref(false)
 const downloadingLabel = ref(false)
+const canceling = ref(false)
+const creatingDevolution = ref(false)
 const shippingEdit = reactive({ open: false, value: 0, saving: false })
 
 const isManual = computed(() => order.value?.platform === 'manual')
@@ -550,6 +564,52 @@ async function generateInvoice() {
     toast.error(e.response?.data?.detail || 'Erro ao gerar NFe')
   } finally {
     generatingInvoice.value = false
+  }
+}
+
+// ── Cancelar pedido / NF-e de devolução (ADR-0037) ──
+async function cancelOrder() {
+  if (!confirm(`Cancelar o pedido #${order.value.id}? Libera o estoque reservado e cancela cobranças pendentes.`)) return
+  canceling.value = true
+  try {
+    const { data } = await api.post(`/orders/${order.value.id}/cancel`)
+    if (data.credit_created) {
+      toast.success(`Pedido cancelado. Crédito de ${formatCurrency(data.credit_created.amount)} gerado para o cliente.`)
+    } else {
+      toast.success('Pedido cancelado.')
+    }
+    await loadOrder()
+  } catch (err) {
+    const detail = err.response?.data?.detail
+    if (detail && typeof detail === 'object' && detail.code === 'requires_devolution') {
+      canceling.value = false
+      if (confirm(`${detail.message}\n\nDeseja emitir a NF-e de Devolução agora?`)) {
+        await createDevolutionNfe()
+      }
+      return
+    }
+    toast.error((typeof detail === 'string' ? detail : null) || 'Erro ao cancelar o pedido')
+  } finally {
+    canceling.value = false
+  }
+}
+
+async function createDevolutionNfe() {
+  creatingDevolution.value = true
+  try {
+    const { data } = await api.post(`/orders/${order.value.id}/devolution-nfe`)
+    if (data.already) {
+      toast.info('Já existe uma NF-e de devolução para este pedido.')
+    } else {
+      let msg = `NF-e de devolução criada (rascunho #${data.invoice_id}). Revise e transmita.`
+      if (data.credit_created) msg += ` Crédito de ${formatCurrency(data.credit_created.amount)} gerado ao cliente.`
+      toast.success(msg)
+    }
+    router.push(`/fiscal/invoices/${data.invoice_id}/edit`)
+  } catch (err) {
+    toast.error(err.response?.data?.detail || 'Erro ao criar a NF-e de devolução')
+  } finally {
+    creatingDevolution.value = false
   }
 }
 

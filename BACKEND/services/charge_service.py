@@ -134,6 +134,27 @@ async def cancel_live_stale_charge(db, order: Order) -> None:
     await db.commit()
 
 
+async def cancel_open_charges(db, order: Order) -> int:
+    """Cancela TODAS as cobranças vivas NÃO-pagas do pedido (ex.: cancelamento do pedido).
+    NÃO toca cobrança paga (essa vira crédito do cliente, não cancelamento). Não commita —
+    o chamador decide o momento do commit. Retorna quantas cobranças cancelou."""
+    rows = (
+        await db.execute(
+            select(PaymentCharge).where(
+                PaymentCharge.order_id == order.id,
+                PaymentCharge.status.in_(LIVE_CHARGE),
+            )
+        )
+    ).scalars().all()
+    n = 0
+    for ch in rows:
+        if (ch.status or "").upper() in PAID_CHARGE:
+            continue  # cobrança paga não se cancela — vira crédito do cliente
+        if await _cancel_in_asaas(db, ch):
+            n += 1
+    return n
+
+
 async def get_or_create_charge(
     db, order: Order, billing_type: str = "UNDEFINED", due_date: date | None = None
 ) -> PaymentCharge:

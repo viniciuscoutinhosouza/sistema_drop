@@ -190,6 +190,9 @@ class Invoice(Base):
     serie = Column(Integer)
     nfe_number = Column(Integer)
     access_key = Column(String(50))
+    # Chave da NF-e de venda referenciada por uma NF-e de DEVOLUÇÃO (finalidade=4) que NÓS
+    # emitimos — vira <ide><NFref><refNFe> no XML (ADR-0037, migration 165).
+    referenced_access_key = Column(String(50))
     person_id = Column(Integer, ForeignKey("people.id"))
     order_id = Column(Integer, ForeignKey("orders.id"))
     inbound_invoice_id = Column(Integer, ForeignKey("invoices.id"))

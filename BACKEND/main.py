@@ -89,6 +89,7 @@ from routers import (
     cmigs,
     competitor_analysis,
     credits,
+    customer_credits,
     dashboard,
     financial,
     fiscal_config,
@@ -101,7 +102,6 @@ from routers import (
     listings,
     manual_orders,
     marketplace_settings,
-    public_checkout,
     media,
     message_templates,
     messages,
@@ -112,6 +112,7 @@ from routers import (
     product_categories,
     products,
     profiles,
+    public_checkout,
     returns,
     sales_report,
     scheduler_monitoring,
@@ -172,6 +173,8 @@ app.include_router(simulator.router, prefix=f"{PREFIX}/simulator", tags=["Simula
 app.include_router(competitor_analysis.router, prefix=f"{PREFIX}/competitor-analysis", tags=["CompetitorAnalysis"])
 # Extrato de crédito CMIG × Galpão (ADR-0034 Fase 4).
 app.include_router(credits.router, prefix=f"{PREFIX}/credits", tags=["Credits"])
+# Extrato de crédito do CLIENTE × CMIG (ADR-0037).
+app.include_router(customer_credits.router, prefix=f"{PREFIX}/customer-credits", tags=["CustomerCredits"])
 app.include_router(people.router, prefix=f"{PREFIX}/people", tags=["People"])
 app.include_router(
     fiscal_config.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/fiscal-config", tags=["FiscalConfig"]

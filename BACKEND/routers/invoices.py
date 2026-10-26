@@ -1990,6 +1990,14 @@ async def _apply_stock_movement(inv: Invoice, db: AsyncSession, *, full_cycle: b
     if _is_simbolica(inv.natureza_operacao) and not full_cycle:
         return {"cmig_ids": set(), "pg_ids": set(), "simbolica": True}
 
+    # Guard ADR-0009: a NF-e de DEVOLUÇÃO é INERTE ao replay de estoque (stock_updated fica False).
+    # O retorno ao estoque vendável passa UMA ÚNICA VEZ pela fonte canônica — os contadores de
+    # inspeção (apto/não-apto: receive_return_items/validate_return_items), NUNCA pela nota. Sem
+    # este guard, emitir+transmitir uma devolução (direction='in') a contaria no replay (que credita
+    # toda NF-e de entrada com stock_updated=True) E DE NOVO na inspeção → dupla-contagem.
+    if (inv.purpose or "") == "devolucao" and not full_cycle:
+        return {"cmig_ids": set(), "pg_ids": set(), "devolucao": True}
+
     if inv.stock_updated:
         return {
             "cmig_recomputed": 0,

@@ -279,6 +279,8 @@ def build_nota_emissao(
         emitente=emit, destinatario=dest, itens=itens, pagamentos=pagamentos,
         transporte_modalidade=int(inv.freight_modality) if inv.freight_modality is not None else 9,
         info_complementar=(inv.additional_info or None), info_fisco=(inv.fiscal_info or None),
+        # Devolução (finalidade=4) referencia a NF-e de venda original (ADR-0037).
+        chave_referenciada=(inv.referenced_access_key if finalidade == 4 else None),
     )
 
 

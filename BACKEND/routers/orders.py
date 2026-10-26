@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database import get_db
-from dependencies import get_current_user, require_menu_permission
+from dependencies import get_current_user, require_menu_permission, require_permission
 from models.cmig import CMIGProduct
 from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
@@ -2125,6 +2125,326 @@ async def bulk_delete_orders(
         deleted.append(order.id)
 
     return {"ok": True, "deleted": deleted, "count": len(deleted)}
+
+
+# ─── Cancelamento de venda direta + NF-e de devolução (ADR-0037) ───────────────
+# Escopo: só pedido MANUAL (venda direta). Capacidade por PERFIL (ADR-0036,
+# require_permission) + escopo de dados (AC vê os seus; galpão por warehouse; admin tudo).
+# Soft-cancel (status='cancelled', mantém histórico). NUNCA cancela em silêncio um pedido com
+# NF-e autorizada — devolve requires_devolution e oferece emitir a devolução (ADR-0009).
+
+
+async def _load_scoped_order(order_id: int, current_user: User, db: AsyncSession) -> Order:
+    """Carrega o pedido aplicando o escopo de dados (mesmo padrão do GET /orders/{id})."""
+    query = select(Order).where(Order.id == order_id)
+    if is_conta(current_user):
+        query = query.where(_ac_visible_filter(current_user))
+    elif is_galpao(current_user):
+        from models.cmig import CMIG
+
+        go_cmigs = select(CMIG.id).where(CMIG.warehouse_id == current_user.warehouse_id)
+        query = query.where(Order.cmig_id.in_(go_cmigs))
+    order = (await db.execute(query)).scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    return order
+
+
+async def _authorized_outbound_invoice(db: AsyncSession, order: Order):
+    """A NF-e de saída PRÓPRIA autorizada do pedido (p/ referência da devolução). None se não há."""
+    from models.fiscal import Invoice
+
+    return (
+        await db.execute(
+            select(Invoice)
+            .where(
+                Invoice.order_id == order.id,
+                Invoice.direction == "out",
+                Invoice.status.in_(("authorized", "finalized")),
+            )
+            .order_by(Invoice.id.desc())
+        )
+    ).scalars().first()
+
+
+@router.post("/{order_id}/cancel")
+async def cancel_order(
+    order_id: int,
+    current_user: User = Depends(require_permission("pedido_cancelar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancela (soft) um pedido de VENDA DIRETA.
+
+    - sem NF-e autorizada e não despachado → libera reserva, cancela cobrança ASAAS pendente,
+      e (se pago) gera CRÉDITO ao cliente para devolução futura do valor; marca 'cancelled'.
+    - com NF-e autorizada → 409 requires_devolution (o front oferece emitir a NF-e de devolução).
+    """
+    from services import charge_service, customer_credit_service, stock_reservation_service
+
+    order = await _load_scoped_order(order_id, current_user, db)
+
+    if (order.platform or "") != "manual":
+        raise HTTPException(
+            status_code=409, detail="Cancelamento disponível apenas para venda direta (pedido manual)."
+        )
+    if (order.status or "") == "cancelled":
+        return {"cancelled": True, "already": True, "order_id": order.id}
+    if (order.shipping_mode or "") == "full":
+        raise HTTPException(status_code=409, detail="Pedido FULL não é cancelável por este fluxo.")
+    if (order.dce_status or "") == "emitted":
+        raise HTTPException(
+            status_code=409,
+            detail="Pedido com DC-e emitida — cancelamento fiscal da DC-e ainda não é suportado; trate manualmente.",
+        )
+
+    own_inv = await _authorized_outbound_invoice(db, order)
+    has_nfe = bool(own_inv) or (order.nfe_status or "") == "authorized" or bool(order.nfe_key)
+    if has_nfe:
+        # Falhar alto: não cancela silenciosamente uma venda com NF-e — exige devolução.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "requires_devolution",
+                "message": "Pedido com NF-e autorizada: emita a NF-e de Devolução antes de reverter a venda.",
+                "has_own_invoice": bool(own_inv),
+                "invoice_id": own_inv.id if own_inv else None,
+            },
+        )
+    if stock_reservation_service._order_was_dispatched(order):
+        raise HTTPException(
+            status_code=409, detail="Pedido já despachado — registre uma devolução em vez de cancelar."
+        )
+
+    paid = (order.payment_status or "") == "paid"
+
+    # 1) Libera a reserva de estoque (idempotente por StockMovement; commita internamente).
+    await stock_reservation_service.release_reservation(db, order)
+
+    # 2) Cancela cobranças ASAAS vivas NÃO-pagas (não derruba o cancelamento se o ASAAS falhar).
+    try:
+        await charge_service.cancel_open_charges(db, order)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 3) Se pago, gera crédito ao cliente (idempotente por order_id) para devolução futura do valor.
+    credit_info = None
+    if paid:
+        if not order.buyer_person_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Pedido pago sem cliente cadastrado — vincule um cliente para gerar o crédito.",
+            )
+        if not order.cmig_id:
+            raise HTTPException(status_code=409, detail="Pedido sem CMIG — não é possível gerar crédito.")
+        if not await customer_credit_service.entry_exists_for_order(db, order.id, "credit"):
+            amount = charge_service.charge_value(order)
+            if amount > 0:
+                entry = await customer_credit_service.add_entry(
+                    db,
+                    cmig_id=order.cmig_id,
+                    person_id=order.buyer_person_id,
+                    entry_type="credit",
+                    amount=amount,
+                    order_id=order.id,
+                    description=f"Cancelamento do pedido #{order.id}",
+                    created_by=current_user.id,
+                    commit=False,
+                )
+                credit_info = {
+                    "person_id": order.buyer_person_id,
+                    "cmig_id": order.cmig_id,
+                    "amount": float(entry.amount),
+                }
+
+    # 4) Soft-cancel + persiste (cobranças canceladas + crédito + status numa transação).
+    order.status = "cancelled"
+    await db.commit()
+    return {
+        "cancelled": True,
+        "order_id": order.id,
+        "was_paid": paid,
+        "credit_created": credit_info,
+    }
+
+
+@router.post("/{order_id}/devolution-nfe")
+async def create_devolution_nfe(
+    order_id: int,
+    current_user: User = Depends(require_permission("nfe_gerenciar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cria o RASCUNHO da NF-e de DEVOLUÇÃO (entrada, finalidade=4) de um pedido com NF-e de saída
+    autorizada, espelhando os itens da nota original (snapshot fiscal) com CFOP de devolução e
+    referenciando a chave original (refNFe). NÃO transmite — o operador revisa e transmite em
+    Fiscal > Saídas. A nota nasce stock_updated=False (ADR-0009: inerte ao replay). Se o pedido
+    estava pago, gera crédito ao cliente (idempotente). Marca o pedido como aguardando retorno.
+    """
+    from models.cmig import CMIG
+    from models.fiscal import Invoice, InvoiceItem
+    from models.person import Person
+    from routers.invoices import _recompute_totals
+    from services import charge_service, customer_credit_service, stock_reservation_service
+
+    order = await _load_scoped_order(order_id, current_user, db)
+    if (order.platform or "") != "manual":
+        raise HTTPException(status_code=409, detail="Devolução disponível apenas para venda direta.")
+
+    orig = await _authorized_outbound_invoice(db, order)
+    if not orig:
+        raise HTTPException(
+            status_code=409,
+            detail="Pedido sem NF-e própria de saída autorizada para referenciar a devolução.",
+        )
+    if not orig.access_key:
+        raise HTTPException(status_code=409, detail="NF-e de saída sem chave de acesso.")
+
+    # Idempotência: já existe devolução deste pedido? Devolve a existente.
+    existing = (
+        await db.execute(
+            select(Invoice)
+            .where(
+                Invoice.order_id == order.id,
+                Invoice.purpose == "devolucao",
+                Invoice.direction == "in",
+            )
+            .order_by(Invoice.id.desc())
+        )
+    ).scalars().first()
+    if existing:
+        return {"invoice_id": existing.id, "already": True, "status": existing.status}
+
+    orig_items = (
+        await db.execute(
+            select(InvoiceItem).where(InvoiceItem.invoice_id == orig.id).order_by(InvoiceItem.item_number)
+        )
+    ).scalars().all()
+    if not orig_items:
+        raise HTTPException(status_code=409, detail="NF-e de saída sem itens.")
+
+    cmig = (await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))).scalar_one()
+    person = None
+    if orig.person_id:
+        person = (
+            await db.execute(select(Person).where(Person.id == orig.person_id))
+        ).scalar_one_or_none()
+
+    # CFOP de ENTRADA de devolução de venda (nós emitimos a nota de entrada p/ receber de volta):
+    # 1202 (dentro da UF) / 2202 (fora da UF). NÃO é o 5202/6202 do suggest_cfop (devolução de
+    # COMPRA, saída). Regra fiscal a confirmar com a contabilidade em homologação (ADR-0037).
+    uf_emit = (cmig.state or "").upper()
+    uf_dest = (person.state if person else cmig.state or "").upper()
+    dev_cfop = "1202" if (uf_emit and uf_emit == uf_dest) else "2202"
+
+    dev = Invoice(
+        cmig_id=order.cmig_id,
+        direction="in",
+        purpose="devolucao",
+        model=orig.model or "55",
+        person_id=orig.person_id,
+        natureza_operacao="Devolução de venda",
+        issue_date=datetime.now(UTC),
+        status="draft",
+        source="fiscal_own",
+        referenced_access_key=orig.access_key,
+        order_id=order.id,
+        stock_updated=False,
+        payment_method="90",  # devolução: sem liquidação financeira (tPag=90)
+        freight_modality=orig.freight_modality,
+        carrier_person_id=orig.carrier_person_id,
+        created_by_user_id=current_user.id,
+        manifestation="not_required",
+        inbound_source="devolucao_emissao",
+    )
+    db.add(dev)
+    await db.flush()
+
+    for i, it in enumerate(orig_items, start=1):
+        db.add(
+            InvoiceItem(
+                invoice_id=dev.id,
+                item_number=i,
+                cmig_product_id=it.cmig_product_id,
+                catalog_product_id=it.catalog_product_id,
+                sku=it.sku,
+                source_type=it.source_type,
+                cfop=dev_cfop,
+                ncm=it.ncm,
+                cest=it.cest,
+                description=it.description,
+                ean=it.ean,
+                unit=it.unit,
+                quantity=it.quantity,
+                unit_value=it.unit_value,
+                total_value=it.total_value,
+                discount=it.discount,
+                origin=it.origin,
+                icms_cst=it.icms_cst,
+                icms_csosn=it.icms_csosn,
+                icms_base=it.icms_base,
+                icms_aliquota=it.icms_aliquota,
+                icms_value=it.icms_value,
+                icms_reducao_bc=it.icms_reducao_bc,
+                fcp_aliquota=it.fcp_aliquota,
+                fcp_value=it.fcp_value,
+                mot_des_icms=it.mot_des_icms,
+                cbenef=it.cbenef,
+                icms_st_base=it.icms_st_base,
+                icms_st_aliquota=it.icms_st_aliquota,
+                icms_st_value=it.icms_st_value,
+                ipi_cst=it.ipi_cst,
+                ipi_aliquota=it.ipi_aliquota,
+                ipi_value=it.ipi_value,
+                ipi_cenq=it.ipi_cenq,
+                pis_cst=it.pis_cst,
+                pis_aliquota=it.pis_aliquota,
+                pis_value=it.pis_value,
+                cofins_cst=it.cofins_cst,
+                cofins_aliquota=it.cofins_aliquota,
+                cofins_value=it.cofins_value,
+                inbound_item_id=it.id,
+            )
+        )
+    await db.flush()
+    await db.refresh(dev, attribute_names=["items"])
+    _recompute_totals(dev)
+
+    # Estoque: se o pedido NÃO foi despachado, a mercadoria nunca saiu (só estava reservada) →
+    # libera a reserva. Se foi despachado, o retorno físico ao estoque passa pela INSPEÇÃO
+    # (apto/não-apto) da tela de Devoluções (ADR-0009) — a nota em si é inerte ao estoque.
+    if not stock_reservation_service._order_was_dispatched(order):
+        await stock_reservation_service.release_reservation(db, order)
+
+    # Se pago, gera crédito ao cliente (idempotente) para a devolução do valor.
+    credit_info = None
+    if (order.payment_status or "") == "paid" and order.buyer_person_id and order.cmig_id:
+        if not await customer_credit_service.entry_exists_for_order(db, order.id, "credit"):
+            amount = charge_service.charge_value(order)
+            if amount > 0:
+                entry = await customer_credit_service.add_entry(
+                    db,
+                    cmig_id=order.cmig_id,
+                    person_id=order.buyer_person_id,
+                    entry_type="credit",
+                    amount=amount,
+                    order_id=order.id,
+                    description=f"Devolução do pedido #{order.id}",
+                    created_by=current_user.id,
+                    commit=False,
+                )
+                credit_info = {"amount": float(entry.amount), "person_id": order.buyer_person_id}
+
+    order.return_status = "awaiting_return"
+    await db.commit()
+    await db.refresh(dev)
+    return {
+        "invoice_id": dev.id,
+        "status": dev.status,
+        "cfop": dev_cfop,
+        "referenced_access_key": dev.referenced_access_key,
+        "items": len(orig_items),
+        "credit_created": credit_info,
+        "message": "NF-e de devolução criada como rascunho. Revise e transmita em Fiscal > Saídas.",
+    }
 
 
 async def _apply_ml_dates(db: AsyncSession, order: Order, ml_data: dict) -> bool:
