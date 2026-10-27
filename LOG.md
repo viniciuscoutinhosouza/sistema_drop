@@ -4625,3 +4625,23 @@ Pedido do dono, três partes, em produção:
   MockResult); health 200; rotas no OpenAPI; frontend buildado; site público 200.
 - **A validar em homologação (dono/contabilidade):** transmissão SEFAZ da devolução.
 - Commits: `4a0010a` (etiqueta) · `16bffe2` (feature) · `7fe7729` (correções da auditoria).
+
+## 2026-10-27 — feat(separacao): modo Bipagem automática + filtros (produto/qtd) + código de fim imprimível
+
+Pedido do dono na tela Logística > Separar Pedidos. Em produção.
+- **Filtros** na lista: por PRODUTO (SKU/nome dos itens) e por QTD DE ITENS (1/2/3+), client-side.
+- **Modo 'scan_auto'** (novo, não mexe em manual/scan): campo auto-focado aguardando bipagem →
+  `scan-locate` acha pedido NÃO-separado com o produto (prioriza MENOS itens, desempate menor
+  order_id; incremento atômico de scanned_qty como o /scan) → imprime etiqueta automática → webcam;
+  cada bip = 1 foto; bipar o CÓDIGO DE FIM encerra; fotos acumulam e 1× `/separate` quando o pedido
+  completa → NF-e automática (emissão própria SEFAZ p/ manual), com erro surfaçado por pedido
+  (fail-loud). Multi-item: volta a aguardar o próximo item do mesmo pedido (order_id escopa).
+- **Código de fim** GLOBAL, configurável (Configurações/modal admin): KV `app_config` (migration
+  168) + `services/app_config_service` (default FIM-FOTOS) + `GET /separation/config` (operador) /
+  `PUT` (admin, is_global) / `GET /finish-code-label.pdf` (CODE128 + QR). Dep nova: qrcode.
+- **Auditoria** (quality + consistency): consistency APROVOU; quality 2 HIGH corrigidos — `/separate`
+  exige 100% bipado NO SERVIDOR (reusa `_scan_blocks_label`, não confia só no front) antes de
+  separar→NF-e; `order_id` coagido a int; toast trata skipped/already. Auto-pick por SKU repetido
+  mantido (design do dono: prioriza 1 item) com o pedido+cliente mostrado no painel p/ conferência.
+- Verificado: pytest import OK, migration 168 (0 erro), qrcode instalado, health 200, build frontend,
+  site 200, rotas no OpenAPI. Commits: `7cb4bd4` (feature) · `6f4b503` (correções).
