@@ -81,7 +81,7 @@
                 @click="selectable(o) && toggle(o.id)">
               <td @click.stop>
                 <input type="checkbox" :checked="selected.has(o.id)" :disabled="!selectable(o)"
-                       :title="selectable(o) ? '' : 'Só pedidos Prontos p/ Envio podem ir para a gaiola'"
+                       :title="selectable(o) ? '' : 'ML: só pedidos Prontos p/ Envio podem ir para a gaiola'"
                        @change="toggle(o.id)" />
               </td>
               <td class="font-weight-bold">
@@ -148,7 +148,7 @@
         </table>
       </div>
       <div v-if="!loading && pending.length" class="card-footer py-2 text-muted small">
-        {{ displayedOrders.length }} de {{ pending.length }} pedido(s) — selecionáveis: Prontos p/ Envio
+        {{ displayedOrders.length }} de {{ pending.length }} pedido(s) pago(s) — selecionáveis: venda direta + ML Pronto p/ Envio
       </div>
     </div>
 
@@ -178,13 +178,22 @@
             <option v-for="l in layouts" :key="l.key" :value="l.key">{{ l.label }}</option>
           </select>
           <button class="btn btn-sm btn-light mr-1" @click="printAllLabels"><i class="fas fa-tags mr-1"></i> Etiquetas</button>
-          <button class="btn btn-sm btn-light mr-1" @click="cartNfe"><i class="fas fa-file-invoice mr-1"></i> NF-e</button>
+          <div class="btn-group btn-group-sm mr-1">
+            <button class="btn btn-light" :disabled="cartNfeBusy" @click="cartNfe(false)"
+                    title="Emitir NF-e de todos os pedidos sem nota — transmite à SEFAZ sem confirmação">
+              <i class="fas mr-1" :class="cartNfeBusy ? 'fa-spinner fa-spin' : 'fa-file-invoice'"></i> Emitir todos
+            </button>
+            <button class="btn btn-light" :disabled="cartNfeBusy" @click="cartNfe(true)"
+                    title="Emitir NF-e de todos com uma confirmação antes de transmitir">
+              <i class="fas fa-file-invoice-dollar mr-1"></i> Emitir confirmando
+            </button>
+          </div>
           <button class="btn btn-sm btn-warning text-dark mr-1" @click="downloadBundle" :disabled="downloadingBundle"
                   title="Baixa NF-e (PDF+XML) e etiquetas de todos os pedidos num único ZIP">
             <i class="fas mr-1" :class="downloadingBundle ? 'fa-spinner fa-spin' : 'fa-file-archive'"></i> Baixar tudo (ZIP)
           </button>
-          <button class="btn btn-sm btn-success mr-1" @click="concludeCart" :disabled="!allLabelPrinted"
-                  :title="allLabelPrinted ? '' : 'Imprima a etiqueta de todos os pedidos para concluir'">
+          <button class="btn btn-sm btn-success mr-1" @click="concludeCart" :disabled="!allSeparated"
+                  :title="allSeparated ? '' : 'Separe (com fotos) todos os pedidos para concluir'">
             <i class="fas fa-check mr-1"></i> Concluir
           </button>
           <button class="btn btn-sm btn-outline-light" @click="cancelCart" title="Cancelar gaiola e devolver pedidos"><i class="fas fa-trash"></i></button>
@@ -232,6 +241,13 @@
                         :title="o.label_printed ? 'Emitir + imprimir NF-e' : 'Imprima a etiqueta primeiro'" @click="emitPrintOrderNfe(o)">
                   <i class="fas fa-file-invoice"></i>
                 </button>
+                <button v-if="o.item_status !== 'separated'" class="btn btn-xs btn-outline-success ml-1"
+                        :disabled="!o.label_printed"
+                        :title="o.label_printed ? 'Separar (foto obrigatória pela webcam)' : 'Imprima a etiqueta primeiro'"
+                        @click="openSeparate(o)">
+                  <i class="fas fa-camera"></i>
+                </button>
+                <span v-else class="badge badge-success ml-1" title="Separado"><i class="fas fa-check"></i></span>
                 <button v-if="o.item_status !== 'separated'" class="btn btn-xs btn-outline-danger ml-1" title="Remover" @click="removeOrder(o.id)">
                   <i class="fas fa-times"></i>
                 </button>
@@ -258,11 +274,49 @@
         <div class="card-footer text-right"><button class="btn btn-sm btn-secondary" @click="addModal.show = false">Fechar</button></div>
       </div>
     </div>
+
+    <!-- Modal: separar com webcam (fotos obrigatórias → Google Drive) -->
+    <div v-if="sep.show" class="modal-backdrop-custom" @click.self="closeSeparate">
+      <div class="card shadow" style="width:560px;max-width:95vw">
+        <div class="card-header d-flex align-items-center">
+          <strong><i class="fas fa-camera mr-2"></i>Separar pedido #{{ sep.order?.id }}</strong>
+          <button class="close ml-auto" @click="closeSeparate"><span>&times;</span></button>
+        </div>
+        <div class="card-body">
+          <p class="small text-muted mb-2">Tire ao menos uma foto da separação. As fotos vão para o Google Drive (pasta <strong>Ecommerce_Imagens/Separacao</strong>).</p>
+          <div v-if="sep.camError" class="alert alert-danger py-2">{{ sep.camError }}</div>
+          <div class="text-center mb-2" style="background:#000;border-radius:6px;overflow:hidden">
+            <video ref="videoEl" autoplay playsinline muted style="width:100%;max-height:300px;object-fit:contain"></video>
+          </div>
+          <div class="d-flex justify-content-center mb-2">
+            <button class="btn btn-primary" :disabled="!sep.ready || sep.saving" @click="capturePhoto">
+              <i class="fas fa-camera mr-1"></i> Tirar foto
+            </button>
+          </div>
+          <div v-if="sep.photos.length" class="d-flex flex-wrap" style="gap:.4rem">
+            <div v-for="(p, i) in sep.photos" :key="i" class="position-relative" style="width:80px;height:80px">
+              <img :src="p.url" style="width:80px;height:80px;object-fit:cover;border-radius:4px;border:1px solid #dee2e6" />
+              <button class="btn btn-xs btn-danger" style="position:absolute;top:-6px;right:-6px;border-radius:50%;padding:0 .35rem;line-height:1" @click="removePhoto(i)" title="Remover">&times;</button>
+            </div>
+          </div>
+          <canvas ref="canvasEl" style="display:none"></canvas>
+        </div>
+        <div class="card-footer d-flex justify-content-between align-items-center">
+          <small class="text-muted">{{ sep.photos.length }} foto(s)</small>
+          <div>
+            <button class="btn btn-sm btn-secondary mr-1" :disabled="sep.saving" @click="closeSeparate">Cancelar</button>
+            <button class="btn btn-sm btn-success" :disabled="!sep.photos.length || sep.saving" @click="concludeSeparate">
+              <i class="fas" :class="sep.saving ? 'fa-spinner fa-spin' : 'fa-check'"></i> Concluir separação
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, reactive } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, reactive } from 'vue'
 import { formatDate as fmtBrDate, formatDateTime as fmtBrDateTime } from '@/utils/formatters'
 import { openAndSaveBlobResponse, saveLabelBoth } from '@/utils/download'
 import api from '@/composables/useApi'
@@ -306,6 +360,13 @@ const downloadingBundle = ref(false)
 const bipCode = ref({})
 const bipRefs = ref({})
 const addModal = reactive({ show: false, order: null })
+const cartNfeBusy = ref(false)
+
+// ── Separar com webcam (fotos obrigatórias → Google Drive) ──
+const videoEl = ref(null)
+const canvasEl = ref(null)
+const sep = reactive({ show: false, order: null, photos: [], saving: false, ready: false, camError: '' })
+let mediaStream = null
 
 onMounted(async () => { await Promise.all([loadPending(), loadCarts(), loadLayouts()]) })
 
@@ -322,7 +383,9 @@ async function loadCarts() {
   catch { openCarts.value = [] }
 }
 
-function selectable(o) { return o.shipment_status === 'ready_to_ship' }
+// ML-com-shipment precisa estar "Pronto p/ Envio"; venda direta (manual) basta estar pago
+// (a lista já só traz pagos — regra do dono).
+function selectable(o) { return o.shipment_status === 'ready_to_ship' || o.platform !== 'mercadolivre' }
 
 // ── Opções de filtro ──
 const platformOptions = computed(() => [...new Set(pending.value.map(o => o.platform).filter(Boolean))])
@@ -367,6 +430,7 @@ function sortIcon(key) { if (sortKey.value !== key) return 'fas fa-sort text-mut
 const selectableDisplayed = computed(() => displayedOrders.value.filter(selectable))
 const allChecked = computed(() => selectableDisplayed.value.length > 0 && selectableDisplayed.value.every(o => selected.value.has(o.id)))
 const allLabelPrinted = computed(() => activeCart.value?.orders?.length > 0 && activeCart.value.orders.every(o => o.label_printed))
+const allSeparated = computed(() => activeCart.value?.orders?.length > 0 && activeCart.value.orders.every(o => o.item_status === 'separated'))
 
 function toggle(id) { const s = new Set(selected.value); s.has(id) ? s.delete(id) : s.add(id); selected.value = s }
 function toggleAll() {
@@ -515,16 +579,75 @@ async function emitPrintOrderNfe(o) {
     await refreshCart()
   } catch (e) { toast.error(e.response?.data?.detail || 'Erro na NF-e') }
 }
-async function cartNfe() {
+// "Emitir todos" (confirmFirst=false) | "Emitir confirmando" (confirmFirst=true). Para pedido
+// manual a NF-e é emissão PRÓPRIA (SEFAZ, transmite); ML segue pelo Faturador.
+async function cartNfe(confirmFirst) {
+  if (confirmFirst && !confirm('Transmitir as NF-e dos pedidos sem nota à SEFAZ? É um ato fiscal irreversível.')) return
+  cartNfeBusy.value = true
   try {
-    await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, {})
-    const { data } = await api.get(`/separation/carts/${activeCart.value.id}/nfe`, { params: { mark: 1 } })
-    const ready = (data.nfe || []).filter(n => n.nfe_key || n.nfe_url)
-    if (!ready.length) return toast.info('NF-e solicitadas — DANFE ainda processando no ML')
-    for (const n of ready) await openDanfe(n.order_id)
+    const { data } = await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, {})
+    const results = data.results || []
+    const errs = results.filter(r => r.error)
+    const ok = results.filter(r => r.nfe_status || r.mode)
+    if (ok.length) toast.success(`NF-e processada(s): ${ok.length}`)
+    if (errs.length) toast.warning(`${errs.length} com erro: ${errs.map(e => '#' + e.order_id + ' ' + (e.error || '')).join(' | ').slice(0, 300)}`)
+    if (!ok.length && !errs.length) toast.info('Nenhum pedido elegível (já com nota ou sem etiqueta).')
+    // Abre DANFE dos ML prontos (emissão própria pode não ter DANFE via esta rota).
+    try {
+      const { data: nf } = await api.get(`/separation/carts/${activeCart.value.id}/nfe`, { params: { mark: 1 } })
+      const ready = (nf.nfe || []).filter(n => n.nfe_key || n.nfe_url)
+      for (const n of ready) await openDanfe(n.order_id)
+    } catch { /* own-emission pode não ter DANFE via ML */ }
     await refreshCart()
-  } catch (e) { toast.error(e.response?.data?.detail || 'Erro na NF-e') }
+  } catch (e) { toast.error(e.response?.data?.detail || 'Erro na NF-e') } finally { cartNfeBusy.value = false }
 }
+
+async function openSeparate(o) {
+  sep.order = o; sep.photos = []; sep.saving = false; sep.ready = false; sep.camError = ''; sep.show = true
+  await nextTick()
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    if (videoEl.value) { videoEl.value.srcObject = mediaStream; sep.ready = true }
+  } catch {
+    sep.camError = 'Não foi possível acessar a câmera. Permita o acesso no navegador (requer HTTPS).'
+  }
+}
+function capturePhoto() {
+  const v = videoEl.value, c = canvasEl.value
+  if (!v || !c) return
+  const w = v.videoWidth || 640, h = v.videoHeight || 480
+  c.width = w; c.height = h
+  c.getContext('2d').drawImage(v, 0, 0, w, h)
+  c.toBlob(blob => { if (blob) sep.photos.push({ blob, url: URL.createObjectURL(blob) }) }, 'image/jpeg', 0.85)
+}
+function removePhoto(i) {
+  const p = sep.photos[i]; if (p?.url) URL.revokeObjectURL(p.url)
+  sep.photos.splice(i, 1)
+}
+function stopCamera() { if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null } }
+function closeSeparate() {
+  stopCamera()
+  sep.photos.forEach(p => p.url && URL.revokeObjectURL(p.url))
+  sep.photos = []; sep.show = false
+}
+async function concludeSeparate() {
+  if (!sep.photos.length) return toast.error('Tire ao menos uma foto da separação.')
+  sep.saving = true
+  try {
+    const fd = new FormData()
+    sep.photos.forEach((p, i) => fd.append('files', p.blob, `foto-${i + 1}.jpg`))
+    await api.post(`/separation/carts/${activeCart.value.id}/orders/${sep.order.id}/separate`, fd,
+      { headers: { 'Content-Type': 'multipart/form-data' } })
+    toast.success(`Pedido #${sep.order.id} separado (${sep.photos.length} foto(s) no Drive).`)
+    closeSeparate()
+    await refreshCart()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao concluir a separação')
+  } finally {
+    sep.saving = false
+  }
+}
+onBeforeUnmount(stopCamera)
 
 // ── Baixar tudo (ZIP): etiquetas + DANFE + XML ──
 async function downloadBundle() {

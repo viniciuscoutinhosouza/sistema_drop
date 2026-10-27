@@ -508,11 +508,11 @@ const steps = computed(() => [
   isManual.value
     ? { key: 'downloaded', label: 'Criado', icon: 'fas fa-plus-circle' }
     : { key: 'downloaded', label: 'Baixou', icon: 'fas fa-download' },
-  { key: 'paid',            label: 'Pago',       icon: 'fas fa-dollar-sign' },
-  { key: 'label_generated', label: 'Etiqueta',   icon: 'fas fa-tag' },
-  { key: 'label_printed',   label: 'Impressa',   icon: 'fas fa-print' },
-  { key: 'separated',       label: 'Separado',   icon: 'fas fa-boxes' },
-  { key: 'shipped',         label: 'Enviado',    icon: 'fas fa-truck' },
+  { key: 'paid',          label: 'Pago',     icon: 'fas fa-dollar-sign' },
+  // "Etiqueta" = etiqueta IMPRESSA (passo "Impressa" foi removido). key=label_printed.
+  { key: 'label_printed', label: 'Etiqueta', icon: 'fas fa-tag' },
+  { key: 'separated',     label: 'Separado', icon: 'fas fa-boxes' },
+  { key: 'shipped',       label: 'Enviado',  icon: 'fas fa-truck' },
 ])
 
 const STATUS_ORDER = ['downloaded', 'paid', 'label_generated', 'label_printed', 'separated', 'shipped']

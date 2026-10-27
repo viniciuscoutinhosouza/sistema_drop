@@ -18,7 +18,7 @@ import re as _re
 import zipfile as _zipfile
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import func, or_, select
 from sqlalchemy import update as sa_update
@@ -654,29 +654,97 @@ async def conclude_cart(
     ).scalars().all()
     if not pcos:
         raise HTTPException(status_code=422, detail="Gaiola sem pedidos")
-    sem_etiqueta = [p.order_id for p in pcos if p.label_printed_at is None]
-    if sem_etiqueta:
+    # Concluir exige o passo SEPARADO (com fotos) em todos — não basta a etiqueta impressa.
+    nao_separados = [p.order_id for p in pcos if p.item_status != "separated"]
+    if nao_separados:
         raise HTTPException(
             status_code=422,
-            detail=f"Imprima a etiqueta de todos antes de concluir. Faltam: {sem_etiqueta}",
+            detail=f"Separe (com fotos) todos os pedidos antes de concluir. Faltam: {nao_separados}",
         )
 
     now = datetime.now(UTC)
-    for pco in pcos:
-        pco.item_status = "separated"
-        pco.separated_by = current_user.id
-        pco.separated_at = now
-        order = (await db.execute(select(Order).where(Order.id == pco.order_id))).scalar_one_or_none()
-        if order:
-            order.status = "separated"
-            order.separated_at = now
-            order.separated_by = current_user.id
-
     cart.status = "separated"
     cart.separated_by = current_user.id
     cart.separated_at = now
     await db.commit()
     return _ser_cart(cart)
+
+
+@router.post("/carts/{cart_id}/orders/{order_id}/separate")
+async def separate_order(
+    cart_id: int,
+    order_id: int,
+    files: list[UploadFile] = File(...),
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Marca o pedido como SEPARADO exigindo >=1 FOTO (webcam da separação), guardada no Google
+    Drive (pasta Ecommerce_Imagens/Separacao). Exige a etiqueta impressa antes. NÃO baixa estoque
+    (a baixa é só na entrega da gaiola — ADR-0005)."""
+    import json as _json
+
+    from services import google_drive_service as gd
+
+    cart = await _get_cart_scoped(db, cart_id, current_user)
+    pco = (
+        await db.execute(
+            select(PickingCartOrder).where(
+                PickingCartOrder.cart_id == cart_id, PickingCartOrder.order_id == order_id
+            )
+        )
+    ).scalar_one_or_none()
+    if not pco:
+        raise HTTPException(status_code=404, detail="Pedido não está nesta gaiola")
+    if pco.label_printed_at is None:
+        raise HTTPException(status_code=422, detail="Imprima a etiqueta antes de separar o pedido.")
+    fotos = [f for f in (files or []) if f is not None]
+    if not fotos:
+        raise HTTPException(status_code=422, detail="Tire ao menos uma foto da separação.")
+    if not gd.configurado():
+        raise HTTPException(status_code=503, detail="Google Drive não configurado no servidor.")
+
+    salvas = []
+    for i, f in enumerate(fotos, start=1):
+        conteudo = await f.read()
+        if not conteudo:
+            continue
+        nome = f"pedido-{order_id}-{cart.cart_number}-{i}.jpg"
+        try:
+            res = await gd.upload(db, conteudo, nome, f.content_type or "image/jpeg", area="Separacao")
+        except gd.DriveNaoConectado as e:
+            raise HTTPException(status_code=409, detail=f"Google Drive: {e}") from e
+        salvas.append({"drive_id": res["id"], "nome": res["nome"], "link": res.get("link")})
+    if not salvas:
+        raise HTTPException(status_code=422, detail="Nenhuma foto válida recebida.")
+
+    now = datetime.now(UTC)
+    pco.separation_photos_json = _json.dumps(salvas)
+    pco.item_status = "separated"
+    pco.separated_by = current_user.id
+    pco.separated_at = now
+    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if order:
+        order.status = "separated"
+        order.separated_at = now
+        order.separated_by = current_user.id
+    await db.commit()
+    return {"ok": True, "order_id": order_id, "item_status": "separated", "fotos": len(salvas)}
+
+
+@router.get("/photo/{drive_file_id}")
+async def separation_photo(
+    drive_file_id: str,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve uma foto da separação PELO sistema (sem expor o link do Drive) — login exigido."""
+    from services import google_drive_service as gd
+
+    try:
+        conteudo = await gd.download(db, drive_file_id)
+    except gd.DriveNaoConectado as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return Response(content=conteudo, media_type="image/jpeg", headers={"Content-Disposition": "inline"})
 
 
 @router.post("/carts/{cart_id}/deliver")
@@ -956,14 +1024,10 @@ async def cart_labels(
         for pco, order in targets:
             pco.label_printed_at = now
             pco.label_printed_by = current_user.id
-            # Imprimir a etiqueta marca o pedido como SEPARADO (por pedido).
-            if pco.item_status != "separated":
-                pco.item_status = "separated"
-                pco.separated_by = current_user.id
-                pco.separated_at = now
-                order.status = "separated"
-                order.separated_at = now
-                order.separated_by = current_user.id
+            # Imprimir marca a etapa ETIQUETA (status 'label_printed'), NÃO 'separado' — separar
+            # agora é um passo próprio (com fotos da webcam). Só avança quem ainda não passou.
+            if (order.status or "") in ("downloaded", "paid", "label_generated"):
+                order.status = "label_printed"
         await db.commit()
 
     ext = "zpl" if is_zpl else "pdf"
@@ -1008,12 +1072,29 @@ async def cart_emit_nfe(
         order = await _load_order_scoped(db, pco.order_id, wh)
         if not order:
             continue
-        if order.platform != "mercadolivre":
-            results.append({"order_id": order.id, "skipped": "não é Mercado Livre"})
-            continue
         if order.nfe_key or order.nfe_status in ("authorized", "pending", "in_process"):
             results.append({"order_id": order.id, "nfe_status": order.nfe_status, "already": True})
             continue
+        # Pedido MANUAL (venda direta): emissão PRÓPRIA SEFAZ. Reusa o roteador oficial
+        # (`_emit_own_nfe`, idempotente por invoice_id — NÃO usa o claim ML). confirm=True transmite.
+        # Falha-alto POR PEDIDO (CMIG sem cert/config etc.) sem derrubar o lote.
+        if _is_manual(order):
+            try:
+                from routers.orders import _emit_own_nfe
+                out = await _emit_own_nfe(order, None, current_user, db, confirm=True)
+                r = {"order_id": order.id, "mode": "own", "nfe_status": out.get("nfe_status"),
+                     "ambiente": out.get("ambiente")}
+                if out.get("warnings"):
+                    r["warnings"] = out["warnings"]
+                results.append(r)
+            except HTTPException as he:
+                detail = he.detail if isinstance(he.detail, str) else str(he.detail)
+                results.append({"order_id": order.id, "error": detail[:300]})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("cart_emit_nfe (própria) order=%s: %s", order.id, exc)
+                results.append({"order_id": order.id, "error": str(exc)[:200]})
+            continue
+        # ── ML (Faturador) — comportamento existente (claim atômico + emit_nfe) ──
         acc = (
             await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
         ).scalar_one_or_none()
