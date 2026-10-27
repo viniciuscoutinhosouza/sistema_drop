@@ -4,6 +4,19 @@
 **Status:** Aceito (implementado)
 **Decisores:** Vinicius (proprietário)
 
+> **Emenda 2026-10-27 (venda direta + fotos — reverte a revisão de 2026-06-07):** a separação
+> voltou a ser **por pedido** (reintroduzido `separate_order`), agora **com FOTO obrigatória** da
+> webcam (guardada no Google Drive, ADR-0038). Mudou a cadeia de estados: **imprimir a etiqueta marca
+> `label_printed`** (etapa "Etiqueta"), **não mais `separated`**; o passo **"Separado"** é o
+> `POST /carts/{id}/orders/{order_id}/separate` (exige ≥1 foto) que marca `item_status='separated'`;
+> e **`conclude_cart` passa a exigir `item_status=='separated'` em todos** (antes bastava etiqueta
+> impressa). **Invariante da baixa de estoque INTOCADO:** `/separate` NÃO baixa estoque — a baixa
+> segue exclusiva em `deliver_cart`→`confirm_dispatch` (idempotente). A lista de separação passou a
+> mostrar **só pedidos PAGOS**; pedido manual (venda direta) entra na gaiola sem exigir
+> `ready_to_ship` (que é conceito ML); NF-e do pedido manual na gaiola é **emissão própria SEFAZ**
+> (ADR-0015/0030), com os botões "Emitir todos"/"Emitir confirmando". O passo "Impressa" saiu do
+> stepper (Etiqueta = impressa).
+
 ## Contexto
 
 Pedidos **não-FULL** (entregues pelo Galpão — flex, agência, correios, coletado,

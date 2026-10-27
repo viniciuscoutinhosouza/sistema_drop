@@ -124,10 +124,11 @@ async def exchange_code(db, code: str, created_by: int | None = None) -> GoogleD
         antiga.is_active = 0
     await db.flush()
 
+    _at = dados.get("access_token")
     conta = GoogleDriveAccount(
         email=email,
         refresh_token_enc=crypto.encrypt(refresh),
-        access_token=dados.get("access_token"),
+        access_token=crypto.encrypt(_at) if _at else None,  # cifrado em repouso (dá acesso às fotos)
         expires_at=datetime.now(UTC) + timedelta(seconds=int(dados.get("expires_in") or 3600)),
         root_folder_name=settings.GOOGLE_DRIVE_ROOT_FOLDER,
         scope=dados.get("scope") or ESCOPO,
@@ -186,7 +187,10 @@ async def access_token(db) -> str:
     if exp is not None and exp.tzinfo is None:
         exp = exp.replace(tzinfo=UTC)
     if conta.access_token and exp and exp - MARGEM_RENOVACAO > now:
-        return conta.access_token
+        try:
+            return crypto.decrypt(conta.access_token)
+        except Exception:  # noqa: BLE001 — token cifrado corrompido → renova abaixo
+            pass
 
     async with httpx.AsyncClient(timeout=TIMEOUT) as c:
         r = await c.post(TOKEN_URL, data={
@@ -205,12 +209,13 @@ async def access_token(db) -> str:
             )
         raise DriveNaoConectado(f"Não foi possível renovar o acesso: {r.text[:200]}")
     dados = r.json()
-    conta.access_token = dados.get("access_token")
+    _new_at = dados.get("access_token")
+    conta.access_token = crypto.encrypt(_new_at) if _new_at else None
     conta.expires_at = now + timedelta(seconds=int(dados.get("expires_in") or 3600))
     conta.last_used_at = now
     conta.last_error = None
     await db.commit()
-    return conta.access_token
+    return _new_at
 
 
 async def _headers(db) -> dict:

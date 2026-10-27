@@ -684,7 +684,12 @@ async def separate_order(
     import json as _json
 
     from services import google_drive_service as gd
+    from services.image_upload import MAX_IMAGE_BYTES, sniff_image_ext
 
+    _MAX_FOTOS = 10
+
+    # _get_cart_scoped escopa por galpão; pco amarra (cart, order). Carrega o Order TAMBÉM escopado
+    # (defesa em profundidade / PII — mesmo padrão do cart_emit_nfe).
     cart = await _get_cart_scoped(db, cart_id, current_user)
     pco = (
         await db.execute(
@@ -700,20 +705,30 @@ async def separate_order(
     fotos = [f for f in (files or []) if f is not None]
     if not fotos:
         raise HTTPException(status_code=422, detail="Tire ao menos uma foto da separação.")
+    if len(fotos) > _MAX_FOTOS:
+        raise HTTPException(status_code=422, detail=f"Máximo de {_MAX_FOTOS} fotos por pedido.")
     if not gd.configurado():
         raise HTTPException(status_code=503, detail="Google Drive não configurado no servidor.")
+    order = await _load_order_scoped(db, order_id, _order_warehouse_clause(current_user))
 
     salvas = []
     for i, f in enumerate(fotos, start=1):
         conteudo = await f.read()
         if not conteudo:
             continue
-        nome = f"pedido-{order_id}-{cart.cart_number}-{i}.jpg"
+        if len(conteudo) > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=422, detail=f"Foto {i} acima de 5 MB.")
+        # Valida por MAGIC BYTE (não confia no content_type do cliente); só jpg/png/webp.
+        ext = sniff_image_ext(conteudo)
+        if not ext:
+            raise HTTPException(status_code=422, detail=f"Foto {i} não é uma imagem válida (jpg/png/webp).")
+        mime = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[ext]
+        nome = f"pedido-{order_id}-{cart.cart_number}-{i}{ext}"
         try:
-            res = await gd.upload(db, conteudo, nome, f.content_type or "image/jpeg", area="Separacao")
+            res = await gd.upload(db, conteudo, nome, mime, area="Separacao")
         except gd.DriveNaoConectado as e:
             raise HTTPException(status_code=409, detail=f"Google Drive: {e}") from e
-        salvas.append({"drive_id": res["id"], "nome": res["nome"], "link": res.get("link")})
+        salvas.append({"drive_id": res["id"], "nome": res["nome"], "mime": mime})
     if not salvas:
         raise HTTPException(status_code=422, detail="Nenhuma foto válida recebida.")
 
@@ -722,7 +737,6 @@ async def separate_order(
     pco.item_status = "separated"
     pco.separated_by = current_user.id
     pco.separated_at = now
-    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
     if order:
         order.status = "separated"
         order.separated_at = now
@@ -731,20 +745,48 @@ async def separate_order(
     return {"ok": True, "order_id": order_id, "item_status": "separated", "fotos": len(salvas)}
 
 
-@router.get("/photo/{drive_file_id}")
+@router.get("/carts/{cart_id}/orders/{order_id}/photo/{idx}")
 async def separation_photo(
-    drive_file_id: str,
+    cart_id: int,
+    order_id: int,
+    idx: int,
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Serve uma foto da separação PELO sistema (sem expor o link do Drive) — login exigido."""
+    """Serve uma foto da separação PELO sistema (sem expor o link do Drive). O arquivo é resolvido
+    a partir da gaiola ESCOPADA por galpão (não do id cru do Drive) — evita IDOR/vazamento de PII."""
+    import json as _json
+
     from services import google_drive_service as gd
 
+    await _get_cart_scoped(db, cart_id, current_user)  # escopo por galpão
+    pco = (
+        await db.execute(
+            select(PickingCartOrder).where(
+                PickingCartOrder.cart_id == cart_id, PickingCartOrder.order_id == order_id
+            )
+        )
+    ).scalar_one_or_none()
+    if not pco or not pco.separation_photos_json:
+        raise HTTPException(status_code=404, detail="Foto não encontrada")
     try:
-        conteudo = await gd.download(db, drive_file_id)
+        lista = _json.loads(pco.separation_photos_json)
+    except Exception:  # noqa: BLE001
+        lista = []
+    if idx < 0 or idx >= len(lista):
+        raise HTTPException(status_code=404, detail="Foto não encontrada")
+    drive_id = lista[idx].get("drive_id")
+    if not drive_id:
+        raise HTTPException(status_code=404, detail="Foto não encontrada")
+    try:
+        conteudo = await gd.download(db, drive_id)
     except gd.DriveNaoConectado as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-    return Response(content=conteudo, media_type="image/jpeg", headers={"Content-Disposition": "inline"})
+    return Response(
+        content=conteudo,
+        media_type=lista[idx].get("mime") or "image/jpeg",
+        headers={"Content-Disposition": "inline"},
+    )
 
 
 @router.post("/carts/{cart_id}/deliver")
