@@ -32,6 +32,13 @@
           <option value="emitida">Com NF-e</option>
           <option value="pendente">Sem NF-e</option>
         </select>
+        <input v-model="filterProduct" class="form-control form-control-sm mr-2" style="max-width:160px" placeholder="Produto (SKU/nome)" />
+        <select v-model="filterItems" class="form-control form-control-sm mr-2" style="max-width:120px" title="Quantidade de itens do pedido">
+          <option value="">Qtd itens</option>
+          <option value="1">1 item</option>
+          <option value="2">2 itens</option>
+          <option value="3">3+ itens</option>
+        </select>
         <button v-if="hasFilters" class="btn btn-sm btn-link text-muted px-1 mr-2" @click="clearFilters" title="Limpar filtros">
           <i class="fas fa-times"></i>
         </button>
@@ -46,6 +53,7 @@
             <div class="dropdown-menu dropdown-menu-right">
               <a class="dropdown-item" href="#" @click.prevent="newCart('manual')"><i class="fas fa-hand-paper mr-1"></i> Modo Manual</a>
               <a class="dropdown-item" href="#" @click.prevent="newCart('scan')"><i class="fas fa-barcode mr-1"></i> Modo Bipagem</a>
+              <a class="dropdown-item" href="#" @click.prevent="newCart('scan_auto')"><i class="fas fa-bolt mr-1"></i> Bipagem automática</a>
             </div>
           </div>
         </div>
@@ -199,6 +207,43 @@
           <button class="btn btn-sm btn-outline-light" @click="cancelCart" title="Cancelar gaiola e devolver pedidos"><i class="fas fa-trash"></i></button>
         </div>
       </div>
+      <!-- Painel BIPAGEM AUTOMÁTICA -->
+      <div v-if="activeCart.mode === 'scan_auto'" class="p-3 border-bottom" style="background:#fffbea">
+        <div class="d-flex align-items-start flex-wrap" style="gap:1rem">
+          <div class="flex-grow-1" style="min-width:280px">
+            <label class="small font-weight-bold mb-1 d-block">
+              <i class="fas fa-bolt text-warning mr-1"></i>
+              <span v-if="sa.state === 'photos'">FOTOS do pedido #{{ sa.currentOrder }} — bipe o produto p/ fotografar, ou o código <strong>{{ sa.finishCode }}</strong> p/ encerrar</span>
+              <span v-else-if="sa.currentOrder">Bipe o PRÓXIMO item do pedido #{{ sa.currentOrder }}</span>
+              <span v-else>Bipe um produto para localizar o pedido</span>
+            </label>
+            <input ref="scanInputEl" v-model="sa.code" class="form-control form-control-lg"
+                   :placeholder="sa.state === 'photos' ? 'Bipe produto (foto) ou código de fim…' : 'Bipe o produto…'"
+                   :disabled="sa.busy" @keyup.enter="onScanAuto" />
+            <div v-if="sa.camError" class="text-danger small mt-1">{{ sa.camError }}</div>
+            <div class="small text-muted mt-1">
+              Código de fim das fotos: <strong>{{ sa.finishCode || '—' }}</strong>
+              <a href="#" class="ml-2" @click.prevent="printFinishCode"><i class="fas fa-print mr-1"></i>Imprimir código (barras/QR)</a>
+              <a v-if="isAdmin" href="#" class="ml-2" @click.prevent="fcModal.show = true"><i class="fas fa-cog mr-1"></i>Configurar</a>
+            </div>
+          </div>
+          <div v-if="sa.currentOrder" class="text-center px-2">
+            <div class="small text-muted">Pedido</div>
+            <div class="font-weight-bold" style="font-size:1.1rem">#{{ sa.currentOrder }}</div>
+            <div class="small text-truncate" style="max-width:140px">{{ sa.buyerName || '' }}</div>
+            <div class="badge badge-info mt-1">{{ sa.scanned }}/{{ sa.expected }} itens</div>
+          </div>
+          <div v-show="sa.state === 'photos'" class="text-center">
+            <video ref="saVideoEl" autoplay playsinline muted style="width:190px;max-height:150px;background:#000;border-radius:6px;object-fit:cover"></video>
+            <div class="small text-muted">{{ sa.photos.length }} foto(s)</div>
+          </div>
+          <div v-if="sa.photos.length" class="d-flex flex-wrap align-content-start" style="gap:.25rem;max-width:180px">
+            <img v-for="(p,i) in sa.photos" :key="i" :src="p.url" style="width:42px;height:42px;object-fit:cover;border-radius:3px;border:1px solid #ccc" />
+          </div>
+        </div>
+        <canvas ref="saCanvasEl" style="display:none"></canvas>
+      </div>
+
       <div class="card-body p-0">
         <table class="table table-sm mb-0 align-middle">
           <thead class="thead-light">
@@ -312,6 +357,24 @@
         </div>
       </div>
     </div>
+
+    <!-- Modal: configurar código de fim das fotos (admin) -->
+    <div v-if="fcModal.show" class="modal-backdrop-custom" @click.self="fcModal.show = false">
+      <div class="card shadow" style="width:430px">
+        <div class="card-header"><strong><i class="fas fa-cog mr-2"></i>Código de finalização das fotos</strong></div>
+        <div class="card-body">
+          <p class="small text-muted">O operador bipa este código para encerrar as fotos de um pedido (modo Bipagem automática). Vale para todos os galpões.</p>
+          <input v-model="fcModal.code" class="form-control" maxlength="60" placeholder="ex.: FIM-FOTOS" />
+        </div>
+        <div class="card-footer d-flex justify-content-between">
+          <button class="btn btn-sm btn-outline-secondary" @click="printFinishCode"><i class="fas fa-print mr-1"></i>Imprimir</button>
+          <div>
+            <button class="btn btn-sm btn-secondary mr-1" @click="fcModal.show = false">Cancelar</button>
+            <button class="btn btn-sm btn-primary" :disabled="fcModal.saving" @click="saveFinishCode">Salvar</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -322,8 +385,11 @@ import { openAndSaveBlobResponse, saveLabelBoth } from '@/utils/download'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { platformLogo, shippingModeStyle, PLATFORMS } from '@/utils/constants'
+import { useAuthStore } from '@/stores/auth'
 
 const toast = useToast()
+const authStore = useAuthStore()
+const isAdmin = computed(() => authStore.user?.role === 'admin')
 
 // ── Mapa de shipment_status (igual à Gestão de Pedidos) ──
 const SHIPMENT_MAP = {
@@ -349,6 +415,8 @@ const filterPlatform = ref('')
 const filterCmig = ref('')
 const filterShipment = ref('')
 const filterNfe = ref('')
+const filterProduct = ref('')
+const filterItems = ref('')
 const sortKey = ref('shipment')
 const sortDir = ref('asc')
 
@@ -367,6 +435,17 @@ const videoEl = ref(null)
 const canvasEl = ref(null)
 const sep = reactive({ show: false, order: null, photos: [], saving: false, ready: false, camError: '' })
 let mediaStream = null
+
+// ── Bipagem automática (modo scan_auto) ──
+const scanInputEl = ref(null)
+const saVideoEl = ref(null)
+const saCanvasEl = ref(null)
+const sa = reactive({
+  code: '', state: 'product', currentOrder: null, buyerName: '', scanned: 0, expected: 0,
+  orderComplete: false, photos: [], finishCode: '', busy: false, camError: '',
+})
+let saStream = null
+const fcModal = reactive({ show: false, code: '', saving: false })
 
 onMounted(async () => { await Promise.all([loadPending(), loadCarts(), loadLayouts()]) })
 
@@ -395,9 +474,17 @@ const cmigOptions = computed(() => {
   for (const o of pending.value) if (o.cmig_id && !map.has(o.cmig_id)) map.set(o.cmig_id, { id: o.cmig_id, name: o.cmig_name || `CMIG ${o.cmig_id}` })
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
 })
-const hasFilters = computed(() => !!(filterPlatform.value || filterCmig.value || filterShipment.value || filterNfe.value || search.value))
+const hasFilters = computed(() => !!(filterPlatform.value || filterCmig.value || filterShipment.value || filterNfe.value || filterProduct.value || filterItems.value || search.value))
 function platformLabel(key) { return PLATFORMS.find(p => p.key === key)?.label || key }
-function clearFilters() { filterPlatform.value = ''; filterCmig.value = ''; filterShipment.value = ''; filterNfe.value = ''; search.value = '' }
+function clearFilters() { filterPlatform.value = ''; filterCmig.value = ''; filterShipment.value = ''; filterNfe.value = ''; filterProduct.value = ''; filterItems.value = ''; search.value = '' }
+function matchesProduct(o, q) {
+  const s = q.toLowerCase()
+  return (o.items || []).some(it => (it.sku || '').toLowerCase().includes(s) || (it.title || '').toLowerCase().includes(s))
+}
+function matchesItemCount(o, f) {
+  const n = (o.items || []).length
+  return f === '3' ? n >= 3 : n === Number(f)
+}
 
 function hasNfe(o) { return !!(o.nfe_url || o.nfe_key || ['authorized', 'pending', 'in_process'].includes(o.nfe_status)) }
 
@@ -408,6 +495,8 @@ const displayedOrders = computed(() => {
     if (filterShipment.value && o.shipment_status !== filterShipment.value) return false
     if (filterNfe.value === 'emitida' && !hasNfe(o)) return false
     if (filterNfe.value === 'pendente' && hasNfe(o)) return false
+    if (filterProduct.value && !matchesProduct(o, filterProduct.value)) return false
+    if (filterItems.value && !matchesItemCount(o, filterItems.value)) return false
     if (search.value && !(o.buyer_name || '').toLowerCase().includes(search.value.toLowerCase())) return false
     return true
   })
@@ -481,11 +570,19 @@ async function addToCart(cart) {
   } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao adicionar') }
 }
 
-async function openCart(id) {
-  try { const { data } = await api.get(`/separation/carts/${id}`); activeCart.value = data; focusFirstBip() }
-  catch { toast.error('Erro ao abrir gaiola') }
+async function openCart(id, { refresh = false } = {}) {
+  try {
+    const wasId = activeCart.value?.id
+    const { data } = await api.get(`/separation/carts/${id}`)
+    activeCart.value = data
+    focusFirstBip()
+    if (data.mode === 'scan_auto') {
+      if (!refresh && wasId !== id) await initScanAuto()   // abertura nova → inicia câmera/estado
+      else { await nextTick(); scanInputEl.value?.focus() } // refresh → mantém estado
+    } else { saStopCamera(); resetSaOrder() }
+  } catch { toast.error('Erro ao abrir gaiola') }
 }
-async function refreshCart() { if (activeCart.value) await openCart(activeCart.value.id) }
+async function refreshCart() { if (activeCart.value) await openCart(activeCart.value.id, { refresh: true }) }
 
 async function scan(o) {
   const code = (bipCode.value[o.id] || '').trim()
@@ -526,6 +623,7 @@ async function cancelCart() {
   try {
     await api.post(`/separation/carts/${activeCart.value.id}/cancel`)
     toast.success('Gaiola cancelada — pedidos devolvidos')
+    saStopCamera(); resetSaOrder()
     activeCart.value = null
     await Promise.all([loadCarts(), loadPending()])
   } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao cancelar') }
@@ -647,7 +745,110 @@ async function concludeSeparate() {
     sep.saving = false
   }
 }
-onBeforeUnmount(stopCamera)
+onBeforeUnmount(() => { stopCamera(); saStopCamera() })
+
+// ── Bipagem automática: máquina de estados ──
+async function initScanAuto() {
+  resetSaOrder()
+  try { const { data } = await api.get('/separation/config'); sa.finishCode = data.finish_photos_code || 'FIM-FOTOS' }
+  catch { sa.finishCode = 'FIM-FOTOS' }
+  fcModal.code = sa.finishCode
+  await nextTick()
+  await saStartCamera()
+  await nextTick(); scanInputEl.value?.focus()
+}
+function resetSaOrder() {
+  sa.photos.forEach(p => p.url && URL.revokeObjectURL(p.url))
+  sa.photos = []; sa.currentOrder = null; sa.buyerName = ''; sa.scanned = 0; sa.expected = 0
+  sa.orderComplete = false; sa.state = 'product'
+}
+async function saStartCamera() {
+  try {
+    saStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    if (saVideoEl.value) saVideoEl.value.srcObject = saStream
+    sa.camError = ''
+  } catch { sa.camError = 'Câmera indisponível — permita o acesso (requer HTTPS).' }
+}
+function saStopCamera() { if (saStream) { saStream.getTracks().forEach(t => t.stop()); saStream = null } }
+
+async function onScanAuto() {
+  const code = (sa.code || '').trim()
+  sa.code = ''
+  if (!code || sa.busy) { await nextTick(); scanInputEl.value?.focus(); return }
+  if (sa.state === 'photos') {
+    if (code.toUpperCase() === (sa.finishCode || '').toUpperCase()) await saFinishPhotos()
+    else saCapture()
+    await nextTick(); scanInputEl.value?.focus()
+  } else {
+    await saLocate(code)
+  }
+}
+async function saLocate(code) {
+  sa.busy = true
+  try {
+    const body = { code }
+    if (sa.currentOrder) body.order_id = sa.currentOrder
+    const { data } = await api.post(`/separation/carts/${activeCart.value.id}/scan-locate`, body)
+    sa.scanned = data.scanned; sa.expected = data.expected; sa.orderComplete = data.order_complete
+    if (!sa.currentOrder) {
+      sa.currentOrder = data.order_id
+      sa.buyerName = data.buyer_name || ''
+      if (!data.label_printed) { toast.info(`Pedido #${data.order_id} — imprimindo etiqueta…`); await printOrderLabelById(data.order_id) }
+    }
+    sa.state = 'photos'
+    await refreshCart()
+    toast.success(`Item bipado (${sa.scanned}/${sa.expected}). Fotografe; bipe "${sa.finishCode}" p/ encerrar.`)
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Produto não encontrado na gaiola')
+  } finally { sa.busy = false; await nextTick(); scanInputEl.value?.focus() }
+}
+function saCapture() {
+  const v = saVideoEl.value, c = saCanvasEl.value
+  if (!v || !c) return
+  const w = v.videoWidth || 640, h = v.videoHeight || 480
+  c.width = w; c.height = h
+  c.getContext('2d').drawImage(v, 0, 0, w, h)
+  c.toBlob(b => { if (b) sa.photos.push({ blob: b, url: URL.createObjectURL(b) }) }, 'image/jpeg', 0.85)
+}
+async function saFinishPhotos() {
+  if (sa.orderComplete) await saFinalizeOrder()
+  else { sa.state = 'product'; toast.info(`Bipe o próximo item do pedido #${sa.currentOrder} (${sa.scanned}/${sa.expected}).`) }
+}
+async function saFinalizeOrder() {
+  if (!sa.photos.length) { toast.error('Tire ao menos uma foto antes de finalizar.'); return }
+  sa.busy = true
+  try {
+    const fd = new FormData()
+    sa.photos.forEach((p, i) => fd.append('files', p.blob, `foto-${i + 1}.jpg`))
+    await api.post(`/separation/carts/${activeCart.value.id}/orders/${sa.currentOrder}/separate`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+    try {
+      const { data } = await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, { order_ids: [sa.currentOrder] })
+      const r = (data.results || [])[0]
+      if (r?.error) toast.warning(`Pedido #${sa.currentOrder}: NF-e NÃO emitida — ${r.error}`)
+      else toast.success(`Pedido #${sa.currentOrder} separado e NF-e emitida.`)
+    } catch (e) { toast.warning(`Pedido #${sa.currentOrder} separado, mas a NF-e falhou: ${e.response?.data?.detail || ''}`) }
+    resetSaOrder()
+    await refreshCart()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao finalizar a separação')
+  } finally { sa.busy = false; await nextTick(); scanInputEl.value?.focus() }
+}
+async function printOrderLabelById(orderId) {
+  try { await printCartLabelsBoth({ order_id: orderId, layout: layout.value }) }
+  catch { toast.error('Falha ao imprimir a etiqueta') }
+}
+function printFinishCode() { openPdf('/separation/finish-code-label.pdf', 'get') }
+async function saveFinishCode() {
+  const code = (fcModal.code || '').trim()
+  if (!code) return toast.error('Informe o código')
+  fcModal.saving = true
+  try {
+    const { data } = await api.put('/separation/config', { finish_photos_code: code })
+    sa.finishCode = data.finish_photos_code
+    toast.success('Código salvo.')
+    fcModal.show = false
+  } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao salvar') } finally { fcModal.saving = false }
+}
 
 // ── Baixar tudo (ZIP): etiquetas + DANFE + XML ──
 async function downloadBundle() {

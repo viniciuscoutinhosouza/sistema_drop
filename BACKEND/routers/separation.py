@@ -389,8 +389,8 @@ async def create_cart(
 ):
     _ensure_warehouse(current_user)
     mode = (body.get("mode") or "manual").strip()
-    if mode not in ("manual", "scan"):
-        raise HTTPException(status_code=422, detail="mode deve ser 'manual' ou 'scan'")
+    if mode not in ("manual", "scan", "scan_auto"):
+        raise HTTPException(status_code=422, detail="mode deve ser 'manual', 'scan' ou 'scan_auto'")
     # Toda gaiola precisa de galpão para ser vista pelos Gest.Log do galpão.
     # Gest.Log usa o próprio galpão; admin (sem galpão) usa o do body ou o único existente.
     wh_id = await _resolve_cart_warehouse(db, current_user, body)
@@ -506,8 +506,8 @@ async def add_orders_to_cart(
         await db.flush()
         order.picking_cart_id = cart.id
 
-        # Modo scan: materializa unidades esperadas
-        if cart.cart_mode == "scan":
+        # Modo scan / scan_auto: materializa as unidades esperadas (p/ casar o código bipado).
+        if cart.cart_mode in ("scan", "scan_auto"):
             for u in await _expand_order(db, order):
                 db.add(PickingCartItem(
                     cart_order_id=pco.id,
@@ -634,6 +634,169 @@ async def scan_order_item(
         "scanned": scanned,
         "complete": scanned >= expected,
     }
+
+
+@router.post("/carts/{cart_id}/scan-locate")
+async def scan_locate(
+    cart_id: int,
+    body: dict,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Modo Bipagem automática: bipa um produto e o sistema LOCALIZA um pedido da gaiola com ele
+    (não separado), **priorizando pedidos com MENOS itens** (1 item primeiro; desempate pelo menor
+    order_id). Incrementa `scanned_qty` da linha casada (atômico, como o /scan). Com `order_id`,
+    escopa a busca ao pedido em curso (próximo item do mesmo pedido). Devolve `order_complete`
+    (todos os itens bipados → o front dispara a NF-e) e `label_printed`."""
+    cart = await _get_cart_scoped(db, cart_id, current_user)
+    if cart.cart_mode != "scan_auto":
+        raise HTTPException(status_code=409, detail="Gaiola não está no modo Bipagem automática")
+    code = (body.get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=422, detail="Informe o código do produto")
+    only_order = body.get("order_id")
+
+    q = select(PickingCartOrder).where(
+        PickingCartOrder.cart_id == cart_id, PickingCartOrder.item_status != "separated"
+    )
+    if only_order:
+        q = q.where(PickingCartOrder.order_id == only_order)
+    pcos = (await db.execute(q)).scalars().all()
+
+    candidatos = []  # (item_count, order_id, pco, target_line)
+    for pco in pcos:
+        rows = (
+            await db.execute(select(PickingCartItem).where(PickingCartItem.cart_order_id == pco.id))
+        ).scalars().all()
+        target = next(
+            (r for r in rows if r.scanned_qty < r.expected_qty and ps.code_matches(r.sku, r.ean, code)),
+            None,
+        )
+        if target:
+            candidatos.append((len(rows), pco.order_id, pco, target))
+    if not candidatos:
+        raise HTTPException(
+            status_code=422,
+            detail="Nenhum pedido pendente com este produto na gaiola (ou já bipado por completo).",
+        )
+    # Prioriza menos itens; desempata pelo menor order_id (determinístico).
+    candidatos.sort(key=lambda c: (c[0], c[1]))
+    item_count, oid, pco, target = candidatos[0]
+
+    result = await db.execute(
+        sa_update(PickingCartItem)
+        .where(PickingCartItem.id == target.id, PickingCartItem.scanned_qty < PickingCartItem.expected_qty)
+        .values(scanned_qty=PickingCartItem.scanned_qty + 1)
+    )
+    await db.commit()
+    if getattr(result, "rowcount", 1) == 0:
+        raise HTTPException(status_code=409, detail="Item já completo — bipe novamente")
+
+    fresh = (
+        await db.execute(select(PickingCartItem).where(PickingCartItem.cart_order_id == pco.id))
+    ).scalars().all()
+    expected = sum(r.expected_qty for r in fresh)
+    scanned = sum(r.scanned_qty for r in fresh)
+    order = (await db.execute(select(Order).where(Order.id == oid))).scalar_one_or_none()
+    return {
+        "matched": True,
+        "order_id": oid,
+        "buyer_name": (order.buyer_name if order else None),
+        "item_count": item_count,
+        "expected": expected,
+        "scanned": scanned,
+        "order_complete": scanned >= expected,
+        "label_printed": pco.label_printed_at is not None,
+    }
+
+
+# ── Config global: código de fim das fotos (modo Bipagem automática) ──────────
+_FINISH_CODE_KEY = "separation.finish_photos_code"
+
+
+@router.get("/config")
+async def get_separation_config(
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Config da separação visível ao operador (p/ o front conhecer o código de fim das fotos)."""
+    from services.app_config_service import get_config
+
+    return {"finish_photos_code": await get_config(db, _FINISH_CODE_KEY)}
+
+
+@router.put("/config")
+async def set_separation_config(
+    body: dict,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edita o código de fim das fotos — admin-only (config global do sistema)."""
+    if not is_global(current_user):
+        raise HTTPException(status_code=403, detail="Apenas administradores alteram esta configuração")
+    from services.app_config_service import set_config
+
+    code = (body.get("finish_photos_code") or "").strip()
+    if not code or len(code) > 60:
+        raise HTTPException(status_code=422, detail="Informe um código (até 60 caracteres)")
+    await set_config(db, _FINISH_CODE_KEY, code, user_id=current_user.id)
+    return {"ok": True, "finish_photos_code": code}
+
+
+@router.get("/finish-code-label.pdf")
+async def finish_code_label(
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """PDF para imprimir o código de FINALIZAR fotos como CODE128 + QR (operador bipa da bancada)."""
+    import io as _io2
+
+    from reportlab.lib.pagesizes import A4 as _A4
+    from reportlab.lib.units import mm as _mm
+    from reportlab.lib.utils import ImageReader as _ImageReader
+    from reportlab.pdfgen import canvas as _canvas
+
+    from services.app_config_service import get_config
+    from services.label_service import _barcode_png
+
+    code = await get_config(db, _FINISH_CODE_KEY)
+
+    qr_png = None
+    try:
+        import qrcode as _qrcode
+
+        qbuf = _io2.BytesIO()
+        _qrcode.make(code).save(qbuf, format="PNG")
+        qr_png = qbuf.getvalue()
+    except Exception:  # noqa: BLE001 — sem qrcode, imprime só o CODE128
+        qr_png = None
+
+    buf = _io2.BytesIO()
+    c = _canvas.Canvas(buf, pagesize=_A4)
+    w, _h = _A4
+    cx = w / 2
+    y = 250 * _mm
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(cx, y, "FINALIZAR FOTOS — Separação")
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(cx, y - 7 * _mm, "Bipe este código para encerrar as fotos do pedido.")
+    c.setFont("Helvetica-Bold", 22)
+    c.drawCentredString(cx, y - 22 * _mm, code or "—")
+
+    png128 = _barcode_png(code or "", "code128")
+    if png128:
+        img = _ImageReader(_io2.BytesIO(png128))
+        c.drawImage(img, cx - 60 * _mm, y - 55 * _mm, width=120 * _mm, height=25 * _mm,
+                    preserveAspectRatio=True, mask="auto")
+    if qr_png:
+        c.drawImage(_ImageReader(_io2.BytesIO(qr_png)), cx - 25 * _mm, y - 100 * _mm,
+                    width=50 * _mm, height=50 * _mm, preserveAspectRatio=True, mask="auto")
+    c.showPage()
+    c.save()
+    return Response(
+        content=buf.getvalue(), media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="codigo-fim-fotos.pdf"'},
+    )
 
 
 @router.post("/carts/{cart_id}/conclude")
@@ -875,8 +1038,8 @@ async def cancel_cart(
 
 # ── Etiquetas / NF-e ──────────────────────────────────────────────────────────
 async def _scan_blocks_label(db: AsyncSession, cart: PickingCart, pco: PickingCartOrder) -> bool:
-    """No modo scan, etiqueta só libera após bipar 100%. True = ainda bloqueado."""
-    if cart.cart_mode != "scan":
+    """No modo scan/scan_auto, etiqueta só libera após bipar 100%. True = ainda bloqueado."""
+    if cart.cart_mode not in ("scan", "scan_auto"):
         return False
     rows = (
         await db.execute(select(PickingCartItem).where(PickingCartItem.cart_order_id == pco.id))
