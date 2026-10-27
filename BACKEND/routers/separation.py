@@ -655,6 +655,11 @@ async def scan_locate(
     if not code:
         raise HTTPException(status_code=422, detail="Informe o código do produto")
     only_order = body.get("order_id")
+    if only_order is not None:
+        try:
+            only_order = int(only_order)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="order_id inválido") from None
 
     q = select(PickingCartOrder).where(
         PickingCartOrder.cart_id == cart_id, PickingCartOrder.item_status != "separated"
@@ -865,6 +870,10 @@ async def separate_order(
         raise HTTPException(status_code=404, detail="Pedido não está nesta gaiola")
     if pco.label_printed_at is None:
         raise HTTPException(status_code=422, detail="Imprima a etiqueta antes de separar o pedido.")
+    # Enforcement server-side: em scan/scan_auto, só separa (→ NF-e automática) com 100% bipado.
+    # No modo manual não há linhas materializadas → no-op. Não confia só no `order_complete` do front.
+    if await _scan_blocks_label(db, cart, pco):
+        raise HTTPException(status_code=422, detail="Bipe todos os itens do pedido antes de separar.")
     fotos = [f for f in (files or []) if f is not None]
     if not fotos:
         raise HTTPException(status_code=422, detail="Tire ao menos uma foto da separação.")

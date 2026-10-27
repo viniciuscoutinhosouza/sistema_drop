@@ -825,6 +825,8 @@ async function saFinalizeOrder() {
       const { data } = await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, { order_ids: [sa.currentOrder] })
       const r = (data.results || [])[0]
       if (r?.error) toast.warning(`Pedido #${sa.currentOrder}: NF-e NÃO emitida — ${r.error}`)
+      else if (r?.already) toast.info(`Pedido #${sa.currentOrder} separado — NF-e já existia.`)
+      else if (r?.skipped) toast.warning(`Pedido #${sa.currentOrder} separado, NF-e pulada: ${r.skipped}`)
       else toast.success(`Pedido #${sa.currentOrder} separado e NF-e emitida.`)
     } catch (e) { toast.warning(`Pedido #${sa.currentOrder} separado, mas a NF-e falhou: ${e.response?.data?.detail || ''}`) }
     resetSaOrder()
