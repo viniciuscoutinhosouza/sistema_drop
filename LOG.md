@@ -4645,3 +4645,20 @@ Pedido do dono na tela Logística > Separar Pedidos. Em produção.
   mantido (design do dono: prioriza 1 item) com o pedido+cliente mostrado no painel p/ conferência.
 - Verificado: pytest import OK, migration 168 (0 erro), qrcode instalado, health 200, build frontend,
   site 200, rotas no OpenAPI. Commits: `7cb4bd4` (feature) · `6f4b503` (correções).
+
+## 2026-10-28 — feat(pagamento): confirmar manual (comprovante) / ver / cancelar no ícone de Pagamentos
+
+Pedido do dono na tela Pedidos Importados (passo "Pago" do stepper, agora sempre clicável → modal).
+- **Não pago** → confirmar pagamento MANUAL: como foi pago + descrição + comprovante (upload OU
+  colar imagem Ctrl+V) → Google Drive (área Comprovantes, ADR-0038), servido protegido/escopado
+  pelo pedido (anti-IDOR). Marca pago + cancela cobranças ASAAS vivas não-pagas.
+- **Pago** → mostra comprovante manual OU detalhes das cobranças ASAAS + cancelar pagamento
+  (motivo). Guards fail-loud: bloqueia se NF-e/DC-e emitida, separado/enviado, ou ASAAS pago vivo.
+- **2 permissões** editáveis em Perfil de Acesso: `pagamento_confirmar` / `pagamento_cancelar`
+  (action_permissions + seed migration 170). Front gated por hasAction.
+- Tabela `order_payment_proofs` append-only (migration 169, com proof_mime). charge_service não
+  reverte em silêncio um pago manual (`has_active_manual_payment`). Escopo multi-papel
+  (`_get_order_checked`).
+- Auditoria (consistency + quality): 2 bloqueadores + 2 HIGH corrigidos. Verificado: migrations 0
+  erro, 6 grants, col criada, health 200, rotas no OpenAPI, build front, site 200. Commits `9f41295`
+  (feature) · `3adb65d` (correções).
