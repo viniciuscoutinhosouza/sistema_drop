@@ -1170,13 +1170,7 @@ async def update_shipping_cost(
 
     Apos pago, o debito esta consolidado e o frete fica fixo.
     """
-    order = (
-        await db.execute(
-            select(Order).where(Order.id == order_id, _ac_visible_filter(current_user))
-        )
-    ).scalar_one_or_none()
-    if not order:
-        raise HTTPException(status_code=404, detail="Pedido nao encontrado")
+    order = await _get_order_checked(db, order_id, current_user)  # escopo multi-papel (galpão/AC/admin)
     if order.platform != "manual":
         raise HTTPException(
             status_code=400,
