@@ -136,7 +136,13 @@ def test_normal_icms60_st_retida():
         cofins_cst="01", cofins_aliquota=Decimal("7.60"), cofins_value=Decimal("7.60"),
     )
     xml = montar_xml_nfe(_nota(prod, crt=3))
-    assert "<ICMS60><orig>0</orig><CST>60</CST><vBCSTRet>80.00</vBCSTRet><vICMSSTRet>14.40</vICMSSTRet></ICMS60>" in xml
+    # Bloco ST-retido COMPLETO e na ordem do schema 4.00 (pST/vICMSSubstituto obrigatórios no
+    # grupo p/ a SEFAZ não rejeitar — cStat 225; 0 quando sem esses valores no cadastro).
+    assert (
+        "<ICMS60><orig>0</orig><CST>60</CST><vBCSTRet>80.00</vBCSTRet>"
+        "<pST>0.00</pST><vICMSSubstituto>0.00</vICMSSubstituto>"
+        "<vICMSSTRet>14.40</vICMSSTRet></ICMS60>"
+    ) in xml
     # ICMS próprio = 0 (ST encerra a cadeia); vST no total = 14.40
     assert "<vICMS>0.00</vICMS>" in xml
     assert "<vST>14.40</vST>" in xml
