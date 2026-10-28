@@ -519,6 +519,8 @@ const STATUS_ORDER = ['downloaded', 'paid', 'label_generated', 'label_printed', 
 
 function stepDone(key) {
   if (!order.value) return false
+  // "Pago" reflete o payment_status (pagamento manual não mexe no order.status).
+  if (key === 'paid' && order.value.payment_status === 'paid') return true
   const currentIdx = STATUS_ORDER.indexOf(order.value.status)
   const stepIdx = STATUS_ORDER.indexOf(key)
   return stepIdx <= currentIdx

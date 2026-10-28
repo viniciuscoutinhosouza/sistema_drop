@@ -85,8 +85,11 @@ function isCurrent(key) {
 }
 
 function stepClass(key) {
-  if (key === 'paid' && props.paymentStatus === 'pending' && props.canPay) {
-    return ['bg-warning', 'text-dark']
+  // "Pago" reflete o PAYMENT_STATUS (não o order.status): pagamento manual seta só payment_status.
+  if (key === 'paid') {
+    if (props.paymentStatus === 'paid') return ['bg-success', 'text-white']
+    if (props.canPay) return ['bg-warning', 'text-dark']
+    return ['bg-secondary', 'text-white']
   }
   if (key === 'label_generated') {
     if (props.status === 'label_printed' || props.labelUrl) {
