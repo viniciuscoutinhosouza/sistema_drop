@@ -202,6 +202,14 @@
                         @click="baixar('danfe')">
                   <i class="fas fa-print mr-1"></i> Imprimir PDF (sem valor fiscal)
                 </button>
+                <button v-if="['rejected','error'].includes(invoice.status)"
+                        class="btn btn-success mr-2 mb-2"
+                        :disabled="retransmitting"
+                        title="Reenvia esta NF-e à SEFAZ (reserva um número novo). Use depois que o motivo da rejeição estiver corrigido — serve inclusive para nota vinculada a pedido."
+                        @click="retransmit">
+                  <i class="fas" :class="retransmitting ? 'fa-spinner fa-spin' : 'fa-paper-plane'"></i>
+                  {{ retransmitting ? 'Transmitindo…' : 'Retransmitir à SEFAZ' }}
+                </button>
                 <button v-if="['finalized','rejected'].includes(invoice.status)"
                         class="btn btn-outline-primary mr-2 mb-2"
                         :disabled="reopening"
@@ -415,6 +423,7 @@ const acting = ref(false)
 const refreshing = ref(false)
 const reapplyingStock = ref(false)
 const downloading = ref(false)
+const retransmitting = ref(false)
 const reopening = ref(false)
 
 // resposta de erro veio como Blob (responseType blob) — extrai o detail JSON de dentro
@@ -586,6 +595,27 @@ function onStockUpdated() {
   toast.success('Estoque atualizado')
   showStockModal.value = false
   load()
+}
+
+async function retransmit() {
+  if (!confirm(
+    'Retransmitir esta NF-e à SEFAZ?\n\nA tentativa anterior foi rejeitada; a retransmissão reserva '
+    + 'um número NOVO e usa os itens atuais da nota.'
+  )) return
+  retransmitting.value = true
+  try {
+    const result = await fiscalStore.transmit(invoice.value.id)
+    const st = (result?.status || '').toLowerCase()
+    if (st === 'authorized') toast.success('NF-e autorizada pela SEFAZ.')
+    else if (st === 'processing' || st === 'queued') toast.info('NF-e em processamento — reconsulte o status em instantes.')
+    else if (st === 'rejected') toast.error('SEFAZ rejeitou novamente — veja o motivo no detalhe da nota.')
+    else toast.info('Transmissão enviada.')
+    await load()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao transmitir à SEFAZ')
+  } finally {
+    retransmitting.value = false
+  }
 }
 
 async function refreshStatus() {
