@@ -72,13 +72,13 @@
 
     <!-- Modal add/editar banco -->
     <div v-if="modal" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5);z-index:1065">
-      <div class="modal-dialog">
+      <div class="modal-dialog modal-lg">
         <div class="modal-content">
           <div class="modal-header py-2">
             <h6 class="modal-title"><i class="fas fa-university mr-2"></i>{{ form.id ? 'Editar banco' : 'Novo banco' }}</h6>
             <button type="button" class="close" :disabled="saving" @click="modal = false"><span>&times;</span></button>
           </div>
-          <div class="modal-body" style="font-size:.9rem">
+          <div class="modal-body" style="font-size:.9rem;max-height:72vh;overflow-y:auto">
             <div class="form-group">
               <label class="small font-weight-bold">Banco <span class="text-danger">*</span></label>
               <select v-model="form.provider" class="form-control form-control-sm">

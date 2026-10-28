@@ -129,10 +129,25 @@ async def ensure_webhook(bank: WarehouseBankAccount, webhook_url: str) -> str:
     except AsaasError:
         pass  # conta sem listagem de webhooks ainda — só cria
 
+    # A API nova do ASAAS exige `email` no webhook (p/ avisar falhas de entrega). NÃO precisa ser
+    # cadastrado no sistema — usamos o e-mail da PRÓPRIA conta ASAAS (GET /myAccount).
+    email = None
+    try:
+        acc = await _request(bank, "GET", "/myAccount")
+        email = acc.get("email")
+    except AsaasError:
+        pass
+    if not email:
+        raise AsaasError(
+            "Não foi possível obter o e-mail da conta ASAAS (GET /myAccount). Verifique se a API "
+            "Key é válida e se a conta tem e-mail cadastrado no ASAAS."
+        )
+
     token = secrets.token_urlsafe(32)  # ~43 chars, dentro de 32-255 do ASAAS
     body = {
         "name": "Sistema Drop - pagamentos",
         "url": webhook_url,
+        "email": email,
         "enabled": True,
         "interrupted": False,
         "authToken": token,
