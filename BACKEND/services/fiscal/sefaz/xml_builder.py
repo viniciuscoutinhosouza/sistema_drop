@@ -524,6 +524,13 @@ def _montar_pag(inf_nfe: etree._Element, nota: NotaEmissao) -> None:
         det_pag = _sub(pag, "detPag")
         _sub(det_pag, "indPag", str(p.ind_pag))
         _sub(det_pag, "tPag", p.forma_pag)
+        # SEFAZ (NT/MOC NF-e 4.00): quando tPag=99 (Outros), o <xPag> (descrição, 2–60 chars) é
+        # OBRIGATÓRIO — e só é permitido nesse caso. Posição no schema: após <tPag>, antes de <vPag>.
+        if p.forma_pag == "99":
+            desc = (p.desc_pag or "Outros").strip()[:60]
+            if len(desc) < 2:
+                desc = "Outros"
+            _sub(det_pag, "xPag", desc)
         _sub(det_pag, "vPag", fmt_val(p.valor))
         if p.troco is not None:
             _sub(det_pag, "vTroco", fmt_val(p.troco))

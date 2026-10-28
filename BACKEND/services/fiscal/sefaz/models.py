@@ -217,6 +217,7 @@ class Pagamento:
     valor: Decimal = Decimal("0")
     ind_pag: int = 0
     troco: Decimal | None = None
+    desc_pag: str | None = None  # <xPag> — obrigatório quando forma_pag=99 (Outros)
 
 
 @dataclass(frozen=True, slots=True)

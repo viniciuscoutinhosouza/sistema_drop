@@ -294,7 +294,12 @@ def build_nota_emissao(
         valor_pag = Decimal("0.00") if forma_pag == "90" else _dec(inv.total_invoice)
         # ind_pag persistido (migration 100) ou default histórico 0 (à vista).
         ind_pag = inv.ind_pag if inv.ind_pag is not None else 0
-        pagamentos = (Pagamento(forma_pag=forma_pag, valor=valor_pag, ind_pag=ind_pag),)
+        # tPag=99 (Outros) exige <xPag>. Hoje o 99 só nasce da emissão de pedido de marketplace
+        # (já pago no marketplace) — descrição clara e dentro de 2–60 chars.
+        desc_pag = "Pago no marketplace" if forma_pag == "99" else None
+        pagamentos = (
+            Pagamento(forma_pag=forma_pag, valor=valor_pag, ind_pag=ind_pag, desc_pag=desc_pag),
+        )
 
     return NotaEmissao(
         modelo=55, serie=serie, numero=numero, ambiente=ambiente, chave=chave, c_nf=c_nf,
