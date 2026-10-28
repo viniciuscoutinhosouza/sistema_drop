@@ -1615,7 +1615,9 @@ async def _get_invoice_for_edit(invoice_id: int, user: User, db: AsyncSession) -
     if not inv:
         raise HTTPException(status_code=404, detail="NFe não encontrada")
     await _check_cmig_access(inv.cmig_id, user, db)
-    if inv.status != "draft":
+    # 'rejected'/'error' = transmissão falhou e NÃO autorizou (sem valor fiscal) — pode ser corrigida
+    # e retentada. Só 'authorized'/'cancelled'/'processing' são imutáveis/em curso.
+    if inv.status not in ("draft", "rejected", "error"):
         raise HTTPException(
             status_code=400, detail=f"NFe em status '{inv.status}' não pode ser editada"
         )
@@ -1899,7 +1901,9 @@ async def calculate_taxes(
 
 
 def _validate_ready_to_transmit(inv: Invoice, cfg: CMIGFiscalConfig, person: Person | None):
-    if inv.status != "draft":
+    # 'rejected'/'error' podem ser re-transmitidas (a tentativa anterior não autorizou; emitir
+    # reserva um novo número). 'authorized'/'cancelled'/'processing' seguem bloqueadas.
+    if inv.status not in ("draft", "rejected", "error"):
         raise HTTPException(
             status_code=400, detail=f"NFe em status '{inv.status}' não pode ser transmitida"
         )
@@ -4083,27 +4087,40 @@ async def create_invoice_from_order(
         existing = (
             await db.execute(select(Invoice).where(Invoice.id == order.invoice_id))
         ).scalar_one_or_none()
-        if existing and (existing.status or "").lower() != "draft":
-            # NFe de fato transmitida/autorizada (ou terminal) — não re-emitir. Mensagem clara
-            # com o status e o número (um rascunho NÃO cai aqui — ver branch abaixo).
-            num = f", nº {existing.nfe_number}" if existing.nfe_number else ""
-            raise HTTPException(
-                status_code=409,
-                detail=f"Pedido já possui NFe {existing.status} (Invoice #{existing.id}{num}).",
-            )
         if existing:
-            # Rascunho abandonado de uma tentativa anterior (status 'draft': sem número/chave, nunca
-            # foi à SEFAZ). NÃO é NFe emitida — descarta e recria do estado ATUAL do pedido, para
-            # não travar a emissão nem reaproveitar dados defasados (ex.: itens editados depois).
-            draft_items = (
-                await db.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == existing.id))
-            ).scalars().all()
-            for di in draft_items:
-                db.delete(di)
-            order.invoice_id = None
-            await db.flush()
-            db.delete(existing)
-            await db.flush()
+            st = (existing.status or "").lower()
+            if st in ("authorized", "cancelled", "processing"):
+                # NFe de fato emitida/autorizada (ou em transmissão) — não re-emitir. Mensagem clara.
+                num = f", nº {existing.nfe_number}" if existing.nfe_number else ""
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Pedido já possui NFe {existing.status} (Invoice #{existing.id}{num}).",
+                )
+            if st == "draft":
+                # Rascunho abandonado (sem número/chave, nunca foi à SEFAZ). NÃO é NFe emitida —
+                # descarta e recria do estado ATUAL do pedido (não trava nem usa dados defasados).
+                draft_items = (
+                    await db.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == existing.id))
+                ).scalars().all()
+                for di in draft_items:
+                    db.delete(di)
+                order.invoice_id = None
+                await db.flush()
+                db.delete(existing)
+                await db.flush()
+            else:
+                # rejected/error/finalized: foi transmitida mas NÃO autorizada (tem logs fiscais e
+                # número reservado — deletar violaria FK e perderia o histórico). RETOMA a mesma
+                # invoice: o operador revisa e re-transmite (o transmit reserva novo número).
+                return {
+                    "invoice_id": existing.id,
+                    "order_id": order.id,
+                    "resumed": True,
+                    "warnings": [
+                        f"NFe anterior ficou {existing.status} (Invoice #{existing.id}). "
+                        "Revise e transmita novamente."
+                    ],
+                }
 
     if not order.items:
         raise HTTPException(status_code=400, detail="Pedido sem itens")

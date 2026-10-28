@@ -275,12 +275,17 @@ def _montar_icms_normal(icms: etree._Element, item: ItemEmissao) -> None:
             _sub(g, "vICMSDeson", fmt_val(vicms or Decimal("0")))
             _sub(g, "motDesICMS", p.mot_des_icms)
     elif cst == "60":
-        # ST já recolhida anteriormente. Revenda sem os valores retidos → 0.00 (aceito pela SEFAZ).
+        # ST já recolhida anteriormente (revenda). Emite o bloco ST-retido COMPLETO e NA ORDEM do
+        # schema 4.00: vBCSTRet, pST, vICMSSubstituto, vICMSSTRet. Emitir só vBCSTRet+vICMSSTRet
+        # (pulando pST e vICMSSubstituto) foi REJEITADO pela SEFAZ (cStat 225 — Falha no Schema XML,
+        # elemento ICMS60/vICMSSTRet). Sem os valores retidos no cadastro → 0 (formato válido).
         g = _sub(icms, "ICMS60")
         _sub(g, "orig", orig)
         _sub(g, "CST", "60")
         _cbenef(g, item)
         _sub(g, "vBCSTRet", fmt_val(p.vbc_st_ret or Decimal("0")))
+        _sub(g, "pST", fmt_pct(getattr(p, "pst_ret", None) or Decimal("0")))
+        _sub(g, "vICMSSubstituto", fmt_val(getattr(p, "vicms_substituto", None) or Decimal("0")))
         _sub(g, "vICMSSTRet", fmt_val(p.vicms_st_ret or Decimal("0")))
     else:
         # ICMS90 (outras) — fallback genérico VÁLIDO para 10/70/90 nesta fase. Tributa como 00
