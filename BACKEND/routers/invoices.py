@@ -2591,6 +2591,11 @@ async def download_danfe(
             ).scalar_one_or_none()
         from services.fiscal.sefaz.exceptions import FiscalError
 
+        # IBGE do destinatário derivado do CEP (não exige digitação) — já na prévia, para usar o
+        # código real (não o fallback do emitente) e persistir, deixando a emissão pronta.
+        if person is not None:
+            await sefaz_service.ensure_person_ibge(db, person)
+
         try:
             xml = sefaz_service.montar_xml_previa(inv, cmig, cfg, person, list(inv.items))
             pdf = await asyncio.to_thread(gerar_danfe_previa, xml)
@@ -4078,11 +4083,27 @@ async def create_invoice_from_order(
         existing = (
             await db.execute(select(Invoice).where(Invoice.id == order.invoice_id))
         ).scalar_one_or_none()
-        if existing:
+        if existing and (existing.status or "").lower() != "draft":
+            # NFe de fato transmitida/autorizada (ou terminal) — não re-emitir. Mensagem clara
+            # com o status e o número (um rascunho NÃO cai aqui — ver branch abaixo).
+            num = f", nº {existing.nfe_number}" if existing.nfe_number else ""
             raise HTTPException(
                 status_code=409,
-                detail=f"Pedido já possui NFe vinculada (Invoice #{existing.id})",
+                detail=f"Pedido já possui NFe {existing.status} (Invoice #{existing.id}{num}).",
             )
+        if existing:
+            # Rascunho abandonado de uma tentativa anterior (status 'draft': sem número/chave, nunca
+            # foi à SEFAZ). NÃO é NFe emitida — descarta e recria do estado ATUAL do pedido, para
+            # não travar a emissão nem reaproveitar dados defasados (ex.: itens editados depois).
+            draft_items = (
+                await db.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == existing.id))
+            ).scalars().all()
+            for di in draft_items:
+                db.delete(di)
+            order.invoice_id = None
+            await db.flush()
+            db.delete(existing)
+            await db.flush()
 
     if not order.items:
         raise HTTPException(status_code=400, detail="Pedido sem itens")

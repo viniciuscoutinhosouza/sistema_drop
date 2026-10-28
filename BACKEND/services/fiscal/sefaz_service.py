@@ -111,10 +111,38 @@ def _estabelecimento(cmig: CMIG, cfg: CMIGFiscalConfig) -> Estabelecimento:
     )
 
 
+async def ensure_person_ibge(db: AsyncSession, person: Person) -> None:
+    """Deriva o código IBGE do município do destinatário a partir do CEP (ViaCEP) quando ausente.
+
+    O `cMun` do destinatário é exigência da SEFAZ (vai no XML), mas é DERIVÁVEL do CEP — o usuário
+    não precisa digitá-lo. Preenche `person.ibge_code` e persiste no cadastro. Best-effort: se o
+    CEP não resolver, deixa como está (o `_cliente` decide se falha, agora como último recurso)."""
+    if (getattr(person, "ibge_code", "") or "").strip():
+        return
+    cep = _digits(getattr(person, "zip_code", ""))
+    if len(cep) != 8:
+        return
+    try:
+        from services.viacep_service import fetch_address
+
+        addr = await fetch_address(cep)
+        code = (addr.get("ibge_code") or "").strip()
+    except Exception:  # noqa: BLE001 — ViaCEP indisponível/CEP não achado: segue sem o código
+        return
+    if len(code) == 7 and code.isdigit():
+        person.ibge_code = code
+        try:
+            await db.commit()
+        except Exception:  # noqa: BLE001 — persistência é bônus; mantém em memória p/ esta emissão
+            await db.rollback()
+            person.ibge_code = code
+
+
 def _cliente(person: Person) -> Cliente:
     if not person.ibge_code:
         raise SefazServiceError(
-            f"Destinatário '{person.name}' sem código IBGE do município — atualize o cadastro."
+            f"Destinatário '{person.name}' sem código IBGE do município e não foi possível "
+            "derivá-lo do CEP — confira o CEP do destinatário em Fiscal > Pessoas."
         )
     doc = _digits(person.document)
     tipo = "PJ" if len(doc) == 14 else "PF"
@@ -556,6 +584,8 @@ async def emitir(
 
     # Pré-valida cadastros (IBGE, IE, NCM) ANTES de consumir um número fiscal —
     # evita "queimar" numeração por erro de cadastro corrigível.
+    # IBGE do destinatário: deriva do CEP (não exige digitação) antes da validação de _cliente.
+    await ensure_person_ibge(db, person)
     _estabelecimento(cmig, cfg)
     _cliente(person)
     _crt = int(cfg.crt or 1)

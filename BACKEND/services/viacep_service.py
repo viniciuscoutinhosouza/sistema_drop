@@ -33,4 +33,7 @@ async def fetch_address(cep: str) -> dict:
         "neighborhood": data.get("bairro", ""),
         "city": data.get("localidade", ""),
         "state": data.get("uf", ""),
+        # Código IBGE do município (7 díg.) — o ViaCEP já devolve; usado para derivar o cMun do
+        # destinatário na NF-e sem exigir que o usuário digite o código (é derivável do CEP).
+        "ibge_code": str(data.get("ibge", "") or ""),
     }

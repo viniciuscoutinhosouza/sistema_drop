@@ -1133,28 +1133,34 @@ async def pay_order(
     shipping_cost = Decimal(str(order.shipping_cost or 0))
     total_debit = product_cost + platform_fee + shipping_cost
 
-    if total_debit > 0:
-        await debit_balance(
-            db,
-            dropshipper_id=current_user.id,
-            amount=total_debit,
-            description=f"Pagamento pedido #{order_id}",
-            reference_type="order",
-            reference_id=order_id,
-        )
+    # Débito de saldo é um conceito dropshipper→galpão: SÓ o AC (Gestor de Conta) tem ACProfile e
+    # saldo a debitar (paga o galpão pelo PG). Galpão/admin (ex.: pedido manual 100% CMIG próprio)
+    # NÃO tem ACProfile — antes estourava "Perfil do Gestor de Conta não encontrado". Nesse caso
+    # só marca o pedido como pago, sem débito de saldo e sem sobrescrever os custos do pedido.
+    is_ac = is_conta(current_user)
+    if is_ac:
+        if total_debit > 0:
+            await debit_balance(
+                db,
+                dropshipper_id=current_user.id,
+                amount=total_debit,
+                description=f"Pagamento pedido #{order_id}",
+                reference_type="order",
+                reference_id=order_id,
+            )
+        order.product_cost = product_cost
+        order.platform_fee = platform_fee
+        order.shipping_cost = shipping_cost
+        order.total_debit = total_debit
 
     order.payment_status = "paid"
     order.status = "paid"
-    order.product_cost = product_cost
-    order.platform_fee = platform_fee
-    order.shipping_cost = shipping_cost
-    order.total_debit = total_debit
     order.paid_at = datetime.now(UTC)
     await db.commit()
 
     return {
         "message": "Pedido pago com sucesso",
-        "total_debit": float(total_debit),
+        "total_debit": float(total_debit if is_ac else 0),
         "new_status": order.status,
     }
 
