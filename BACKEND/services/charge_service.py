@@ -70,9 +70,28 @@ def mark_order_paid_from_charge(order: Order) -> bool:
     return True
 
 
+async def has_active_manual_payment(db, order_id: int) -> bool:
+    """True se o pedido tem uma confirmação MANUAL de pagamento ativa (último evento 'confirm' sem
+    'cancel' depois) — ADR order_payment_proofs. Usado p/ o ASAAS NÃO reverter um pago manual."""
+    from models.order_payment import OrderPaymentProof
+
+    rows = (
+        await db.execute(
+            select(OrderPaymentProof.event_type)
+            .where(OrderPaymentProof.order_id == order_id)
+            .order_by(OrderPaymentProof.id)
+        )
+    ).scalars().all()
+    active = False
+    for ev in rows:
+        active = ev == "confirm"
+    return active
+
+
 async def revert_order_payment_if_refunded(db, order: Order) -> bool:
     """Após um estorno/cancelamento, se NÃO há mais cobrança paga viva e o pedido está 'paid',
-    volta para 'pending' e limpa `paid_at`. Retorna True se mudou."""
+    volta para 'pending' e limpa `paid_at`. Retorna True se mudou.
+    NÃO reverte se há confirmação MANUAL de pagamento ativa (os dois subsistemas não disputam)."""
     if order.payment_status != "paid":
         return False
     paid = (
@@ -83,6 +102,8 @@ async def revert_order_payment_if_refunded(db, order: Order) -> bool:
         )
     ).first()
     if paid:
+        return False
+    if await has_active_manual_payment(db, order.id):
         return False
     order.payment_status = "pending"
     order.paid_at = None

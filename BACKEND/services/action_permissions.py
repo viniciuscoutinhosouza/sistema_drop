@@ -85,6 +85,11 @@ ACTION_PERMISSIONS: list[dict] = [
      "default_base_roles": ["admin", "go", "ac"]},
     {"key": "credito_cliente_gerenciar", "label": "Gerenciar crédito do cliente (lançar/baixar)",
      "menu": "financeiro", "default_base_roles": ["admin", "go", "ac"]},
+    # Pagamento do pedido (confirmar manual com comprovante / cancelar informando motivo).
+    {"key": "pagamento_confirmar", "label": "Confirmar pagamento manual (com comprovante)",
+     "menu": "pedidos", "default_base_roles": ["admin", "go", "ac"]},
+    {"key": "pagamento_cancelar", "label": "Cancelar pagamento (informando motivo)",
+     "menu": "pedidos", "default_base_roles": ["admin", "go", "ac"]},
 ]
 
 _BY_KEY = {p["key"]: p for p in ACTION_PERMISSIONS}

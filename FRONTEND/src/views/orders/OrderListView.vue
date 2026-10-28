@@ -549,7 +549,7 @@
               :has-nfe="hasNfe(order)"
               :is-full="isFullOrder(order)"
               @click:delivery="openShipmentModal(order)"
-              @click:pay="payOrder(order)"
+              @click:pay="openPaymentModal(order)"
               @click:label="handleLabelClick(order)"
               @click:nfe="handleNfeClick(order)"
               @click:separated="openSeparationInfo(order)"
@@ -801,6 +801,82 @@
               {{ nfeConfirm.saving ? 'Transmitindo…' : (nfeConfirm.ambiente === 'homolog' ? 'Transmitir (homologação)' : 'Confirmar e Transmitir') }}
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Pagamento (confirmar manual / ver comprovante / cancelar) -->
+  <div v-if="payModal.show" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5);z-index:1062" @click.self="closePayModal">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header py-2">
+          <h6 class="modal-title"><i class="fas fa-dollar-sign mr-2"></i>Pagamento do pedido #{{ payModal.order?.id }}</h6>
+          <button type="button" class="close" @click="closePayModal"><span>&times;</span></button>
+        </div>
+        <div class="modal-body">
+          <div v-if="payModal.loading" class="text-center py-3"><i class="fas fa-spinner fa-spin fa-2x text-muted"></i></div>
+          <template v-else>
+            <!-- NÃO PAGO: confirmar manual -->
+            <div v-if="payModal.info?.payment_status !== 'paid'">
+              <div v-if="payModal.info?.asaas?.length" class="alert alert-info py-2 small">
+                Há cobrança(s) ASAAS neste pedido — o pagamento confirma sozinho pelo webhook. Abaixo você pode registrar um pagamento feito por fora.
+              </div>
+              <template v-if="canConfirmPay">
+                <div class="form-group mb-2">
+                  <label class="small font-weight-bold">Como foi pago?</label>
+                  <input v-model="payModal.method" class="form-control form-control-sm" placeholder="Pix, dinheiro, transferência, cartão…" />
+                </div>
+                <div class="form-group mb-2">
+                  <label class="small font-weight-bold">Descrição / observação</label>
+                  <textarea v-model="payModal.description" class="form-control form-control-sm" rows="2" placeholder="Detalhes do pagamento…"></textarea>
+                </div>
+                <div class="form-group mb-0">
+                  <label class="small font-weight-bold">Comprovante (imagem) — opcional</label>
+                  <input type="file" accept="image/*" class="form-control-file mb-1" @change="onPayFile" />
+                  <div class="border rounded p-2 text-center text-muted" tabindex="0" style="min-height:64px;outline:none" @paste="onPayPaste">
+                    <img v-if="payModal.proofUrl" :src="payModal.proofUrl" style="max-height:170px;max-width:100%;object-fit:contain" />
+                    <span v-else><i class="fas fa-paste mr-1"></i>Clique aqui e cole (Ctrl+V) a imagem do comprovante</span>
+                  </div>
+                </div>
+              </template>
+              <div v-else class="alert alert-warning py-2 small mb-0">Você não tem permissão para confirmar pagamento.</div>
+            </div>
+            <!-- PAGO: comprovante / ASAAS + cancelar -->
+            <div v-else>
+              <div class="alert alert-success py-2"><i class="fas fa-check-circle mr-1"></i>Pedido pago.</div>
+              <div v-if="payModal.info?.manual" class="mb-2">
+                <div class="small"><strong>Pagamento manual</strong> — {{ payModal.info.manual.payment_method || '—' }}</div>
+                <div v-if="payModal.info.manual.description" class="small text-muted">{{ payModal.info.manual.description }}</div>
+                <div class="small text-muted">{{ formatDateTime(payModal.info.manual.created_at) }}</div>
+                <img v-if="payModal.storedProofUrl" :src="payModal.storedProofUrl" style="max-height:220px;max-width:100%;object-fit:contain;border:1px solid #dee2e6;border-radius:4px" class="mt-2" />
+              </div>
+              <div v-if="payModal.info?.asaas?.length" class="mb-2">
+                <div class="small font-weight-bold">Cobranças ASAAS</div>
+                <table class="table table-sm mb-0"><tbody>
+                  <tr v-for="c in payModal.info.asaas" :key="c.id">
+                    <td>{{ c.billing_type || '—' }}</td>
+                    <td>{{ formatCurrency(c.value) }}</td>
+                    <td><span class="badge badge-light border">{{ c.status || '—' }}</span></td>
+                    <td><a v-if="c.invoice_url" :href="c.invoice_url" target="_blank" rel="noopener" class="small">link</a></td>
+                  </tr>
+                </tbody></table>
+              </div>
+              <div v-if="canCancelPay" class="border-top pt-2 mt-2">
+                <label class="small font-weight-bold text-danger">Cancelar pagamento</label>
+                <input v-model="payModal.cancelReason" class="form-control form-control-sm mb-1" placeholder="Motivo do cancelamento" />
+                <button class="btn btn-sm btn-outline-danger" :disabled="payModal.busy" @click="doCancelPayment">
+                  <i class="fas fa-ban mr-1"></i>Cancelar pagamento
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+        <div v-if="!payModal.loading" class="modal-footer py-2">
+          <button class="btn btn-sm btn-secondary" @click="closePayModal">Fechar</button>
+          <button v-if="payModal.info?.payment_status !== 'paid' && canConfirmPay" class="btn btn-sm btn-success" :disabled="payModal.busy" @click="doConfirmPayment">
+            <i class="fas" :class="payModal.busy ? 'fa-spinner fa-spin' : 'fa-check'"></i> Confirmar pagamento
+          </button>
         </div>
       </div>
     </div>
@@ -1262,6 +1338,72 @@ async function payOrder(order) {
     toast.success(`Pedido pago! Débito: ${formatCurrency(data.total_debit)}`)
     await loadOrders()
   } catch (err) { toast.error(err.response?.data?.detail || 'Erro ao pagar pedido') }
+}
+
+// ── Pagamento: confirmar manual (c/ comprovante) / ver / cancelar (ADR Perfil de Acesso) ──
+const payModal = reactive({
+  show: false, order: null, info: null, loading: false, busy: false,
+  method: '', description: '', proofBlob: null, proofUrl: '', storedProofUrl: '', cancelReason: '',
+})
+const canConfirmPay = computed(() => (authStore.hasAction ? authStore.hasAction('pagamento_confirmar') : true))
+const canCancelPay = computed(() => (authStore.hasAction ? authStore.hasAction('pagamento_cancelar') : true))
+
+async function openPaymentModal(order) {
+  Object.assign(payModal, { show: true, order, info: null, loading: true, busy: false, method: '', description: '', proofBlob: null, proofUrl: '', storedProofUrl: '', cancelReason: '' })
+  try {
+    const { data } = await api.get(`/orders/${order.id}/payment-info`)
+    payModal.info = data
+    if (data.manual?.has_proof) {
+      try {
+        const resp = await api.get(`/orders/${order.id}/payment-proof/${data.manual.event_id}`, { responseType: 'blob' })
+        payModal.storedProofUrl = URL.createObjectURL(resp.data)
+      } catch { /* sem comprovante visível */ }
+    }
+  } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao carregar o pagamento') }
+  finally { payModal.loading = false }
+}
+function closePayModal() {
+  if (payModal.proofUrl) URL.revokeObjectURL(payModal.proofUrl)
+  if (payModal.storedProofUrl) URL.revokeObjectURL(payModal.storedProofUrl)
+  payModal.show = false; payModal.proofBlob = null; payModal.proofUrl = ''; payModal.storedProofUrl = ''
+}
+function setProof(blob) {
+  if (payModal.proofUrl) URL.revokeObjectURL(payModal.proofUrl)
+  payModal.proofBlob = blob
+  payModal.proofUrl = blob ? URL.createObjectURL(blob) : ''
+}
+function onPayFile(e) { const f = e.target.files?.[0]; if (f) setProof(f) }
+function onPayPaste(e) {
+  const items = e.clipboardData?.items || []
+  for (const it of items) {
+    if (it.type?.startsWith('image/')) { const b = it.getAsFile(); if (b) { setProof(b); e.preventDefault(); return } }
+  }
+}
+async function doConfirmPayment() {
+  payModal.busy = true
+  try {
+    const fd = new FormData()
+    fd.append('payment_method', payModal.method || '')
+    fd.append('description', payModal.description || '')
+    if (payModal.proofBlob) fd.append('file', payModal.proofBlob, 'comprovante.jpg')
+    await api.post(`/orders/${payModal.order.id}/confirm-payment`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+    toast.success('Pagamento confirmado.')
+    closePayModal()
+    await loadOrders()
+  } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao confirmar o pagamento') }
+  finally { payModal.busy = false }
+}
+async function doCancelPayment() {
+  const reason = (payModal.cancelReason || '').trim()
+  if (!reason) return toast.error('Informe o motivo do cancelamento.')
+  payModal.busy = true
+  try {
+    await api.post(`/orders/${payModal.order.id}/cancel-payment`, { reason })
+    toast.success('Pagamento cancelado.')
+    closePayModal()
+    await loadOrders()
+  } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao cancelar o pagamento') }
+  finally { payModal.busy = false }
 }
 
 async function updateStatus(order, status) {

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, or_, select
@@ -1357,6 +1357,184 @@ async def _get_order_checked(db: AsyncSession, order_id: int, current_user: User
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
     return order
+
+
+# ─── Confirmação / cancelamento MANUAL de pagamento + comprovante (Perfil de Acesso) ──────────
+# Complementa o ASAAS: o operador registra que o pagamento foi feito (como + comprovante no Google
+# Drive) ou cancela informando o motivo. Escopo multi-papel via _get_order_checked; permissões de
+# ação `pagamento_confirmar` / `pagamento_cancelar` editáveis por Perfil (ADR-0025/0036).
+
+
+async def _latest_manual_payment(db: AsyncSession, order_id: int):
+    """Última confirmação manual ATIVA (sem 'cancel' depois) do pedido, ou None."""
+    from models.order_payment import OrderPaymentProof
+
+    rows = (
+        await db.execute(
+            select(OrderPaymentProof)
+            .where(OrderPaymentProof.order_id == order_id)
+            .order_by(OrderPaymentProof.id)
+        )
+    ).scalars().all()
+    active = None
+    for ev in rows:
+        active = ev if ev.event_type == "confirm" else None
+    return active
+
+
+@router.post("/{order_id}/confirm-payment")
+async def confirm_payment(
+    order_id: int,
+    payment_method: str = Form(""),
+    description: str = Form(""),
+    file: UploadFile | None = File(None),
+    current_user: User = Depends(require_permission("pagamento_confirmar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Registra pagamento MANUAL (como + comprovante opcional no Drive) e marca o pedido pago."""
+    from models.order_payment import OrderPaymentProof
+
+    order = await _get_order_checked(db, order_id, current_user)
+    if (order.payment_status or "") == "paid":
+        raise HTTPException(status_code=409, detail="Pedido já está pago.")
+
+    proof_drive_id = None
+    if file is not None:
+        from services import google_drive_service as gd
+        from services.image_upload import MAX_IMAGE_BYTES, sniff_image_ext
+
+        conteudo = await file.read()
+        if conteudo:
+            if len(conteudo) > MAX_IMAGE_BYTES:
+                raise HTTPException(status_code=422, detail="Comprovante acima de 5 MB.")
+            ext = sniff_image_ext(conteudo)
+            if not ext:
+                raise HTTPException(status_code=422, detail="Comprovante não é uma imagem válida (jpg/png/webp).")
+            if not gd.configurado():
+                raise HTTPException(status_code=503, detail="Google Drive não configurado no servidor.")
+            mime = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[ext]
+            try:
+                res = await gd.upload(db, conteudo, f"comprovante-pedido-{order_id}{ext}", mime, area="Comprovantes")
+            except gd.DriveNaoConectado as e:
+                raise HTTPException(status_code=409, detail=f"Google Drive: {e}") from e
+            proof_drive_id = res["id"]
+
+    db.add(OrderPaymentProof(
+        order_id=order.id, event_type="confirm",
+        payment_method=(payment_method or "").strip()[:50] or None,
+        description=(description or "").strip()[:1000] or None,
+        proof_drive_id=proof_drive_id, created_by=current_user.id,
+    ))
+    order.payment_status = "paid"
+    if not order.paid_at:
+        order.paid_at = datetime.now(UTC)
+    await db.commit()
+    return {"ok": True, "payment_status": "paid", "has_proof": bool(proof_drive_id)}
+
+
+@router.get("/{order_id}/payment-info")
+async def payment_info(
+    order_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Estado do pagamento: confirmação manual (comprovante) + cobranças ASAAS + cancelamentos."""
+    from models.order_payment import OrderPaymentProof
+    from models.payment import PaymentCharge
+
+    order = await _get_order_checked(db, order_id, current_user)
+    manual = await _latest_manual_payment(db, order.id)
+    charges = (
+        await db.execute(
+            select(PaymentCharge).where(PaymentCharge.order_id == order.id).order_by(PaymentCharge.id.desc())
+        )
+    ).scalars().all()
+    cancels = (
+        await db.execute(
+            select(OrderPaymentProof)
+            .where(OrderPaymentProof.order_id == order.id, OrderPaymentProof.event_type == "cancel")
+            .order_by(OrderPaymentProof.id.desc())
+        )
+    ).scalars().all()
+    return {
+        "payment_status": order.payment_status,
+        "manual": None if not manual else {
+            "event_id": manual.id,
+            "payment_method": manual.payment_method,
+            "description": manual.description,
+            "has_proof": bool(manual.proof_drive_id),
+            "created_at": manual.created_at.isoformat() if manual.created_at else None,
+        },
+        "asaas": [
+            {"id": c.id, "billing_type": c.billing_type, "value": float(c.value or 0),
+             "status": c.status, "invoice_url": c.invoice_url, "due_date": c.due_date.isoformat() if c.due_date else None}
+            for c in charges
+        ],
+        "cancellations": [
+            {"reason": c.reason, "created_at": c.created_at.isoformat() if c.created_at else None}
+            for c in cancels
+        ],
+    }
+
+
+@router.get("/{order_id}/payment-proof/{event_id}")
+async def payment_proof(
+    order_id: int,
+    event_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve o comprovante PELO sistema (escopado pelo pedido; nunca pelo id cru do Drive — anti-IDOR)."""
+    from models.order_payment import OrderPaymentProof
+    from services import google_drive_service as gd
+
+    await _get_order_checked(db, order_id, current_user)  # escopo multi-papel
+    ev = (
+        await db.execute(
+            select(OrderPaymentProof).where(
+                OrderPaymentProof.id == event_id, OrderPaymentProof.order_id == order_id
+            )
+        )
+    ).scalar_one_or_none()
+    if not ev or not ev.proof_drive_id:
+        raise HTTPException(status_code=404, detail="Comprovante não encontrado")
+    try:
+        conteudo = await gd.download(db, ev.proof_drive_id)
+    except gd.DriveNaoConectado as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return Response(content=conteudo, media_type="image/jpeg", headers={"Content-Disposition": "inline"})
+
+
+@router.post("/{order_id}/cancel-payment")
+async def cancel_payment(
+    order_id: int,
+    body: dict,
+    current_user: User = Depends(require_permission("pagamento_cancelar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancela o pagamento (reverte para pendente) informando o motivo. NÃO estorna o ASAAS — o
+    dinheiro de volta segue o fluxo de crédito/devolução. Bloqueia se já há NF-e ou foi separado/enviado."""
+    from models.order_payment import OrderPaymentProof
+
+    order = await _get_order_checked(db, order_id, current_user)
+    if (order.payment_status or "") != "paid":
+        raise HTTPException(status_code=409, detail="Pedido não está pago.")
+    reason = (body.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail="Informe o motivo do cancelamento do pagamento.")
+    # Guards: não mexer no pagamento de pedido já faturado ou expedido (furo fiscal/estoque).
+    if (order.nfe_status or "") == "authorized" or order.nfe_key:
+        raise HTTPException(status_code=409, detail="Pedido com NF-e emitida — cancele a venda/emita devolução, não o pagamento.")
+    if (order.status or "") in ("separated", "shipped"):
+        raise HTTPException(status_code=409, detail="Pedido já separado/enviado — não é possível cancelar o pagamento.")
+
+    db.add(OrderPaymentProof(
+        order_id=order.id, event_type="cancel", reason=reason[:1000], created_by=current_user.id,
+    ))
+    order.payment_status = "pending"
+    order.paid_at = None
+    await db.commit()
+    return {"ok": True, "payment_status": "pending"}
 
 
 def _extract_nfe_fields(invoice: dict) -> tuple[str | None, str | None, str | None]:

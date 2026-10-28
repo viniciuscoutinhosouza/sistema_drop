@@ -41,6 +41,7 @@ from models.messages import (  # noqa: F401
 from models.nfe_config import NFeConfig  # noqa: F401
 from models.notification import Notification  # noqa: F401
 from models.order import Order, OrderItem  # noqa: F401
+from models.order_payment import OrderPaymentProof  # noqa: F401
 from models.person import Person  # noqa: F401
 from models.picking import (  # noqa: F401
     PickingCart,

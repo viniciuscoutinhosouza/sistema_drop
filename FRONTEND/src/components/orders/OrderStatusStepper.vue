@@ -132,7 +132,7 @@ const reachedShipped = computed(() =>
 )
 
 function stepClickable(key) {
-  if (key === 'paid' && props.paymentStatus === 'pending' && props.canPay) return true
+  if (key === 'paid') return true  // sempre clicável: abre o modal de pagamento (ver/registrar/cancelar)
   if (key === 'label_generated' && props.canPrintLabel) return true
   if (key === 'nfe') return true
   if (key === 'separated') return reachedSeparated.value
@@ -141,7 +141,7 @@ function stepClickable(key) {
 }
 
 function onStepClick(key) {
-  if (key === 'paid' && props.paymentStatus === 'pending' && props.canPay) {
+  if (key === 'paid') {
     emit('click:pay')
     return
   }
