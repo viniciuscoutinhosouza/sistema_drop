@@ -1399,6 +1399,7 @@ async def confirm_payment(
         raise HTTPException(status_code=409, detail="Pedido já está pago.")
 
     proof_drive_id = None
+    proof_mime = None
     if file is not None:
         from services import google_drive_service as gd
         from services.image_upload import MAX_IMAGE_BYTES, sniff_image_ext
@@ -1412,9 +1413,9 @@ async def confirm_payment(
                 raise HTTPException(status_code=422, detail="Comprovante não é uma imagem válida (jpg/png/webp).")
             if not gd.configurado():
                 raise HTTPException(status_code=503, detail="Google Drive não configurado no servidor.")
-            mime = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[ext]
+            proof_mime = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[ext]
             try:
-                res = await gd.upload(db, conteudo, f"comprovante-pedido-{order_id}{ext}", mime, area="Comprovantes")
+                res = await gd.upload(db, conteudo, f"comprovante-pedido-{order_id}{ext}", proof_mime, area="Comprovantes")
             except gd.DriveNaoConectado as e:
                 raise HTTPException(status_code=409, detail=f"Google Drive: {e}") from e
             proof_drive_id = res["id"]
@@ -1423,11 +1424,17 @@ async def confirm_payment(
         order_id=order.id, event_type="confirm",
         payment_method=(payment_method or "").strip()[:50] or None,
         description=(description or "").strip()[:1000] or None,
-        proof_drive_id=proof_drive_id, created_by=current_user.id,
+        proof_drive_id=proof_drive_id, proof_mime=proof_mime, created_by=current_user.id,
     ))
     order.payment_status = "paid"
     if not order.paid_at:
         order.paid_at = datetime.now(UTC)
+    # Cancela cobranças ASAAS vivas NÃO-pagas (pago por fora → evita o cliente pagar 2×). Best-effort.
+    try:
+        from services import charge_service
+        await charge_service.cancel_open_charges(db, order)
+    except Exception:  # noqa: BLE001
+        pass
     await db.commit()
     return {"ok": True, "payment_status": "paid", "has_proof": bool(proof_drive_id)}
 
@@ -1502,7 +1509,10 @@ async def payment_proof(
         conteudo = await gd.download(db, ev.proof_drive_id)
     except gd.DriveNaoConectado as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
-    return Response(content=conteudo, media_type="image/jpeg", headers={"Content-Disposition": "inline"})
+    return Response(
+        content=conteudo, media_type=(ev.proof_mime or "image/jpeg"),
+        headers={"Content-Disposition": "inline"},
+    )
 
 
 @router.post("/{order_id}/cancel-payment")
@@ -1525,8 +1535,26 @@ async def cancel_payment(
     # Guards: não mexer no pagamento de pedido já faturado ou expedido (furo fiscal/estoque).
     if (order.nfe_status or "") == "authorized" or order.nfe_key:
         raise HTTPException(status_code=409, detail="Pedido com NF-e emitida — cancele a venda/emita devolução, não o pagamento.")
+    if (order.dce_status or "") == "emitted":
+        raise HTTPException(status_code=409, detail="Pedido com DC-e emitida — trate a venda, não o pagamento.")
     if (order.status or "") in ("separated", "shipped"):
         raise HTTPException(status_code=409, detail="Pedido já separado/enviado — não é possível cancelar o pagamento.")
+    # Dinheiro recebido de verdade no ASAAS: não cancelar aqui — usar estorno/crédito (cancelar a venda).
+    from models.payment import PaymentCharge
+    from services.charge_service import PAID_CHARGE
+
+    paid_asaas = (
+        await db.execute(
+            select(PaymentCharge.id).where(
+                PaymentCharge.order_id == order.id, PaymentCharge.status.in_(PAID_CHARGE)
+            )
+        )
+    ).first()
+    if paid_asaas:
+        raise HTTPException(
+            status_code=409,
+            detail="Há pagamento ASAAS recebido — use estorno/crédito (cancele a venda), não cancele o pagamento aqui.",
+        )
 
     db.add(OrderPaymentProof(
         order_id=order.id, event_type="cancel", reason=reason[:1000], created_by=current_user.id,

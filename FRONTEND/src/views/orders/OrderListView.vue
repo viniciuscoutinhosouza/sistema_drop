@@ -1349,6 +1349,8 @@ const canConfirmPay = computed(() => (authStore.hasAction ? authStore.hasAction(
 const canCancelPay = computed(() => (authStore.hasAction ? authStore.hasAction('pagamento_cancelar') : true))
 
 async function openPaymentModal(order) {
+  if (payModal.proofUrl) URL.revokeObjectURL(payModal.proofUrl)
+  if (payModal.storedProofUrl) URL.revokeObjectURL(payModal.storedProofUrl)
   Object.assign(payModal, { show: true, order, info: null, loading: true, busy: false, method: '', description: '', proofBlob: null, proofUrl: '', storedProofUrl: '', cancelReason: '' })
   try {
     const { data } = await api.get(`/orders/${order.id}/payment-info`)

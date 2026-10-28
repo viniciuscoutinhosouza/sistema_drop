@@ -14,6 +14,7 @@ BEGIN
       payment_method VARCHAR2(50),
       description    VARCHAR2(1000),
       proof_drive_id VARCHAR2(100),
+      proof_mime     VARCHAR2(30),
       reason         VARCHAR2(1000),
       created_by     NUMBER REFERENCES users(id),
       created_at     TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP

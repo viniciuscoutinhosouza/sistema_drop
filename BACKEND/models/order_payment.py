@@ -20,6 +20,7 @@ class OrderPaymentProof(Base):
     payment_method = Column(String(50))              # como foi pago (Pix, dinheiro, transferência…)
     description = Column(String(1000))
     proof_drive_id = Column(String(100))             # id do comprovante no Google Drive
+    proof_mime = Column(String(30))                  # mime do comprovante (image/jpeg|png|webp)
     reason = Column(String(1000))                    # motivo do cancelamento
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
