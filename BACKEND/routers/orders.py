@@ -1395,6 +1395,8 @@ async def confirm_payment(
     from models.order_payment import OrderPaymentProof
 
     order = await _get_order_checked(db, order_id, current_user)
+    if (order.status or "") == "cancelled" or (order.platform_status or "") == "cancelled":
+        raise HTTPException(status_code=409, detail="Pedido cancelado — não é possível confirmar pagamento.")
     if (order.payment_status or "") == "paid":
         raise HTTPException(status_code=409, detail="Pedido já está pago.")
 

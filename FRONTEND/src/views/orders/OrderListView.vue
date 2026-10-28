@@ -819,6 +819,10 @@
           <template v-else>
             <!-- NÃO PAGO: confirmar manual -->
             <div v-if="payModal.info?.payment_status !== 'paid'">
+              <div v-if="payModal.order && isCancelled(payModal.order)" class="alert alert-danger py-2 mb-0">
+                <i class="fas fa-ban mr-1"></i>Pedido cancelado — não é possível confirmar pagamento.
+              </div>
+              <template v-else>
               <div v-if="payModal.info?.asaas?.length" class="alert alert-info py-2 small">
                 Há cobrança(s) ASAAS neste pedido — o pagamento confirma sozinho pelo webhook. Abaixo você pode registrar um pagamento feito por fora.
               </div>
@@ -841,6 +845,7 @@
                 </div>
               </template>
               <div v-else class="alert alert-warning py-2 small mb-0">Você não tem permissão para confirmar pagamento.</div>
+              </template>
             </div>
             <!-- PAGO: comprovante / ASAAS + cancelar -->
             <div v-else>
@@ -874,7 +879,7 @@
         </div>
         <div v-if="!payModal.loading" class="modal-footer py-2">
           <button class="btn btn-sm btn-secondary" @click="closePayModal">Fechar</button>
-          <button v-if="payModal.info?.payment_status !== 'paid' && canConfirmPay" class="btn btn-sm btn-success" :disabled="payModal.busy" @click="doConfirmPayment">
+          <button v-if="payModal.info?.payment_status !== 'paid' && canConfirmPay && !(payModal.order && isCancelled(payModal.order))" class="btn btn-sm btn-success" :disabled="payModal.busy" @click="doConfirmPayment">
             <i class="fas" :class="payModal.busy ? 'fa-spinner fa-spin' : 'fa-check'"></i> Confirmar pagamento
           </button>
         </div>
