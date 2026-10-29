@@ -1,8 +1,8 @@
 # Memória de Trabalho — Sistema Drop
 
-> Registro das tarefas concluídas, por **local** (CASA / ESCOL / NOTEBOOK), para manter a
-> continuidade entre as 3 máquinas do dono. Mantém só os **últimos 5 dias**. Commitado no GitHub a
-> cada tarefa concluída. Ao "baixar do github", a última entrada abaixo é a tarefa mais recente.
+> Registro de continuidade entre os locais de trabalho do dono (**CASA**, **ESCOL**, **NOTEBOOK**).
+> Mantém apenas os **últimos 5 dias** de trabalho. Cada tarefa concluída vira uma entrada com local, data/hora e o resumo entregue.
+> **Entrada mais recente no topo** — ao baixar o projeto do GitHub, a Claude apresenta a primeira entrada abaixo.
 
 ---
 
@@ -43,3 +43,26 @@ não tinha a feature. Commitados (`a3380ff`) e rebuildados; bundle agora contém
 **Follow-up:** criar produto por aqui usa `estoque_movimentar`; quando o follow-up do ADR-0036
 fechar uma permissão própria de "criar produto", alinhar. Dono: hard-refresh (Ctrl+Shift+R) p/
 carregar o bundle novo.
+
+---
+
+## 2026-10-29 20:48 — CASA — NF-e do Pedido 13636 (ciclo completo) + pull do projeto
+
+**Commit:** `de6e158` · **em produção**
+
+Pedido já tinha NF-e emitida mas a tela continuava mostrando "NF-e Pendente" + botão "Gerar NFe a
+partir do Pedido". Resolvido ponta a ponta:
+
+1. **`<xPag>` no XML quando tPag=99** → corrige a Rejeição 441 da SEFAZ ("Descrição do pagamento
+   obrigatória para meio de pagamento 99 - outros"). `xml_builder` emite `<xPag>` entre `<tPag>` e
+   `<vPag>` só quando forma=99; `sefaz_service` manda "Pago no marketplace".
+2. **Botão "Retransmitir à SEFAZ"** na nota rejeitada (`InvoiceDetailView.vue`) — a lacuna de UI que
+   impedia o dono de reautorizar.
+3. **Sincronização do pedido no `transmit`** (best-effort) + **migration 171** de backfill (MERGE)
+   para pedidos que já estavam presos nesse estado.
+4. **`GET /orders/{id}` passou a devolver `invoice_id`** — a serialização do detalhe omitia o campo,
+   então o `v-if="order.invoice_id"` era sempre falso e o botão não alternava para "Ver NFe vinculada".
+
+Verificado em produção: commit no servidor, `/docs` 200, nginx 200, logs limpos.
+
+---
