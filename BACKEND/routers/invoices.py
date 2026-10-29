@@ -387,8 +387,32 @@ async def list_invoices(
         ps = (await db.execute(select(Person).where(Person.id.in_(person_ids)))).scalars().all()
         persons = {p.id: p for p in ps}
 
+    # Indicador "produtos não sincronizados" (só ENTRADAS da página): nota com >=1 item que NÃO casa
+    # com nenhum produto cadastrado (FK/EAN/SKU, inclusive product_eans). Reusa o matcher único
+    # (_item_match_view) para não divergir; computado só sobre a página (não é SSOT, é dica de UI).
+    unmatched_ids: set[int] = set()
+    in_rows = [r for r in rows if r.direction == "in"]
+    if in_rows:
+        from collections import defaultdict
+        by_inv = {r.id: r for r in in_rows}
+        items_all = (
+            await db.execute(select(InvoiceItem).where(InvoiceItem.invoice_id.in_(list(by_inv))))
+        ).scalars().all()
+        items_by_inv: dict[int, list] = defaultdict(list)
+        for it in items_all:
+            items_by_inv[it.invoice_id].append(it)
+        for iid, its in items_by_inv.items():
+            for it in its:
+                mv = await _item_match_view(it, by_inv[iid], db)
+                if not mv["matched"]:
+                    unmatched_ids.add(iid)
+                    break
+
+    items_out = [_serialize(r, person=persons.get(r.person_id)) for r in rows]
+    for d in items_out:
+        d["has_unmatched_items"] = d["id"] in unmatched_ids
     return {
-        "items": [_serialize(r, person=persons.get(r.person_id)) for r in rows],
+        "items": items_out,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -2967,6 +2991,339 @@ async def update_stock(
             **result,
         }
     return {"detail": "Estoque atualizado", **result}
+
+
+# ─── Reconciliação item-de-entrada ↔ produto (multi-EAN, migration 172) ──────────
+# Resolve itens de NF-e de entrada cujo EAN não casa com nenhum produto cadastrado: vincular a um
+# produto existente (adicionando/corrigindo EAN) ou criar produto novo. Depois re-contabiliza.
+
+
+async def _product_eans_list(db, *, cmig_product_id=None, catalog_product_id=None) -> list[dict]:
+    from models.product_ean import ProductEan
+    col = ProductEan.cmig_product_id if cmig_product_id else ProductEan.catalog_product_id
+    val = cmig_product_id or catalog_product_id
+    rows = (
+        await db.execute(select(ProductEan).where(col == val).order_by(ProductEan.id))
+    ).scalars().all()
+    return [{"id": r.id, "ean": r.ean} for r in rows]
+
+
+async def _item_match_view(item, invoice, db) -> dict:
+    """Status de casamento de 1 item de nota de entrada ↔ produto (mesma régua do matcher)."""
+    from models.cmig import CMIGProduct
+    from services.fiscal.ean_match import catalog_product_id_by_ean, cmig_product_id_by_ean
+
+    matched = None
+    src = (item.source_type or "").lower()
+    if item.cmig_product_id:
+        cp = (await db.execute(select(CMIGProduct).where(CMIGProduct.id == item.cmig_product_id))).scalar_one_or_none()
+        if cp:
+            matched = {"target": "cmig", "id": cp.id, "sku": cp.sku_cmig, "title": cp.title, "ean": cp.ean}
+    elif item.catalog_product_id:
+        pg = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == item.catalog_product_id))).scalar_one_or_none()
+        if pg:
+            matched = {"target": "pg", "id": pg.id, "sku": pg.sku, "title": pg.title, "ean": pg.ean}
+    elif src == "pg":
+        pid = None
+        if (item.sku or "").strip():
+            pid = (await db.execute(select(CatalogProduct.id).where(CatalogProduct.sku == item.sku.strip()))).scalar_one_or_none()
+        pid = pid or await catalog_product_id_by_ean(db, item.ean)
+        if pid:
+            pg = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == pid))).scalar_one_or_none()
+            if pg:
+                matched = {"target": "pg", "id": pg.id, "sku": pg.sku, "title": pg.title, "ean": pg.ean}
+    else:
+        pid = await cmig_product_id_by_ean(db, invoice.cmig_id, item.ean)
+        if pid:
+            cp = (await db.execute(select(CMIGProduct).where(CMIGProduct.id == pid))).scalar_one_or_none()
+            if cp:
+                matched = {"target": "cmig", "id": cp.id, "sku": cp.sku_cmig, "title": cp.title, "ean": cp.ean}
+    return {
+        "item_id": item.id,
+        "description": item.description,
+        "ean": item.ean,
+        "ncm": item.ncm,
+        "cest": item.cest,
+        "quantity": float(item.quantity or 0),
+        "matched": matched is not None,
+        "matched_product": matched,
+    }
+
+
+async def _load_inbound_invoice(invoice_id, current_user, db):
+    inv = (
+        await db.execute(select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice_id))
+    ).scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="NFe não encontrada")
+    if inv.direction != "in":
+        raise HTTPException(status_code=400, detail="Reconciliação disponível apenas para NF-e de entrada")
+    await _check_cmig_access(inv.cmig_id, current_user, db)
+    return inv
+
+
+@router.get("/{invoice_id}/stock-match")
+async def invoice_stock_match(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("estoque_movimentar")),
+):
+    """Status de casamento item↔produto de uma NF-e de entrada (fonte do modal de sincronização)."""
+    inv = await _load_inbound_invoice(invoice_id, current_user, db)
+    items = [await _item_match_view(it, inv, db) for it in sorted(inv.items, key=lambda x: x.id)]
+    return {
+        "invoice_id": inv.id,
+        "cmig_id": inv.cmig_id,
+        "status": inv.status,
+        "inbound_source": inv.inbound_source,
+        "stock_updated": bool(inv.stock_updated),
+        "unmatched": sum(1 for i in items if not i["matched"]),
+        "items": items,
+    }
+
+
+async def _recontabilize_after_link(inv, db) -> dict:
+    """Após vincular/criar produto: se a nota ainda não foi contabilizada, contabiliza (reusa o
+    caminho canônico); se já foi, apenas recomputa os produtos afetados (pega o novo vínculo)."""
+    if not inv.stock_updated:
+        try:
+            return await dfe_service.update_stock_from_invoice(inv.id)
+        except ValueError as e:
+            return {"error": str(e)}
+    from services.fiscal.stock_calculator import recompute_after_invoice_change
+    fresh = (
+        await db.execute(select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == inv.id))
+    ).scalar_one()
+    r = await recompute_after_invoice_change(fresh, db)
+    await db.commit()
+    return {k: v for k, v in r.items() if k not in ("cmig_ids", "pg_ids")}
+
+
+@router.post("/{invoice_id}/items/{item_id}/link-product")
+async def link_item_to_product(
+    invoice_id: int,
+    item_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("estoque_movimentar")),
+):
+    """Vincula o item da nota a um produto JÁ cadastrado (CMIG ou PG) e trata o EAN:
+    'add' (padrão) adiciona o EAN da nota como EAN adicional; 'replace_product' troca o EAN
+    principal do produto pelo da nota; 'replace_item' (só rascunho de nota própria) adota o EAN do
+    produto no item. Seta a FK do item (a nota casa já) e re-contabiliza."""
+    from models.cmig import CMIG, CMIGProduct
+    from models.product_ean import ProductEan
+    from services.fiscal.ean_match import (
+        catalog_product_id_by_ean,
+        cmig_product_id_by_ean,
+        normalize_ean,
+    )
+
+    target = (body.get("target") or "").lower()
+    product_id = body.get("product_id")
+    ean_action = (body.get("ean_action") or "add").lower()
+    if target not in ("cmig", "pg"):
+        raise HTTPException(status_code=400, detail="target inválido (cmig|pg)")
+    if not product_id:
+        raise HTTPException(status_code=400, detail="product_id é obrigatório")
+    if ean_action not in ("add", "replace_product", "replace_item"):
+        raise HTTPException(status_code=400, detail="ean_action inválido")
+
+    inv = await _load_inbound_invoice(invoice_id, current_user, db)
+    item = next((i for i in inv.items if i.id == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado nesta nota")
+    item_ean = normalize_ean(item.ean)
+
+    if ean_action == "replace_item":
+        # Reescrever o EAN do ITEM altera dado fiscal da nota — só em rascunho de nota PRÓPRIA.
+        if inv.status not in ("draft",) or (inv.inbound_source == "dfe_focus"):
+            raise HTTPException(
+                status_code=409,
+                detail="Não é possível reescrever o EAN de uma nota autorizada ou recebida de "
+                       "terceiro (DFe). Use 'adicionar' ou 'substituir no produto'.",
+            )
+
+    if target == "cmig":
+        prod = (
+            await db.execute(select(CMIGProduct).where(CMIGProduct.id == product_id, CMIGProduct.cmig_id == inv.cmig_id))
+        ).scalar_one_or_none()
+        if not prod:
+            raise HTTPException(status_code=404, detail="Produto CMIG não encontrado nesta CMIG")
+        if prod.is_composite:
+            raise HTTPException(status_code=409, detail="Produto é um KIT — não recebe entrada direta de NF-e")
+        if ean_action in ("add", "replace_product") and item_ean:
+            other = await cmig_product_id_by_ean(db, inv.cmig_id, item_ean)
+            if other and other != prod.id:
+                raise HTTPException(status_code=409, detail=f"Este EAN já pertence a outro produto (#{other}).")
+        item.cmig_product_id = prod.id
+        if not item.source_type:
+            item.source_type = "cmig"
+        if prod.pg_product_id:
+            item.catalog_product_id = prod.pg_product_id
+        if ean_action == "add" and item_ean and item_ean != normalize_ean(prod.ean):
+            existing = {e["ean"] for e in await _product_eans_list(db, cmig_product_id=prod.id)}
+            if item_ean not in existing:
+                db.add(ProductEan(cmig_product_id=prod.id, ean=item_ean, created_by=current_user.id))
+        elif ean_action == "replace_product" and item_ean:
+            prod.ean = item_ean
+        elif ean_action == "replace_item":
+            item.ean = normalize_ean(prod.ean)
+    else:  # pg
+        prod = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))).scalar_one_or_none()
+        if not prod:
+            raise HTTPException(status_code=404, detail="Produto PG não encontrado")
+        # Escopo: o PG tem de ser do galpão da CMIG da nota (anti cross-scope).
+        cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one_or_none()
+        if cmig and cmig.warehouse_id and prod.warehouse_id != cmig.warehouse_id:
+            raise HTTPException(status_code=403, detail="Produto PG é de outro galpão.")
+        if prod.is_composite:
+            raise HTTPException(status_code=409, detail="Produto é um KIT — não recebe entrada direta de NF-e")
+        if ean_action in ("add", "replace_product") and item_ean:
+            other = await catalog_product_id_by_ean(db, item_ean)
+            if other and other != prod.id:
+                raise HTTPException(status_code=409, detail=f"Este EAN já pertence a outro produto PG (#{other}).")
+        item.catalog_product_id = prod.id
+        item.source_type = "pg"
+        if ean_action == "add" and item_ean and item_ean != normalize_ean(prod.ean):
+            existing = {e["ean"] for e in await _product_eans_list(db, catalog_product_id=prod.id)}
+            if item_ean not in existing:
+                db.add(ProductEan(catalog_product_id=prod.id, ean=item_ean, created_by=current_user.id))
+        elif ean_action == "replace_product" and item_ean:
+            prod.ean = item_ean
+        elif ean_action == "replace_item":
+            item.ean = normalize_ean(prod.ean)
+
+    await db.commit()
+    stock = await _recontabilize_after_link(inv, db)
+    return {"ok": True, "linked": {"target": target, "product_id": product_id}, "stock": stock}
+
+
+@router.post("/{invoice_id}/items/{item_id}/create-product")
+async def create_product_from_item(
+    invoice_id: int,
+    item_id: int,
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("estoque_movimentar")),
+):
+    """Cria um produto NOVO (CMIG ou PG) a partir do item da nota (title/ean/ncm/cest/origin/custo),
+    vincula a FK do item e re-contabiliza. CMIG reusa o criador oficial; PG cria no galpão da CMIG."""
+    from models.cmig import CMIG
+    from services.fiscal.ean_match import normalize_ean
+
+    body = body or {}
+    target = (body.get("target") or "cmig").lower()
+    if target not in ("cmig", "pg"):
+        raise HTTPException(status_code=400, detail="target inválido (cmig|pg)")
+    inv = await _load_inbound_invoice(invoice_id, current_user, db)
+    item = next((i for i in inv.items if i.id == item_id), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item não encontrado nesta nota")
+    item_ean = normalize_ean(item.ean) or None
+    title = (body.get("title") or item.description or "Produto").strip()[:255]
+    cost = float(item.unit_value or 0) or None
+
+    if target == "cmig":
+        from routers.cmigs import create_cmig_product
+        from schemas.cmig import CMIGProductCreate
+
+        sku = (body.get("sku") or item.sku or f"NF{inv.nfe_number or inv.id}-{item.item_number}").strip()[:100]
+        payload = CMIGProductCreate(
+            sku_cmig=sku, title=title, ean=item_ean, ncm=item.ncm, cest=item.cest,
+            origin=item.origin if item.origin is not None else 0, cost_price=cost,
+        )
+        created = await create_cmig_product(inv.cmig_id, payload, db=db, current_user=current_user)
+        new_id = created["id"]
+        # Recarrega a nota (create_cmig_product commitou; a sessão pode ter expirado o inv).
+        inv = await _load_inbound_invoice(invoice_id, current_user, db)
+        item = next(i for i in inv.items if i.id == item_id)
+        item.cmig_product_id = new_id
+        if not item.source_type:
+            item.source_type = "cmig"
+    else:
+        cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one_or_none()
+        wh = cmig.warehouse_id if cmig else None
+        sku = (body.get("sku") or item.sku or f"NF{inv.nfe_number or inv.id}-{item.item_number}").strip()[:50]
+        dup = (await db.execute(select(CatalogProduct.id).where(CatalogProduct.sku == sku, CatalogProduct.warehouse_id == wh))).scalar_one_or_none()
+        if dup:
+            raise HTTPException(status_code=409, detail=f"Já existe PG com SKU {sku} neste galpão.")
+        new = CatalogProduct(
+            warehouse_id=wh, sku=sku, title=title, ean=item_ean, ncm=item.ncm, cest=item.cest,
+            origin=item.origin if item.origin is not None else 0, cost_price=cost,
+        )
+        db.add(new)
+        await db.flush()
+        new_id = new.id
+        item.catalog_product_id = new_id
+        item.source_type = "pg"
+
+    await db.commit()
+    stock = await _recontabilize_after_link(inv, db)
+    return {"ok": True, "created": {"target": target, "product_id": new_id}, "stock": stock}
+
+
+@router.get("/product-eans/list")
+async def list_product_eans(
+    target: str,
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("estoque_movimentar")),
+):
+    """EANs (principal + adicionais) de um produto — p/ o modal mostrar antes de add/substituir."""
+    from models.cmig import CMIGProduct
+
+    target = (target or "").lower()
+    if target == "cmig":
+        prod = (await db.execute(select(CMIGProduct).where(CMIGProduct.id == product_id))).scalar_one_or_none()
+        if not prod:
+            raise HTTPException(status_code=404, detail="Produto não encontrado")
+        await _check_cmig_access(prod.cmig_id, current_user, db)
+        extra = await _product_eans_list(db, cmig_product_id=product_id)
+        return {"main_ean": prod.ean, "additional": extra}
+    elif target == "pg":
+        prod = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))).scalar_one_or_none()
+        if not prod:
+            raise HTTPException(status_code=404, detail="Produto não encontrado")
+        extra = await _product_eans_list(db, catalog_product_id=product_id)
+        return {"main_ean": prod.ean, "additional": extra}
+    raise HTTPException(status_code=400, detail="target inválido (cmig|pg)")
+
+
+@router.delete("/product-eans/{ean_id}", status_code=200)
+async def delete_product_ean(
+    ean_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("estoque_movimentar")),
+):
+    """Remove um EAN ADICIONAL (vínculo errado) e recomputa o estoque do produto afetado."""
+    from models.cmig import CMIGProduct
+    from models.product_ean import ProductEan
+    from services.fiscal.stock_calculator import (
+        recompute_cmig_product_stock,
+        recompute_pg_product_stock,
+    )
+
+    pe = (await db.execute(select(ProductEan).where(ProductEan.id == ean_id))).scalar_one_or_none()
+    if not pe:
+        raise HTTPException(status_code=404, detail="EAN não encontrado")
+    if pe.cmig_product_id:
+        prod = (await db.execute(select(CMIGProduct).where(CMIGProduct.id == pe.cmig_product_id))).scalar_one_or_none()
+        if prod:
+            await _check_cmig_access(prod.cmig_id, current_user, db)
+        cmig_pid = pe.cmig_product_id
+        db.delete(pe)
+        await db.commit()
+        if prod:
+            await recompute_cmig_product_stock(cmig_pid, db)
+            await db.commit()
+    else:
+        pg_pid = pe.catalog_product_id
+        db.delete(pe)
+        await db.commit()
+        await recompute_pg_product_stock(pg_pid, db)
+        await db.commit()
+    return {"ok": True}
 
 
 # ── Importação de XML (entrada) ───────────────────────────────────────────────
