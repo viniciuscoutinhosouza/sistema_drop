@@ -21,7 +21,6 @@ from models.traceability import (
     InvoiceItemLot,
     InvoiceItemSerial,
     ProductLot,
-    ProductSerial,
     StockLotAllocation,
 )
 
@@ -144,14 +143,17 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
         if not row:
             return 0
         p_ean, p_cmig_id, scalar_target = row
-        # CMIG (escalar: ramo NÃO-'pg'): FK cmig_product_id OU EAN-na-CMIG.
+        # CMIG (escalar: ramo NÃO-'pg'): FK cmig_product_id OU EAN-na-CMIG. Multi-EAN (migration
+        # 172): espelha o escalar (.in_(eans)) p/ o lote bater termo-a-termo com o stock_quantity.
+        from services.fiscal.ean_match import eans_of_cmig_product
+        c_eans = await eans_of_cmig_product(db, product_id, p_ean)
         conds = [and_(not_pg, InvoiceItem.cmig_product_id == product_id)]
-        if (p_ean or "").strip():
+        if c_eans:
             conds.append(
                 and_(
                     not_pg,
                     InvoiceItem.cmig_product_id.is_(None),
-                    InvoiceItem.ean == p_ean,
+                    InvoiceItem.ean.in_(c_eans),
                     Invoice.cmig_id == p_cmig_id,
                 )
             )
@@ -166,12 +168,14 @@ async def recompute_lots(db, product_type: str, product_id: int) -> int:
         if not row:
             return 0
         p_sku, p_ean, scalar_target = row
-        # PG (escalar: só quando source=='pg'): FK catalog_product_id OU SKU/EAN.
+        # PG (escalar: só quando source=='pg'): FK catalog_product_id OU SKU/EAN. Multi-EAN (172).
+        from services.fiscal.ean_match import eans_of_catalog_product
+        pg_eans = await eans_of_catalog_product(db, product_id, p_ean)
         inner = [InvoiceItem.catalog_product_id == product_id]
         if (p_sku or "").strip():
             inner.append(InvoiceItem.sku == p_sku)
-        if (p_ean or "").strip():
-            inner.append(InvoiceItem.ean == p_ean)
+        if pg_eans:
+            inner.append(InvoiceItem.ean.in_(pg_eans))
         item_match = and_(func.lower(InvoiceItem.source_type) == "pg", or_(*inner))
     else:
         return 0  # variant_pg/variant_cmig: resolução por SKU→variante fica p/ follow-up

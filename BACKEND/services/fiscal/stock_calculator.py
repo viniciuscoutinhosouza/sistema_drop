@@ -364,6 +364,12 @@ async def affected_products_from_invoice(
             )
         ).scalars().all()
 
+    # Galpão da CMIG da nota — escopa o casamento PG por EAN (anti cross-galpão: EAN é do fabricante).
+    inv_wh = None
+    if invoice.cmig_id:
+        from models.cmig import CMIG
+        inv_wh = (await db.execute(select(CMIG.warehouse_id).where(CMIG.id == invoice.cmig_id))).scalar()
+
     for item in items:
         source = (item.source_type or "").lower()
         if source == "pg":
@@ -381,9 +387,9 @@ async def affected_products_from_invoice(
                     )
                 ).scalar_one_or_none()
             if not pg and ean:
-                # Multi-EAN (migration 172): casa pela coluna nativa OU por product_eans.
+                # Multi-EAN (migration 172): coluna nativa OU product_eans, escopado ao galpão.
                 from services.fiscal.ean_match import catalog_product_id_by_ean
-                pg = await catalog_product_id_by_ean(db, ean)
+                pg = await catalog_product_id_by_ean(db, ean, warehouse_id=inv_wh)
             if pg:
                 pg_ids.add(pg)
             continue

@@ -2998,6 +2998,13 @@ async def update_stock(
 # produto existente (adicionando/corrigindo EAN) ou criar produto novo. Depois re-contabiliza.
 
 
+def _assert_pg_scope(prod, current_user):
+    """Escopo de PG por galpão (não há _check_cmig_access p/ PG). Admin global passa."""
+    from services.data_scope import is_global
+    if not is_global(current_user) and prod.warehouse_id != getattr(current_user, "warehouse_id", None):
+        raise HTTPException(status_code=403, detail="Sem acesso a este produto PG.")
+
+
 async def _product_eans_list(db, *, cmig_product_id=None, catalog_product_id=None) -> list[dict]:
     from models.product_ean import ProductEan
     col = ProductEan.cmig_product_id if cmig_product_id else ProductEan.catalog_product_id
@@ -3024,10 +3031,14 @@ async def _item_match_view(item, invoice, db) -> dict:
         if pg:
             matched = {"target": "pg", "id": pg.id, "sku": pg.sku, "title": pg.title, "ean": pg.ean}
     elif src == "pg":
+        from models.cmig import CMIG
+        wh = (await db.execute(select(CMIG.warehouse_id).where(CMIG.id == invoice.cmig_id))).scalar()
         pid = None
         if (item.sku or "").strip():
-            pid = (await db.execute(select(CatalogProduct.id).where(CatalogProduct.sku == item.sku.strip()))).scalar_one_or_none()
-        pid = pid or await catalog_product_id_by_ean(db, item.ean)
+            pid = (await db.execute(select(CatalogProduct.id).where(
+                CatalogProduct.sku == item.sku.strip(), CatalogProduct.warehouse_id == wh
+            ))).scalar_one_or_none()
+        pid = pid or await catalog_product_id_by_ean(db, item.ean, warehouse_id=wh)
         if pid:
             pg = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == pid))).scalar_one_or_none()
             if pg:
@@ -3084,19 +3095,24 @@ async def invoice_stock_match(
 
 async def _recontabilize_after_link(inv, db) -> dict:
     """Após vincular/criar produto: se a nota ainda não foi contabilizada, contabiliza (reusa o
-    caminho canônico); se já foi, apenas recomputa os produtos afetados (pega o novo vínculo)."""
-    if not inv.stock_updated:
-        try:
+    caminho canônico); se já foi, recomputa os produtos afetados (pega o novo vínculo).
+
+    NUNCA derruba o endpoint: o vínculo (FK/EAN) já está commitado; se a contabilização falhar,
+    devolve {error} e o operador re-tenta pelo ícone 'contabilizar' (idempotente) — em vez de 500
+    cru que esconderia que o vínculo foi salvo."""
+    try:
+        if not inv.stock_updated:
             return await dfe_service.update_stock_from_invoice(inv.id)
-        except ValueError as e:
-            return {"error": str(e)}
-    from services.fiscal.stock_calculator import recompute_after_invoice_change
-    fresh = (
-        await db.execute(select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == inv.id))
-    ).scalar_one()
-    r = await recompute_after_invoice_change(fresh, db)
-    await db.commit()
-    return {k: v for k, v in r.items() if k not in ("cmig_ids", "pg_ids")}
+        from services.fiscal.stock_calculator import recompute_after_invoice_change
+        fresh = (
+            await db.execute(select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == inv.id))
+        ).scalar_one()
+        r = await recompute_after_invoice_change(fresh, db)
+        await db.commit()
+        return {k: v for k, v in r.items() if k not in ("cmig_ids", "pg_ids")}
+    except Exception as e:  # noqa: BLE001 — vínculo persiste; contabilização é retentável
+        logger.warning("recontabilizar pós-vínculo falhou (invoice %s): %s", inv.id, e)
+        return {"error": "Vínculo salvo, mas a contabilização falhou — tente contabilizar novamente."}
 
 
 @router.post("/{invoice_id}/items/{item_id}/link-product")
@@ -3166,6 +3182,13 @@ async def link_item_to_product(
             if item_ean not in existing:
                 db.add(ProductEan(cmig_product_id=prod.id, ean=item_ean, created_by=current_user.id))
         elif ean_action == "replace_product" and item_ean:
+            # Preserva o EAN antigo como adicional — senão notas antigas que casavam por ele
+            # deixariam de casar no replay (perda silenciosa de histórico de estoque).
+            old = normalize_ean(prod.ean)
+            if old and old != item_ean:
+                existing = {e["ean"] for e in await _product_eans_list(db, cmig_product_id=prod.id)}
+                if old not in existing:
+                    db.add(ProductEan(cmig_product_id=prod.id, ean=old, created_by=current_user.id))
             prod.ean = item_ean
         elif ean_action == "replace_item":
             item.ean = normalize_ean(prod.ean)
@@ -3173,14 +3196,17 @@ async def link_item_to_product(
         prod = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))).scalar_one_or_none()
         if not prod:
             raise HTTPException(status_code=404, detail="Produto PG não encontrado")
-        # Escopo: o PG tem de ser do galpão da CMIG da nota (anti cross-scope).
+        # Escopo: o PG tem de ser do galpão da CMIG da nota (anti cross-scope). Falha alto se a CMIG
+        # não tem galpão (não vincular a PG órfão).
         cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one_or_none()
-        if cmig and cmig.warehouse_id and prod.warehouse_id != cmig.warehouse_id:
+        if not cmig or not cmig.warehouse_id:
+            raise HTTPException(status_code=409, detail="CMIG da nota sem galpão — não é possível vincular produto PG.")
+        if prod.warehouse_id != cmig.warehouse_id:
             raise HTTPException(status_code=403, detail="Produto PG é de outro galpão.")
         if prod.is_composite:
             raise HTTPException(status_code=409, detail="Produto é um KIT — não recebe entrada direta de NF-e")
         if ean_action in ("add", "replace_product") and item_ean:
-            other = await catalog_product_id_by_ean(db, item_ean)
+            other = await catalog_product_id_by_ean(db, item_ean, warehouse_id=cmig.warehouse_id)
             if other and other != prod.id:
                 raise HTTPException(status_code=409, detail=f"Este EAN já pertence a outro produto PG (#{other}).")
         item.catalog_product_id = prod.id
@@ -3190,6 +3216,11 @@ async def link_item_to_product(
             if item_ean not in existing:
                 db.add(ProductEan(catalog_product_id=prod.id, ean=item_ean, created_by=current_user.id))
         elif ean_action == "replace_product" and item_ean:
+            old = normalize_ean(prod.ean)
+            if old and old != item_ean:
+                existing = {e["ean"] for e in await _product_eans_list(db, catalog_product_id=prod.id)}
+                if old not in existing:
+                    db.add(ProductEan(catalog_product_id=prod.id, ean=old, created_by=current_user.id))
             prod.ean = item_ean
         elif ean_action == "replace_item":
             item.ean = normalize_ean(prod.ean)
@@ -3243,7 +3274,9 @@ async def create_product_from_item(
             item.source_type = "cmig"
     else:
         cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one_or_none()
-        wh = cmig.warehouse_id if cmig else None
+        if not cmig or not cmig.warehouse_id:
+            raise HTTPException(status_code=409, detail="CMIG da nota sem galpão — não é possível criar produto PG.")
+        wh = cmig.warehouse_id
         sku = (body.get("sku") or item.sku or f"NF{inv.nfe_number or inv.id}-{item.item_number}").strip()[:50]
         dup = (await db.execute(select(CatalogProduct.id).where(CatalogProduct.sku == sku, CatalogProduct.warehouse_id == wh))).scalar_one_or_none()
         if dup:
@@ -3285,6 +3318,7 @@ async def list_product_eans(
         prod = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == product_id))).scalar_one_or_none()
         if not prod:
             raise HTTPException(status_code=404, detail="Produto não encontrado")
+        _assert_pg_scope(prod, current_user)
         extra = await _product_eans_list(db, catalog_product_id=product_id)
         return {"main_ean": prod.ean, "additional": extra}
     raise HTTPException(status_code=400, detail="target inválido (cmig|pg)")
@@ -3318,6 +3352,9 @@ async def delete_product_ean(
             await recompute_cmig_product_stock(cmig_pid, db)
             await db.commit()
     else:
+        pg = (await db.execute(select(CatalogProduct).where(CatalogProduct.id == pe.catalog_product_id))).scalar_one_or_none()
+        if pg:
+            _assert_pg_scope(pg, current_user)  # anti-IDOR: não deletar EAN de PG de outro galpão
         pg_pid = pe.catalog_product_id
         db.delete(pe)
         await db.commit()

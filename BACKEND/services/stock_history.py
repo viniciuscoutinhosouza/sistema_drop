@@ -426,18 +426,24 @@ async def _fetch_direct_pg_events(
     Esses items NÃO vêm via nenhum CMIGProduct vinculado — são entradas/saídas
     diretas em PG (vínculo via SKU/EAN, não via FK).
     """
+    from models.cmig import CMIG
     from services.fiscal.ean_match import eans_of_catalog_product
     sku = (pg_product.sku or "").strip()
     # Multi-EAN (migration 172): principal + product_eans (vazio → [ean principal], zero regressão).
     eans = await eans_of_catalog_product(db, pg_product.id, pg_product.ean)
 
-    # FK direta tem prioridade; SKU/EAN como fallback para itens legados
+    # Fallback SKU/EAN escopado ao galpão do PG (anti cross-galpão: EAN é do fabricante, não do
+    # galpão; sem isso, nota de outro galpão creditaria este PG no replay). O match por FK direta
+    # (catalog_product_id) NÃO é escopado — é definicionalmente deste produto.
+    wh_cmigs = select(CMIG.id).where(CMIG.warehouse_id == pg_product.warehouse_id)
     match_clauses = [InvoiceItem.catalog_product_id == pg_product.id]
     if sku:
-        match_clauses.append(and_(InvoiceItem.catalog_product_id.is_(None), InvoiceItem.sku == sku))
+        match_clauses.append(
+            and_(InvoiceItem.catalog_product_id.is_(None), InvoiceItem.sku == sku, Invoice.cmig_id.in_(wh_cmigs))
+        )
     if eans:
         match_clauses.append(
-            and_(InvoiceItem.catalog_product_id.is_(None), InvoiceItem.ean.in_(eans))
+            and_(InvoiceItem.catalog_product_id.is_(None), InvoiceItem.ean.in_(eans), Invoice.cmig_id.in_(wh_cmigs))
         )
     if len(match_clauses) == 1 and not sku and not eans:
         return []

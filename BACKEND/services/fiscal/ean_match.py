@@ -94,23 +94,25 @@ async def cmig_product_id_by_ean(db, cmig_id: int, ean: str | None) -> int | Non
     return sorted(ids)[0]
 
 
-async def catalog_product_id_by_ean(db, ean: str | None) -> int | None:
-    """Produto PG cujo EAN — principal OU adicional — casa com `ean` (escopo global, espelha o
-    casamento PG histórico por EAN). Determinístico + log.warning em ambiguidade."""
+async def catalog_product_id_by_ean(db, ean: str | None, warehouse_id: int | None = None) -> int | None:
+    """Produto PG cujo EAN — principal OU adicional — casa com `ean`. Escopável por `warehouse_id`
+    (anti cross-galpão: EAN é do fabricante, não do galpão). Determinístico + log.warning em ambiguidade."""
     ean = normalize_ean(ean)
     if not ean:
         return None
     ids: set[int] = set()
-    ids.update(
-        (await db.execute(
-            select(CatalogProduct.id).where(CatalogProduct.ean == ean)
-        )).scalars().all()
+    q1 = select(CatalogProduct.id).where(CatalogProduct.ean == ean)
+    if warehouse_id is not None:
+        q1 = q1.where(CatalogProduct.warehouse_id == warehouse_id)
+    ids.update((await db.execute(q1)).scalars().all())
+    q2 = (
+        select(ProductEan.catalog_product_id)
+        .join(CatalogProduct, CatalogProduct.id == ProductEan.catalog_product_id)
+        .where(ProductEan.ean == ean)
     )
-    ids.update(
-        (await db.execute(
-            select(ProductEan.catalog_product_id).where(ProductEan.ean == ean)
-        )).scalars().all()
-    )
+    if warehouse_id is not None:
+        q2 = q2.where(CatalogProduct.warehouse_id == warehouse_id)
+    ids.update((await db.execute(q2)).scalars().all())
     ids.discard(None)
     if not ids:
         return None
