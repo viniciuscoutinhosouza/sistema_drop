@@ -182,7 +182,7 @@
             <ul class="nav nav-treeview">
               <li v-if="canSee('pedidos')" class="nav-item">
                 <RouterLink to="/orders" class="nav-link" :class="{ active: route.path.startsWith('/orders') }">
-                  <i class="nav-icon fas fa-shopping-cart"></i><p>Pedidos Importados</p>
+                  <i class="nav-icon fas fa-shopping-cart"></i><p>Pedidos</p>
                 </RouterLink>
               </li>
               <li v-if="canSee('pedido_manual')" class="nav-item">
