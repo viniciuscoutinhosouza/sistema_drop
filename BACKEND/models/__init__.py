@@ -59,6 +59,7 @@ from models.product import (  # noqa: F401
     MLFullTariff,
     ProductListing,
 )
+from models.product_ean import ProductEan  # noqa: F401
 from models.return_ import Return  # noqa: F401
 from models.scheduler_job_execution import SchedulerJobExecution  # noqa: F401
 from models.smtp_config import SMTPConfig  # noqa: F401

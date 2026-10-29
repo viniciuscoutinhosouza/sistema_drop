@@ -131,13 +131,16 @@ async def _fetch_nfe_events_for_cmig_product(
       explicitamente PG (source_type='pg'). Sem esse filtro, items PG cujo EAN
       coincide com um CMIG seriam puxados indevidamente pro histórico CMIG.
     """
-    product_ean = (cmig_product.ean or "").strip()
+    # Multi-EAN (migration 172): casa por QUALQUER EAN do produto (principal + product_eans).
+    # product_eans vazio → [ean principal], idêntico ao comportamento histórico (zero regressão).
+    from services.fiscal.ean_match import eans_of_cmig_product
+    eans = await eans_of_cmig_product(db, cmig_product.id, cmig_product.ean)
     item_match = [InvoiceItem.cmig_product_id == cmig_product.id]
-    if product_ean:
+    if eans:
         item_match.append(
             and_(
                 InvoiceItem.cmig_product_id.is_(None),
-                InvoiceItem.ean == product_ean,
+                InvoiceItem.ean.in_(eans),
                 # Items PG têm seu próprio caminho (_fetch_direct_pg_events).
                 # Aqui aceitamos apenas legacy (NULL) e source='cmig'.
                 or_(
@@ -423,16 +426,20 @@ async def _fetch_direct_pg_events(
     Esses items NÃO vêm via nenhum CMIGProduct vinculado — são entradas/saídas
     diretas em PG (vínculo via SKU/EAN, não via FK).
     """
+    from services.fiscal.ean_match import eans_of_catalog_product
     sku = (pg_product.sku or "").strip()
-    ean = (pg_product.ean or "").strip()
+    # Multi-EAN (migration 172): principal + product_eans (vazio → [ean principal], zero regressão).
+    eans = await eans_of_catalog_product(db, pg_product.id, pg_product.ean)
 
     # FK direta tem prioridade; SKU/EAN como fallback para itens legados
     match_clauses = [InvoiceItem.catalog_product_id == pg_product.id]
     if sku:
         match_clauses.append(and_(InvoiceItem.catalog_product_id.is_(None), InvoiceItem.sku == sku))
-    if ean:
-        match_clauses.append(and_(InvoiceItem.catalog_product_id.is_(None), InvoiceItem.ean == ean))
-    if len(match_clauses) == 1 and not sku and not ean:
+    if eans:
+        match_clauses.append(
+            and_(InvoiceItem.catalog_product_id.is_(None), InvoiceItem.ean.in_(eans))
+        )
+    if len(match_clauses) == 1 and not sku and not eans:
         return []
 
     stmt = (

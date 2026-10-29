@@ -381,11 +381,9 @@ async def affected_products_from_invoice(
                     )
                 ).scalar_one_or_none()
             if not pg and ean:
-                pg = (
-                    await db.execute(
-                        select(CatalogProduct.id).where(CatalogProduct.ean == ean)
-                    )
-                ).scalar_one_or_none()
+                # Multi-EAN (migration 172): casa pela coluna nativa OU por product_eans.
+                from services.fiscal.ean_match import catalog_product_id_by_ean
+                pg = await catalog_product_id_by_ean(db, ean)
             if pg:
                 pg_ids.add(pg)
             continue
@@ -407,18 +405,9 @@ async def affected_products_from_invoice(
 
         ean = (item.ean or "").strip()
         if ean and invoice.cmig_id:
-            from sqlalchemy import and_
-
-            cp_id = (
-                await db.execute(
-                    select(CMIGProduct.id).where(
-                        and_(
-                            CMIGProduct.cmig_id == invoice.cmig_id,
-                            CMIGProduct.ean == ean,
-                        )
-                    )
-                )
-            ).scalar_one_or_none()
+            # Multi-EAN (migration 172): casa pela coluna nativa OU por product_eans (escopo CMIG).
+            from services.fiscal.ean_match import cmig_product_id_by_ean
+            cp_id = await cmig_product_id_by_ean(db, invoice.cmig_id, ean)
             if cp_id:
                 cmig_ids.add(cp_id)
 
