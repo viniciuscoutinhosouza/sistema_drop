@@ -165,6 +165,21 @@ export const useFiscalStore = defineStore('fiscal', () => {
     return data
   }
 
+  async function stockMatch(invoiceId) {
+    const { data } = await api.get(`/invoices/${invoiceId}/stock-match`)
+    return data
+  }
+
+  async function linkItemProduct(invoiceId, itemId, body) {
+    const { data } = await api.post(`/invoices/${invoiceId}/items/${itemId}/link-product`, body)
+    return data
+  }
+
+  async function createProductFromItem(invoiceId, itemId, body) {
+    const { data } = await api.post(`/invoices/${invoiceId}/items/${itemId}/create-product`, body)
+    return data
+  }
+
   return {
     invoices, total, loading, currentInvoice,
     fetchInvoices, fetchInvoice, fetchOutbound, exportOutbound, syncMlOutbound, syncMlFiscal,
@@ -173,5 +188,6 @@ export const useFiscalStore = defineStore('fiscal', () => {
     addItem, updateItem, deleteItem,
     calculateTaxes, transmit, finalizeNoSefaz, cancel, correctionLetter, sendEmail, refreshStatus,
     syncReceived, manifest, updateStock, updateStockBulk,
+    stockMatch, linkItemProduct, createProductFromItem,
   }
 })

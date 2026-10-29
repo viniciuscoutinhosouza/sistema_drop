@@ -120,8 +120,8 @@
                     :class="{'table-warning': inv.manifestation === 'pending' && inv.inbound_source === 'dfe_focus'}"
                     @click="$router.push(`/fiscal/invoices/${inv.id}`)">
                   <td v-if="canMoveStock" class="text-center" @click.stop>
-                    <input v-if="inv.stock_pending" type="checkbox" :value="inv.id" v-model="selectedIds"
-                           style="width:16px;height:16px">
+                    <input v-if="inv.stock_pending && !inv.has_unmatched_items" type="checkbox"
+                           :value="inv.id" v-model="selectedIds" style="width:16px;height:16px">
                   </td>
                   <td>
                     <code v-if="inv.access_key" class="small">…{{ inv.access_key.slice(-12) }}</code>
@@ -151,7 +151,15 @@
                     <span class="badge" :class="statusClass(inv.status)">{{ statusLabel(inv.status) }}</span>
                   </td>
                   <td @click.stop class="text-center">
-                    <button v-if="inv.stock_pending && canMoveStock" class="btn btn-sm btn-outline-warning"
+                    <button v-if="inv.has_unmatched_items && canMoveStock" class="btn btn-sm btn-outline-danger"
+                            title="Esta nota tem produtos não sincronizados — clique para vincular ou cadastrar"
+                            @click="openSync(inv)">
+                      <i class="fas fa-link"></i>
+                    </button>
+                    <span v-else-if="inv.has_unmatched_items" class="text-danger" title="Produtos não sincronizados">
+                      <i class="fas fa-link"></i>
+                    </span>
+                    <button v-else-if="inv.stock_pending && canMoveStock" class="btn btn-sm btn-outline-warning"
                             title="Contabilizar o estoque desta nota" :disabled="rowBusy[inv.id]"
                             @click="contabilizarUma(inv)">
                       <i class="fas" :class="rowBusy[inv.id] ? 'fa-spinner fa-spin' : 'fa-box'"></i>
@@ -193,6 +201,12 @@
       :default-cmig-id="filters.cmig_id"
       @close="showImport = false"
       @imported="onImported" />
+
+    <ProductSyncModal
+      v-if="syncModalInvoiceId"
+      :invoice-id="syncModalInvoiceId"
+      @close="syncModalInvoiceId = null"
+      @done="reload" />
   </div>
 </template>
 
@@ -205,6 +219,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { fmt } from '@/views/fiscal/_helpers'
 import XmlImportModal from '@/components/fiscal/XmlImportModal.vue'
+import ProductSyncModal from '@/components/fiscal/ProductSyncModal.vue'
 
 const fiscalStore = useFiscalStore()
 const cmigStore = useCmigStore()
@@ -216,6 +231,8 @@ const { cmigs } = storeToRefs(cmigStore)
 const pageSize = 20
 const showImport = ref(false)
 const syncing = ref(false)
+const syncModalInvoiceId = ref(null)
+function openSync(inv) { syncModalInvoiceId.value = inv.id }
 
 // Contabilização de estoque (ícone por linha + ação em lote) — gateado por permissão de ação
 // `estoque_movimentar` (ADR-0036; admin bypassa). O backend reforça em require_permission.
@@ -223,7 +240,9 @@ const canMoveStock = computed(() => authStore.hasAction('estoque_movimentar'))
 const selectedIds = ref([])
 const bulkBusy = ref(false)
 const rowBusy = reactive({})
-const pendingInvoices = computed(() => invoices.value.filter(i => i.stock_pending))
+// Só notas prontas p/ contabilizar entram na seleção em lote (as com produtos não sincronizados
+// precisam ser resolvidas no modal primeiro — senão o lote cairia em no_match).
+const pendingInvoices = computed(() => invoices.value.filter(i => i.stock_pending && !i.has_unmatched_items))
 const allPendingSelected = computed(() =>
   pendingInvoices.value.length > 0 && pendingInvoices.value.every(i => selectedIds.value.includes(i.id))
 )
