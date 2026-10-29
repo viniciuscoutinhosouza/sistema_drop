@@ -1967,6 +1967,40 @@ async def transmit_invoice(
     # transmissão (a nota já está autorizada) — apenas sinaliza pendência recuperável.
     stock_ok = await _apply_stock_on_authorization(inv, db)
     await db.refresh(inv, attribute_names=["items"])
+
+    # Sincroniza os campos fiscais DENORMALIZADOS do pedido vinculado — a lista/detalhe de Pedidos
+    # leem daqui (nfe_status/nfe_key/invoice_id). Feito no PONTO ÚNICO de transmissão para valer em
+    # QUALQUER caminho: emissão pelo pedido OU retransmissão direta pela tela da NF-e. Sem isto, a
+    # retransmissão pela nota deixava o pedido preso em "NF-e Pendente" com o botão "Gerar NFe".
+    # Só venda de SAÍDA autorizada em PRODUÇÃO (homologação não é doc fiscal real; devolução
+    # direction='in' não representa a venda do pedido).
+    if (
+        inv.status == "authorized"
+        and inv.direction == "out"
+        and (inv.purpose or "venda") == "venda"
+        and (inv.environment or "") == "production"
+        and inv.order_id
+    ):
+        # BEST-EFFORT: a autorização SEFAZ JÁ foi gravada/commitada dentro de `emitir` ANTES daqui.
+        # Um erro neste writeback (lock/timeout Oracle) NÃO pode virar HTTP 500 numa nota já
+        # autorizada — espelha `_apply_stock_on_authorization`. Falha → rollback + log, resposta
+        # segue normal; a migration 171 (e a próxima transmissão) reconciliam o campo denormalizado.
+        try:
+            ord_ = (
+                await db.execute(select(Order).where(Order.id == inv.order_id))
+            ).scalar_one_or_none()
+            if ord_:
+                ord_.nfe_status = "authorized"
+                ord_.nfe_key = inv.access_key
+                if ord_.invoice_id != inv.id:
+                    ord_.invoice_id = inv.id
+                await db.commit()
+        except Exception:  # noqa: BLE001 — campo denormalizado é recuperável (backfill/re-sync)
+            await db.rollback()
+            logger.warning(
+                "[nfe] falha ao sincronizar pedido %s da nota %s", inv.order_id, inv.id, exc_info=True
+            )
+
     resp = _serialize(inv, with_items=True)
     if not stock_ok:
         resp["stock_pending"] = True
