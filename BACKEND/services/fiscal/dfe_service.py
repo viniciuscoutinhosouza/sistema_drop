@@ -425,20 +425,27 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
         if is_simbolica(inv.natureza_operacao):
             return {"cmig_recomputed": 0, "pg_recomputed": 0, "simbolica": True}
 
-        result = await recompute_after_invoice_change(inv, db)
+        # Determina os produtos afetados ANTES de marcar — base do guard no_match.
+        from services.fiscal.stock_calculator import affected_products_from_invoice
+        cmig_ids0, pg_ids0 = await affected_products_from_invoice(inv, db)
         # Falhar alto, não em silêncio: a nota TEM itens mas NENHUM casou com produto cadastrado
-        # (EAN/SKU não batem com nenhum CMIGProduct/CatalogProduct da CMIG). Não há o que creditar —
-        # NÃO marca stock_updated (a nota segue PENDENTE p/ o operador cadastrar/corrigir o produto
-        # com o EAN da nota e re-contabilizar). Antes isso marcava "contabilizado" e não mexia no
-        # estoque — o operador via "feito" mas o saldo não mudava.
-        if not (result.get("cmig_ids") or result.get("pg_ids")) and (inv.items or []):
+        # (EAN/SKU não batem com nenhum CMIGProduct/CatalogProduct, nem pela coluna nativa nem por
+        # product_eans). Não há o que creditar — NÃO marca stock_updated (a nota segue PENDENTE p/ o
+        # operador cadastrar/corrigir/vincular o produto e re-contabilizar). Antes marcava
+        # "contabilizado" e não mexia no estoque — o operador via "feito" mas o saldo não mudava.
+        if not (cmig_ids0 or pg_ids0) and (inv.items or []):
             return {
                 "cmig_recomputed": 0,
                 "pg_recomputed": 0,
                 "no_match": True,
                 "items": len(inv.items or []),
             }
+        # Marca stock_updated ANTES do recompute: o replay gateia por stock_updated==True; sem a
+        # flag setada a PRÓPRIA nota não entra no seu recompute e o saldo não creditava na hora
+        # (bug de ordem). Espelha _apply_stock_movement. Flush p/ o SELECT do replay enxergar a flag.
         inv.stock_updated = True
+        await db.flush()
+        result = await recompute_after_invoice_change(inv, db)
         # Rastreabilidade (ADR-0027): recompute do saldo por lote APÓS setar stock_updated
         # (o replay de lote gateia por stock_updated; o autoflush garante que o SELECT veja a flag).
         # Best-effort — nunca quebra a manifestação (o saldo de lote é cache reconstruível).
