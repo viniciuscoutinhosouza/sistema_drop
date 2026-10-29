@@ -957,6 +957,10 @@ async def get_order(
         "nfe_url": _ml_nfe_url(order),
         "nfe_key": order.nfe_key,
         "nfe_status": order.nfe_status,
+        # invoice_id da NF-e própria vinculada — o detalhe do pedido (OrderDetailView) usa para
+        # alternar "Gerar NFe a partir do Pedido" ↔ "Ver NFe vinculada". Faltava aqui (a lista já
+        # devolvia), então o botão aparecia mesmo com a nota já emitida.
+        "invoice_id": order.invoice_id,
         "estimated_delivery_date": order.estimated_delivery_date.isoformat()
         if order.estimated_delivery_date
         else None,
