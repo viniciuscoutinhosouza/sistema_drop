@@ -78,6 +78,17 @@
 
         <!-- Tabela -->
         <div class="card">
+          <div v-if="canMoveStock" class="card-header d-flex align-items-center">
+            <button class="btn btn-sm btn-success" :disabled="selectedIds.length === 0 || bulkBusy"
+                    @click="contabilizarLote">
+              <i class="fas" :class="bulkBusy ? 'fa-spinner fa-spin' : 'fa-boxes'"></i>
+              Contabilizar Estoque<span v-if="selectedIds.length"> ({{ selectedIds.length }})</span>
+            </button>
+            <small class="text-muted ml-2">
+              Marque as entradas com <i class="fas fa-box text-warning"></i> (ainda não contabilizadas) e
+              lance o estoque de todas de uma vez.
+            </small>
+          </div>
           <div class="card-body p-0">
             <div v-if="loading" class="text-center py-5">
               <i class="fas fa-spinner fa-spin fa-2x text-muted"></i>
@@ -85,6 +96,11 @@
             <table v-else class="table table-hover mb-0">
               <thead>
                 <tr>
+                  <th v-if="canMoveStock" style="width:34px" class="text-center" @click.stop>
+                    <input type="checkbox" :checked="allPendingSelected" :disabled="pendingInvoices.length === 0"
+                           title="Selecionar todas as entradas pendentes de estoque"
+                           @change="toggleSelectAll" style="width:16px;height:16px">
+                  </th>
                   <th role="button" @click="setSort('numero')">Chave / Número <i class="fas" :class="sortIcon('numero')"></i></th>
                   <th role="button" @click="setSort('emissao')">Emissão <i class="fas" :class="sortIcon('emissao')"></i></th>
                   <th>Fornecedor</th>
@@ -92,16 +108,21 @@
                   <th>Manifestação</th>
                   <th class="text-right">Total</th>
                   <th>Status</th>
+                  <th class="text-center">Estoque</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-if="invoices.length === 0">
-                  <td colspan="8" class="text-center text-muted py-4">Nenhuma NFe de entrada encontrada.</td>
+                  <td :colspan="canMoveStock ? 10 : 9" class="text-center text-muted py-4">Nenhuma NFe de entrada encontrada.</td>
                 </tr>
                 <tr v-for="inv in invoices" :key="inv.id" style="cursor:pointer"
                     :class="{'table-warning': inv.manifestation === 'pending' && inv.inbound_source === 'dfe_focus'}"
                     @click="$router.push(`/fiscal/invoices/${inv.id}`)">
+                  <td v-if="canMoveStock" class="text-center" @click.stop>
+                    <input v-if="inv.stock_pending" type="checkbox" :value="inv.id" v-model="selectedIds"
+                           style="width:16px;height:16px">
+                  </td>
                   <td>
                     <code v-if="inv.access_key" class="small">…{{ inv.access_key.slice(-12) }}</code>
                     <span v-else-if="inv.nfe_number">{{ inv.nfe_number }} / {{ inv.serie }}</span>
@@ -128,6 +149,20 @@
                   </td>
                   <td>
                     <span class="badge" :class="statusClass(inv.status)">{{ statusLabel(inv.status) }}</span>
+                  </td>
+                  <td @click.stop class="text-center">
+                    <button v-if="inv.stock_pending && canMoveStock" class="btn btn-sm btn-outline-warning"
+                            title="Contabilizar o estoque desta nota" :disabled="rowBusy[inv.id]"
+                            @click="contabilizarUma(inv)">
+                      <i class="fas" :class="rowBusy[inv.id] ? 'fa-spinner fa-spin' : 'fa-box'"></i>
+                    </button>
+                    <span v-else-if="inv.stock_pending" class="text-warning" title="Estoque não contabilizado">
+                      <i class="fas fa-box"></i>
+                    </span>
+                    <span v-else-if="inv.stock_updated" class="text-success" title="Estoque já contabilizado">
+                      <i class="fas fa-check-circle"></i>
+                    </span>
+                    <span v-else class="text-muted" title="Não contabiliza estoque">—</span>
                   </td>
                   <td @click.stop class="text-right">
                     <RouterLink :to="`/fiscal/invoices/${inv.id}`" class="btn btn-sm btn-outline-info" title="Detalhes">
@@ -166,12 +201,14 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useFiscalStore } from '@/stores/fiscal'
 import { useCmigStore } from '@/stores/cmig'
+import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { fmt } from '@/views/fiscal/_helpers'
 import XmlImportModal from '@/components/fiscal/XmlImportModal.vue'
 
 const fiscalStore = useFiscalStore()
 const cmigStore = useCmigStore()
+const authStore = useAuthStore()
 const toast = useToast()
 const { invoices, total, loading } = storeToRefs(fiscalStore)
 const { cmigs } = storeToRefs(cmigStore)
@@ -179,6 +216,52 @@ const { cmigs } = storeToRefs(cmigStore)
 const pageSize = 20
 const showImport = ref(false)
 const syncing = ref(false)
+
+// Contabilização de estoque (ícone por linha + ação em lote) — gateado por permissão de ação
+// `estoque_movimentar` (ADR-0036; admin bypassa). O backend reforça em require_permission.
+const canMoveStock = computed(() => authStore.hasAction('estoque_movimentar'))
+const selectedIds = ref([])
+const bulkBusy = ref(false)
+const rowBusy = reactive({})
+const pendingInvoices = computed(() => invoices.value.filter(i => i.stock_pending))
+const allPendingSelected = computed(() =>
+  pendingInvoices.value.length > 0 && pendingInvoices.value.every(i => selectedIds.value.includes(i.id))
+)
+function toggleSelectAll() {
+  selectedIds.value = allPendingSelected.value ? [] : pendingInvoices.value.map(i => i.id)
+}
+async function contabilizarUma(inv) {
+  rowBusy[inv.id] = true
+  try {
+    const r = await fiscalStore.updateStock(inv.id)
+    if (r.already_updated) toast.info('Esta nota já estava contabilizada no estoque.')
+    else toast.success('Estoque contabilizado.')
+    reload()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao contabilizar o estoque')
+  } finally {
+    rowBusy[inv.id] = false
+  }
+}
+async function contabilizarLote() {
+  if (selectedIds.value.length === 0) return
+  bulkBusy.value = true
+  try {
+    const r = await fiscalStore.updateStockBulk(selectedIds.value)
+    const parts = [`${r.updated} contabilizada(s)`]
+    if (r.skipped) parts.push(`${r.skipped} já/inaplicável`)
+    if (r.errors?.length) parts.push(`${r.errors.length} com erro`)
+    const msg = parts.join(' · ')
+    if (r.errors?.length) toast.warning(msg)
+    else toast.success(msg)
+    selectedIds.value = []
+    reload()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao contabilizar o estoque em lote')
+  } finally {
+    bulkBusy.value = false
+  }
+}
 const filters = reactive({
   cmig_id: null,
   direction: 'in',
@@ -213,6 +296,7 @@ function sortIcon(col) {
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
 async function reload() {
+  selectedIds.value = []  // seleção não sobrevive a troca de página/filtro
   const params = {}
   for (const [k, v] of Object.entries(filters)) {
     if (v !== null && v !== '') params[k] = v

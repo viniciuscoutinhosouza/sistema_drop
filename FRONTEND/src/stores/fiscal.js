@@ -160,6 +160,11 @@ export const useFiscalStore = defineStore('fiscal', () => {
     return data
   }
 
+  async function updateStockBulk(invoiceIds) {
+    const { data } = await api.post('/invoices/update-stock-bulk', { invoice_ids: invoiceIds })
+    return data
+  }
+
   return {
     invoices, total, loading, currentInvoice,
     fetchInvoices, fetchInvoice, fetchOutbound, exportOutbound, syncMlOutbound, syncMlFiscal,
@@ -167,6 +172,6 @@ export const useFiscalStore = defineStore('fiscal', () => {
     createInvoice, updateInvoice, deleteInvoice,
     addItem, updateItem, deleteItem,
     calculateTaxes, transmit, finalizeNoSefaz, cancel, correctionLetter, sendEmail, refreshStatus,
-    syncReceived, manifest, updateStock,
+    syncReceived, manifest, updateStock, updateStockBulk,
   }
 })

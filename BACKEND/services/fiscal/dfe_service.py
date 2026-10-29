@@ -408,6 +408,11 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
             raise ValueError("Invoice não encontrada")
         if inv.direction != "in":
             raise ValueError("Apenas entradas podem mover estoque")
+        # Fail-safe ADR-0009 (defesa em profundidade): a NF-e de DEVOLUÇÃO é inerte ao replay de
+        # estoque (stock_updated fica False; a inspeção é a fonte canônica). Nunca contabiliza aqui
+        # — espelha o guard de _apply_stock_movement, protegendo também o ícone/lote da tela.
+        if (inv.purpose or "") == "devolucao":
+            return {"cmig_recomputed": 0, "pg_recomputed": 0, "devolucao": True}
         if inv.stock_updated:
             return {
                 "cmig_recomputed": 0,

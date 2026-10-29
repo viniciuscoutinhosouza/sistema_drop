@@ -201,6 +201,16 @@ def _serialize(
         "manifestation_at": inv.manifestation_at.isoformat() if inv.manifestation_at else None,
         "manifestation_protocol": inv.manifestation_protocol,
         "stock_updated": bool(inv.stock_updated),
+        # Derivado (fonte única da elegibilidade do ícone "contabilizar estoque" na tela de Entrada):
+        # entrada recebida (authorized/finalized) ainda NÃO contabilizada, que NÃO é devolução
+        # (ADR-0009, inerte ao replay) nem simbólica (ADR-0022). O front não replica esta regra.
+        "stock_pending": (
+            inv.direction == "in"
+            and not inv.stock_updated
+            and (inv.status in ("authorized", "finalized"))
+            and (inv.purpose or "") != "devolucao"
+            and not _is_simbolica(inv.natureza_operacao)
+        ),
         "focus_ref": inv.focus_ref,
         "focus_status": inv.focus_status,
         "focus_message": inv.focus_message,
@@ -2872,11 +2882,68 @@ async def manifest_invoice(
     }
 
 
+@router.post("/update-stock-bulk")
+async def update_stock_bulk(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("estoque_movimentar")),
+):
+    """Contabiliza o estoque de VÁRIAS entradas de uma vez (botão de ação em lote da tela de
+    Entrada). Reusa o caminho canônico `update_stock_from_invoice` (event-sourced, idempotente,
+    guards de direction/devolução/simbólica/already_updated). Parcial-sucesso: cada nota tem sua
+    própria transação; escopo e erros são tratados POR NOTA (nunca derrubam o lote).
+
+    Body: {"invoice_ids": [int, ...]}  (de-duplicado; teto de 200 por request)
+    Retorna: {processed, updated, skipped, errors:[...], results:[{id, ok, ...}]}"""
+    raw = body.get("invoice_ids") or []
+    try:
+        ids = list(dict.fromkeys(int(i) for i in raw))[:200]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="invoice_ids inválido") from None
+    if not ids:
+        raise HTTPException(status_code=400, detail="Nenhuma nota informada")
+
+    results: list[dict] = []
+    updated = skipped = 0
+    for iid in ids:
+        inv = (await db.execute(select(Invoice).where(Invoice.id == iid))).scalar_one_or_none()
+        if not inv:
+            results.append({"id": iid, "ok": False, "error": "não encontrada"})
+            continue
+        try:
+            await _check_cmig_access(inv.cmig_id, current_user, db)  # anti-IDOR por nota
+        except HTTPException:
+            results.append({"id": iid, "ok": False, "error": "sem acesso"})
+            continue
+        try:
+            r = await dfe_service.update_stock_from_invoice(iid)
+        except ValueError as e:
+            results.append({"id": iid, "ok": False, "error": str(e)})
+            continue
+        except Exception:  # noqa: BLE001 — uma nota com erro não derruba o lote
+            logger.exception("update-stock-bulk: falha na nota %s", iid)
+            results.append({"id": iid, "ok": False, "error": "erro interno"})
+            continue
+        if r.get("already_updated") or r.get("simbolica") or r.get("devolucao"):
+            skipped += 1
+            results.append({"id": iid, "ok": True, "skipped": True, **r})
+        else:
+            updated += 1
+            results.append({"id": iid, "ok": True, **r})
+    return {
+        "processed": len(ids),
+        "updated": updated,
+        "skipped": skipped,
+        "errors": [x for x in results if not x.get("ok")],
+        "results": results,
+    }
+
+
 @router.post("/{invoice_id}/update-stock")
 async def update_stock(
     invoice_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("estoque_movimentar")),
 ):
     """Replica itens da entrada para `cmig_products.stock_quantity` por EAN.
     Idempotente — flag `stock_updated` evita reaplicação."""

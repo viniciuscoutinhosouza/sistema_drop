@@ -235,7 +235,7 @@
                         class="btn btn-warning mr-2 mb-2" @click="showManifestModal = true">
                   <i class="fas fa-flag mr-1"></i> Manifestar
                 </button>
-                <button v-if="invoice.direction === 'in' && !invoice.stock_updated"
+                <button v-if="invoice.direction === 'in' && !invoice.stock_updated && canMoveStock"
                         class="btn btn-outline-success mr-2 mb-2" @click="showStockModal = true">
                   <i class="fas fa-boxes mr-1"></i> Atualizar Estoque
                 </button>
@@ -396,6 +396,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useFiscalStore } from '@/stores/fiscal'
+import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { saveBlobResponse } from '@/utils/download'
 import api from '@/composables/useApi'
@@ -406,7 +407,12 @@ import StockUpdateModal from '@/components/fiscal/StockUpdateModal.vue'
 const route = useRoute()
 const router = useRouter()
 const fiscalStore = useFiscalStore()
+const authStore = useAuthStore()
 const toast = useToast()
+
+// Contabilizar estoque exige a permissão de ação `estoque_movimentar` (ADR-0036; backend gateia em
+// require_permission). Esconde o botão de quem não tem, evitando clique → 403.
+const canMoveStock = computed(() => authStore.hasAction('estoque_movimentar'))
 
 const invoice = ref(null)
 const loading = ref(true)
