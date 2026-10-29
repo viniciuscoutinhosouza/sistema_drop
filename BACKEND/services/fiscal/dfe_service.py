@@ -426,6 +426,18 @@ async def update_stock_from_invoice(invoice_id: int) -> dict:
             return {"cmig_recomputed": 0, "pg_recomputed": 0, "simbolica": True}
 
         result = await recompute_after_invoice_change(inv, db)
+        # Falhar alto, não em silêncio: a nota TEM itens mas NENHUM casou com produto cadastrado
+        # (EAN/SKU não batem com nenhum CMIGProduct/CatalogProduct da CMIG). Não há o que creditar —
+        # NÃO marca stock_updated (a nota segue PENDENTE p/ o operador cadastrar/corrigir o produto
+        # com o EAN da nota e re-contabilizar). Antes isso marcava "contabilizado" e não mexia no
+        # estoque — o operador via "feito" mas o saldo não mudava.
+        if not (result.get("cmig_ids") or result.get("pg_ids")) and (inv.items or []):
+            return {
+                "cmig_recomputed": 0,
+                "pg_recomputed": 0,
+                "no_match": True,
+                "items": len(inv.items or []),
+            }
         inv.stock_updated = True
         # Rastreabilidade (ADR-0027): recompute do saldo por lote APÓS setar stock_updated
         # (o replay de lote gateia por stock_updated; o autoflush garante que o SELECT veja a flag).

@@ -234,8 +234,13 @@ async function contabilizarUma(inv) {
   rowBusy[inv.id] = true
   try {
     const r = await fiscalStore.updateStock(inv.id)
-    if (r.already_updated) toast.info('Esta nota já estava contabilizada no estoque.')
-    else toast.success('Estoque contabilizado.')
+    if (r.no_match) {
+      toast.warning('Nenhum produto desta nota casou pelo EAN — cadastre/corrija o produto com o EAN da nota e contabilize novamente. Estoque NÃO alterado.')
+    } else if (r.already_updated) {
+      toast.info('Esta nota já estava contabilizada no estoque.')
+    } else {
+      toast.success('Estoque contabilizado.')
+    }
     reload()
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao contabilizar o estoque')
@@ -249,10 +254,11 @@ async function contabilizarLote() {
   try {
     const r = await fiscalStore.updateStockBulk(selectedIds.value)
     const parts = [`${r.updated} contabilizada(s)`]
+    if (r.no_match) parts.push(`${r.no_match} sem produto casado (EAN)`)
     if (r.skipped) parts.push(`${r.skipped} já/inaplicável`)
     if (r.errors?.length) parts.push(`${r.errors.length} com erro`)
     const msg = parts.join(' · ')
-    if (r.errors?.length) toast.warning(msg)
+    if (r.errors?.length || r.no_match) toast.warning(msg)
     else toast.success(msg)
     selectedIds.value = []
     reload()

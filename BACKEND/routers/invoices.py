@@ -2904,7 +2904,7 @@ async def update_stock_bulk(
         raise HTTPException(status_code=400, detail="Nenhuma nota informada")
 
     results: list[dict] = []
-    updated = skipped = 0
+    updated = skipped = no_match = 0
     for iid in ids:
         inv = (await db.execute(select(Invoice).where(Invoice.id == iid))).scalar_one_or_none()
         if not inv:
@@ -2924,7 +2924,11 @@ async def update_stock_bulk(
             logger.exception("update-stock-bulk: falha na nota %s", iid)
             results.append({"id": iid, "ok": False, "error": "erro interno"})
             continue
-        if r.get("already_updated") or r.get("simbolica") or r.get("devolucao"):
+        if r.get("no_match"):
+            # Nenhum produto casou pelo EAN — a nota NÃO foi contabilizada (segue pendente).
+            no_match += 1
+            results.append({"id": iid, "ok": True, "no_match": True, **r})
+        elif r.get("already_updated") or r.get("simbolica") or r.get("devolucao"):
             skipped += 1
             results.append({"id": iid, "ok": True, "skipped": True, **r})
         else:
@@ -2934,6 +2938,7 @@ async def update_stock_bulk(
         "processed": len(ids),
         "updated": updated,
         "skipped": skipped,
+        "no_match": no_match,
         "errors": [x for x in results if not x.get("ok")],
         "results": results,
     }
@@ -2955,6 +2960,12 @@ async def update_stock(
         result = await dfe_service.update_stock_from_invoice(inv.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if result.get("no_match"):
+        return {
+            "detail": "Nenhum produto da nota casou pelo EAN — estoque não alterado. "
+                      "Cadastre/corrija o produto com o EAN da nota e contabilize novamente.",
+            **result,
+        }
     return {"detail": "Estoque atualizado", **result}
 
 
