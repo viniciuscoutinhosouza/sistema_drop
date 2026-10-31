@@ -6,7 +6,7 @@
 
 ---
 
-## 2026-10-31 00:41 — CASA — Endereçamento Fase 2: Picking por endereço (ADR-0039)
+## 2026-10-31 — CASA — Endereçamento Fase 2: Picking por endereço (ADR-0039) — ✅ EM PRODUÇÃO (commit `f750a05`)
 
 **O que:** a lista de separação e a bipagem do Carrinho Gaiola passam a dizer **onde pegar cada item
 e em que ordem** — SUGESTÃO (não debita; débito fica p/ Fase 2.5, conforme decisão do dono).
@@ -23,9 +23,12 @@ e em que ordem** — SUGESTÃO (não debita; débito fica p/ Fase 2.5, conforme 
 **Auditoria (trio):** ADR aprovado; consistency 0 crítico/alto; quality 0 crítico/alto (1 MÉDIO de
 blindagem corrigido). Verificado: pytest **336 ok**, build OK. ADR-0039 Fase 2 + emenda ADR-0005.
 
-**Deploy:** em execução nesta sessão (sem migration — só código; sync + PM2 + build + health).
-Follow-ups: Fase 2.5 (débito do endereço ao separar/despachar); Fase 3 (inventário por endereço,
-transferência em massa, box tracking).
+**Deploy (feito 2026-10-31):** commit `f750a05` em produção (`/home/ubuntu/app`, fast-forward
+`01ac132..f750a05`); **sem migration** (Fase 2 é só leitura). PM2 `sistema-drop-backend` online sem
+erro; `npm run build` OK (bundle novo `SeparationView-*.js`); `/docs` e domínio **200**; as 2 rotas
+`pick-plan` (`/storage/products/{pt}/{id}/pick-plan` e `/separation/carts/{id}/pick-plan`) ativas no
+OpenAPI. Follow-ups: Fase 2.5 (débito do endereço ao separar/despachar); Fase 3 (inventário por
+endereço, transferência em massa, box tracking).
 
 ---
 
