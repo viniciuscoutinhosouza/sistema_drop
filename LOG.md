@@ -29,7 +29,9 @@ Trio de auditoria: ADR-checker APROVADO; consistency 1 CRÍTICO (rota `reorder` 
 corrida pack-default→500) + médios — **TODOS corrigidos** (rota literal reposicionada; HTML-escape +
 `opener=null`; IntegrityError no upsert; `_to_int`→400; revalida caixas ao baixar qty; etiqueta
 reemite recria; recompute do código interno logado, não silenciado). Verificado: pytest 327 ok (2
-pré-existentes), build OK. **Migrations 173/174 ainda NÃO rodadas** (DEV sem Oracle) — pendente deploy.
+pré-existentes), build OK. **Deploy em produção 2026-10-31 (commit `01ac132`):** migrations 173 (15
+blocos/0 erro) e 174 (1 bloco/0 erro) aplicadas no Oracle; 5 tabelas + `product_eans.source` + 4
+permissões (admin/go) confirmadas; PM2 online; bundle no nginx; `/docs`+domínio 200; rotas no OpenAPI.
 
 ## 2026-10-24 — feat(rbac): capacidades CMIG/fiscal/PG/estoque viram permissões de Perfil (ADR-0036)
 

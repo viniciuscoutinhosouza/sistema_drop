@@ -6,7 +6,14 @@
 
 ---
 
-## 2026-10-30 23:59 — CASA — Endereçamento Físico de Estoque (Fase 1, ADR-0039)
+## 2026-10-30 23:59 — CASA — Endereçamento Físico de Estoque (Fase 1, ADR-0039) — ✅ EM PRODUÇÃO (31/10, commit `01ac132`)
+
+> **Deploy feito em 2026-10-31:** migrations 173 (15 blocos/0 erro) e 174 (1 bloco/0 erro) aplicadas
+> no Oracle; 5 tabelas + `product_eans.source` + 4 permissões (admin/go) confirmadas; PM2 online sem
+> erro; bundle novo no nginx; `/docs` e domínio 200; rotas `/api/v1/storage` no OpenAPI. **Pendente do
+> dono:** habilitar `endereco_configurar`/`endereco_movimentar` em perfis não-sistema (ex.:
+> `go.harmonyexpress`) pela tela Perfil, se quiser que operadores específicos usem. Próximo: **Fase 2** (picking).
+
 
 **Pedido:** estrutura para organizar fisicamente o galpão, com vários modelos (salas com
 armários/estantes, porta-pallet com estante→coluna→altura→pallet, e misto), hierarquia do maior ao
