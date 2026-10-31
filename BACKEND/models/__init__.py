@@ -64,6 +64,13 @@ from models.return_ import Return  # noqa: F401
 from models.scheduler_job_execution import SchedulerJobExecution  # noqa: F401
 from models.smtp_config import SMTPConfig  # noqa: F401
 from models.stock_adjustment import StockManualAdjustment  # noqa: F401
+from models.storage import (  # noqa: F401
+    ProductAllocation,
+    ProductAllocationPack,
+    ProductPackDefault,
+    StorageBoxLabel,
+    StorageLocation,
+)
 from models.traceability import (  # noqa: F401
     InvoiceItemLot,
     InvoiceItemSerial,

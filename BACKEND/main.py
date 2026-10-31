@@ -124,6 +124,7 @@ from routers import (
     shopee_logistics,
     simulator,
     stock,
+    storage,
     supplier_products,
     traceability,
     users,
@@ -150,6 +151,7 @@ app.include_router(
 )
 app.include_router(returns.router, prefix=f"{PREFIX}/returns", tags=["Returns"])
 app.include_router(stock.router, prefix=f"{PREFIX}/stock", tags=["Stock"])
+app.include_router(storage.router, prefix=f"{PREFIX}/storage", tags=["Storage"])
 app.include_router(traceability.router, prefix=f"{PREFIX}/traceability", tags=["Traceability"])
 app.include_router(inventories.router, prefix=f"{PREFIX}/inventories", tags=["Inventories"])
 app.include_router(full_cnpjs.router, prefix=f"{PREFIX}/full-cnpjs", tags=["FullCNPJs"])

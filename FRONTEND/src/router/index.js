@@ -54,6 +54,7 @@ const AwaitingReturnView = () => import('@/views/returns/AwaitingReturnView.vue'
 
 // Stock
 const StockControlView = () => import('@/views/stock/StockControlView.vue')
+const StorageAddressingView = () => import('@/views/stock/StorageAddressingView.vue')
 const TraceabilityView = () => import('@/views/stock/TraceabilityView.vue')
 const ProductLedgerView = () => import('@/views/stock/ProductLedgerView.vue')
 
@@ -226,6 +227,7 @@ const routes = [
       { path: 'estoque/movimentacao', component: ProductLedgerView, meta: { title: 'Extrato de Movimentação', role: ['ugo', 'ac'] } },
       { path: 'estoque/armazenagem', component: WarehouseMovementView, meta: { title: 'Movimentação de Armazenagem' } },
       { path: 'estoque/descarte', component: ProductDiscardView, meta: { title: 'Registrar Descarte de Produto' } },
+      { path: 'estoque/enderecamento', component: StorageAddressingView, meta: { title: 'Endereçamento', menuKey: 'estoque' } },
       { path: 'full-cnpjs', component: FullCnpjsView, meta: { title: 'CNPJs FULL', role: 'ac' } },
 
       { path: 'notifications', component: NotificationsView, meta: { title: 'Notificações' } },

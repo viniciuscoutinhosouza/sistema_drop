@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-10-30 — feat(estoque): Endereçamento Físico de Estoque — Fase 1 (ADR-0039)
+
+Pedido do dono: organizar fisicamente o galpão, com vários modelos (salas/armários, porta-pallet,
+misto), identificação por ramo (Sala Mickey estantes 1..8; Pateta 1..5; letras A..C/A..F),
+composição de caixas (homogênea/heterogênea), ordem de picking e FEFO para rastreáveis; incluir
+etiqueta/QR nas caixas fechadas e código interno para produtos sem EAN. Usabilidade apresentada e
+aprovada; 3 decisões = aditivo / Fase 1 (estrutura+alocação+mapa) / caixas padrão+livre.
+
+Implementado (camada ADITIVA — nada grava saldo; reconcilia com o escalar, balde "sem endereço"):
+- **Migrations 173** (6 tabelas: `storage_locations`, `product_allocations`, `product_allocation_packs`,
+  `product_pack_defaults`, `storage_box_labels` + `product_eans.source`) e **174** (seed permissões,
+  zero-regressão go+admin). Idempotentes.
+- **Backend:** `models/storage.py`; `services/storage_service.py` (full_code + recompute subárvore,
+  geração em massa por ramo named/numeric/letter, EAN-13 interno prefixo 2+DV único, reconciliação);
+  `services/product_scope.py` (assert_pg_scope extraído de invoices.py); `routers/storage.py`
+  (`/api/v1/storage`, 23 rotas); 2 permissões `endereco_configurar`/`endereco_movimentar`.
+- **Frontend:** `StorageAddressingView.vue` (Estrutura + Mapa), `StorageNode.vue` recursivo, rota
+  `estoque/enderecamento`, menu Estoque; etiquetas QR/barcode via CDN (sem dep no bundle).
+- Escopo por galpão derivado do usuário em toda resolução de id (anti-IDOR); ADR-0039 criada.
+
+Trio de auditoria: ADR-checker APROVADO; consistency 1 CRÍTICO (rota `reorder` sombreada por
+`{loc_id}`) + 2 médios; quality 1 CRÍTICO (XSS→token na impressão de etiqueta) + 2 ALTO (reorder,
+corrida pack-default→500) + médios — **TODOS corrigidos** (rota literal reposicionada; HTML-escape +
+`opener=null`; IntegrityError no upsert; `_to_int`→400; revalida caixas ao baixar qty; etiqueta
+reemite recria; recompute do código interno logado, não silenciado). Verificado: pytest 327 ok (2
+pré-existentes), build OK. **Migrations 173/174 ainda NÃO rodadas** (DEV sem Oracle) — pendente deploy.
+
 ## 2026-10-24 — feat(rbac): capacidades CMIG/fiscal/PG/estoque viram permissões de Perfil (ADR-0036)
 
 Pedido do dono: o usuário dono de galpão (`go.harmonyexpress`) não conseguia **criar conta CMIG** nem

@@ -2999,10 +2999,9 @@ async def update_stock(
 
 
 def _assert_pg_scope(prod, current_user):
-    """Escopo de PG por galpão (não há _check_cmig_access p/ PG). Admin global passa."""
-    from services.data_scope import is_global
-    if not is_global(current_user) and prod.warehouse_id != getattr(current_user, "warehouse_id", None):
-        raise HTTPException(status_code=403, detail="Sem acesso a este produto PG.")
+    """Escopo de PG por galpão. Delega ao ponto compartilhado (services/product_scope) — ADR-0039."""
+    from services.product_scope import assert_pg_scope
+    assert_pg_scope(prod, current_user)
 
 
 async def _product_eans_list(db, *, cmig_product_id=None, catalog_product_id=None) -> list[dict]:

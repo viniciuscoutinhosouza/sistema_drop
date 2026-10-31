@@ -282,6 +282,11 @@
                   <i class="nav-icon fas fa-boxes"></i><p>Controle de Estoque</p>
                 </RouterLink>
               </li>
+              <li v-if="canSee('estoque')" class="nav-item">
+                <RouterLink to="/estoque/enderecamento" class="nav-link" :class="{ active: route.path === '/estoque/enderecamento' }">
+                  <i class="nav-icon fas fa-map-marked-alt"></i><p>Endereçamento</p>
+                </RouterLink>
+              </li>
               <li v-if="canSee('ag_retorno')" class="nav-item">
                 <RouterLink to="/returns/aguardando-retorno" class="nav-link" :class="{ active: route.path === '/returns/aguardando-retorno' }">
                   <i class="nav-icon fas fa-undo-alt text-info"></i><p>Ag. Retorno Físico</p>

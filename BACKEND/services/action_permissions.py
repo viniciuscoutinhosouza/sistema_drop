@@ -51,6 +51,13 @@ ACTION_PERMISSIONS: list[dict] = [
     # `estoque` já controla a visibilidade; esta ação discrimina quem MOVIMENTA (galpão/admin).
     {"key": "estoque_movimentar", "label": "Movimentar estoque físico (desmontar KIT, ajustes manuais)",
      "menu": "estoque", "default_base_roles": ["go", "admin"]},
+    # Endereçamento físico (ADR-0039) — camada aditiva de localização, por galpão. `configurar` monta
+    # a árvore (ação estrutural); `movimentar` aloca produto/caixas, gera código interno e etiquetas.
+    # ac NÃO recebe (endereçamento é do galpão). Escopo por galpão continua no data_scope (intocado).
+    {"key": "endereco_configurar", "label": "Endereçamento: montar/editar a estrutura do galpão",
+     "menu": "estoque", "default_base_roles": ["go", "admin"]},
+    {"key": "endereco_movimentar", "label": "Endereçamento: alocar produto, caixas, código interno e etiquetas",
+     "menu": "estoque", "default_base_roles": ["go", "admin"]},
     # Fiscal
     {"key": "nfe_gerenciar", "label": "Ações fiscais de NF-e (finalizar/cancelar/inutilizar)",
      "menu": "fiscal_saidas", "default_base_roles": ["ac", "admin"]},
