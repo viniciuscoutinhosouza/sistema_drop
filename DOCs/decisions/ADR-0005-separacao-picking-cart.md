@@ -122,3 +122,14 @@ Status: Aceito. Substitui parcialmente as decisões 2 e 7.
   por idempotência + `failed_dispatch` na resposta; reprocesso é manual por ora.
 - Numeração de gaiola `G-AAAAMMDD-NNN` por galpão/dia (UTC); sem UNIQUE em
   `cart_number` (corrida de numeração possível, cosmética).
+
+## Emenda (ADR-0039 Fase 2 — 2026-10-31)
+
+O picking passa a **consultar o endereçamento físico** (ADR-0039) como **sugestão**: a lista de
+separação (PDF) e a bipagem do Carrinho Gaiola mostram **onde pegar cada item e em que ordem**
+(FEFO → `pick_order` → caixa aberta antes de fechada → `pick_sequence` → `full_code`), via o ponto
+único `services/storage_picking.py::pick_plan_for` e as rotas de leitura
+`GET /separation/carts/{id}/pick-plan` e `GET /storage/products/{pt}/{id}/pick-plan`. **Aditivo e
+tolerante** (produto sem endereço degrada para "sem endereço"); **não debita** o endereço nesta fase
+(o débito ao separar/despachar é a Fase 2.5). FEFO reusa o mesmo ORDER BY do débito de lote
+(`traceability_service.allocate_fefo`) para o picker pegar o lote que o sistema vai baixar.

@@ -27,6 +27,7 @@ from models.storage import (
 )
 from models.user import User
 from services.data_scope import accessible_cmig_ids, is_global, warehouse_scope
+from services.storage_picking import pick_plan_for
 from services.storage_service import (
     BOX_TOKEN_PREFIX,
     LOC_TOKEN_PREFIX,
@@ -390,6 +391,21 @@ async def product_allocations(
         "sem_endereco": (None if stock is None else stock - addressed),
         "pack_defaults": [{"id": d.id, "units_per_box": d.units_per_box, "label": d.label} for d in defaults],
     }
+
+
+@router.get("/products/{product_type}/{product_id}/pick-plan")
+async def product_pick_plan(
+    product_type: str, product_id: int,
+    qty: int = Query(1, ge=0),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    """Plano de picking (Fase 2): onde pegar `qty` deste produto, na ordem FEFO→pick_order→caixa
+    aberta→rota. Leitura escopada por galpão (reusa _assert_product_in_scope). Sugestão — não debita."""
+    await _assert_product_in_scope(db, product_type, product_id, current_user)
+    plan = await pick_plan_for(db, product_type, product_id, qty=qty)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Produto não encontrado.")
+    return plan
 
 
 @router.get("/locations/{loc_id}/contents")

@@ -18,7 +18,9 @@ MARGIN = 15 * mm
 
 
 def render_picking_list(rows: list[dict], *, title: str = "Lista de Separação") -> bytes:
-    """`rows`: [{title, sku, ean, qty}] já consolidados. Retorna bytes do PDF A4."""
+    """`rows`: [{title, sku, ean, qty, pick_plan?, pick_shortage?}] já consolidados. Retorna bytes
+    do PDF A4. `pick_plan` (ADR-0039 Fase 2) = [{full_code, take, lot_code?}] renderizado como
+    sub-linha "Endereço (ordem)" sob o item; `pick_shortage` = unidades sem endereço."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
 
@@ -80,6 +82,26 @@ def render_picking_list(rows: list[dict], *, title: str = "Lista de Separação"
         c.setLineWidth(0.6)
         c.rect(x_chk - 3.5 * mm, y - 1 * mm, 4 * mm, 4 * mm)
         c.setFont("Helvetica", 8.5)
+
+        # Endereço (ADR-0039 Fase 2) — sub-linha de picking sob o item (FEFO → caixa aberta → rota)
+        pp = r.get("pick_plan") or []
+        short = int(r.get("pick_shortage") or 0)
+        if pp or short:
+            y -= 4.2 * mm
+            segs = []
+            for s in pp:
+                seg = f"{s.get('full_code') or '?'} ({int(s.get('take') or 0)})"
+                if s.get("lot_code"):
+                    seg += f" lote {s['lot_code']}"
+                segs.append(seg)
+            txt = "→ " + ("   ·   ".join(segs) if segs else "")
+            if short:
+                txt += (("   ·   " if segs else "→ ") + f"[{short} sem endereço]")
+            c.setFont("Helvetica-Oblique", 7.5)
+            c.setFillColorRGB(0.25, 0.25, 0.25)
+            c.drawString(x_prod, y, txt[:120])
+            c.setFillColorRGB(0, 0, 0)
+            c.setFont("Helvetica", 8.5)
 
         # separador leve
         c.setStrokeColorRGB(0.85, 0.85, 0.85)

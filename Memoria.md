@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-10-31 00:41 — CASA — Endereçamento Fase 2: Picking por endereço (ADR-0039)
+
+**O que:** a lista de separação e a bipagem do Carrinho Gaiola passam a dizer **onde pegar cada item
+e em que ordem** — SUGESTÃO (não debita; débito fica p/ Fase 2.5, conforme decisão do dono).
+
+**Entregue:**
+- `services/storage_picking.py` (ponto único `pick_plan_for` + ordenação pura `order_allocations`):
+  **FEFO → `pick_order` → caixa aberta → `pick_sequence` → `full_code`**. FEFO = mesmo ORDER BY do
+  débito de lote (ADR-0027); alocação rastreável sem lote vai ao fim; inclui alocações de variante.
+- Rotas de leitura escopadas: `GET /storage/products/{pt}/{id}/pick-plan` e
+  `GET /separation/carts/{id}/pick-plan`. Coluna "Endereço (ordem)" no PDF + painel "Rota de picking"
+  na bipagem (`SeparationView.vue`). `get_cart` intocado. Anotação blindada (try/except — nunca
+  derruba a separação). **Sem migration** (só leitura).
+
+**Auditoria (trio):** ADR aprovado; consistency 0 crítico/alto; quality 0 crítico/alto (1 MÉDIO de
+blindagem corrigido). Verificado: pytest **336 ok**, build OK. ADR-0039 Fase 2 + emenda ADR-0005.
+
+**Deploy:** em execução nesta sessão (sem migration — só código; sync + PM2 + build + health).
+Follow-ups: Fase 2.5 (débito do endereço ao separar/despachar); Fase 3 (inventário por endereço,
+transferência em massa, box tracking).
+
+---
+
 ## 2026-10-30 23:59 — CASA — Endereçamento Físico de Estoque (Fase 1, ADR-0039) — ✅ EM PRODUÇÃO (31/10, commit `01ac132`)
 
 > **Deploy feito em 2026-10-31:** migrations 173 (15 blocos/0 erro) e 174 (1 bloco/0 erro) aplicadas

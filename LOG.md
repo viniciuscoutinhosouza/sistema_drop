@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-10-31 — feat(separacao): Picking por endereço — Endereçamento Fase 2 (ADR-0039)
+
+SUGESTÃO de picking (não debita; débito = Fase 2.5). A lista de separação e a bipagem do Carrinho
+Gaiola passam a dizer ONDE pegar cada item e em que ordem.
+
+- `services/storage_picking.py` (novo): `pick_plan_for` + ordenação PURA `order_allocations`
+  (testável). Precedência: **FEFO → `pick_order` → caixa aberta → `pick_sequence` → `full_code`**.
+  FEFO = mesmo ORDER BY do débito de lote (`allocate_fefo`: expiry asc nulls_last, lot_id asc);
+  alocação rastreável sem lote vai ao fim. Inclui alocações de variante do produto-base; galpão
+  derivado do próprio produto (`resolve_product_meta`).
+- Rotas de leitura escopadas: `GET /api/v1/storage/products/{pt}/{id}/pick-plan` e
+  `GET /api/v1/separation/carts/{id}/pick-plan`.
+- `picking_list_pdf`: sub-linha "Endereço (ordem)" no PDF (via `_annotate_pick_plan`, blindado por
+  try/except — anotação nunca derruba a separação); `get_cart` não foi engordado (endpoint dedicado).
+- Frontend: painel "Rota de picking" na bipagem (`SeparationView.vue`).
+- ADR-0039 Fase 2 + emenda ADR-0005. Sem migration (puramente leitura).
+
+Trio de auditoria LIMPO (ADR aprovado; consistency 0 crítico/alto; quality 0 crítico/alto — 1 MÉDIO
+de blindagem corrigido). Verificado: pytest 336 ok (2 pré-existentes), build OK.
+
 ## 2026-10-30 — feat(estoque): Endereçamento Físico de Estoque — Fase 1 (ADR-0039)
 
 Pedido do dono: organizar fisicamente o galpão, com vários modelos (salas/armários, porta-pallet,

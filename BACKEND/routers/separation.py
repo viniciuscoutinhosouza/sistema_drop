@@ -55,6 +55,7 @@ from services.label_service import (
     ML_CONF_HEADER as _ML_CONF_HEADER,
 )
 from services.picking_list_service import render_picking_list
+from services.storage_picking import KIND_TO_PRODUCT_TYPE, pick_plan_for
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -212,6 +213,32 @@ async def _resolve_components(db: AsyncSession, base: dict) -> list[dict]:
     return out
 
 
+async def _annotate_pick_plan(db: AsyncSession, rows: list[dict]) -> None:
+    """Anota cada linha consolidada com o plano de picking por endereço (ADR-0039 Fase 2).
+
+    ADITIVO e tolerante: produto sem endereço simplesmente não ganha `pick_plan` (degrada). O galpão
+    é derivado do próprio produto (pick_plan_for) — não vaza entre galpões. Sugestão, não debita."""
+    for r in rows:
+        pt = KIND_TO_PRODUCT_TYPE.get(r.get("kind"))
+        pid = r.get("product_id")
+        if not pt or not pid:
+            continue
+        # Blindagem: a anotação é ADITIVA — nunca pode derrubar o PDF/rota que já funcionava. Qualquer
+        # falha inesperada (driver/LOB/endereçamento) degrada para "sem endereço", não 500.
+        try:
+            plan = await pick_plan_for(db, pt, pid, qty=int(r.get("qty") or 0))
+            if not plan:
+                continue
+            r["pick_plan"] = [
+                {"full_code": s["full_code"], "take": s["take"], "lot_code": s.get("lot_code")}
+                for s in plan["stops"] if s.get("take")
+            ]
+            r["pick_shortage"] = plan.get("shortage") or 0
+        except Exception:  # noqa: BLE001 — sugestão de picking nunca bloqueia a separação
+            logger.warning("Falha ao montar pick_plan de %s/%s (ignorado).", pt, pid, exc_info=True)
+            continue
+
+
 async def _expand_order(db: AsyncSession, order: Order) -> list[dict]:
     """Todas as unidades a separar de um pedido (kits expandidos)."""
     items = (
@@ -337,6 +364,7 @@ async def picking_list_pdf(
     for order in orders:
         units.extend(await _expand_order(db, order))
     rows = ps.consolidate(units)
+    await _annotate_pick_plan(db, rows)
     pdf = render_picking_list(rows, title=f"Lista de Separação — {len(orders)} pedido(s)")
     return Response(
         content=pdf, media_type="application/pdf",
@@ -456,6 +484,36 @@ async def get_cart(
     d = _ser_cart(cart)
     d["orders"] = orders_out
     return d
+
+
+@router.get("/carts/{cart_id}/pick-plan")
+async def cart_pick_plan(
+    cart_id: int,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rota de picking consolidada da gaiola (ADR-0039 Fase 2): o que pegar e ONDE, somando os
+    pedidos do carrinho. Leitura escopada por galpão (via _get_cart_scoped). Sugestão — não debita."""
+    cart = await _get_cart_scoped(db, cart_id, current_user)
+    pcos = (
+        await db.execute(select(PickingCartOrder).where(PickingCartOrder.cart_id == cart_id))
+    ).scalars().all()
+    units: list[dict] = []
+    for pco in pcos:
+        order = (await db.execute(select(Order).where(Order.id == pco.order_id))).scalar_one_or_none()
+        if order:
+            units.extend(await _expand_order(db, order))
+    rows = ps.consolidate(units)
+    await _annotate_pick_plan(db, rows)
+    items = [
+        {"title": r.get("title"), "sku": r.get("sku"), "qty": r.get("qty"),
+         "pick_plan": r.get("pick_plan", []), "pick_shortage": r.get("pick_shortage", 0)}
+        for r in rows
+    ]
+    # rota global: itens com endereço (menor pick_sequence implícito na ordem do pick_plan) antes dos
+    # "sem endereço"; dentro, preserva a ordem de consolidação (por título).
+    items.sort(key=lambda it: (0 if it["pick_plan"] else 1))
+    return {"cart_id": cart_id, "cart_number": cart.cart_number, "items": items}
 
 
 @router.post("/carts/{cart_id}/orders")

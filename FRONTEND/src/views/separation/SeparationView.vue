@@ -185,6 +185,9 @@
           <select v-model="layout" class="form-control form-control-sm d-inline-block mr-2" style="width:auto" title="Layout p/ etiqueta interna (manual)">
             <option v-for="l in layouts" :key="l.key" :value="l.key">{{ l.label }}</option>
           </select>
+          <button class="btn btn-sm btn-light mr-1" @click="togglePickRoute" title="Rota de picking por endereço (FEFO → caixa aberta → rota)">
+            <i class="fas mr-1" :class="pickRouteBusy ? 'fa-spinner fa-spin' : 'fa-route'"></i> Rota
+          </button>
           <button class="btn btn-sm btn-light mr-1" @click="printAllLabels"><i class="fas fa-tags mr-1"></i> Etiquetas</button>
           <div class="btn-group btn-group-sm mr-1">
             <button class="btn btn-light" :disabled="cartNfeBusy" @click="cartNfe(false)"
@@ -207,6 +210,32 @@
           <button class="btn btn-sm btn-outline-light" @click="cancelCart" title="Cancelar gaiola e devolver pedidos"><i class="fas fa-trash"></i></button>
         </div>
       </div>
+      <!-- Painel ROTA DE PICKING (ADR-0039 Fase 2) — sugestão: onde pegar cada item, em que ordem -->
+      <div v-if="showPickRoute" class="p-3 border-bottom" style="background:#eef5ff">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <strong><i class="fas fa-route mr-1"></i> Rota de picking</strong>
+          <button class="btn btn-xs btn-link text-muted" @click="showPickRoute = false"><i class="fas fa-times"></i></button>
+        </div>
+        <p v-if="!pickRoute.length" class="text-muted small mb-0">Nenhum item para montar a rota.</p>
+        <table v-else class="table table-sm table-borderless mb-0">
+          <tbody>
+            <tr v-for="(it, i) in pickRoute" :key="i">
+              <td class="text-right text-muted small" style="width:3rem">{{ it.qty }}×</td>
+              <td>
+                <div class="small"><strong>{{ it.sku }}</strong> — {{ it.title }}</div>
+                <div v-if="it.pick_plan.length" class="small">
+                  <span v-for="(s, j) in it.pick_plan" :key="j" class="badge badge-info mr-1">
+                    {{ s.full_code }} ({{ s.take }})<span v-if="s.lot_code"> · lote {{ s.lot_code }}</span>
+                  </span>
+                  <span v-if="it.pick_shortage" class="badge badge-warning text-dark">{{ it.pick_shortage }} sem endereço</span>
+                </div>
+                <div v-else class="small text-warning">sem endereço cadastrado</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <!-- Painel BIPAGEM AUTOMÁTICA -->
       <div v-if="activeCart.mode === 'scan_auto'" class="p-3 border-bottom" style="background:#fffbea">
         <div class="d-flex align-items-start flex-wrap" style="gap:1rem">
@@ -583,6 +612,22 @@ async function openCart(id, { refresh = false } = {}) {
   } catch { toast.error('Erro ao abrir gaiola') }
 }
 async function refreshCart() { if (activeCart.value) await openCart(activeCart.value.id, { refresh: true }) }
+
+// Rota de picking (ADR-0039 Fase 2) — sugestão de onde pegar cada item; não debita o endereço.
+const pickRoute = ref([])
+const showPickRoute = ref(false)
+const pickRouteBusy = ref(false)
+async function togglePickRoute() {
+  if (showPickRoute.value) { showPickRoute.value = false; return }
+  if (!activeCart.value) return
+  pickRouteBusy.value = true
+  try {
+    const { data } = await api.get(`/separation/carts/${activeCart.value.id}/pick-plan`)
+    pickRoute.value = data.items || []
+    showPickRoute.value = true
+  } catch (e) { toast.error(e.response?.data?.detail || 'Falha ao montar a rota.') }
+  finally { pickRouteBusy.value = false }
+}
 
 async function scan(o) {
   const code = (bipCode.value[o.id] || '').trim()

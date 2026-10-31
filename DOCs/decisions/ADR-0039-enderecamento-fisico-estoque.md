@@ -1,7 +1,7 @@
 # ADR-0039 — Endereçamento Físico de Estoque como sub-ledger aditivo de localização
 
 ## Status
-Aceita (Fase 1 implementada) — 2026-10-30.
+Aceita — Fase 1 em produção (2026-10-31, commit `01ac132`); Fase 2 (sugestão de picking) implementada (2026-10-31).
 
 ## Contexto
 O galpão precisa organizar fisicamente onde cada produto fica. Há **vários modelos** de galpão:
@@ -57,9 +57,17 @@ nunca confiado no path; toda resolução de id (location/allocation/produto/cód
 ## Faseamento
 - **Fase 1 (esta):** estrutura (árvore) + alocação + caixas + mapa/consulta + reconciliação +
   etiqueta/QR + código interno. Migrations 173 (schema) / 174 (seed). Router `/api/v1/storage`.
-- **Fase 2:** plugar no `PickingCart` (ADR-0005) — lista de separação com **rota + FEFO + regra de
-  caixa**: FEFO manda; dentro do mesmo lote/produto, **esgotar unidade solta/caixa aberta primeiro e
-  preservar caixa fechada** (facilita a contagem — pedido do dono); `pick_sequence` como desempate.
+- **Fase 2 (implementada):** SUGESTÃO de picking no `PickingCart` (ADR-0005) — **não debita** (débito
+  é Fase 2.5). Ponto único `services/storage_picking.py::pick_plan_for` (ordenação em função PURA
+  `order_allocations`, testável). **Precedência:** (1) FEFO rastreável — `expiry_date asc nulls_last,
+  lot_id asc`, o MESMO ORDER BY do débito de lote (`traceability_service.allocate_fefo`), e alocação
+  rastreável **sem lote identificado** vai para o fim (não finge validade); (2) `product_allocations.pick_order`
+  (intenção manual por produto); (3) endereço com **unidade solta / caixa aberta primeiro** (preserva
+  caixa fechada p/ contagem — pedido do dono); (4) `location.pick_sequence` (rota física); (5) `full_code`.
+  Inclui alocações feitas no nível de **variante** do produto-base (senão apareceria "sem endereço"
+  falso). `warehouse_id` derivado do próprio produto (`resolve_product_meta`), não do pedido. Rotas de
+  LEITURA escopadas: `GET /storage/products/{pt}/{id}/pick-plan` e `GET /separation/carts/{id}/pick-plan`;
+  coluna "Endereço (ordem)" no PDF da lista + painel "Rota de picking" na bipagem. Emenda a ADR-0005.
 - **Fase 3:** inventário por endereço, transferência em massa, rastreio individual por caixa física.
 
 ## Consequências
