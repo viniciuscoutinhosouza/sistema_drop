@@ -6,7 +6,12 @@
 
 ---
 
-## 2026-10-31 — CASA — Endereçamento Fase 2.5: Débito do endereço ao despachar (ADR-0039) — auditado, deploy pendente
+## 2026-10-31 — CASA — Endereçamento Fase 2.5: Débito do endereço ao despachar (ADR-0039) — ✅ EM PRODUÇÃO (commit `5d70a5b`)
+
+> **Deploy feito em 2026-11-01:** fast-forward `f750a05..5d70a5b`; **migration 175** aplicada (5 blocos/0
+> erro, idempotente; `product_allocation_movements` criada, COUNT=0); PM2 online sem erro; build do front
+> OK; `/docs` e domínio 200; rota `/api/v1/storage/allocation-movements` no OpenAPI. Zero-regressão (tabela
+> nasce vazia; hooks só agem em pedidos despachados após o deploy).
 
 **O que:** a SUGESTÃO da Fase 2 virou MOVIMENTO. Ao DESPACHAR (entrega da gaiola → `confirm_dispatch`,
 mesmo gatilho do saldo escalar) o endereço físico é **debitado**; no RETORNO ao vendável, **creditado**
