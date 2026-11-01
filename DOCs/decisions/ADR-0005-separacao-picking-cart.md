@@ -133,3 +133,12 @@ separação (PDF) e a bipagem do Carrinho Gaiola mostram **onde pegar cada item 
 tolerante** (produto sem endereço degrada para "sem endereço"); **não debita** o endereço nesta fase
 (o débito ao separar/despachar é a Fase 2.5). FEFO reusa o mesmo ORDER BY do débito de lote
 (`traceability_service.allocate_fefo`) para o picker pegar o lote que o sistema vai baixar.
+
+## Emenda (ADR-0039 Fase 2.5 — 2026-10-31)
+
+`deliver_cart → confirm_dispatch` agora também **debita o endereço físico** (ADR-0039 Fase 2.5), pelo
+mesmo gatilho e no mesmo ramo **não-FULL** do débito escalar — nunca no `/separate` (mantém a decisão
+#3: a baixa ocorre só na ENTREGA da gaiola, não na separação). O débito é camada de LOCALIZAÇÃO
+(`product_allocations.qty_units`), **nunca** o saldo escalar; é best-effort e **não derruba o despacho**
+(espelha o `failed_dispatch`). O retorno ao vendável (`confirm_pending_return`/`validate_return_items`
+aprovado) credita o endereço de volta. Ponto único `services/storage_debit_service.py`.

@@ -124,3 +124,34 @@ class StorageBoxLabel(Base):
     is_active = Column(Boolean, nullable=False, server_default=text("1"))
     printed_by = Column(Integer, ForeignKey("users.id"))
     printed_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+
+
+class ProductAllocationMovement(Base):
+    """Razão append-only do movimento de ENDEREÇO (Fase 2.5, ADR-0039) — migration 175.
+
+    Espelha stock_movements × qty_units: o débito ao despachar (reason='dispatch', delta<0) e o
+    crédito no retorno ao vendável (reason='return', delta>0) só movem `product_allocations.qty_units`;
+    o saldo escalar (ADR-0004) é debitado pelo código existente do `confirm_dispatch`, independente.
+
+    `product_type`/`product_id` = a ALOCAÇÃO de fato tocada (pode ser variant_pg/variant_cmig).
+    `base_product_type`/`base_product_id` = o produto-LÓGICO (pg|cmig base) — bridge p/ o crédito do
+    retorno (base-level) reencontrar os débitos feitos no nível de variante. Idempotência: débito por
+    (order_id, reason='dispatch'); crédito por (return_id, reason='return')."""
+
+    __tablename__ = "product_allocation_movements"
+
+    id = Column(Integer, primary_key=True)
+    warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=False)
+    order_id = Column(Integer, ForeignKey("orders.id"))
+    return_id = Column(Integer, ForeignKey("returns.id"))
+    allocation_id = Column(Integer, ForeignKey("product_allocations.id"))
+    location_id = Column(Integer, ForeignKey("storage_locations.id"))
+    product_type = Column(String(20), nullable=False)
+    product_id = Column(Integer, nullable=False)
+    base_product_type = Column(String(20), nullable=False)
+    base_product_id = Column(Integer, nullable=False)
+    lot_id = Column(Integer, ForeignKey("product_lots.id"))
+    delta_units = Column(Integer, nullable=False)
+    reason = Column(String(20), nullable=False)  # dispatch | return
+    created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))

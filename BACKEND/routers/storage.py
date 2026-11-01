@@ -20,6 +20,7 @@ from dependencies import get_current_user, require_permission
 from models.product_ean import ProductEan
 from models.storage import (
     ProductAllocation,
+    ProductAllocationMovement,
     ProductAllocationPack,
     ProductPackDefault,
     StorageBoxLabel,
@@ -558,6 +559,36 @@ async def reconciliation(
     items = await warehouse_reconciliation(db, wh)
     return {"warehouse_id": wh, "items": items,
             "unmatched_count": sum(1 for i in items if (i["sem_endereco"] or 0) != 0)}
+
+
+# ══ EXTRATO DE MOVIMENTOS DE ENDEREÇO (Fase 2.5, ADR-0039) ══════════════════════
+@router.get("/allocation-movements")
+async def allocation_movements(
+    warehouse_id: int | None = Query(None),
+    order_id: int | None = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    """Extrato append-only dos débitos ('dispatch') e créditos ('return') de endereço, escopado por
+    galpão (derivado do usuário, nunca do path — ADR-0026). Leitura: login+escopo."""
+    wh = _resolve_wh(current_user, warehouse_id)
+    conds = [ProductAllocationMovement.warehouse_id == wh]
+    if order_id is not None:
+        conds.append(ProductAllocationMovement.order_id == order_id)
+    rows = (
+        await db.execute(
+            select(ProductAllocationMovement).where(*conds)
+            .order_by(ProductAllocationMovement.id.desc()).limit(limit)
+        )
+    ).scalars().all()
+    return {"warehouse_id": wh, "items": [{
+        "id": m.id, "order_id": m.order_id, "return_id": m.return_id,
+        "allocation_id": m.allocation_id, "location_id": m.location_id,
+        "product_type": m.product_type, "product_id": m.product_id,
+        "base_product_type": m.base_product_type, "base_product_id": m.base_product_id,
+        "lot_id": m.lot_id, "delta_units": m.delta_units, "reason": m.reason,
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+    } for m in rows]}
 
 
 # ══ EMBALAGEM-PADRÃO ════════════════════════════════════════════════════════════

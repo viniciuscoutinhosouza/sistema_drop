@@ -455,7 +455,20 @@ async def confirm_dispatch(db: AsyncSession, order: Order) -> None:
         except Exception as exc:
             logger.error("confirm_dispatch FULL order=%s: %s", order.id, exc)
         return
+
+    # Endereçamento Fase 2.5 (ADR-0039): debita o endereço físico (camada de LOCALIZAÇÃO — NUNCA grava
+    # saldo escalar). Só ENFILEIRA (não commita/rollback); roda ANTES do guard escalar p/ ser
+    # retentável se uma execução anterior parou entre os dois ledgers. Best-effort, nunca derruba o
+    # despacho. Commitado junto com o escalar abaixo, ou aqui mesmo se o escalar já foi aplicado (retry).
+    from services.storage_debit_service import debit_order_addresses
+    _addr_staged = await debit_order_addresses(db, order)
+
     if await _already_has_movement(db, order.id, "dispatch"):
+        if _addr_staged:
+            try:
+                await db.commit()
+            except Exception as exc:
+                logger.error("confirm_dispatch endereço(retry) order=%s: %s", order.id, exc)
         return
 
     items = await _get_order_items(db, order)
@@ -685,6 +698,12 @@ async def confirm_pending_return(db: AsyncSession, order: Order) -> None:
         except Exception:
             logger.warning("confirm_pending_return: reversão de lote falhou order=%s", order.id, exc_info=True)
 
+    # Endereçamento Fase 2.5 (ADR-0039): credita o endereço de volta (pedido inteiro — retorno total).
+    # NÃO commita (este chamador commita logo abaixo). Best-effort.
+    if _rev:
+        from services.storage_debit_service import credit_order_addresses
+        await credit_order_addresses(db, order_id=order.id, qty_by_base=_rev, return_id=None)
+
     order.return_status = "returned"
     try:
         await db.commit()
@@ -827,6 +846,16 @@ async def validate_return(
                      return_id=return_obj.id, movement_type=movement_type, qty=qty,
                      field="unfit_quantity", delta=qty, created_by=user_id)
 
+    # Endereçamento Fase 2.5 (ADR-0039): credita o endereço de volta SÓ no ramo aprovado (unfit não
+    # volta ao vendável). Devolução não-NF-e (legada, ADR-0009): usa a qtd do PEDIDO, simétrico ao
+    # confirm_pending_return. NÃO commita (este chamador commita abaixo). Best-effort.
+    if approved:
+        from services.storage_debit_service import credit_order_addresses, qty_by_base_from_items
+        await credit_order_addresses(
+            db, order_id=order.id, qty_by_base=qty_by_base_from_items(items),
+            return_id=return_obj.id, created_by=user_id,
+        )
+
     try:
         await db.commit()
         if approved:
@@ -947,6 +976,15 @@ async def validate_return_items(
                 await traceability_service.reverse_allocations(db, _order_id, _tp, _pid, _q, _new_status)
         except Exception:
             logger.warning("validate_return_items: reversão de lote falhou return=%s", return_obj.id, exc_info=True)
+
+    # Endereçamento Fase 2.5 (ADR-0039): credita o endereço de volta SÓ no ramo aprovado (unfit NÃO
+    # volta ao vendável → não pode subir qty_units). Pela qtd REAL da NF-e (devolução parcial),
+    # idempotente por return_id. NÃO commita (o router orquestra a transação). Best-effort.
+    if approved and _rev and _order_id:
+        from services.storage_debit_service import credit_order_addresses
+        await credit_order_addresses(
+            db, order_id=_order_id, qty_by_base=_rev, return_id=return_obj.id, created_by=user_id
+        )
 
     if approved and (_pg_ids or _cmig_ids):
         from services.stock_sync_service import schedule_push

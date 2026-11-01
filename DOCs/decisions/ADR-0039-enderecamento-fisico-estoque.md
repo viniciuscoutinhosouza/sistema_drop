@@ -1,7 +1,8 @@
 # ADR-0039 — Endereçamento Físico de Estoque como sub-ledger aditivo de localização
 
 ## Status
-Aceita — Fase 1 em produção (2026-10-31, commit `01ac132`); Fase 2 (sugestão de picking) implementada (2026-10-31).
+Aceita — Fase 1 em produção (2026-10-31, commit `01ac132`); Fase 2 (sugestão de picking) em produção
+(2026-10-31, commit `f750a05`); Fase 2.5 (débito do endereço ao despachar) implementada (2026-10-31).
 
 ## Contexto
 O galpão precisa organizar fisicamente onde cada produto fica. Há **vários modelos** de galpão:
@@ -45,7 +46,11 @@ com o saldo escalar e **NUNCA grava saldo** (mesmo espírito do SEM-LOTE da ADR-
 ### Invariante
 Σ `qty_units` ativas por produto **reconcilia** com `stock_quantity` LOCAL (ADR-0019; FULL fica de
 fora — `full_stock` é outra tabela). Diferença = balde **"sem endereço"** (calculado na leitura).
-**Kit** (ADR-0023, saldo derivado) é excluído do endereçamento e da reconciliação.
+**Kit** (ADR-0023, saldo derivado) é excluído do endereçamento e da reconciliação. Na Fase 1 `qty_units`
+só muda por alocação manual do operador; a partir da **Fase 2.5** também se move no **despacho** (débito)
+e no **retorno ao vendável** (crédito), sempre pelo mesmo gatilho do saldo escalar — mas a camada segue
+**incremental-only** (não acompanha o replay do escalar; o balde "sem endereço" absorve o drift até a
+reconciliação). `unaddressed ≥ 0` é endereçamento parcial, **não** drift.
 
 ### Autorização (ADR-0036)
 Capacidade = **permissão de ação editável por perfil** (`endereco_configurar` monta a árvore,
@@ -68,6 +73,34 @@ nunca confiado no path; toda resolução de id (location/allocation/produto/cód
   falso). `warehouse_id` derivado do próprio produto (`resolve_product_meta`), não do pedido. Rotas de
   LEITURA escopadas: `GET /storage/products/{pt}/{id}/pick-plan` e `GET /separation/carts/{id}/pick-plan`;
   coluna "Endereço (ordem)" no PDF da lista + painel "Rota de picking" na bipagem. Emenda a ADR-0005.
+- **Fase 2.5 (implementada):** DÉBITO do endereço dirigido pelo pedido — move `product_allocations.qty_units`,
+  **NUNCA** o saldo escalar (ADR-0004 intocado). Gatilho ÚNICO = o MESMO do débito escalar: `confirm_dispatch`
+  (entrega da gaiola, ADR-0005) no ramo **não-FULL** (FULL de fora, ADR-0019). Ponto único
+  `services/storage_debit_service.py`: `debit_order_addresses` (commit próprio, idempotente por
+  `(order_id,'dispatch')`, best-effort — nunca derruba o despacho; atômico via plan/apply + rollback) debita
+  na ORDEM do picking (reusa `storage_picking.order_allocations`: FEFO = mesmo ORDER BY do débito de lote),
+  **preservando a variante vendida** (mira `variant_pg/variant_cmig`, fallback base — não agrega no base como
+  `allocate_order_lots`), expandindo **kit→componentes** (ADR-0023, kit sem alocação), consumindo **solta antes
+  de abrir caixa** (reduz `box_count` menor `upb` primeiro e desativa a `StorageBoxLabel` da caixa aberta).
+  `credit_order_addresses` (NÃO commita — router orquestra em `validate_return_items`; best-effort) devolve ao
+  endereço a qtd REAL devolvida por produto (devolução parcial NF-e), **só no ramo aprovado** (`approved=True`;
+  unfit não volta ao vendável), idempotente por `return_id` (ou `(order_id,'return')` no cancelamento), creditando
+  de volta as MESMAS alocações debitadas e **sem super-creditar** (teto = debitado − já devolvido). Razão
+  append-only `product_allocation_movements` (migration 175) carrega `base_product_*` (produto-lógico, bridge p/
+  o crédito reencontrar débitos de variante) e `allocation/location/lot_id` (fidelidade de recall). Extrato de
+  leitura `GET /storage/allocation-movements` (escopado por galpão, ADR-0026). Produto **sem endereço = no-op**
+  (o balde "sem endereço" absorve; `unaddressed ≥ 0` é endereçamento parcial, não drift). A camada é
+  **incremental-only**: `qty_units` NÃO é reconstruído pelo replay do escalar (ADR-0019) — uma nota
+  cancelada/editada ou "Recalcular Estoque" move o escalar sem mover o endereço, e o balde absorve até a
+  reconciliação. Emenda a ADR-0005. **Caminho de retorno:** `confirm_pending_return` (pedido inteiro),
+  `validate_return_items` (NF-e-driven parcial) e `validate_return` (devolução não-NF-e legada) creditam
+  o endereço **só no ramo aprovado**; `receive_*`/`mark_awaiting_return` ficam de fora (ainda não voltam
+  ao vendável). **Follow-ups:** (a) endpoint admin de reconcile-fix (replay do débito p/ pedidos
+  despachados sem movimento de endereço); (b) retorno de **KIT** não credita o endereço dos COMPONENTES
+  (o crédito é chaveado no id do kit; `base_product_*` do débito é o componente → no-op) — **espelha o
+  escalar** (que credita o `stock_quantity` derivado/0 do kit, ADR-0023, sem restaurar componentes),
+  então os dois ficam coerentes e o balde "sem endereço" absorve; corrigir exige tratar escalar+endereço
+  juntos.
 - **Fase 3:** inventário por endereço, transferência em massa, rastreio individual por caixa física.
 
 ## Consequências

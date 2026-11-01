@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-10-31 — CASA — Endereçamento Fase 2.5: Débito do endereço ao despachar (ADR-0039) — auditado, deploy pendente
+
+**O que:** a SUGESTÃO da Fase 2 virou MOVIMENTO. Ao DESPACHAR (entrega da gaiola → `confirm_dispatch`,
+mesmo gatilho do saldo escalar) o endereço físico é **debitado**; no RETORNO ao vendável, **creditado**
+de volta. **Nunca grava saldo escalar** (ADR-0004 intocado) — só move `product_allocations.qty_units`
+e loga em `product_allocation_movements` (migration 175).
+
+**Entregue:**
+- `services/storage_debit_service.py` (ponto único): `debit_order_addresses` (staged — o
+  `confirm_dispatch` commita; idempotente por `(order_id,'dispatch')`; atômico plan/apply; best-effort,
+  nunca derruba o despacho) debita na ordem do picking (reusa `storage_picking.order_allocations`),
+  **preservando a variante vendida**, expandindo **kit→componentes**, consumindo **solta antes de abrir
+  caixa** (+desativa `StorageBoxLabel`). `credit_order_addresses` devolve a qtd REAL por produto, **só
+  no ramo aprovado**, idempotente por `return_id`, sem super-creditar (teto = debitado − devolvido).
+- 3 hooks em `stock_reservation_service.py` (`confirm_dispatch` débito; `confirm_pending_return` e
+  `validate_return`/`validate_return_items` crédito). Extrato `GET /storage/allocation-movements`.
+- Migration 175 + `ProductAllocationMovement`. ADR-0039 (Status/Faseamento/Invariante) + emenda ADR-0005.
+
+**Auditoria (trio):** ADR-checker APROVADO; consistency 0 crítico/alto (2 CRÍTICOS+4 ALTOS do plano
+incorporados); quality 0 crítico/alto. 3 MÉDIOS corrigidos (qty_units negativo em over-débito
+cross-target → acumulador por alocação; rollback que descartava estado do chamador → débito virou
+staged sem rollback; `validate_return` não-NF-e passou a creditar o endereço). Follow-up documentado:
+retorno de KIT não credita componentes (espelha o escalar) + reconcile-fix admin. Verificado: pytest
+**345 ok** (2 pré-existentes em test_orders).
+
+**Deploy PENDENTE do dono:** rodar **migration 175** em produção + deploy do backend. Sem migration o
+endpoint/hook não funcionam. Não deployado ainda.
+
+---
+
 ## 2026-10-31 — CASA — Endereçamento Fase 2: Picking por endereço (ADR-0039) — ✅ EM PRODUÇÃO (commit `f750a05`)
 
 **O que:** a lista de separação e a bipagem do Carrinho Gaiola passam a dizer **onde pegar cada item

@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-10-31 — feat(estoque): Débito do endereço ao despachar — Endereçamento Fase 2.5 (ADR-0039)
+
+A SUGESTÃO da Fase 2 vira MOVIMENTO: ao DESPACHAR (`confirm_dispatch`, mesmo gatilho do saldo escalar),
+o endereço físico é debitado; no RETORNO ao vendável, creditado de volta. **Nunca grava saldo escalar**
+(ADR-0004 intocado) — só move `product_allocations.qty_units` e loga em `product_allocation_movements`.
+
+- **Migration 175** `product_allocation_movements` (razão append-only; `base_product_*` faz o bridge
+  entre o crédito base-level do retorno e o débito que pode ter sido na variante/lote).
+- `models/storage.py`: `ProductAllocationMovement`.
+- `services/storage_debit_service.py` (novo, ponto único): `debit_order_addresses` (commit próprio,
+  idempotente por `(order_id,'dispatch')`, best-effort, atômico plan/apply+rollback) debita na ORDEM do
+  picking (reusa `storage_picking.order_allocations`), **preservando a variante vendida**, expandindo
+  **kit→componentes**, consumindo **solta antes de abrir caixa** (reduz `box_count` menor `upb` primeiro +
+  desativa `StorageBoxLabel`). `credit_order_addresses` (NÃO commita) devolve a qtd REAL por produto,
+  **só no ramo aprovado**, idempotente por `return_id`, sem super-creditar (teto = debitado − devolvido).
+- Hooks em `stock_reservation_service.py`: `confirm_dispatch` (débito, antes do guard escalar p/ retry),
+  `confirm_pending_return` (crédito pedido inteiro), `validate_return_items` (crédito `approved=True`).
+- `routers/storage.py`: `GET /api/v1/storage/allocation-movements` (extrato escopado por galpão).
+- `tests/test_storage_debit.py` (7 testes puros: abertura de caixa + agregação por produto).
+- Docs: ADR-0039 (Status/Faseamento/Invariante) + emenda ADR-0005. Produto sem endereço = no-op.
+
+Verificado: pytest 343 ok (2 pré-existentes em test_orders — `MockResult.scalar`, não relacionadas).
+Migration 175 ainda NÃO rodada em produção; deploy pendente de autorização do dono.
+
+---
+
 ## 2026-10-31 — feat(separacao): Picking por endereço — Endereçamento Fase 2 (ADR-0039)
 
 SUGESTÃO de picking (não debita; débito = Fase 2.5). A lista de separação e a bipagem do Carrinho
