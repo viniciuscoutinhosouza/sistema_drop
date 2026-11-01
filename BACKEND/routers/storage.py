@@ -30,6 +30,7 @@ from models.user import User
 from services.data_scope import accessible_cmig_ids, is_global, warehouse_scope
 from services.storage_picking import pick_plan_for
 from services.storage_inventory_service import apply_count
+from services.storage_transfer_service import transfer_location_all, transfer_quantity
 from services.storage_service import (
     BOX_TOKEN_PREFIX,
     LOC_TOKEN_PREFIX,
@@ -570,19 +571,42 @@ async def move_allocation(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("endereco_movimentar")),
 ):
+    # Move a alocação INTEIRA (delega ao ponto único da Fase 3b: ledger transfer_out/in + merge no
+    # destino em vez do antigo 409 "una as alocações"). Escopo de origem e destino pelo usuário.
     a = await _get_allocation(db, alloc_id, current_user)
     dest = await _get_location(db, _to_int(body.get("to_location_id") or 0, "to_location_id"), current_user)
-    if not dest.is_storable:
-        raise HTTPException(status_code=409, detail="Endereço de destino não é armazenável.")
-    if dest.warehouse_id != a.warehouse_id:
-        raise HTTPException(status_code=409, detail="Destino é de outro galpão.")
-    a.location_id = dest.id
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail="O destino já tem esse produto/lote — una as alocações.")
-    return await _ser_allocation(db, a)
+    return await transfer_quantity(db, a, dest, None, current_user)
+
+
+@router.post("/transfer")
+async def transfer(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("endereco_movimentar")),
+):
+    """Transfere `qty_units` (ausente = tudo) de uma alocação para outro endereço do MESMO galpão
+    (Fase 3b, ADR-0039). Interno: muda só o local, nunca o saldo escalar. body:
+    {from_allocation_id, to_location_id, qty_units?}. Escopo de origem e destino derivado do usuário."""
+    a = await _get_allocation(db, _to_int(body.get("from_allocation_id") or 0, "from_allocation_id"), current_user)
+    dest = await _get_location(db, _to_int(body.get("to_location_id") or 0, "to_location_id"), current_user)
+    qty = body.get("qty_units")
+    if qty is not None:
+        qty = _to_int(qty, "qty_units")
+    return await transfer_quantity(db, a, dest, qty, current_user)
+
+
+@router.post("/locations/{loc_id}/transfer-all")
+async def transfer_all(
+    loc_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("endereco_movimentar")),
+):
+    """Esvazia um endereço: move TODAS as alocações ativas para outro endereço do mesmo galpão
+    (Fase 3b). body: {to_location_id}. Atômico (all-or-nothing)."""
+    src = await _get_location(db, loc_id, current_user)
+    dest = await _get_location(db, _to_int(body.get("to_location_id") or 0, "to_location_id"), current_user)
+    return await transfer_location_all(db, src, dest, current_user)
 
 
 @router.delete("/allocations/{alloc_id}")
@@ -619,14 +643,14 @@ async def reconciliation(
 async def allocation_movements(
     warehouse_id: int | None = Query(None),
     order_id: int | None = Query(None),
-    reason: str | None = Query(None, pattern="^(dispatch|return|adjust)$"),
+    reason: str | None = Query(None, pattern="^(dispatch|return|adjust|transfer_out|transfer_in)$"),
     location_id: int | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
     db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
 ):
-    """Extrato append-only dos movimentos de endereço: débitos ('dispatch'), créditos ('return') e
-    ajustes de inventário ('adjust'). `reason='adjust'` = relatório de divergências do inventário.
-    Escopado por galpão (derivado do usuário, nunca do path — ADR-0026). Leitura: login+escopo."""
+    """Extrato append-only dos movimentos de endereço: débitos ('dispatch'), créditos ('return'),
+    ajustes de inventário ('adjust') e transferências ('transfer_out'/'transfer_in'). `reason='adjust'`
+    = divergências do inventário. Escopado por galpão (derivado do usuário, nunca do path — ADR-0026)."""
     wh = _resolve_wh(current_user, warehouse_id)
     conds = [ProductAllocationMovement.warehouse_id == wh]
     if order_id is not None:

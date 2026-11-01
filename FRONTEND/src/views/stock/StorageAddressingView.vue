@@ -54,7 +54,8 @@
                 Este nó é organizacional (não armazenável). Produtos ficam nos nós-folha marcados como armazenáveis.
               </div>
               <div v-else>
-                <button v-if="canMove" class="btn btn-sm btn-primary mb-2" @click="openAllocModal(null)"><i class="fas fa-plus"></i> Endereçar produto aqui</button>
+                <button v-if="canMove" class="btn btn-sm btn-primary mb-2 mr-2" @click="openAllocModal(null)"><i class="fas fa-plus"></i> Endereçar produto aqui</button>
+                <button v-if="canMove && nodeContents.length" class="btn btn-sm btn-outline-warning mb-2" @click="openTransfer('node')"><i class="fas fa-dolly"></i> Esvaziar para…</button>
                 <p v-if="!nodeContents.length" class="text-muted small">Nada endereçado aqui.</p>
                 <table v-else class="table table-sm table-hover">
                   <thead><tr><th>Produto</th><th class="text-right">Qtd</th><th>Caixas</th><th></th></tr></thead>
@@ -72,6 +73,7 @@
                       </td>
                       <td class="text-nowrap">
                         <button v-if="canMove" class="btn btn-xs btn-link p-0 mr-2" title="Editar" @click="openAllocModal(a)"><i class="fas fa-edit"></i></button>
+                        <button v-if="canMove" class="btn btn-xs btn-link p-0 mr-2" title="Transferir" @click="openTransfer('alloc', a)"><i class="fas fa-dolly"></i></button>
                         <button v-if="canMove && a.packs.length" class="btn btn-xs btn-link p-0 mr-2" title="Etiquetas de caixa" @click="printBoxLabels(a)"><i class="fas fa-qrcode"></i></button>
                         <button v-if="canMove" class="btn btn-xs btn-link text-danger p-0" title="Remover" @click="removeAlloc(a)"><i class="fas fa-trash"></i></button>
                       </td>
@@ -325,6 +327,34 @@
         </div>
       </div>
     </div>
+
+    <!-- Modal: transferir / esvaziar -->
+    <div v-if="transferModal.open" class="modal-backdrop-custom" @click.self="transferModal.open = false">
+      <div class="modal-card">
+        <h5>{{ transferModal.mode === 'node' ? 'Esvaziar endereço' : 'Transferir' }}</h5>
+        <p v-if="transferModal.mode === 'alloc'" class="small text-muted">
+          <strong>{{ transferModal.alloc.product && transferModal.alloc.product.sku }}</strong> —
+          {{ transferModal.alloc.qty_units }} un em {{ selectedNode && selectedNode.full_code }}</p>
+        <p v-else class="small text-muted">Move todas as {{ nodeContents.length }} alocações de
+          {{ selectedNode && selectedNode.full_code }} para outro endereço.</p>
+        <div class="form-group">
+          <label class="small">Endereço de destino</label>
+          <select v-model.number="transferModal.to_location_id" class="form-control form-control-sm">
+            <option :value="null" disabled>Selecione…</option>
+            <option v-for="l in storableLocs.filter(x => x.id !== (selectedNode && selectedNode.id))" :key="l.id" :value="l.id">{{ l.full_code }}</option>
+          </select>
+        </div>
+        <div v-if="transferModal.mode === 'alloc'" class="form-group">
+          <label class="small">Quantidade (máx {{ transferModal.alloc.qty_units }})</label>
+          <input type="number" min="1" :max="transferModal.alloc.qty_units" v-model.number="transferModal.qty_units" class="form-control form-control-sm">
+          <small class="text-muted">Parcial chega como unidade solta no destino.</small>
+        </div>
+        <div class="text-right">
+          <button class="btn btn-sm btn-secondary mr-2" @click="transferModal.open = false">Cancelar</button>
+          <button class="btn btn-sm btn-primary" :disabled="!transferModal.to_location_id || transferModal.saving" @click="submitTransfer">Transferir</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -359,6 +389,8 @@ const countPanel = ref({ loc: null, lines: [], scan: '', result: [], saving: fal
 const nodeModal = ref({ open: false })
 const bulkModal = ref({ open: false, scheme: {} })
 const allocModal = ref({ open: false, packs: [], defaults: [] })
+const transferModal = ref({ open: false, mode: 'alloc', alloc: {}, to_location_id: null, qty_units: null, saving: false })
+const storableLocs = ref([])
 
 function whParam() { return warehouseId.value ? { warehouse_id: warehouseId.value } : {} }
 
@@ -495,6 +527,35 @@ async function removeAlloc(a) {
   if (!confirm('Remover esta alocação?')) return
   try { await api.delete(`/storage/allocations/${a.id}`); await selectNode(selectedNode.value); toast.success('Removida.') }
   catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao remover.') }
+}
+
+// ── Transferência entre endereços (Fase 3b) ──
+async function loadStorableLocs() {
+  try { const { data } = await api.get('/storage/inventory/to-count', { params: { ...whParam(), limit: 1000 } }); storableLocs.value = data.items || [] }
+  catch { /* ignore */ }
+}
+async function openTransfer(mode, a) {
+  await loadStorableLocs()
+  transferModal.value = { open: true, mode, alloc: a || {}, to_location_id: null,
+    qty_units: mode === 'alloc' ? (a ? a.qty_units : null) : null, saving: false }
+}
+async function submitTransfer() {
+  const m = transferModal.value
+  if (!m.to_location_id) return
+  m.saving = true
+  try {
+    if (m.mode === 'node') {
+      await api.post(`/storage/locations/${selectedNode.value.id}/transfer-all`, { to_location_id: m.to_location_id })
+    } else {
+      const body = { from_allocation_id: m.alloc.id, to_location_id: m.to_location_id }
+      if (m.qty_units && m.qty_units < m.alloc.qty_units) body.qty_units = m.qty_units
+      await api.post('/storage/transfer', body)
+    }
+    m.open = false
+    await selectNode(selectedNode.value)
+    toast.success('Transferência concluída.')
+  } catch (e) { toast.error(e?.response?.data?.detail || 'Falha na transferência.') }
+  finally { m.saving = false }
 }
 
 // ── Reconciliação / Scan ──

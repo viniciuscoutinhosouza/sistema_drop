@@ -181,7 +181,7 @@ async def _load_allocation_rows(db, warehouse_id: int, candidates: list[tuple]) 
 
 def _plan_pack_open(packs: list, new_qty: int) -> list[tuple]:
     """Abre caixas até Σ(box·upb) ≤ new_qty (unidade solta primeiro já saiu em qty_units). Abre a de
-    MENOR upb primeiro (menos fragmentação). Devolve [(pack, novo_box_count, upb_abertos), ...] só p/
+    MENOR upb primeiro (menos fragmentação). Devolve [(pack, novo_box_count, upb, open_n), ...] só p/
     os packs que mudaram. As unidades da caixa aberta viram soltas (já contidas em new_qty)."""
     changes = []
     boxed = sum((p.box_count or 0) * (p.units_per_box or 0) for p in packs)

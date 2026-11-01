@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-11-01 — feat(estoque): Transferência entre endereços — Endereçamento Fase 3b (ADR-0039)
+
+Move estoque de um endereço para outro no MESMO galpão. Interno: muda só o local, Σ `qty_units` do
+produto não muda → **nunca toca o saldo escalar** (ADR-0004) nem lotes. Loga `transfer_out`(−N) +
+`transfer_in`(+N) = net-zero.
+
+- **Migration 177**: CHECK `reason` += `transfer_out`/`transfer_in` (5 valores; drop+recreate idempotente).
+- `services/storage_transfer_service.py` (ponto único): `transfer_quantity` (atômico, fail-loud, 409 em
+  corrida) + `transfer_location_all` (esvaziar endereço, all-or-nothing). Dois caminhos exclusivos:
+  **reassign** (move total p/ destino vazio → só `location_id`, preserva caixas) × **geral** (parcial/merge
+  → debita origem via `_plan_pack_open` + `box_labels_to_close`, credita solto no destino; origem zerada
+  fica ativa em 0 — convenção do débito, não envenena o slot da UNIQUE; sem hard-delete p/ preservar FK).
+  Trava mesmo-galpão no service
+  (admin global); `lot_id` preservado; `base_product_*` via `resolve_base_product`.
+- `routers/storage.py`: `POST /storage/transfer`, `POST /storage/locations/{id}/transfer-all`;
+  `move_allocation` delega ao ponto único (ganhou ledger + merge); regex `reason` do extrato → 5 valores.
+- Frontend: botão **Transferir** por alocação (qty + destino) + **Esvaziar para…** no nó.
+- `tests/test_storage_transfer.py` (5 travas); docs ADR-0039 (Status/Faseamento/Invariante).
+
+Trio sobre o PLANO: ADR aprovado c/ ressalvas; consistency 1 risco de invariante (C1) + ALTOS — TODOS
+incorporados (caminhos exclusivos, regex do extrato, snapshot do local, etiquetas, contrato do move,
+trava mesmo-galpão). Verificado: pytest 356 ok (2 pré-existentes), build front OK. Migration 177 NÃO em produção.
+
+---
+
 ## 2026-11-01 — feat(estoque): Inventário por endereço — Endereçamento Fase 3a (ADR-0039)
 
 O operador conta fisicamente um endereço e o sistema ajusta `product_allocations.qty_units` para bater

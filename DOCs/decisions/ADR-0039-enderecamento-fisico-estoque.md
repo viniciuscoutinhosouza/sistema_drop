@@ -3,7 +3,8 @@
 ## Status
 Aceita — Fase 1 em produção (2026-10-31, commit `01ac132`); Fase 2 (sugestão de picking) em produção
 (2026-10-31, commit `f750a05`); Fase 2.5 (débito do endereço ao despachar) em produção (2026-11-01,
-commit `5d70a5b` + migration 175); Fase 3a (inventário por endereço) implementada (2026-11-01).
+commit `5d70a5b` + migration 175); Fase 3a (inventário por endereço) em produção (2026-11-01, commit
+`0e4978e` + migration 176); Fase 3b (transferência entre endereços) implementada (2026-11-01).
 
 ## Contexto
 O galpão precisa organizar fisicamente onde cada produto fica. Há **vários modelos** de galpão:
@@ -50,7 +51,8 @@ fora — `full_stock` é outra tabela). Diferença = balde **"sem endereço"** (
 **Kit** (ADR-0023, saldo derivado) é excluído do endereçamento e da reconciliação. Na Fase 1 `qty_units`
 só muda por alocação manual do operador; a partir da **Fase 2.5** também se move no **despacho** (débito)
 e no **retorno ao vendável** (crédito), e na **Fase 3a** pela **contagem física** (inventário `reason='adjust'`,
-que corrige a localização, não o escalar) — mas a camada segue
+que corrige a localização, não o escalar), e na **Fase 3b** pela **transferência** entre endereços
+(`transfer_out`/`transfer_in`, **net-zero**: só muda o local, Σ inalterado) — mas a camada segue
 **incremental-only** (não acompanha o replay do escalar; o balde "sem endereço" absorve o drift até a
 reconciliação). `unaddressed ≥ 0` é endereçamento parcial, **não** drift.
 
@@ -125,7 +127,30 @@ nunca confiado no path; toda resolução de id (location/allocation/produto/cód
   (estado final correto; só o `delta` logado de uma contagem com `before` defasado fica impreciso — lock
   otimista se o extrato virar trilha contábil); (b) a divergência reportada agrega por produto, não por
   lote (inventário-por-lote fica para depois).
-- **Fase 3 (restante):** transferência em massa, rastreio individual por caixa física.
+- **Fase 3b (implementada):** TRANSFERÊNCIA ENTRE ENDEREÇOS (migration 177; `reason` += `transfer_out`/
+  `transfer_in`). Movimento **INTERNO** — muda só o local, o Σ `qty_units` do produto **não muda** →
+  **nunca toca o saldo escalar** (ADR-0004) nem `product_lots`/`stock_lot_allocations` (ADR-0027);
+  `transfer_out(−N)` + `transfer_in(+N)` = **net-zero intra-galpão** (mais forte que dispatch/adjust, que
+  o balde "sem endereço" absorve). Ponto único `services/storage_transfer_service.py`: `transfer_quantity`
+  (commit atômico, fail-loud, `IntegrityError`→409) + `transfer_location_all` (esvaziar endereço,
+  all-or-nothing). **Dois caminhos mutuamente exclusivos** (Σ preservado em ambos): *reassign* (move TOTAL
+  p/ destino sem o slot → só reatribui `location_id`, carrega packs/etiquetas intactos) × *geral* (parcial,
+  ou destino que já tem o slot → debita a origem reusando `_plan_pack_open` + `box_labels_to_close`, credita
+  **solto** no destino via `_find_allocation`; origem zerada **fica ativa em 0** — mesma convenção do
+  débito da Fase 2.5 (a UNIQUE do slot não filtra `is_active`, então desativar envenenaria o slot e
+  travaria transferir o produto de volta; linha 0-qty é inócua na reconciliação; sem hard-delete, preserva
+  o FK dos movimentos históricos). **Trava mesmo-galpão no service** (admin é global; `to.warehouse_id ==
+  from.warehouse_id` fail-loud 400) além do escopo por usuário no router (ADR-0026). `lot_id` preservado
+  ponta a ponta; `base_product_*` via `resolve_base_product`; `transfer_*` são ortogonais à matemática de
+  crédito de devolução (`_outstanding_by_base` só olha dispatch/return). Rotas: `POST /storage/transfer`,
+  `POST /storage/locations/{id}/transfer-all`; `POST /allocations/{id}/move` passou a delegar (ganhou
+  ledger + merge, fim do 409 "una as alocações"); `reason` do extrato aceita os 5 valores. _Follow-ups:_
+  (a) transferência parcial chega **solta** no destino (recompor caixas é manual; box tracking é a Fase 3
+  restante); (b) `qty_units` é lido-e-reescrito sem `with_for_update` — duas transferências concorrentes na
+  MESMA alocação podem perder um débito (mesmo perfil pré-existente do débito/inventário; a reconciliação
+  detecta, lock otimista fecharia de vez); (c) linhas 0-qty ativas acumulam em endereços esvaziados
+  (inócuas na reconciliação; uma limpeza/prune é opcional).
+- **Fase 3 (restante):** rastreio individual por caixa física (box tracking).
 
 ## Consequências
 - Zero regressão no motor de estoque/fiscal (nada grava saldo; tabelas nascem vazias).

@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-11-01 — CASA — Endereçamento Fase 3b: Transferência entre endereços (ADR-0039) — auditado, deploy pendente
+
+**O que:** move estoque de um endereço para outro **no mesmo galpão**. Interno: muda só o local, Σ
+`qty_units` do produto **não muda** → **nunca toca o saldo escalar** (ADR-0004) nem lotes. Loga
+`transfer_out`(−N) + `transfer_in`(+N) = net-zero.
+
+**Entregue:**
+- **Migration 177**: CHECK `reason` += `transfer_out`/`transfer_in` (5 valores).
+- `services/storage_transfer_service.py` (ponto único): `transfer_quantity` (atômico, fail-loud, 409 em
+  corrida) + `transfer_location_all` (esvaziar endereço, all-or-nothing). Dois caminhos exclusivos:
+  **reassign** (move total p/ destino vazio → só `location_id`, preserva caixas) × **geral** (parcial/merge
+  → debita origem via `_plan_pack_open`+`box_labels_to_close`, credita solto no destino; origem zerada fica
+  ativa em 0 (convenção do débito, não envenena o slot da UNIQUE; sem hard-delete). Trava mesmo-galpão (admin);
+  `lot_id` preservado; `base_product_*` via `resolve_base_product`.
+- `routers/storage.py`: `POST /storage/transfer`, `POST /storage/locations/{id}/transfer-all`;
+  `move_allocation` delega (ganhou ledger + merge); regex `reason` do extrato → 5 valores.
+- Front: botão **Transferir** por alocação (qty + destino) + **Esvaziar para…** no nó.
+
+**Auditoria do plano (trio):** ADR aprovado c/ ressalvas; consistency C1 (invariante) + ALTOS — TODOS
+incorporados (caminhos exclusivos, regex, snapshot do local, etiquetas, contrato do move, trava
+mesmo-galpão). Verificado: pytest **356 ok**, build front OK. Trio sobre a implementação em curso.
+
+**Deploy PENDENTE do dono:** rodar **migration 177** + deploy. Não deployado ainda.
+
+---
+
 ## 2026-11-01 — CASA — Endereçamento Fase 3a: Inventário por endereço (ADR-0039) — ✅ EM PRODUÇÃO (commit `0e4978e`)
 
 > **Deploy feito em 2026-11-01:** fast-forward `5d70a5b..0e4978e`; **migration 176** aplicada (4 blocos/0
