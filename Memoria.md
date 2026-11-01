@@ -6,7 +6,13 @@
 
 ---
 
-## 2026-11-01 — CASA — Endereçamento Fase 3a: Inventário por endereço (ADR-0039) — auditado, deploy pendente
+## 2026-11-01 — CASA — Endereçamento Fase 3a: Inventário por endereço (ADR-0039) — ✅ EM PRODUÇÃO (commit `0e4978e`)
+
+> **Deploy feito em 2026-11-01:** fast-forward `5d70a5b..0e4978e`; **migration 176** aplicada (4 blocos/0
+> erro, idempotente; CHECK `ck_palloc_mov_reason` = `('dispatch','return','adjust')`; colunas
+> `last_counted_at/by` em `storage_locations` confirmadas); PM2 online sem erro; build front OK
+> (`StorageAddressingView-*.js` novo); `/docs` e domínio 200; rotas `/storage/locations/{id}/count` e
+> `/storage/inventory/to-count` no OpenAPI. Smoke funcional (bipar contagem logado) a exercitar na tela.
 
 **O que:** o operador conta fisicamente um endereço e o sistema ajusta `product_allocations.qty_units`
 para bater com o contado (movimento `reason='adjust'`). Corrige **ONDE** o estoque está — **nunca o
