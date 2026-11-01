@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-11-01 — feat(estoque): Inventário por endereço — Endereçamento Fase 3a (ADR-0039)
+
+O operador conta fisicamente um endereço e o sistema ajusta `product_allocations.qty_units` para bater
+com o contado (movimento `reason='adjust'`). Corrige ONDE o estoque está — **nunca o saldo escalar**
+(ADR-0004) nem `product_lots` (ADR-0027). Inventário de endereço ≠ inventário contábil.
+
+- **Migration 176**: CHECK de `product_allocation_movements.reason` += `'adjust'` (drop+recreate
+  idempotente); `storage_locations` += `last_counted_at`/`last_counted_by` (ciclo de contagem).
+- `services/storage_inventory_service.py` (ponto único): `apply_count` **fail-loud**, atômico, bloqueia
+  kit, conta por `(produto, lot_id)` com SEM-LOTE, cria alocação p/ produto achado (upsert `.is_(None)`
+  + `IntegrityError`→409), pula `delta=0`, seta `created_by`; abertura de caixa reusa `_plan_pack_open`
+  + desativa `StorageBoxLabel` via helper compartilhado `storage_service.box_labels_to_close`; devolve a
+  divergência pós-contagem (contábil × endereçado, `unaddressed`, flag `over`).
+- `storage_service.py`: `resolve_base_product` (variante→base, mesma semântica do débito) + helper
+  `box_labels_to_close` (compartilhado com o débito da Fase 2.5, que foi refatorado p/ usá-lo).
+- `routers/storage.py`: `POST /locations/{id}/count` (permissão `endereco_movimentar`),
+  `GET /inventory/to-count` (NULLS FIRST), filtro `reason`/`location_id` no `GET /allocation-movements`.
+- Frontend: aba **Inventário** em `StorageAddressingView.vue` (lista a contar + painel de contagem com
+  adicionar-produto + resultado destacando `over` + ajustes recentes).
+- Testes `tests/test_storage_inventory.py`; docs ADR-0039 (Status/Faseamento/Invariante).
+
+Trio de auditoria sobre o PLANO: ADR aprovado c/ ressalvas; consistency 0 crítico (ALTOS incorporados:
+divergência visível/`over`, desativar etiqueta no decréscimo, upsert anti-corrida, resolve_base_product).
+Verificado: pytest 345 ok (2 pré-existentes), build front OK. Migration 176 ainda NÃO em produção.
+
+---
+
 ## 2026-10-31 — feat(estoque): Débito do endereço ao despachar — Endereçamento Fase 2.5 (ADR-0039)
 
 A SUGESTÃO da Fase 2 vira MOVIMENTO: ao DESPACHAR (`confirm_dispatch`, mesmo gatilho do saldo escalar),

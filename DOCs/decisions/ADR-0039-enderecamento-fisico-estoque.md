@@ -2,7 +2,8 @@
 
 ## Status
 Aceita — Fase 1 em produção (2026-10-31, commit `01ac132`); Fase 2 (sugestão de picking) em produção
-(2026-10-31, commit `f750a05`); Fase 2.5 (débito do endereço ao despachar) implementada (2026-10-31).
+(2026-10-31, commit `f750a05`); Fase 2.5 (débito do endereço ao despachar) em produção (2026-11-01,
+commit `5d70a5b` + migration 175); Fase 3a (inventário por endereço) implementada (2026-11-01).
 
 ## Contexto
 O galpão precisa organizar fisicamente onde cada produto fica. Há **vários modelos** de galpão:
@@ -48,7 +49,8 @@ com o saldo escalar e **NUNCA grava saldo** (mesmo espírito do SEM-LOTE da ADR-
 fora — `full_stock` é outra tabela). Diferença = balde **"sem endereço"** (calculado na leitura).
 **Kit** (ADR-0023, saldo derivado) é excluído do endereçamento e da reconciliação. Na Fase 1 `qty_units`
 só muda por alocação manual do operador; a partir da **Fase 2.5** também se move no **despacho** (débito)
-e no **retorno ao vendável** (crédito), sempre pelo mesmo gatilho do saldo escalar — mas a camada segue
+e no **retorno ao vendável** (crédito), e na **Fase 3a** pela **contagem física** (inventário `reason='adjust'`,
+que corrige a localização, não o escalar) — mas a camada segue
 **incremental-only** (não acompanha o replay do escalar; o balde "sem endereço" absorve o drift até a
 reconciliação). `unaddressed ≥ 0` é endereçamento parcial, **não** drift.
 
@@ -101,7 +103,29 @@ nunca confiado no path; toda resolução de id (location/allocation/produto/cód
   escalar** (que credita o `stock_quantity` derivado/0 do kit, ADR-0023, sem restaurar componentes),
   então os dois ficam coerentes e o balde "sem endereço" absorve; corrigir exige tratar escalar+endereço
   juntos.
-- **Fase 3:** inventário por endereço, transferência em massa, rastreio individual por caixa física.
+- **Fase 3a (implementada):** INVENTÁRIO POR ENDEREÇO (migration 176). O operador conta fisicamente um
+  endereço e o sistema ajusta `product_allocations.qty_units` para bater com o contado, logando movimento
+  `reason='adjust'` (3º vetor de `qty_units`, além de alocação manual / dispatch / return). Corrige **ONDE**
+  o estoque está — **NUNCA** o saldo escalar (ADR-0004) nem `product_lots` (ADR-0027). Ponto único
+  `services/storage_inventory_service.py::apply_count`: **fail-loud** (não best-effort — ação direta do
+  operador; o router valida escopo/produto/lote/kit/packs e passa dados validados), commita atômico (a
+  contagem inteira ou nada), **bloqueia kit** (ADR-0023), conta **por `(produto, lot_id)`** com SEM-LOTE
+  (`lot=NULL`), pode **criar alocação** p/ produto achado não registrado (upsert com `.is_(None)` no lote +
+  `IntegrityError`→409 anti-corrida), pula movimento de `delta=0`, seta `created_by`. Abertura de caixa no
+  decréscimo reusa `_plan_pack_open` + desativa `StorageBoxLabel` pelo helper **compartilhado** com o débito
+  (`storage_service.box_labels_to_close`, sem QR órfão). Devolve por produto a **divergência pós-contagem**
+  (contábil `stock_quantity` × endereçado Σ`qty_units`, `unaddressed`, flag **`over`** = endereçado > contábil
+  = físico lançado além do saldo, caso acionável) — **visível** (CLAUDE.md fail-loud), NÃO corrige o escalar:
+  isso é o inventário CONTÁBIL (ADR-0004), fluxo distinto na API/UI. Rotas: `POST /storage/locations/{id}/count`
+  (permissão `endereco_movimentar`), `GET /storage/inventory/to-count` (ciclo de contagem, NULLS FIRST),
+  `reason='adjust'` no `GET /storage/allocation-movements` (relatório de divergências). `storage_locations`
+  ganha `last_counted_at/by`. `resolve_base_product` (variante→base, MESMA semântica do débito) preenche o
+  `base_product_*` do movimento.
+  _Follow-ups da 3a (não-bloqueantes):_ (a) contagem concorrente do mesmo endereço é last-writer-wins
+  (estado final correto; só o `delta` logado de uma contagem com `before` defasado fica impreciso — lock
+  otimista se o extrato virar trilha contábil); (b) a divergência reportada agrega por produto, não por
+  lote (inventário-por-lote fica para depois).
+- **Fase 3 (restante):** transferência em massa, rastreio individual por caixa física.
 
 ## Consequências
 - Zero regressão no motor de estoque/fiscal (nada grava saldo; tabelas nascem vazias).

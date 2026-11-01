@@ -29,6 +29,7 @@ from models.storage import (
 from models.user import User
 from services.data_scope import accessible_cmig_ids, is_global, warehouse_scope
 from services.storage_picking import pick_plan_for
+from services.storage_inventory_service import apply_count
 from services.storage_service import (
     BOX_TOKEN_PREFIX,
     LOC_TOKEN_PREFIX,
@@ -37,6 +38,7 @@ from services.storage_service import (
     generate_bulk_codes,
     generate_internal_ean,
     recompute_subtree_full_codes,
+    resolve_base_product,
     resolve_product_meta,
     scalar_stock,
     warehouse_reconciliation,
@@ -423,6 +425,57 @@ async def location_contents(loc_id: int, db: AsyncSession = Depends(get_db), cur
     return {"location": _ser_location(loc), "allocations": [await _ser_allocation(db, a) for a in rows]}
 
 
+@router.post("/locations/{loc_id}/count")
+async def count_location(
+    loc_id: int,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("endereco_movimentar")),
+):
+    """Inventário por endereço (Fase 3a, ADR-0039): o operador conta fisicamente o endereço e o sistema
+    ajusta as alocações (`qty_units`) para bater com o contado — SEM tocar o saldo escalar. body:
+    {counts: [{product_type, product_id, lot_id?, counted_units, packs?}]}. Pode incluir produto que
+    NÃO estava alocado ali (achado na contagem → cria a alocação). Valida escopo/produto/lote/kit/packs
+    aqui e delega a mutação ao `apply_count`. Devolve a divergência pós-contagem (contábil × endereçado)."""
+    loc = await _get_location(db, loc_id, current_user)
+    if not loc.is_storable:
+        raise HTTPException(status_code=409, detail="Este endereço não é armazenável (não é folha).")
+    counts = body.get("counts")
+    if not isinstance(counts, list) or not counts:
+        raise HTTPException(status_code=400, detail="Informe ao menos uma linha de contagem.")
+
+    seen: set = set()
+    items: list[dict] = []
+    for c in counts:
+        pt = (c.get("product_type") or "").lower()
+        pid = _to_int(c.get("product_id") or 0, "product_id")
+        if pt not in PRODUCT_TYPES or not pid:
+            raise HTTPException(status_code=400, detail="Produto inválido na contagem.")
+        lot_id = c.get("lot_id") or None
+        if lot_id:
+            lot_id = _to_int(lot_id, "lot_id")
+        counted = _to_int(c.get("counted_units"), "counted_units")
+        if counted < 0:
+            raise HTTPException(status_code=400, detail="Quantidade contada não pode ser negativa.")
+        key = (pt, pid, lot_id or 0)
+        if key in seen:
+            raise HTTPException(status_code=400, detail="Produto/lote repetido na mesma contagem.")
+        seen.add(key)
+        meta = await _assert_product_in_scope(db, pt, pid, current_user)
+        if meta.get("is_composite"):
+            raise HTTPException(status_code=409, detail="KIT tem estoque derivado (ADR-0023) — não se inventaria por endereço.")
+        if loc.warehouse_id != meta["warehouse_id"]:
+            raise HTTPException(status_code=409, detail="Produto e endereço são de galpões diferentes.")
+        await _validate_lot(db, lot_id, pt, pid)
+        packs = _validate_packs(counted, c.get("packs")) if ("packs" in c) else None
+        base_pt, base_pid = await resolve_base_product(db, pt, pid)
+        items.append({"product_type": pt, "product_id": pid, "lot_id": lot_id, "counted": counted,
+                      "packs": packs, "base_pt": base_pt, "base_pid": base_pid,
+                      "warehouse_id": meta["warehouse_id"]})
+
+    return await apply_count(db, loc, items, current_user)
+
+
 async def _validate_lot(db, lot_id, product_type, product_id):
     if not lot_id:
         return
@@ -566,15 +619,22 @@ async def reconciliation(
 async def allocation_movements(
     warehouse_id: int | None = Query(None),
     order_id: int | None = Query(None),
+    reason: str | None = Query(None, pattern="^(dispatch|return|adjust)$"),
+    location_id: int | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
     db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
 ):
-    """Extrato append-only dos débitos ('dispatch') e créditos ('return') de endereço, escopado por
-    galpão (derivado do usuário, nunca do path — ADR-0026). Leitura: login+escopo."""
+    """Extrato append-only dos movimentos de endereço: débitos ('dispatch'), créditos ('return') e
+    ajustes de inventário ('adjust'). `reason='adjust'` = relatório de divergências do inventário.
+    Escopado por galpão (derivado do usuário, nunca do path — ADR-0026). Leitura: login+escopo."""
     wh = _resolve_wh(current_user, warehouse_id)
     conds = [ProductAllocationMovement.warehouse_id == wh]
     if order_id is not None:
         conds.append(ProductAllocationMovement.order_id == order_id)
+    if reason is not None:
+        conds.append(ProductAllocationMovement.reason == reason)
+    if location_id is not None:
+        conds.append(ProductAllocationMovement.location_id == location_id)
     rows = (
         await db.execute(
             select(ProductAllocationMovement).where(*conds)
@@ -589,6 +649,31 @@ async def allocation_movements(
         "lot_id": m.lot_id, "delta_units": m.delta_units, "reason": m.reason,
         "created_at": m.created_at.isoformat() if m.created_at else None,
     } for m in rows]}
+
+
+@router.get("/inventory/to-count")
+async def inventory_to_count(
+    warehouse_id: int | None = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    """Ciclo de contagem: folhas armazenáveis do galpão ordenadas por NUNCA contado primeiro, depois
+    mais-antigo (NULLS FIRST). Escopado por galpão. Leitura: login+escopo."""
+    wh = _resolve_wh(current_user, warehouse_id)
+    rows = (
+        await db.execute(
+            select(StorageLocation).where(
+                StorageLocation.warehouse_id == wh,
+                StorageLocation.is_storable == True,  # noqa: E712
+                StorageLocation.is_active == True,  # noqa: E712
+            ).order_by(StorageLocation.last_counted_at.asc().nulls_first(), StorageLocation.full_code).limit(limit)
+        )
+    ).scalars().all()
+    return {"warehouse_id": wh, "items": [{
+        "id": l.id, "full_code": l.full_code, "level_type": l.level_type, "code": l.code,
+        "last_counted_at": l.last_counted_at.isoformat() if l.last_counted_at else None,
+        "last_counted_by": l.last_counted_by,
+    } for l in rows]}
 
 
 # ══ EMBALAGEM-PADRÃO ════════════════════════════════════════════════════════════

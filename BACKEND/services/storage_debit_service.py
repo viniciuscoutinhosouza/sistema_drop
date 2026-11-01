@@ -264,7 +264,7 @@ async def debit_order_addresses(db, order) -> None:
         # abertura de caixa + etiquetas a desativar: calculadas UMA vez por alocação, com o total final
         # debitado (new_qty = qty original − Σ takes), ainda na fase de leitura (os selects de etiqueta
         # ficam aqui, fora da fase de aplicação, que então não faz nenhum I/O).
-        from models.storage import StorageBoxLabel
+        from services.storage_service import box_labels_to_close
 
         for alloc_id, ref in alloc_ref.items():
             a = ref["alloc"]
@@ -273,16 +273,7 @@ async def debit_order_addresses(db, order) -> None:
             ref["pack_changes"] = _plan_pack_open(ref["packs"], new_qty)
             label_closes = []
             for p, new_box_count, upb, open_n in ref["pack_changes"]:
-                labels = (
-                    await db.execute(
-                        select(StorageBoxLabel).where(
-                            StorageBoxLabel.allocation_id == alloc_id,
-                            StorageBoxLabel.units_per_box == upb,
-                            StorageBoxLabel.is_active == True,  # noqa: E712
-                        ).order_by(StorageBoxLabel.id).limit(open_n)
-                    )
-                ).scalars().all()
-                label_closes.extend(labels)
+                label_closes.extend(await box_labels_to_close(db, alloc_id, upb, open_n))
             ref["label_closes"] = label_closes
 
         # ── aplicação (SÓ mutações puras — não levanta, não há I/O) ──────────────

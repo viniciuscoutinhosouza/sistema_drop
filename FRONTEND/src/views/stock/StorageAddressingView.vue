@@ -14,6 +14,7 @@
     <ul class="nav nav-tabs mb-3">
       <li class="nav-item"><a class="nav-link" :class="{ active: tab === 'estrutura' }" href="#" @click.prevent="tab = 'estrutura'">Estrutura</a></li>
       <li class="nav-item"><a class="nav-link" :class="{ active: tab === 'mapa' }" href="#" @click.prevent="tab = 'mapa'; loadReconciliation()">Mapa & Reconciliação</a></li>
+      <li class="nav-item"><a class="nav-link" :class="{ active: tab === 'inventario' }" href="#" @click.prevent="tab = 'inventario'; loadToCount(); loadDivergences()">Inventário</a></li>
     </ul>
 
     <div v-if="isAdmin && !warehouseId" class="alert alert-info">Selecione um galpão para começar.</div>
@@ -85,7 +86,7 @@
     </div>
 
     <!-- ════ MAPA & RECONCILIAÇÃO ════ -->
-    <div v-else class="row">
+    <div v-else-if="tab === 'mapa'" class="row">
       <div class="col-md-5">
         <div class="card">
           <div class="card-header"><i class="fas fa-barcode mr-1"></i>Bipar / buscar código</div>
@@ -119,6 +120,105 @@
                   <td class="text-right" :class="{ 'text-danger': i.over, 'text-success': i.sem_endereco === 0 }">{{ i.sem_endereco }}</td>
                 </tr>
                 <tr v-if="!recon.length"><td colspan="4" class="text-center text-muted small">Nada endereçado ainda.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════ INVENTÁRIO POR ENDEREÇO ════ -->
+    <div v-else-if="tab === 'inventario'" class="row">
+      <div class="col-md-4">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between">
+            <span><i class="fas fa-clipboard-list mr-1"></i>A contar</span>
+            <button class="btn btn-sm btn-outline-secondary" @click="loadToCount"><i class="fas fa-sync"></i></button>
+          </div>
+          <div class="card-body p-0" style="max-height:70vh;overflow:auto">
+            <p class="small text-muted px-2 pt-2 mb-1">Nunca contado primeiro, depois mais antigo.</p>
+            <table class="table table-sm table-hover mb-0">
+              <tbody>
+                <tr v-for="l in toCount" :key="l.id" style="cursor:pointer" :class="{ 'table-active': countPanel.loc && countPanel.loc.id === l.id }" @click="openCount(l)">
+                  <td class="small"><strong>{{ l.full_code }}</strong>
+                    <div class="text-muted">{{ l.last_counted_at ? ('contado ' + fmtDate(l.last_counted_at)) : 'nunca contado' }}</div></td>
+                </tr>
+                <tr v-if="!toCount.length"><td class="text-center text-muted small">Sem endereços armazenáveis.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-md-8">
+        <!-- Painel de contagem -->
+        <div v-if="countPanel.loc" class="card mb-3">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-boxes mr-1"></i>Contar: {{ countPanel.loc.full_code }}</span>
+            <button class="btn btn-xs btn-link text-muted" @click="countPanel.loc = null">fechar</button>
+          </div>
+          <div class="card-body">
+            <p class="small text-muted">Informe a quantidade <strong>física contada</strong> de cada item. Corrige o endereço, <u>não</u> o saldo contábil — divergências aparecem abaixo e na Reconciliação.</p>
+            <table class="table table-sm">
+              <thead><tr><th>Produto</th><th>Lote</th><th class="text-right" style="width:120px">Contado</th><th></th></tr></thead>
+              <tbody>
+                <tr v-for="(r, idx) in countPanel.lines" :key="idx">
+                  <td class="small"><strong>{{ r.sku || (r.product_type + ' #' + r.product_id) }}</strong><div class="text-muted">{{ r.title }}</div></td>
+                  <td class="small">{{ r.lot_id || '—' }}</td>
+                  <td><input type="number" min="0" v-model.number="r.counted_units" class="form-control form-control-sm text-right"></td>
+                  <td><button v-if="r._added" class="btn btn-xs btn-link text-danger" @click="countPanel.lines.splice(idx,1)"><i class="fas fa-times"></i></button></td>
+                </tr>
+                <tr v-if="!countPanel.lines.length"><td colspan="4" class="text-center text-muted small">Endereço vazio — adicione o que encontrou.</td></tr>
+              </tbody>
+            </table>
+            <div class="input-group input-group-sm mb-2">
+              <input v-model="countPanel.scan" class="form-control" placeholder="Achou algo não listado? bipe EAN/código interno" @keyup.enter="addFoundProduct">
+              <div class="input-group-append"><button class="btn btn-outline-primary" @click="addFoundProduct">Adicionar</button></div>
+            </div>
+            <div class="text-right">
+              <button class="btn btn-sm btn-primary" :disabled="!countPanel.lines.length || countPanel.saving" @click="submitCount">
+                <i class="fas fa-save"></i> Confirmar contagem
+              </button>
+            </div>
+            <div v-if="countPanel.result.length" class="mt-3">
+              <h6 class="small text-muted">Resultado da contagem</h6>
+              <table class="table table-sm">
+                <thead><tr><th>Produto</th><th class="text-right">Δ</th><th class="text-right">Endereçado</th><th class="text-right">Saldo</th><th class="text-right">Sem end.</th></tr></thead>
+                <tbody>
+                  <tr v-for="(r, i) in countPanel.result" :key="i" :class="{ 'table-danger': r.over }">
+                    <td class="small">{{ r.product_type }} #{{ r.product_id }}<span v-if="r.lot_id" class="text-muted"> · lote {{ r.lot_id }}</span></td>
+                    <td class="text-right" :class="r.delta > 0 ? 'text-success' : (r.delta < 0 ? 'text-danger' : 'text-muted')">{{ r.delta > 0 ? '+' : '' }}{{ r.delta }}</td>
+                    <td class="text-right">{{ r.addressed_total }}</td>
+                    <td class="text-right">{{ r.stock_quantity }}</td>
+                    <td class="text-right">{{ r.unaddressed }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-if="countPanel.result.some(r => r.over)" class="small text-danger mb-0">
+                <i class="fas fa-exclamation-triangle"></i> Há item com <strong>endereçado &gt; saldo contábil</strong> — físico lançado além do contábil. Abra um inventário contábil para reconciliar o saldo.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div v-else class="alert alert-info">Escolha um endereço à esquerda para contar.</div>
+
+        <!-- Divergências recentes -->
+        <div class="card">
+          <div class="card-header d-flex justify-content-between">
+            <span><i class="fas fa-history mr-1"></i>Ajustes recentes de inventário</span>
+            <button class="btn btn-sm btn-outline-secondary" @click="loadDivergences"><i class="fas fa-sync"></i></button>
+          </div>
+          <div class="card-body p-2" style="max-height:40vh;overflow:auto">
+            <table class="table table-sm mb-0">
+              <thead><tr><th>Quando</th><th>Produto</th><th>Lote</th><th class="text-right">Δ</th></tr></thead>
+              <tbody>
+                <tr v-for="m in divergences" :key="m.id">
+                  <td class="small text-muted">{{ fmtDate(m.created_at) }}</td>
+                  <td class="small">{{ m.product_type }} #{{ m.product_id }}</td>
+                  <td class="small">{{ m.lot_id || '—' }}</td>
+                  <td class="text-right" :class="m.delta_units > 0 ? 'text-success' : 'text-danger'">{{ m.delta_units > 0 ? '+' : '' }}{{ m.delta_units }}</td>
+                </tr>
+                <tr v-if="!divergences.length"><td colspan="4" class="text-center text-muted small">Nenhum ajuste ainda.</td></tr>
               </tbody>
             </table>
           </div>
@@ -252,6 +352,9 @@ const recon = ref([])
 const scanCode = ref('')
 const scanResult = ref(null)
 const scanLabel = ref('')
+const toCount = ref([])
+const divergences = ref([])
+const countPanel = ref({ loc: null, lines: [], scan: '', result: [], saving: false })
 
 const nodeModal = ref({ open: false })
 const bulkModal = ref({ open: false, scheme: {} })
@@ -407,6 +510,58 @@ async function doScan() {
     scanLabel.value = { product: 'Produto', box: 'Caixa', location: 'Endereço' }[data.kind] || 'Resultado'
     scanResult.value = JSON.stringify(data, null, 2)
   } catch (e) { scanResult.value = null; toast.error(e?.response?.data?.detail || 'Nada encontrado.') }
+}
+
+// ── Inventário por endereço (Fase 3a) ──
+function fmtDate(s) { if (!s) return ''; try { return new Date(s).toLocaleString('pt-BR') } catch { return s } }
+async function loadToCount() {
+  try { const { data } = await api.get('/storage/inventory/to-count', { params: whParam() }); toCount.value = data.items || [] }
+  catch (e) { if (e?.response?.status !== 400) toast.error(e?.response?.data?.detail || 'Falha ao listar endereços.') }
+}
+async function loadDivergences() {
+  try { const { data } = await api.get('/storage/allocation-movements', { params: { ...whParam(), reason: 'adjust', limit: 50 } }); divergences.value = data.items || [] }
+  catch (e) { if (e?.response?.status !== 400) toast.error(e?.response?.data?.detail || 'Falha ao listar ajustes.') }
+}
+async function openCount(loc) {
+  countPanel.value = { loc, lines: [], scan: '', result: [], saving: false }
+  try {
+    const { data } = await api.get(`/storage/locations/${loc.id}/contents`)
+    countPanel.value.lines = (data.allocations || []).map(a => ({
+      product_type: a.product_type, product_id: a.product_id, lot_id: a.lot_id,
+      sku: a.product?.sku, title: a.product?.title,
+      counted_units: a.qty_units, _added: false,
+    }))
+  } catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao abrir o endereço.') }
+}
+async function addFoundProduct() {
+  const code = (countPanel.value.scan || '').trim()
+  if (!code) return
+  try {
+    const { data } = await api.get(`/storage/scan/${encodeURIComponent(code)}`)
+    if (data.kind !== 'product') { toast.warning('Código não é de produto.'); return }
+    const p = data.product
+    if (countPanel.value.lines.some(r => r.product_type === p.product_type && r.product_id === p.product_id && !r.lot_id)) {
+      toast.info('Produto já está na lista.'); countPanel.value.scan = ''; return
+    }
+    countPanel.value.lines.push({ product_type: p.product_type, product_id: p.product_id, lot_id: null,
+      sku: p.sku, title: p.title, counted_units: 0, _added: true })
+    countPanel.value.scan = ''
+  } catch (e) { toast.error(e?.response?.data?.detail || 'Produto não encontrado.') }
+}
+async function submitCount() {
+  const cp = countPanel.value
+  const counts = cp.lines.map(r => ({
+    product_type: r.product_type, product_id: r.product_id,
+    lot_id: r.lot_id || null, counted_units: Number(r.counted_units) || 0,
+  }))
+  cp.saving = true
+  try {
+    const { data } = await api.post(`/storage/locations/${cp.loc.id}/count`, { counts })
+    cp.result = data.lines || []
+    toast.success('Contagem registrada.')
+    await loadToCount(); await loadDivergences()
+  } catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao registrar a contagem.') }
+  finally { cp.saving = false }
 }
 
 // ── Etiquetas (impressão com QR/barcode via CDN, sem dep no bundle) ──

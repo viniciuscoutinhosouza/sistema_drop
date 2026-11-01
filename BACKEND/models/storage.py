@@ -39,6 +39,8 @@ class StorageLocation(Base):
     child_scheme = Column(String(200))                 # hint do padrão de filhos (continuar a sequência)
     is_active = Column(Boolean, nullable=False, server_default=text("1"))
     notes = Column(String(500))
+    last_counted_at = Column(TIMESTAMP(timezone=True))   # inventário por endereço (Fase 3a) — migration 176
+    last_counted_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
     updated_at = Column(
         TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"), onupdate=text("SYSTIMESTAMP")
@@ -127,11 +129,12 @@ class StorageBoxLabel(Base):
 
 
 class ProductAllocationMovement(Base):
-    """Razão append-only do movimento de ENDEREÇO (Fase 2.5, ADR-0039) — migration 175.
+    """Razão append-only do movimento de ENDEREÇO (ADR-0039) — migration 175 (+ 'adjust' na 176).
 
-    Espelha stock_movements × qty_units: o débito ao despachar (reason='dispatch', delta<0) e o
-    crédito no retorno ao vendável (reason='return', delta>0) só movem `product_allocations.qty_units`;
-    o saldo escalar (ADR-0004) é debitado pelo código existente do `confirm_dispatch`, independente.
+    Espelha stock_movements × qty_units: o débito ao despachar (reason='dispatch', delta<0), o crédito
+    no retorno ao vendável (reason='return', delta>0) e o ajuste de inventário por contagem física
+    (reason='adjust', Fase 3a, delta ±) só movem `product_allocations.qty_units`; o saldo escalar
+    (ADR-0004) é debitado pelo código existente do `confirm_dispatch`, independente.
 
     `product_type`/`product_id` = a ALOCAÇÃO de fato tocada (pode ser variant_pg/variant_cmig).
     `base_product_type`/`base_product_id` = o produto-LÓGICO (pg|cmig base) — bridge p/ o crédito do

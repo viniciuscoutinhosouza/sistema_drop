@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-11-01 — CASA — Endereçamento Fase 3a: Inventário por endereço (ADR-0039) — auditado, deploy pendente
+
+**O que:** o operador conta fisicamente um endereço e o sistema ajusta `product_allocations.qty_units`
+para bater com o contado (movimento `reason='adjust'`). Corrige **ONDE** o estoque está — **nunca o
+saldo escalar** (ADR-0004) nem `product_lots` (ADR-0027). Inventário de endereço ≠ inventário contábil:
+a divergência aparece (flag **`over`** = endereçado > saldo = físico lançado além do contábil).
+
+**Entregue:**
+- **Migration 176**: CHECK `reason` += `'adjust'`; `storage_locations` += `last_counted_at/by`.
+- `services/storage_inventory_service.py` (ponto único): `apply_count` fail-loud, atômico, bloqueia kit,
+  conta por `(produto, lot_id)` com SEM-LOTE, cria alocação p/ produto achado (upsert anti-corrida
+  `.is_(None)`+409), pula `delta=0`, abre caixa reusando `_plan_pack_open` + desativa `StorageBoxLabel`
+  pelo helper **compartilhado** com o débito; devolve divergência pós-contagem (contábil × endereçado).
+- `storage_service.py`: `resolve_base_product` + `box_labels_to_close`. Débito (Fase 2.5) refatorado p/
+  usar o helper. Rotas: `POST /storage/locations/{id}/count`, `GET /storage/inventory/to-count`, filtro
+  `reason`/`location_id` no `/allocation-movements`. Front: aba **Inventário** (lista a contar + painel de
+  contagem + adicionar produto + resultado destacando `over` + ajustes recentes).
+
+**Auditoria do plano (trio):** ADR aprovado c/ ressalvas; consistency/ADR 0 bloqueador — ALTOS
+incorporados (divergência visível/`over`, desativar etiqueta no decréscimo via helper único, upsert
+anti-corrida, `resolve_base_product`). Verificado: pytest **345 ok** (2 pré-existentes), build front OK.
+Trio sobre a implementação em curso.
+
+**Deploy PENDENTE do dono:** rodar **migration 176** em produção + deploy. Não deployado ainda.
+
+---
+
 ## 2026-10-31 — CASA — Endereçamento Fase 2.5: Débito do endereço ao despachar (ADR-0039) — ✅ EM PRODUÇÃO (commit `5d70a5b`)
 
 > **Deploy feito em 2026-11-01:** fast-forward `f750a05..5d70a5b`; **migration 175** aplicada (5 blocos/0

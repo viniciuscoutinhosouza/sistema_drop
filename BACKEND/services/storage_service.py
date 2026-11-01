@@ -139,6 +139,41 @@ async def scalar_stock(db, product_type: str, product_id: int) -> int | None:
     return int(row[0]) if row and row[0] is not None else None
 
 
+async def resolve_base_product(db, product_type: str, product_id: int) -> tuple[str, int]:
+    """Produto-LÓGICO (base pg/cmig) de um product_type. Variante → (pg|cmig, parent_id); base → ele
+    mesmo. MESMA semântica do `_debit_targets` (Fase 2.5), p/ o `base_product_*` do movimento 'adjust'
+    casar com o de 'dispatch'/'return'. Se a variante não existe, devolve (pt, pid) como fallback."""
+    pt = (product_type or "").lower()
+    if pt == "variant_pg":
+        from models.product import CatalogProductVariant
+        v = (await db.execute(select(CatalogProductVariant).where(CatalogProductVariant.id == product_id))).scalar_one_or_none()
+        return ("pg", v.product_id) if v else (pt, product_id)
+    if pt == "variant_cmig":
+        from models.cmig import CMIGProductVariant
+        v = (await db.execute(select(CMIGProductVariant).where(CMIGProductVariant.id == product_id))).scalar_one_or_none()
+        return ("cmig", v.cmig_product_id) if v else (pt, product_id)
+    return (pt, product_id)
+
+
+async def box_labels_to_close(db, allocation_id: int, units_per_box: int, open_n: int) -> list:
+    """Etiquetas de caixa FECHADA (`StorageBoxLabel` ativas) a invalidar quando `open_n` caixas de
+    `units_per_box` são abertas numa alocação. Ponto ÚNICO compartilhado pelo débito (Fase 2.5) e pelo
+    inventário (Fase 3a) — a mesma caixa aberta nunca deixa um QR órfão resolvendo caixa fantasma."""
+    from models.storage import StorageBoxLabel
+
+    if open_n <= 0:
+        return []
+    return (
+        await db.execute(
+            select(StorageBoxLabel).where(
+                StorageBoxLabel.allocation_id == allocation_id,
+                StorageBoxLabel.units_per_box == units_per_box,
+                StorageBoxLabel.is_active == True,  # noqa: E712
+            ).order_by(StorageBoxLabel.id).limit(open_n)
+        )
+    ).scalars().all()
+
+
 # ── full_code da árvore ─────────────────────────────────────────────────────────
 async def build_full_code(db, parent_id: int | None, code: str) -> str:
     from models.storage import StorageLocation
