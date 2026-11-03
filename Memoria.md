@@ -6,7 +6,7 @@
 
 ---
 
-## 2026-11-03 — CASA — Endereçamento Fase 3c: Rastreio por caixa física (ADR-0039) — auditado, deploy pendente
+## 2026-11-03 — CASA — Endereçamento Fase 3c: Rastreio por caixa física (ADR-0039) — ✅ EM PRODUÇÃO (commit `564adac`)
 
 **O que:** a etiqueta/QR (já uma caixa física) ganha CICLO DE VIDA ('closed'|'open'|'consumed') e vira
 unidade MOVÍVEL de endereço. Camada ADITIVA: a caixa carrega N unidades JÁ contadas no `qty_units` do
@@ -30,7 +30,13 @@ endereço → **nunca grava saldo escalar** (ADR-0004) nem lotes (ADR-0027). Mov
 conhecidos (perfil das 3b): lost-update em move concorrente; backfill 'open'→'consumed' cosmético.
 Verificado: pytest **369 ok** (2 pré-existentes), build front OK. 10 testes novos.
 
-**Deploy PENDENTE do dono:** rodar **migration 178** + deploy. Não deployado ainda.
+**Deploy feito em 2026-11-03 (CASA):** fast-forward `e08997a..564adac` (11 arquivos); **migration 178**
+aplicada antes do restart (`run_migration.py`, 6 blocos/0 erro, idempotente; `STORAGE_BOX_LABELS` ganhou
+`STATUS NOT NULL`/`MOVED_AT`/`MOVED_BY` — tabela vazia, backfill sem alvo); `npm run build` OK; PM2
+`sistema-drop-backend` online sem traceback/ImportError; `/docs` e domínio público **200**; rotas
+`/api/v1/storage/boxes`, `/api/v1/storage/box-labels/{id}/move` e `/open` no OpenAPI. **Fase 3 do
+Endereçamento FECHADA por completo** (1, 2, 2.5, 3a, 3b, 3c). Pendente só exercício funcional real das
+rotas de caixa quando o dono criar a 1ª etiqueta (`storage_box_labels` vazia hoje).
 
 ---
 
