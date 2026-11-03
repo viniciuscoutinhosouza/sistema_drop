@@ -5,7 +5,8 @@ Aceita — Fase 1 em produção (2026-10-31, commit `01ac132`); Fase 2 (sugestã
 (2026-10-31, commit `f750a05`); Fase 2.5 (débito do endereço ao despachar) em produção (2026-11-01,
 commit `5d70a5b` + migration 175); Fase 3a (inventário por endereço) em produção (2026-11-01, commit
 `0e4978e` + migration 176); Fase 3b (transferência entre endereços) em produção (2026-11-03, commit
-`e08997a` + migration 177); Fase 3c (rastreio por caixa física) implementada (2026-11-03).
+`e08997a` + migration 177); Fase 3c (rastreio por caixa física) em produção (2026-11-03, commit
+`564adac` + migration 178). **Fase 3 completa.**
 
 ## Contexto
 O galpão precisa organizar fisicamente onde cada produto fica. Há **vários modelos** de galpão:
@@ -151,7 +152,7 @@ nunca confiado no path; toda resolução de id (location/allocation/produto/cód
   MESMA alocação podem perder um débito (mesmo perfil pré-existente do débito/inventário; a reconciliação
   detecta, lock otimista fecharia de vez); (c) linhas 0-qty ativas acumulam em endereços esvaziados
   (inócuas na reconciliação; uma limpeza/prune é opcional).
-- **Fase 3c (implementada):** RASTREIO POR CAIXA FÍSICA (box tracking — migration 178). A etiqueta/QR
+- **Fase 3c (em produção, 2026-11-03):** RASTREIO POR CAIXA FÍSICA (box tracking — migration 178). A etiqueta/QR
   (`storage_box_labels`, já uma caixa física) ganha CICLO DE VIDA (`status` 'closed'|'open'|'consumed',
   invariante `is_active == (status == 'closed')`) e auditoria de movimentação (`moved_at`/`moved_by`).
   **Sem** coluna de saldo e **sem** `location_id` na etiqueta — o endereço da caixa é o da sua alocação
