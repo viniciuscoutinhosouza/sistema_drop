@@ -6,7 +6,15 @@
 
 ---
 
-## 2026-11-01 — CASA — Endereçamento Fase 3b: Transferência entre endereços (ADR-0039) — auditado, deploy pendente
+## 2026-11-01 — CASA — Endereçamento Fase 3b: Transferência entre endereços (ADR-0039) — ✅ EM PRODUÇÃO (commit `e08997a`)
+
+> **Deploy feito em 2026-11-03 (CASA):** fast-forward `0e4978e..e08997a` (10 arquivos, +523/-22);
+> **migration 177** aplicada (`run_migration.py`, 2 blocos/0 erro, idempotente; constraint
+> `CK_PALLOC_MOV_REASON` confirmada no Oracle = `('dispatch','return','adjust','transfer_out','transfer_in')`
+> — superset do antigo, zero-regressão); `npm run build` OK; PM2 `sistema-drop-backend` online sem
+> traceback/ImportError; `/docs` e domínio público **200**; rotas `/api/v1/storage/transfer` e
+> `/api/v1/storage/locations/{loc_id}/transfer-all` no OpenAPI. Follow-up restante da Fase 3: **box
+> tracking** (rastreio por caixa física).
 
 **O que:** move estoque de um endereço para outro **no mesmo galpão**. Interno: muda só o local, Σ
 `qty_units` do produto **não muda** → **nunca toca o saldo escalar** (ADR-0004) nem lotes. Loga
@@ -26,9 +34,10 @@
 
 **Auditoria do plano (trio):** ADR aprovado c/ ressalvas; consistency C1 (invariante) + ALTOS — TODOS
 incorporados (caminhos exclusivos, regex, snapshot do local, etiquetas, contrato do move, trava
-mesmo-galpão). Verificado: pytest **356 ok**, build front OK. Trio sobre a implementação em curso.
-
-**Deploy PENDENTE do dono:** rodar **migration 177** + deploy. Não deployado ainda.
+mesmo-galpão). Trio sobre a implementação: ADR aprovado (0 bloqueador); consistency C1+ALTOS
+resolvidos (1 MÉDIO = teste net-zero adicionado); quality 0 crítico, **1 HIGH corrigido** (slot
+envenenado — origem zerada agora fica `is_active=True`, alinhada ao débito da Fase 2.5). Verificado:
+pytest **359 ok** (2 pré-existentes), build front OK.
 
 ---
 
