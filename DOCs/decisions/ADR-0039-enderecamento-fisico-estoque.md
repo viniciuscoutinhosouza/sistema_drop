@@ -4,7 +4,8 @@
 Aceita — Fase 1 em produção (2026-10-31, commit `01ac132`); Fase 2 (sugestão de picking) em produção
 (2026-10-31, commit `f750a05`); Fase 2.5 (débito do endereço ao despachar) em produção (2026-11-01,
 commit `5d70a5b` + migration 175); Fase 3a (inventário por endereço) em produção (2026-11-01, commit
-`0e4978e` + migration 176); Fase 3b (transferência entre endereços) implementada (2026-11-01).
+`0e4978e` + migration 176); Fase 3b (transferência entre endereços) em produção (2026-11-03, commit
+`e08997a` + migration 177); Fase 3c (rastreio por caixa física) implementada (2026-11-03).
 
 ## Contexto
 O galpão precisa organizar fisicamente onde cada produto fica. Há **vários modelos** de galpão:
@@ -150,7 +151,26 @@ nunca confiado no path; toda resolução de id (location/allocation/produto/cód
   MESMA alocação podem perder um débito (mesmo perfil pré-existente do débito/inventário; a reconciliação
   detecta, lock otimista fecharia de vez); (c) linhas 0-qty ativas acumulam em endereços esvaziados
   (inócuas na reconciliação; uma limpeza/prune é opcional).
-- **Fase 3 (restante):** rastreio individual por caixa física (box tracking).
+- **Fase 3c (implementada):** RASTREIO POR CAIXA FÍSICA (box tracking — migration 178). A etiqueta/QR
+  (`storage_box_labels`, já uma caixa física) ganha CICLO DE VIDA (`status` 'closed'|'open'|'consumed',
+  invariante `is_active == (status == 'closed')`) e auditoria de movimentação (`moved_at`/`moved_by`).
+  **Sem** coluna de saldo e **sem** `location_id` na etiqueta — o endereço da caixa é o da sua alocação
+  (fonte única). `services/storage_box_service.py`: `move_box` move a caixa FECHADA inteira p/ outro
+  endereço do mesmo galpão mantendo o MESMO token (Fase 3b no nível da caixa, net-zero
+  `transfer_out`/`transfer_in` via `storage_service.log_allocation_move`), **preservando a caixa** —
+  credita o destino como CAIXA (pack de `units_per_box`), não como unidade solta (resolve o follow-up da
+  3b); debita a origem tratando caixa defasada (composição de packs editada depois) com fail-loud, sem
+  envenenar `boxed_units`/`packs_over`; origem zerada fica ativa (convenção da 3b). `open_box` abre a caixa
+  → unidades soltas no MESMO endereço (`qty_units` inalterado → sem ledger). `box_labels_to_close` (ponto
+  único) virou o ESCRITOR do estado (carimba `is_active=False`+`status='open'`); os 2 sites diretos
+  (reemissão/DELETE de etiqueta) carimbam `status='consumed'`. Rotas `POST /storage/box-labels/{id}/move`,
+  `POST .../open`, `GET /storage/boxes` (mapa warehouse-scoped, exclui kit — ADR-0023), `/scan` enriquecido
+  (localizar por QR em qualquer status). Reusa `_find_allocation` (lote preservado, ADR-0027),
+  `resolve_base_product` e o ledger `transfer_out`/`transfer_in` já no CHECK (177) → **sem 6º reason**,
+  sem migration de CHECK. Escopo por galpão derivado do usuário (ADR-0026); capacidade =
+  `endereco_movimentar` (ADR-0036). _Follow-ups:_ caixa com produtos MISTURADOS (hoje caixa = 1
+  produto/lote, igual à alocação); bipagem da caixa no despacho (estado 'consumed' por baixa de caixa);
+  lock otimista p/ move concorrente na mesma caixa (perfil pré-existente das Fases 3b).
 
 ## Consequências
 - Zero regressão no motor de estoque/fiscal (nada grava saldo; tabelas nascem vazias).

@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-11-03 — CASA — Endereçamento Fase 3c: Rastreio por caixa física (ADR-0039) — auditado, deploy pendente
+
+**O que:** a etiqueta/QR (já uma caixa física) ganha CICLO DE VIDA ('closed'|'open'|'consumed') e vira
+unidade MOVÍVEL de endereço. Camada ADITIVA: a caixa carrega N unidades JÁ contadas no `qty_units` do
+endereço → **nunca grava saldo escalar** (ADR-0004) nem lotes (ADR-0027). Mover caixa é net-zero.
+
+**Entregue:**
+- **Migration 178**: `storage_box_labels` += `status` (invariante `is_active==(status=='closed')`; backfill
+  `is_active=0→consumed`), `moved_at`/`moved_by`, CHECK, índice. Sem coluna de saldo, sem `location_id`,
+  **sem 6º reason** (reusa `transfer_out`/`transfer_in` da 177).
+- `services/storage_box_service.py` (ponto único): `move_box` (caixa FECHADA muda de endereço do mesmo
+  galpão com o MESMO token; credita destino como CAIXA/pack — não solto → resolve o follow-up da 3b;
+  debita origem tratando caixa defasada fail-loud; origem zerada fica ativa; ledger net-zero; 409 em
+  corrida) + `open_box` (closed→open, soltas no MESMO endereço, qty inalterado, sem ledger).
+- `storage_service.py`: `box_labels_to_close` virou o ESCRITOR do estado (is_active+status juntos);
+  novo `log_allocation_move`. Rotas `POST /storage/box-labels/{id}/move|open`, `GET /storage/boxes` (mapa
+  fail-closed), `/scan` enriquecido (localizar por QR). Front: aba **Caixas** (registro + Localizar +
+  Mover/Abrir).
+
+**Auditoria (trio):** ADR aprovado; consistency 0 bloqueador; quality 0 CRÍTICO, **1 HIGH corrigido**
+(`/boxes` vazava cross-galpão p/ não-global sem galpão → trocado por `_resolve_wh` fail-closed). Riscos
+conhecidos (perfil das 3b): lost-update em move concorrente; backfill 'open'→'consumed' cosmético.
+Verificado: pytest **369 ok** (2 pré-existentes), build front OK. 10 testes novos.
+
+**Deploy PENDENTE do dono:** rodar **migration 178** + deploy. Não deployado ainda.
+
+---
+
 ## 2026-11-01 — CASA — Endereçamento Fase 3b: Transferência entre endereços (ADR-0039) — ✅ EM PRODUÇÃO (commit `e08997a`)
 
 > **Deploy feito em 2026-11-03 (CASA):** fast-forward `0e4978e..e08997a` (10 arquivos, +523/-22);
@@ -168,66 +196,3 @@ pytest **327 ok** (2 pré-existentes), build OK.
 
 **Pendente (decisão do dono):** rodar **migrations 173/174** + deploy (DEV não conecta no Oracle —
 wallet ausente — então o caminho real só roda em produção). Nada commitado ainda.
-
----
-
-## 2026-10-29 23:46 — ESCOL — Sincronização de produtos da nota (multi-EAN) + reconciliação de entrada
-
-**Pedido:** na tela Compra/Entrada, um ícone que indique que a nota tem produtos não sincronizados;
-clicar abre um modal para vincular o produto da nota a um já cadastrado (adicionando o EAN — produto
-pode ter 1+ EANs — ou corrigindo), ou cadastrar produto novo.
-
-**Entregue e em produção:**
-- **Multi-EAN** (`product_eans`, migration 172, CMIG + PG) consultado nas 3 superfícies de casamento
-  de estoque (detector + 2 do replay) — aditivo, zero-regressão (tabela nasce vazia).
-- **Bug de ordem corrigido** em `update_stock_from_invoice`: marcava `stock_updated` DEPOIS do
-  recompute, então a própria nota não entrava no seu replay e o saldo não creditava na hora. Agora
-  marca ANTES (igual `_apply_stock_movement`). **Corrige a contabilização de qualquer nota casada.**
-- **Endpoints** (routers/invoices.py, `require_permission estoque_movimentar` + `_check_cmig_access`):
-  `GET /{id}/stock-match`, `POST /{id}/items/{item_id}/link-product` (add/replace EAN, seta FK,
-  re-contabiliza), `POST .../create-product` (reusa create_cmig_product; PG no galpão da CMIG;
-  bloqueia KIT), `GET /product-eans/list`, `DELETE /product-eans/{id}`. `list_invoices` expõe
-  `has_unmatched_items`.
-- **Frontend:** coluna Estoque com ícone 🔗 vermelho quando `has_unmatched_items` → abre
-  `ProductSyncModal` (lista itens, busca produto, vincular/criar, contabilizar). Ícone 📦 laranja =
-  pendente de contabilizar; ✓ verde = contabilizado.
-
-**Auditoria (trio):** adr-checker APROVADO; quality-guardian reprovou com 2 CRITICAL + 4 HIGH, TODOS
-corrigidos e re-verificados: (C1) recontabilização nunca dá 500 cru; (C2) `replace_product` preserva
-o EAN antigo como adicional (não rouba histórico no replay); (HIGH) casamento/deleção de PG por EAN
-escopados por galpão (anti-IDOR cross-galpão); link/create PG falham alto sem galpão; ADR-0027
-(lotes) espelha multi-EAN.
-
-**Verificado em produção:** 60 testes (stock/invoice/fiscal/trace) passando; fluxo real exercitado
-(stock-match → vincular add/replace → credita, com limpeza); migration 172 aplicada; 5 rotas no
-OpenAPI; site 200. **10 das últimas 30 entradas** têm produto não sincronizado (inclui a 13001).
-
-**Correção de deploy:** `EntradasView.vue` + `fiscal.js` tinham ficado fora dos commits → o bundle
-não tinha a feature. Commitados (`a3380ff`) e rebuildados; bundle agora contém o ícone/modal.
-
-**Follow-up:** criar produto por aqui usa `estoque_movimentar`; quando o follow-up do ADR-0036
-fechar uma permissão própria de "criar produto", alinhar. Dono: hard-refresh (Ctrl+Shift+R) p/
-carregar o bundle novo.
-
----
-
-## 2026-10-29 20:48 — CASA — NF-e do Pedido 13636 (ciclo completo) + pull do projeto
-
-**Commit:** `de6e158` · **em produção**
-
-Pedido já tinha NF-e emitida mas a tela continuava mostrando "NF-e Pendente" + botão "Gerar NFe a
-partir do Pedido". Resolvido ponta a ponta:
-
-1. **`<xPag>` no XML quando tPag=99** → corrige a Rejeição 441 da SEFAZ ("Descrição do pagamento
-   obrigatória para meio de pagamento 99 - outros"). `xml_builder` emite `<xPag>` entre `<tPag>` e
-   `<vPag>` só quando forma=99; `sefaz_service` manda "Pago no marketplace".
-2. **Botão "Retransmitir à SEFAZ"** na nota rejeitada (`InvoiceDetailView.vue`) — a lacuna de UI que
-   impedia o dono de reautorizar.
-3. **Sincronização do pedido no `transmit`** (best-effort) + **migration 171** de backfill (MERGE)
-   para pedidos que já estavam presos nesse estado.
-4. **`GET /orders/{id}` passou a devolver `invoice_id`** — a serialização do detalhe omitia o campo,
-   então o `v-if="order.invoice_id"` era sempre falso e o botão não alternava para "Ver NFe vinculada".
-
-Verificado em produção: commit no servidor, `/docs` 200, nginx 200, logs limpos.
-
----

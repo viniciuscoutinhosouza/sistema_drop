@@ -115,7 +115,16 @@ class ProductPackDefault(Base):
 
 
 class StorageBoxLabel(Base):
-    """Etiqueta/QR de caixa fechada: `token` (no QR) → alocação. Base da bipagem/contagem (Fase 2)."""
+    """Etiqueta/QR de caixa física: `token` (no QR) → alocação. Base da bipagem/contagem (Fase 2) e,
+    a partir da Fase 3c (box tracking, migration 178), unidade com CICLO DE VIDA e movível de endereço.
+
+    `status`: 'closed' (caixa fechada, rastreável/movível) | 'open' (aberta → unidades soltas no mesmo
+    endereço) | 'consumed' (etiqueta retirada: reemissão/DELETE, ou futura baixa por caixa no despacho).
+    INVARIANTE: `is_active == (status == 'closed')` — `is_active` segue como compat; o ponto único
+    `storage_service.box_labels_to_close` carimba status='open' junto do is_active=False, e os 2 sites
+    diretos (reemissão/DELETE) carimbam status='consumed'. O endereço da caixa é o da sua alocação
+    (sem coluna location_id — fonte única); mover a caixa repontar `allocation_id` p/ a alocação do
+    endereço de destino (mesmo token)."""
 
     __tablename__ = "storage_box_labels"
 
@@ -124,8 +133,11 @@ class StorageBoxLabel(Base):
     allocation_id = Column(Integer, ForeignKey("product_allocations.id"), nullable=False)
     units_per_box = Column(Integer, nullable=False, server_default=text("0"))
     is_active = Column(Boolean, nullable=False, server_default=text("1"))
+    status = Column(String(12), nullable=False, server_default=text("'closed'"))  # closed|open|consumed
     printed_by = Column(Integer, ForeignKey("users.id"))
     printed_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    moved_at = Column(TIMESTAMP(timezone=True))   # última movimentação de caixa (Fase 3c)
+    moved_by = Column(Integer, ForeignKey("users.id"))
 
 
 class ProductAllocationMovement(Base):

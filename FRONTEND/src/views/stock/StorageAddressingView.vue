@@ -15,6 +15,7 @@
       <li class="nav-item"><a class="nav-link" :class="{ active: tab === 'estrutura' }" href="#" @click.prevent="tab = 'estrutura'">Estrutura</a></li>
       <li class="nav-item"><a class="nav-link" :class="{ active: tab === 'mapa' }" href="#" @click.prevent="tab = 'mapa'; loadReconciliation()">Mapa & Reconciliação</a></li>
       <li class="nav-item"><a class="nav-link" :class="{ active: tab === 'inventario' }" href="#" @click.prevent="tab = 'inventario'; loadToCount(); loadDivergences()">Inventário</a></li>
+      <li class="nav-item"><a class="nav-link" :class="{ active: tab === 'caixas' }" href="#" @click.prevent="tab = 'caixas'; loadBoxes()">Caixas</a></li>
     </ul>
 
     <div v-if="isAdmin && !warehouseId" class="alert alert-info">Selecione um galpão para começar.</div>
@@ -228,6 +229,60 @@
       </div>
     </div>
 
+    <!-- ════ CAIXAS (box tracking — Fase 3c) ════ -->
+    <div v-else-if="tab === 'caixas'" class="row">
+      <div class="col-md-4">
+        <div class="card">
+          <div class="card-header"><i class="fas fa-qrcode mr-1"></i>Localizar caixa (QR)</div>
+          <div class="card-body">
+            <div class="input-group input-group-sm mb-2">
+              <input v-model="boxLocate" class="form-control" placeholder="BOX-… (bipe ou digite)" @keyup.enter="locateBox">
+              <div class="input-group-append"><button class="btn btn-outline-primary" @click="locateBox"><i class="fas fa-search"></i></button></div>
+            </div>
+            <div v-if="boxLocateResult" class="small border rounded p-2">
+              <div><strong>{{ boxLocateResult.allocation && boxLocateResult.allocation.product && boxLocateResult.allocation.product.title }}</strong></div>
+              <div class="text-muted">SKU {{ boxLocateResult.allocation && boxLocateResult.allocation.product && boxLocateResult.allocation.product.sku }} · {{ boxLocateResult.units_per_box }} un/caixa</div>
+              <div>Endereço: <strong>{{ boxLocateResult.allocation && boxLocateResult.allocation.location_full_code }}</strong></div>
+              <div>Status: <span :class="boxStatusClass(boxLocateResult.status)">{{ boxStatusLabel(boxLocateResult.status) }}</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-8">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-boxes mr-1"></i>Registro de caixas</span>
+            <select v-model="boxStatusFilter" class="form-control form-control-sm w-auto" @change="loadBoxes">
+              <option value="closed">Fechadas</option>
+              <option value="open">Abertas</option>
+              <option value="">Todas</option>
+            </select>
+          </div>
+          <div class="card-body p-2" style="max-height: 70vh; overflow:auto">
+            <table class="table table-sm table-hover mb-0">
+              <thead><tr><th>Caixa</th><th>Produto</th><th>Endereço</th><th class="text-center">Un</th><th>Status</th><th></th></tr></thead>
+              <tbody>
+                <tr v-for="b in boxes" :key="b.id">
+                  <td class="small"><code>{{ b.token }}</code></td>
+                  <td class="small">{{ b.product && b.product.title }}<br><span class="text-muted">{{ b.product && b.product.sku }}</span></td>
+                  <td class="small">{{ b.location_full_code }}</td>
+                  <td class="text-center">{{ b.units_per_box }}</td>
+                  <td><span :class="boxStatusClass(b.status)">{{ boxStatusLabel(b.status) }}</span></td>
+                  <td class="text-right">
+                    <template v-if="canMove && b.status === 'closed'">
+                      <button class="btn btn-xs btn-link p-0 mr-2" title="Mover caixa" @click="openMoveBox(b)"><i class="fas fa-dolly"></i></button>
+                      <button class="btn btn-xs btn-link p-0 text-warning" title="Abrir caixa" @click="doOpenBox(b)"><i class="fas fa-box-open"></i></button>
+                    </template>
+                  </td>
+                </tr>
+                <tr v-if="!boxes.length"><td colspan="6" class="text-center text-muted small">Nenhuma caixa neste filtro.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal: criar/editar nó -->
     <div v-if="nodeModal.open" class="modal-backdrop-custom" @click.self="nodeModal.open = false">
       <div class="modal-card">
@@ -355,6 +410,28 @@
         </div>
       </div>
     </div>
+
+    <!-- Modal: mover caixa (box tracking — Fase 3c) -->
+    <div v-if="moveBoxModal.open" class="modal-backdrop-custom" @click.self="moveBoxModal.open = false">
+      <div class="modal-card">
+        <h5>Mover caixa</h5>
+        <p class="small text-muted">
+          <code>{{ moveBoxModal.box.token }}</code> — {{ moveBoxModal.box.units_per_box }} un de
+          <strong>{{ moveBoxModal.box.product && moveBoxModal.box.product.sku }}</strong>,
+          hoje em {{ moveBoxModal.box.location_full_code }}. A caixa inteira muda de endereço mantendo o mesmo QR.</p>
+        <div class="form-group">
+          <label class="small">Endereço de destino</label>
+          <select v-model.number="moveBoxModal.to_location_id" class="form-control form-control-sm">
+            <option :value="null" disabled>Selecione…</option>
+            <option v-for="l in storableLocs.filter(x => x.id !== moveBoxModal.box.location_id)" :key="l.id" :value="l.id">{{ l.full_code }}</option>
+          </select>
+        </div>
+        <div class="text-right">
+          <button class="btn btn-sm btn-secondary mr-2" @click="moveBoxModal.open = false">Cancelar</button>
+          <button class="btn btn-sm btn-primary" :disabled="!moveBoxModal.to_location_id || moveBoxModal.saving" @click="submitMoveBox">Mover</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -391,6 +468,11 @@ const bulkModal = ref({ open: false, scheme: {} })
 const allocModal = ref({ open: false, packs: [], defaults: [] })
 const transferModal = ref({ open: false, mode: 'alloc', alloc: {}, to_location_id: null, qty_units: null, saving: false })
 const storableLocs = ref([])
+const boxes = ref([])
+const boxStatusFilter = ref('closed')
+const boxLocate = ref('')
+const boxLocateResult = ref(null)
+const moveBoxModal = ref({ open: false, box: {}, to_location_id: null, saving: false })
 
 function whParam() { return warehouseId.value ? { warehouse_id: warehouseId.value } : {} }
 
@@ -556,6 +638,46 @@ async function submitTransfer() {
     toast.success('Transferência concluída.')
   } catch (e) { toast.error(e?.response?.data?.detail || 'Falha na transferência.') }
   finally { m.saving = false }
+}
+
+// ── Caixas (box tracking — Fase 3c) ──
+function boxStatusLabel(s) { return s === 'open' ? 'Aberta' : s === 'consumed' ? 'Retirada' : 'Fechada' }
+function boxStatusClass(s) { return s === 'open' ? 'badge badge-warning' : s === 'consumed' ? 'badge badge-secondary' : 'badge badge-success' }
+async function loadBoxes() {
+  try {
+    const params = { ...whParam() }
+    if (boxStatusFilter.value) params.status = boxStatusFilter.value
+    const { data } = await api.get('/storage/boxes', { params })
+    boxes.value = data.items || []
+  } catch (e) { if (e?.response?.status !== 400) toast.error(e?.response?.data?.detail || 'Falha ao carregar as caixas.') }
+}
+async function locateBox() {
+  const code = (boxLocate.value || '').trim()
+  if (!code) return
+  try { const { data } = await api.get(`/storage/scan/${encodeURIComponent(code)}`); boxLocateResult.value = data.kind === 'box' ? data : null
+    if (data.kind !== 'box') toast.warning('Esse código não é de caixa.') }
+  catch (e) { boxLocateResult.value = null; toast.error(e?.response?.data?.detail || 'Caixa não encontrada.') }
+}
+async function openMoveBox(b) {
+  await loadStorableLocs()
+  moveBoxModal.value = { open: true, box: b, to_location_id: null, saving: false }
+}
+async function submitMoveBox() {
+  const m = moveBoxModal.value
+  if (!m.to_location_id) return
+  m.saving = true
+  try {
+    await api.post(`/storage/box-labels/${m.box.id}/move`, { location_id: m.to_location_id })
+    m.open = false
+    await loadBoxes()
+    toast.success('Caixa movida.')
+  } catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao mover a caixa.') }
+  finally { m.saving = false }
+}
+async function doOpenBox(b) {
+  if (!confirm('Abrir esta caixa? O conteúdo vira unidades soltas no mesmo endereço.')) return
+  try { await api.post(`/storage/box-labels/${b.id}/open`); await loadBoxes(); toast.success('Caixa aberta.') }
+  catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao abrir a caixa.') }
 }
 
 // ── Reconciliação / Scan ──

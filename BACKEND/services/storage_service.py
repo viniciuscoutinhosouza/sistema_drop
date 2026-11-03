@@ -156,14 +156,17 @@ async def resolve_base_product(db, product_type: str, product_id: int) -> tuple[
 
 
 async def box_labels_to_close(db, allocation_id: int, units_per_box: int, open_n: int) -> list:
-    """Etiquetas de caixa FECHADA (`StorageBoxLabel` ativas) a invalidar quando `open_n` caixas de
-    `units_per_box` são abertas numa alocação. Ponto ÚNICO compartilhado pelo débito (Fase 2.5) e pelo
-    inventário (Fase 3a) — a mesma caixa aberta nunca deixa um QR órfão resolvendo caixa fantasma."""
+    """Abre (invalida) `open_n` etiquetas de caixa FECHADA de `units_per_box` numa alocação e as devolve.
+    Ponto ÚNICO e ESCRITOR do estado da caixa, compartilhado pelo débito (Fase 2.5), inventário (Fase 3a),
+    transferência (Fase 3b) e `open_box` (Fase 3c) — a mesma caixa aberta nunca deixa um QR órfão
+    resolvendo caixa fantasma. Carimba `is_active=False` + `status='open'` JUNTOS (invariante
+    `is_active == (status == 'closed')`), de modo que o `is_active=False` que alguns chamadores ainda
+    setam depois (fase de aplicação do débito, p.ex.) é redundante e inócuo — reescreve o mesmo valor."""
     from models.storage import StorageBoxLabel
 
     if open_n <= 0:
         return []
-    return (
+    rows = (
         await db.execute(
             select(StorageBoxLabel).where(
                 StorageBoxLabel.allocation_id == allocation_id,
@@ -172,6 +175,28 @@ async def box_labels_to_close(db, allocation_id: int, units_per_box: int, open_n
             ).order_by(StorageBoxLabel.id).limit(open_n)
         )
     ).scalars().all()
+    for lb in rows:
+        lb.is_active = False
+        lb.status = "open"
+    return rows
+
+
+async def log_allocation_move(
+    db, *, warehouse_id: int, allocation_id: int, location_id: int,
+    product_type: str, product_id: int, base_product_type: str, base_product_id: int,
+    lot_id, delta_units: int, reason: str, created_by=None, order_id=None, return_id=None,
+) -> None:
+    """Adiciona UMA linha no razão append-only de endereço (`ProductAllocationMovement`). Ponto único
+    do insert do ledger, p/ a Fase 3c (box tracking) não clonar o `_mov` da transferência (Fase 3b)."""
+    from models.storage import ProductAllocationMovement
+
+    db.add(ProductAllocationMovement(
+        warehouse_id=warehouse_id, order_id=order_id, return_id=return_id,
+        allocation_id=allocation_id, location_id=location_id,
+        product_type=product_type, product_id=product_id,
+        base_product_type=base_product_type, base_product_id=base_product_id,
+        lot_id=lot_id, delta_units=delta_units, reason=reason, created_by=created_by,
+    ))
 
 
 # ── full_code da árvore ─────────────────────────────────────────────────────────

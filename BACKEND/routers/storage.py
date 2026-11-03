@@ -814,11 +814,15 @@ async def scan(code: str, db: AsyncSession = Depends(get_db), current_user: User
     """Resolve um código escaneado: caixa (BOX-), endereço (LOC-) ou produto (EAN/código interno)."""
     code = (code or "").strip()
     if code.startswith(BOX_TOKEN_PREFIX):
-        lb = (await db.execute(select(StorageBoxLabel).where(StorageBoxLabel.token == code, StorageBoxLabel.is_active == True))).scalar_one_or_none()  # noqa: E712
+        # Localizar por QR: acha a caixa em QUALQUER status (uma caixa aberta/consumida existe e deve
+        # ser informada, não 404 enganoso); o escopo vem da alocação (anti-IDOR).
+        lb = (await db.execute(select(StorageBoxLabel).where(StorageBoxLabel.token == code))).scalar_one_or_none()
         if not lb:
             raise HTTPException(status_code=404, detail="Etiqueta de caixa não encontrada.")
         a = await _get_allocation(db, lb.allocation_id, current_user)
-        return {"kind": "box", "units_per_box": lb.units_per_box, "allocation": await _ser_allocation(db, a)}
+        return {"kind": "box", "box_id": lb.id, "status": lb.status, "units_per_box": lb.units_per_box,
+                "moved_at": lb.moved_at.isoformat() if lb.moved_at else None,
+                "allocation": await _ser_allocation(db, a)}
 
     if code.startswith(LOC_TOKEN_PREFIX):
         loc = await _get_location(db, _to_int(code[len(LOC_TOKEN_PREFIX):] or 0, "endereço"), current_user)
@@ -860,7 +864,7 @@ async def location_label(loc_id: int, db: AsyncSession = Depends(get_db), curren
 async def list_box_labels(alloc_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     a = await _get_allocation(db, alloc_id, current_user)
     rows = (await db.execute(select(StorageBoxLabel).where(StorageBoxLabel.allocation_id == a.id, StorageBoxLabel.is_active == True).order_by(StorageBoxLabel.id))).scalars().all()  # noqa: E712
-    return {"items": [{"id": lb.id, "token": lb.token, "units_per_box": lb.units_per_box} for lb in rows]}
+    return {"items": [{"id": lb.id, "token": lb.token, "units_per_box": lb.units_per_box, "status": lb.status} for lb in rows]}
 
 
 @router.post("/allocations/{alloc_id}/box-labels")
@@ -876,6 +880,7 @@ async def create_box_labels(
         raise HTTPException(status_code=409, detail="Defina as caixas da alocação antes de gerar etiquetas.")
     for old in (await db.execute(select(StorageBoxLabel).where(StorageBoxLabel.allocation_id == a.id, StorageBoxLabel.is_active == True))).scalars().all():  # noqa: E712
         old.is_active = False
+        old.status = "consumed"  # etiqueta retirada na reemissão (invariante is_active==(status=='closed'))
     await db.flush()
     created = []
     for p in packs:
@@ -897,5 +902,85 @@ async def deactivate_box_label(label_id: int, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=404, detail="Etiqueta não encontrada.")
     await _get_allocation(db, lb.allocation_id, current_user)  # anti-IDOR por escopo da alocação
     lb.is_active = False
+    lb.status = "consumed"  # etiqueta retirada (invariante is_active==(status=='closed'))
     await db.commit()
     return {"ok": True}
+
+
+# ══ BOX TRACKING (Fase 3c) ══════════════════════════════════════════════════════
+async def _get_box_label(db, label_id: int, user: User):
+    """Resolve uma etiqueta de caixa e ESCOPA pela alocação dela (anti-IDOR, ADR-0026)."""
+    lb = (await db.execute(select(StorageBoxLabel).where(StorageBoxLabel.id == label_id))).scalar_one_or_none()
+    if not lb:
+        raise HTTPException(status_code=404, detail="Caixa não encontrada.")
+    a = await _get_allocation(db, lb.allocation_id, user)  # _assert_wh_scope
+    return lb, a
+
+
+@router.post("/box-labels/{label_id}/move")
+async def move_box_label(
+    label_id: int, body: dict,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(require_permission("endereco_movimentar")),
+):
+    """Move a caixa física inteira (mesmo QR) p/ outro endereço do MESMO galpão (net-zero, Fase 3b no
+    nível da caixa). Resolve o follow-up da 3b (transferir caixa sem chegar solta)."""
+    from services.storage_box_service import move_box
+
+    lb, _ = await _get_box_label(db, label_id, current_user)
+    to_loc = await _get_location(db, _to_int(body.get("location_id") or 0, "endereço de destino"), current_user)
+    return await move_box(db, lb, to_loc, current_user)
+
+
+@router.post("/box-labels/{label_id}/open")
+async def open_box_label(
+    label_id: int,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(require_permission("endereco_movimentar")),
+):
+    """Abre a caixa: o conteúdo vira unidades soltas no MESMO endereço (qty_units inalterado)."""
+    from services.storage_box_service import open_box
+
+    lb, _ = await _get_box_label(db, label_id, current_user)
+    return await open_box(db, lb, current_user)
+
+
+@router.get("/boxes")
+async def box_register(
+    warehouse_id: int | None = None, status: str | None = None, location_id: int | None = None,
+    product_type: str | None = None, product_id: int | None = None,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    """Mapa/registro das caixas físicas do galpão: onde cada uma está, o que tem dentro e o status.
+    Escopado por galpão do usuário (fail-closed via `_resolve_wh`), nunca pelo path (ADR-0026)."""
+    wh = _resolve_wh(current_user, warehouse_id)  # fail-closed: não-global sem galpão → 403
+    q = (
+        select(StorageBoxLabel, ProductAllocation, StorageLocation)
+        .join(ProductAllocation, ProductAllocation.id == StorageBoxLabel.allocation_id)
+        .join(StorageLocation, StorageLocation.id == ProductAllocation.location_id)
+        .where(ProductAllocation.warehouse_id == wh)
+    )
+    if status:
+        q = q.where(StorageBoxLabel.status == status)
+    if location_id:
+        q = q.where(ProductAllocation.location_id == location_id)
+    if product_type and product_id:
+        q = q.where(ProductAllocation.product_type == product_type, ProductAllocation.product_id == product_id)
+    q = q.order_by(StorageLocation.full_code, StorageBoxLabel.id)
+    rows = (await db.execute(q)).all()
+    out = []
+    meta_cache: dict[tuple, dict] = {}
+    for lb, a, loc in rows:
+        key = (a.product_type, a.product_id)
+        meta = meta_cache.get(key)
+        if meta is None:
+            meta = await resolve_product_meta(db, a.product_type, a.product_id) or {}
+            if meta.get("is_composite"):
+                continue  # defense-in-depth: kit nunca é endereçado (ADR-0023); não deveria ocorrer
+            meta_cache[key] = meta
+        out.append({
+            "id": lb.id, "token": lb.token, "status": lb.status, "units_per_box": lb.units_per_box,
+            "allocation_id": a.id, "location_id": a.location_id, "location_full_code": loc.full_code,
+            "product_type": a.product_type, "product_id": a.product_id, "lot_id": a.lot_id,
+            "product": {"title": meta.get("title"), "sku": meta.get("sku")},
+            "moved_at": lb.moved_at.isoformat() if lb.moved_at else None,
+        })
+    return {"items": out}

@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-11-03 — feat(estoque): Rastreio por caixa física — Endereçamento Fase 3c (ADR-0039)
+
+A etiqueta/QR (`storage_box_labels`, já uma caixa física) ganha CICLO DE VIDA e vira unidade movível de
+endereço. Camada ADITIVA: a caixa carrega `units_per_box` unidades JÁ contadas no `qty_units` do endereço
+onde está → **nunca grava saldo escalar** (ADR-0004) nem lotes (ADR-0027). Mover caixa é net-zero.
+
+- **Migration 178**: `storage_box_labels` += `status` ('closed'|'open'|'consumed', invariante
+  `is_active == (status=='closed')`; backfill `is_active=0→consumed`), `moved_at`/`moved_by`, CHECK, índice
+  `(allocation_id, status)`. Sem coluna de saldo, sem `location_id` (endereço = o da alocação), **sem 6º
+  reason** (reusa `transfer_out`/`transfer_in` da 177).
+- `services/storage_box_service.py` (NOVO): `move_box` (caixa FECHADA muda de endereço do mesmo galpão com
+  o MESMO token; credita o destino como CAIXA — pack de `units_per_box`, não solto → resolve o follow-up da
+  3b; debita a origem tratando caixa defasada com fail-loud, sem envenenar `boxed_units`/`packs_over`;
+  origem zerada fica ativa; ledger `transfer_out`/`transfer_in` net-zero; atômico, 409 em corrida) e
+  `open_box` (closed→open, unidades soltas no MESMO endereço, `qty_units` inalterado → sem ledger).
+- `services/storage_service.py`: `box_labels_to_close` virou ponto único ESCRITOR do estado (carimba
+  `is_active=False` + `status='open'`); novo `log_allocation_move` (ponto único do insert no ledger).
+- `routers/storage.py`: `POST /storage/box-labels/{id}/move` + `/open` (`endereco_movimentar`); `GET
+  /storage/boxes` (mapa, **fail-closed** por `_resolve_wh` — anti-IDOR ADR-0026; exclui kit — ADR-0023);
+  `/scan` BOX enriquecido (localizar por QR em qualquer status); reemissão/DELETE carimbam `status='consumed'`.
+- Frontend `StorageAddressingView.vue`: aba **Caixas** (registro + Localizar por QR + Mover/Abrir + modal).
+- `tests/test_storage_box.py` (10 testes: travas + net-zero do move + open). Docs ADR-0039 (Status/Faseamento).
+
+**Auditoria (trio sobre o código):** ADR-checker APROVADO; consistency 0 bloqueador; quality 0 CRÍTICO,
+**1 HIGH corrigido** (`/boxes` usava `warehouse_scope` cru → vazava cross-galpão p/ não-global sem galpão;
+trocado por `_resolve_wh` fail-closed). Riscos conhecidos (não-bloqueantes, perfil das Fases 3b): lost-update
+em move concorrente da mesma caixa; backfill colapsa 'open' histórico em 'consumed' (cosmético). Verificado:
+pytest **369 ok** (2 pré-existentes em test_orders), build front OK. Follow-ups: caixa com produtos
+misturados; bipagem da caixa no despacho (estado 'consumed'); migrar `_mov` da 3b p/ `log_allocation_move`.
+
+---
+
 ## 2026-11-01 — feat(estoque): Transferência entre endereços — Endereçamento Fase 3b (ADR-0039)
 
 Move estoque de um endereço para outro no MESMO galpão. Interno: muda só o local, Σ `qty_units` do
