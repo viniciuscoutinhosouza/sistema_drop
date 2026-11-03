@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-11-03 20:05 — ESCOL — Fix: botão "Área/Raiz" sumia no Endereçamento (admin sem galpão)
+
+**Pedido do dono:** em Estoque > Endereçamento não conseguia criar a árvore — não tinha o botão de adicionar.
+
+**Causa:** para **admin**, ao abrir a tela o galpão não era auto-selecionado (o backend exige escolher),
+então `warehouseId` ficava nulo e a aba Estrutura INTEIRA (com os botões **Área/Raiz** e **Gerar em
+massa**) ficava escondida atrás de "Selecione um galpão para começar" (`v-if="isAdmin && !warehouseId"`
+vs `v-else-if` da aba). Perfis `admin` e `go` já têm `endereco_configurar` (seed migration 174); só o
+perfil `gc` (ac) não tem.
+
+**Fix (frontend, EM PRODUÇÃO — commit `6229c1f`):** admin passa a **auto-selecionar o 1º galpão** no
+`onMounted` (`StorageAddressingView.vue`) → árvore + botões aparecem na hora; o seletor do topo continua
+trocando. Build OK, site 200.
+
+**Se ainda não aparecer:** (1) logado como conta/gestor (perfil `gc`/ac) → esse perfil não tem
+`endereco_configurar`; habilitar em Perfil de Acesso ou usar admin/go. (2) Sessão antiga (login antes de
+31/10, quando a permissão foi seedada) → logout+login resolve.
+
+---
+
 ## 2026-11-03 — CASA — Endereçamento Fase 3c: Rastreio por caixa física (ADR-0039) — ✅ EM PRODUÇÃO (commit `564adac`)
 
 **O que:** a etiqueta/QR (já uma caixa física) ganha CICLO DE VIDA ('closed'|'open'|'consumed') e vira
