@@ -798,7 +798,12 @@ async function printBoxLabels(a) {
 }
 
 onMounted(async () => {
-  if (isAdmin.value) await loadWarehouses()
+  if (isAdmin.value) {
+    await loadWarehouses()
+    // Admin: auto-seleciona o 1º galpão — senão a aba Estrutura (e os botões Área/Raiz e Gerar em
+    // massa) fica escondida atrás de "Selecione um galpão" até o admin notar o seletor do topo.
+    if (!warehouseId.value && warehouses.value.length) warehouseId.value = warehouses.value[0].id
+  }
   await loadTree()
 })
 </script>
