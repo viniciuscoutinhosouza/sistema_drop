@@ -347,7 +347,11 @@
     <!-- Modal: alocar produto -->
     <div v-if="allocModal.open" class="modal-backdrop-custom" @click.self="allocModal.open = false">
       <div class="modal-card">
-        <h5>{{ allocModal.id ? 'Editar alocação' : 'Endereçar produto' }}</h5>
+        <h5 class="d-flex justify-content-between align-items-center">
+          <span>{{ allocModal.id ? 'Editar alocação' : 'Endereçar produto' }}</span>
+          <button class="btn btn-sm btn-link text-info p-0" title="Como funciona? Como vira estoque?"
+                  @click="showAllocHelp = true"><i class="fas fa-question-circle"></i></button>
+        </h5>
         <p class="small text-muted">Em: {{ selectedNode && selectedNode.full_code }}</p>
         <div v-if="!allocModal.id" class="form-group">
           <label class="small">Localizar produto (bipe EAN / código interno)</label>
@@ -438,6 +442,7 @@
     </div>
 
     <StorageHelpModal v-if="showHelp" @close="showHelp = false" />
+    <StorageAllocHelpModal v-if="showAllocHelp" @close="showAllocHelp = false" />
   </div>
 </template>
 
@@ -448,6 +453,7 @@ import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import StorageNode from '@/components/stock/StorageNode.vue'
 import StorageHelpModal from '@/components/stock/StorageHelpModal.vue'
+import StorageAllocHelpModal from '@/components/stock/StorageAllocHelpModal.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -456,6 +462,7 @@ const isAdmin = computed(() => auth.user?.role === 'admin')
 const canConfig = computed(() => auth.hasAction('endereco_configurar'))
 const canMove = computed(() => auth.hasAction('endereco_movimentar'))
 const showHelp = ref(false)
+const showAllocHelp = ref(false)
 
 const tab = ref('estrutura')
 const warehouseId = ref(null)
