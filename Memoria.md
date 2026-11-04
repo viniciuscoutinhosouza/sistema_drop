@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-11-04 20:25 — ESCOL — Fix: Separar Pedidos não mostrava nenhum pedido (ML) + modal de ajuda
+
+**Pedido do dono:** em Logística > Separar Pedidos não aparecia nenhum pedido; e criar um "?" explicando
+a Logística.
+
+**Causa:** o filtro de elegibilidade (`_eligibility_conditions`) exigia `Order.payment_status=='paid'`
+para TODOS os pedidos (regra "só PAGOS" que o dono pediu). Mas o pedido do **Mercado Livre** já é pago
+**no marketplace** e chega com `payment_status='pending'` no nosso banco (o sync ML não carimba 'paid') —
+então o filtro escondia **todos os 48 pedidos ML** (40 coletado + 5 flex + 3 correios).
+
+**Fix (EM PRODUÇÃO — commit `5cbf46b`):** a regra "pago" passa a valer só para venda **manual** (não
+separar antes de o cliente pagar); pedido ML **dispensa** `payment_status='paid'`. Também criei
+`SeparationHelpModal.vue` (botão "?" no cabeçalho) explicando o fluxo (gaiola → separar → NF-e → etiqueta
+→ despacho), quais pedidos aparecem (pago/não-FULL/não-Shopee/não-despachado/fora de gaiola/do galpão) e
+o "não aparece nenhum?". **Verificado em produção:** código deployado roda `_eligibility_conditions` →
+**48 pedidos elegíveis** (antes: 0); backend restart health 200; build front OK (SeparationView novo).
+
+---
+
 ## 2026-11-04 20:04 — ESCOL — Ajustes do Endereçamento (etiquetas + alocação zerada)
 
 Três ajustes sobre a feature de etiquetas (todos EM PRODUÇÃO):
