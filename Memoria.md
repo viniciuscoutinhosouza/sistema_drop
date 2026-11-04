@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-11-04 13:29 — ESCOL — Desligar mensageria do ASAAS (notificações cobradas) nos clientes
+
+**Pedido do dono:** desligar o serviço de mensageria nos clientes do ASAAS (existentes) e em todos os
+clientes que forem cadastrados.
+
+**Contexto:** ao criar cobrança, `asaas_service.upsert_customer` criava o cliente no ASAAS SEM
+`notificationDisabled` → o ASAAS mandava notificações (e-mail/SMS, que podem ser cobradas).
+
+**Feito:**
+- **Código (EM PRODUÇÃO, commit `7721036`):** `upsert_customer` cria o cliente ASAAS com
+  `notificationDisabled: true` e, ao reencontrar um cliente existente com notificação ligada, desliga
+  (best-effort, nunca derruba a cobrança). Backend reiniciado, health 200.
+- **One-off (produção):** desliguei via API as notificações de TODOS os clientes ASAAS das 2 contas
+  (warehouses 1 e 22): banco 1 = 14 desligados; banco 21 = 14 já estavam desligados (mesma conta).
+  Verificado: **0 clientes com notificação ligada**.
+
+**Default novos clientes:** nascem com `notificationDisabled: true`. Registrado como instrução
+permanente (junto com a IA de atendimento desligada em 13:05).
+
+---
+
 ## 2026-11-04 13:05 — ESCOL — Desabilitar mensageria/IA (envio de mensagem cobrado) para todos os clientes
 
 **Pedido do dono:** desabilitar a mensageria/envio de mensagem em todos os clientes (serviço cobrado,
