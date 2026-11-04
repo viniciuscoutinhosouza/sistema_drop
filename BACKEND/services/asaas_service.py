@@ -11,6 +11,7 @@ Os endpoints mapeiam AsaasError → 400/409/502 (nunca 500 silencioso).
 """
 
 import hashlib
+import logging
 import secrets
 
 import httpx
@@ -19,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.warehouse import WarehouseBankAccount
 from services import crypto
+
+logger = logging.getLogger(__name__)
 
 _SANDBOX_BASE = "https://api-sandbox.asaas.com/v3"
 _PROD_BASE = "https://api.asaas.com/v3"
@@ -166,7 +169,15 @@ async def upsert_customer(bank: WarehouseBankAccount, person: dict) -> str:
     found = await _request(bank, "GET", "/customers", params={"cpfCnpj": doc})
     items = found.get("data") or []
     if items:
-        return items[0].get("id")
+        cid = items[0].get("id")
+        # O dono NÃO quer a mensageria do ASAAS (notificações e-mail/SMS podem ser cobradas):
+        # garante notificações DESLIGADAS no cliente já existente (best-effort, nunca derruba a cobrança).
+        if cid and not items[0].get("notificationDisabled"):
+            try:
+                await _request(bank, "POST", f"/customers/{cid}", json_body={"notificationDisabled": True})
+            except Exception:  # noqa: BLE001
+                logger.warning("ASAAS: falha ao desligar notificações do cliente %s", cid)
+        return cid
     created = await _request(
         bank,
         "POST",
@@ -176,6 +187,8 @@ async def upsert_customer(bank: WarehouseBankAccount, person: dict) -> str:
             "cpfCnpj": doc,
             "email": person.get("email") or None,
             "phone": person.get("phone") or None,
+            # Sem mensageria do ASAAS por padrão (serviço cobrado; o dono não usa).
+            "notificationDisabled": True,
         },
     )
     cid = created.get("id")
