@@ -26,7 +26,8 @@
             <tr><td class="f">Quantidade (unidades)</td><td>Quantas <strong>unidades</strong> desse produto estão guardadas aqui. (Em caixas fechadas? preencha a Composição abaixo que ele soma.)</td></tr>
             <tr><td class="f">Ordem de picking</td><td>Quando o mesmo produto está em vários endereços, define <strong>qual pegar primeiro</strong>. A rota geral do galpão também respeita o <em>FEFO</em> (validade mais curta primeiro) e a sequência dos endereços.</td></tr>
             <tr><td class="f">Lote (id) <span class="badge badge-warning">rastreável</span></td><td>Só aparece em produto <strong>rastreável</strong> (lote/validade). Informe <strong>qual lote</strong> está aqui — o endereçamento acompanha o lote e o FEFO.</td></tr>
-            <tr><td class="f">Composição de caixas</td><td><strong>caixas × un/caixa</strong> (+ rótulo). Ex.: <code>3 × 10</code> = 30 un em 3 caixas de 10. Pode ter várias linhas (3×10 + 1×5). Serve pra gerar <strong>etiqueta/QR das caixas fechadas</strong> e pro picking esvaziar a caixa aberta antes de abrir outra.</td></tr>
+            <tr><td class="f">Composição de caixas</td><td><strong>caixas × un/caixa</strong>. Ex.: <code>3 × 10</code> = 30 un em 3 caixas de 10. Pode ter várias linhas (3×10 + 1×5). Serve pra gerar <strong>etiqueta/QR das caixas fechadas</strong> e pro picking esvaziar a caixa aberta antes de abrir outra.</td></tr>
+            <tr><td class="f">↳ Rótulo <span class="badge badge-light">opcional</span></td><td>Um <strong>nome para identificar o tipo de caixa</strong> — ex.: <code>Caixa master</code>, <code>Display</code>, <code>Fardo de 10</code>. Aparece na <strong>etiqueta da caixa</strong> e fica salvo como <strong>embalagem-padrão do produto</strong> (da próxima vez aparece como atalho em “padrões: 10un”). Só organização/identificação — não altera a quantidade.</td></tr>
           </tbody>
         </table>
       </section>
