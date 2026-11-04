@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-11-04 20:04 — ESCOL — Ajustes do Endereçamento (etiquetas + alocação zerada)
+
+Três ajustes sobre a feature de etiquetas (todos EM PRODUÇÃO):
+1. **Remover confirmação ao gerar etiqueta** (commit `88e893f`): o dono não quer o `confirm()` — removido do
+   lote e do botão individual.
+2. **Etiqueta de endereço no tamanho selecionado + lote** (commit `a965bb0`): a etiqueta de endereço
+   (ícone tag) passa a usar o tamanho (100×50/100×150); novo botão **"Etiquetas de endereço"** na barra
+   gera a etiqueta de TODOS os endereços marcados (qualquer nó) numa página só. A barra tem os 2 lotes.
+3. **Alocação zerada sai do endereço** (commit `3a7fa90`): ao mover a caixa, a qtd zerou mas o produto
+   continuava no endereço (0). `location_contents` e `product_allocations` passam a filtrar `qty_units>0`
+   — o registro fica ATIVO em 0 no banco (reuso ao re-endereçar + FK do ledger `ProductAllocationMovement`;
+   convenção Fase 3b não envenena o slot da UNIQUE), só não aparece mais. Verificado: location 99 banco
+   `qty=0` mas `location_contents` exibe 0 alocações; 29 testes storage ok; health 200.
+
+---
+
 ## 2026-11-04 19:41 — ESCOL — Etiquetas de caixa em LOTE + tamanho (100×50/100×150) + Rótulo
 
 **Pedido do dono:** checkbox em cada endereço; emitir as etiquetas das caixas de todos os marcados numa
