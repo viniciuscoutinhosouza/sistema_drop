@@ -20,6 +20,10 @@ zero; picking FEFO→ordem→caixa; débito do endereço ao despachar e crédito
 endereço corrige ONDE está, não o contábil. Ilustrado com diagrama SVG (saldo = endereços + sem-endereço)
 + exemplo de composição de caixas (3×10+1×5=35). Build OK, bundle novo, site 200.
 
+**Follow-up (15:20, commit `c1d688d`):** o dono perguntou pra que serve o campo **"Rótulo"** — adicionei
+a explicação no modal: é o nome opcional do tipo de caixa (ex.: Caixa master/Display/Fardo de 10),
+aparece na etiqueta e vira embalagem-padrão reutilizável do produto; não altera a quantidade.
+
 ---
 
 ## 2026-11-04 14:48 — ESCOL — Campo da geração em massa vira "Qtd. dígitos" (Endereçamento)
