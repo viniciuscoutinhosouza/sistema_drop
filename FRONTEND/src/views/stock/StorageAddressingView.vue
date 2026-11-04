@@ -36,14 +36,16 @@
             </div>
           </div>
           <div v-if="canMove" class="px-2 py-1 border-top bg-light d-flex align-items-center flex-wrap" style="gap:6px">
-            <small class="text-muted"><i class="fas fa-qrcode mr-1"></i>Etiquetas de caixa das marcadas:</small>
+            <small class="text-muted">Marcados <b>({{ selectedLocIds.length }})</b> — tamanho:</small>
             <select v-model="labelSize" class="form-control form-control-sm" style="width:auto">
               <option value="100x50">100 × 50 mm</option>
               <option value="100x150">100 × 150 mm</option>
             </select>
+            <button class="btn btn-sm btn-outline-secondary" :disabled="!selectedLocIds.length || printingAddr" @click="printSelectedLocationLabels">
+              <i class="fas" :class="printingAddr ? 'fa-spinner fa-spin' : 'fa-tag'"></i> Etiquetas de endereço
+            </button>
             <button class="btn btn-sm btn-outline-primary" :disabled="!selectedLocIds.length || printingBatch" @click="printSelectedBoxLabels">
-              <i class="fas" :class="printingBatch ? 'fa-spinner fa-spin' : 'fa-print'"></i>
-              Emitir<span v-if="selectedLocIds.length"> ({{ selectedLocIds.length }})</span>
+              <i class="fas" :class="printingBatch ? 'fa-spinner fa-spin' : 'fa-qrcode'"></i> Etiquetas de caixa
             </button>
             <button v-if="selectedLocIds.length" class="btn btn-sm btn-link text-muted p-0" @click="selectedLocIds = []">limpar</button>
           </div>
@@ -480,6 +482,21 @@ const showAllocHelp = ref(false)
 const selectedLocIds = ref([])
 const labelSize = ref('100x50')
 const printingBatch = ref(false)
+const printingAddr = ref(false)
+async function printSelectedLocationLabels() {
+  if (!selectedLocIds.value.length) return
+  printingAddr.value = true
+  try {
+    // Etiqueta de endereço vale p/ qualquer nó marcado (armazenável ou não); lê em paralelo.
+    const res = await Promise.all(selectedLocIds.value.map(id =>
+      api.get(`/storage/locations/${id}/label`).then(r => r.data).catch(() => null)))
+    const items = res.filter(Boolean).map(d => ({ human: d.full_code, qr: d.qr, sub: d.level_type }))
+    if (!items.length) { toast.warning('Nada a imprimir.'); return }
+    printLabels('Etiquetas de endereço', items, { size: labelSize.value })
+    toast.success(`${items.length} etiqueta(s) de endereço enviada(s) para impressão.`)
+  } catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao gerar etiquetas de endereço.') }
+  finally { printingAddr.value = false }
+}
 function toggleLoc(node) {
   const i = selectedLocIds.value.indexOf(node.id)
   if (i >= 0) selectedLocIds.value.splice(i, 1)
@@ -848,7 +865,7 @@ function printLabels(title, items, opts = {}) {
 async function printLocationLabel(node) {
   try {
     const { data } = await api.get(`/storage/locations/${node.id}/label`)
-    printLabels('Etiqueta de endereço', [{ human: data.full_code, qr: data.qr, sub: data.level_type }])
+    printLabels('Etiqueta de endereço', [{ human: data.full_code, qr: data.qr, sub: data.level_type }], { size: labelSize.value })
   } catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao gerar etiqueta.') }
 }
 async function printBoxLabels(a) {
