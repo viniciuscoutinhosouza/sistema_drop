@@ -22,7 +22,7 @@
         <h6 class="hl"><i class="fas fa-i-cursor text-success mr-1"></i>O que é cada campo</h6>
         <table class="table table-sm table-bordered small mb-0 fields">
           <tbody>
-            <tr><td class="f">Localizar produto</td><td><strong>Bipe o EAN</strong> (código de barras) ou o <strong>código interno</strong> e clique <em>Buscar</em>. Produto sem EAN? use <em>“Gerar código interno”</em> — cria um código próprio pra etiquetar/bipar.</td></tr>
+            <tr><td class="f">Localizar produto</td><td><strong>Bipe o EAN</strong> (código de barras), digite o <strong>SKU</strong> ou o <strong>código interno</strong> e clique <em>Buscar</em>. Produto sem EAN? use <em>“Gerar código interno”</em> — cria um código próprio pra etiquetar/bipar.</td></tr>
             <tr><td class="f">Quantidade (unidades)</td><td>Quantas <strong>unidades</strong> desse produto estão guardadas aqui. (Em caixas fechadas? preencha a Composição abaixo que ele soma.)</td></tr>
             <tr><td class="f">Ordem de picking</td><td>Quando o mesmo produto está em vários endereços, define <strong>qual pegar primeiro</strong>. A rota geral do galpão também respeita o <em>FEFO</em> (validade mais curta primeiro) e a sequência dos endereços.</td></tr>
             <tr><td class="f">Lote (id) <span class="badge badge-warning">rastreável</span></td><td>Só aparece em produto <strong>rastreável</strong> (lote/validade). Informe <strong>qual lote</strong> está aqui — o endereçamento acompanha o lote e o FEFO.</td></tr>

@@ -354,9 +354,9 @@
         </h5>
         <p class="small text-muted">Em: {{ selectedNode && selectedNode.full_code }}</p>
         <div v-if="!allocModal.id" class="form-group">
-          <label class="small">Localizar produto (bipe EAN / código interno)</label>
+          <label class="small">Localizar produto (bipe EAN, SKU ou código interno)</label>
           <div class="input-group">
-            <input v-model="allocModal.scan" class="form-control form-control-sm" placeholder="EAN ou código interno" @keyup.enter="resolveAllocProduct">
+            <input v-model="allocModal.scan" class="form-control form-control-sm" placeholder="EAN, SKU ou código interno" @keyup.enter="resolveAllocProduct">
             <div class="input-group-append"><button class="btn btn-sm btn-outline-primary" @click="resolveAllocProduct">Buscar</button></div>
           </div>
         </div>

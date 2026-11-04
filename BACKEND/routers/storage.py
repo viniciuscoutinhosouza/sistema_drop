@@ -28,9 +28,8 @@ from models.storage import (
 )
 from models.user import User
 from services.data_scope import accessible_cmig_ids, is_global, warehouse_scope
-from services.storage_picking import pick_plan_for
 from services.storage_inventory_service import apply_count
-from services.storage_transfer_service import transfer_location_all, transfer_quantity
+from services.storage_picking import pick_plan_for
 from services.storage_service import (
     BOX_TOKEN_PREFIX,
     LOC_TOKEN_PREFIX,
@@ -44,6 +43,7 @@ from services.storage_service import (
     scalar_stock,
     warehouse_reconciliation,
 )
+from services.storage_transfer_service import transfer_location_all, transfer_quantity
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -793,7 +793,10 @@ async def generate_internal_code(
 
     # Recompute best-effort: o código novo pode casar notas antigas no replay.
     try:
-        from services.fiscal.stock_calculator import recompute_cmig_product_stock, recompute_pg_product_stock
+        from services.fiscal.stock_calculator import (
+            recompute_cmig_product_stock,
+            recompute_pg_product_stock,
+        )
         if target == "cmig_product_id":
             await recompute_cmig_product_stock(meta["ean_target_id"], db)
         else:
@@ -850,6 +853,24 @@ async def scan(code: str, db: AsyncSession = Depends(get_db), current_user: User
             cp = (await db.execute(select(CMIGProduct).where(CMIGProduct.id == cid))).scalar_one_or_none()
             if cp and (allowed is None or cp.cmig_id in allowed):
                 return {"kind": "product", **await product_allocations("cmig", cid, db, current_user)}
+
+    # Fallback por SKU — o operador também digita o SKU, não só EAN/código interno. Escopado por
+    # galpão (PG) e pelas CMIGs acessíveis (CMIG); case-insensitive p/ ser tolerante com a digitação.
+    from models.product import CatalogProduct
+    sku_u = code.upper()
+    pg_q = select(CatalogProduct.id).where(func.upper(CatalogProduct.sku) == sku_u)
+    if wh is not None:
+        pg_q = pg_q.where(CatalogProduct.warehouse_id == wh)
+    pg_sku = (await db.execute(pg_q)).scalars().first()
+    if pg_sku:
+        return {"kind": "product", **await product_allocations("pg", pg_sku, db, current_user)}
+    allowed = await accessible_cmig_ids(current_user, db)
+    for cid, cmig_id in (
+        await db.execute(select(CMIGProduct.id, CMIGProduct.cmig_id).where(func.upper(CMIGProduct.sku_cmig) == sku_u))
+    ).all():
+        if allowed is None or cmig_id in allowed:
+            return {"kind": "product", **await product_allocations("cmig", cid, db, current_user)}
+
     raise HTTPException(status_code=404, detail="Nada encontrado para este código.")
 
 
