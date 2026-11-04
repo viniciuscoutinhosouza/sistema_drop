@@ -487,7 +487,6 @@ function toggleLoc(node) {
 }
 async function printSelectedBoxLabels() {
   if (!selectedLocIds.value.length) return
-  if (!confirm(`Emitir as etiquetas de caixa dos ${selectedLocIds.value.length} endereço(s) marcado(s) (incluindo sub-endereços)?\n\nAs etiquetas/QR anteriores desses endereços serão SUBSTITUÍDAS (os QR antigos deixam de funcionar).`)) return
   printingBatch.value = true
   try {
     const { data } = await api.post('/storage/box-labels/print-batch', { location_ids: selectedLocIds.value })
@@ -853,7 +852,6 @@ async function printLocationLabel(node) {
   } catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao gerar etiqueta.') }
 }
 async function printBoxLabels(a) {
-  if (!confirm('Gerar etiquetas das caixas desta alocação?')) return
   try {
     const { data } = await api.post(`/storage/allocations/${a.id}/box-labels`)
     const sku = data.product?.sku || ''
