@@ -8,7 +8,6 @@ cross-galpão): o galpão é derivado do usuário (como `stock.py`), nunca confi
 from __future__ import annotations
 
 import logging
-import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -893,27 +892,100 @@ async def create_box_labels(
     alloc_id: int,
     db: AsyncSession = Depends(get_db), current_user: User = Depends(require_permission("endereco_movimentar")),
 ):
-    """Gera uma etiqueta por caixa fechada da alocação (a partir dos packs). Reemitir RECRIA:
-    desativa as etiquetas ativas desta alocação antes de gerar as novas (não acumula duplicatas)."""
+    """Gera uma etiqueta por caixa fechada da alocação (a partir dos packs). Reemitir RECRIA
+    (ponto único `recreate_box_labels`): desativa as ativas antes de gerar as novas."""
+    from services.storage_box_service import recreate_box_labels
+
     a = await _get_allocation(db, alloc_id, current_user)
-    packs = (await db.execute(select(ProductAllocationPack).where(ProductAllocationPack.allocation_id == a.id))).scalars().all()
-    if not packs:
+    created = await recreate_box_labels(db, a, current_user.id)
+    if not created:
         raise HTTPException(status_code=409, detail="Defina as caixas da alocação antes de gerar etiquetas.")
-    for old in (await db.execute(select(StorageBoxLabel).where(StorageBoxLabel.allocation_id == a.id, StorageBoxLabel.is_active == True))).scalars().all():  # noqa: E712
-        old.is_active = False
-        old.status = "consumed"  # etiqueta retirada na reemissão (invariante is_active==(status=='closed'))
-    await db.flush()
-    created = []
-    for p in packs:
-        for _ in range(int(p.box_count or 0)):
-            token = f"{BOX_TOKEN_PREFIX}{secrets.token_hex(8)}"
-            lb = StorageBoxLabel(token=token, allocation_id=a.id, units_per_box=p.units_per_box, printed_by=current_user.id)
-            db.add(lb)
-            created.append({"token": token, "units_per_box": p.units_per_box})
     await db.commit()
     meta = await resolve_product_meta(db, a.product_type, a.product_id)
     return {"ok": True, "labels": created,
             "product": {"title": meta["title"] if meta else None, "sku": meta["sku"] if meta else None}}
+
+
+@router.post("/box-labels/print-batch")
+async def print_batch_box_labels(
+    body: dict,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(require_permission("endereco_movimentar")),
+):
+    """Emite as etiquetas de caixa de VÁRIOS endereços de uma vez (marcados na árvore), para imprimir
+    numa página só. Expande cada endereço selecionado para o SUBTREE (inclui descendentes),
+    dedup por alocação, emite (= recria, ponto único) e devolve a lista plana com o RÓTULO + endereço.
+    Escopo por galpão validado POR id (anti-IDOR). Teto defensivo de etiquetas por request."""
+    from collections import defaultdict
+
+    from services.storage_box_service import recreate_box_labels
+
+    MAX_LABELS = 500
+    raw = body.get("location_ids") or []
+    try:
+        ids = list(dict.fromkeys(int(i) for i in raw))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="location_ids inválido") from None
+    if not ids:
+        raise HTTPException(status_code=400, detail="Marque ao menos um endereço.")
+
+    # Valida CADA endereço pelo escopo (não derivar o universo de um único id) e junta os galpões.
+    sel = [await _get_location(db, i, current_user) for i in ids]
+    whs = {loc.warehouse_id for loc in sel}
+    all_locs = (
+        await db.execute(select(StorageLocation).where(StorageLocation.warehouse_id.in_(whs)))
+    ).scalars().all()
+    children = defaultdict(list)
+    for loc in all_locs:
+        children[loc.parent_id].append(loc)
+    full_by_id = {loc.id: loc.full_code for loc in all_locs}
+
+    # BFS: expande os selecionados para o subtree (coleta só as locations armazenáveis).
+    want: set[int] = set()
+    stack = list(sel)
+    seen: set[int] = set()
+    while stack:
+        loc = stack.pop()
+        if loc.id in seen:
+            continue
+        seen.add(loc.id)
+        if loc.is_storable:
+            want.add(loc.id)
+        stack.extend(children.get(loc.id, []))
+    if not want:
+        raise HTTPException(status_code=409, detail="Nenhum endereço armazenável na seleção.")
+
+    allocs = (
+        await db.execute(select(ProductAllocation).where(ProductAllocation.location_id.in_(want)))
+    ).scalars().all()
+
+    # Pré-checa o VOLUME antes de recriar (não gastar inserts/locks no Oracle p/ recusar depois).
+    alloc_ids = [a.id for a in allocs]
+    if alloc_ids:
+        total = (await db.execute(
+            select(func.coalesce(func.sum(ProductAllocationPack.box_count), 0))
+            .where(ProductAllocationPack.allocation_id.in_(alloc_ids))
+        )).scalar() or 0
+        if int(total) > MAX_LABELS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"A seleção geraria {int(total)} etiquetas (máx {MAX_LABELS}) — imprima por partes.",
+            )
+
+    out: list[dict] = []
+    for a in allocs:
+        labels = await recreate_box_labels(db, a, current_user.id)
+        if not labels:
+            continue
+        meta = await resolve_product_meta(db, a.product_type, a.product_id)
+        for lb in labels:
+            out.append({
+                **lb,  # token, units_per_box, rotulo
+                "sku": meta["sku"] if meta else None,
+                "title": meta["title"] if meta else None,
+                "location": full_by_id.get(a.location_id),
+            })
+    await db.commit()
+    return {"labels": out, "count": len(out)}
 
 
 @router.delete("/box-labels/{label_id}")

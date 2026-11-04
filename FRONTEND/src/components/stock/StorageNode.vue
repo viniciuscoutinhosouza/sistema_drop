@@ -6,6 +6,8 @@
         <i class="fas" :class="expanded ? 'fa-caret-down' : 'fa-caret-right'"></i>
       </span>
       <span class="toggle mr-1" v-else>&nbsp;</span>
+      <input v-if="canMove" type="checkbox" class="node-check mr-1" :checked="selectedIds.includes(node.id)"
+             title="Marcar para emitir etiquetas de caixa" @click.stop="$emit('toggle', node)">
       <span class="flex-grow-1 node-label" @click="$emit('select', node)">
         <span class="text-muted small">{{ node.level_type }}</span>
         <strong class="ml-1">{{ node.code }}</strong>
@@ -22,9 +24,10 @@
     </div>
     <template v-if="expanded && node.children">
       <StorageNode v-for="c in node.children" :key="c.id" :node="c" :depth="depth + 1"
-        :can-config="canConfig" :selected-id="selectedId"
+        :can-config="canConfig" :can-move="canMove" :selected-id="selectedId" :selected-ids="selectedIds"
         @select="$emit('select', $event)" @add="$emit('add', $event)" @bulk="$emit('bulk', $event)"
-        @edit="$emit('edit', $event)" @remove="$emit('remove', $event)" @label="$emit('label', $event)" />
+        @edit="$emit('edit', $event)" @remove="$emit('remove', $event)" @label="$emit('label', $event)"
+        @toggle="$emit('toggle', $event)" />
     </template>
   </div>
 </template>
@@ -36,9 +39,11 @@ const props = defineProps({
   node: { type: Object, required: true },
   depth: { type: Number, default: 0 },
   canConfig: { type: Boolean, default: false },
+  canMove: { type: Boolean, default: false },
   selectedId: { type: [Number, null], default: null },
+  selectedIds: { type: Array, default: () => [] },
 })
-defineEmits(['select', 'add', 'bulk', 'edit', 'remove', 'label'])
+defineEmits(['select', 'add', 'bulk', 'edit', 'remove', 'label', 'toggle'])
 
 const expanded = ref(true)
 const areaLabel = computed(() => ({ pallet: 'Porta-pallet', cabinet: 'Armários', other: 'Área' }[props.node.area_kind] || ''))

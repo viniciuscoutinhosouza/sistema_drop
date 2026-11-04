@@ -21,7 +21,7 @@ destino ANTES de chamar (anti-IDOR, ADR-0026); aqui reforçamos a trava mesmo-ga
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -51,6 +51,39 @@ async def _packs_of(db, allocation_id: int) -> list:
 
 def _boxed_units(packs) -> int:
     return sum((p.box_count or 0) * (p.units_per_box or 0) for p in packs)
+
+
+async def recreate_box_labels(db, allocation, user_id: int) -> list[dict]:
+    """Ponto ÚNICO de (re)emissão das etiquetas de caixa FECHADA de uma alocação (usado pelo endpoint
+    single e pelo batch). "Emitir = recriar": desativa as ativas (→ status='consumed', invariante
+    Fase 3c `is_active==status=='closed'`) e cria 1 `StorageBoxLabel` por caixa a partir dos packs.
+    Carimba o RÓTULO pelo pack de ORIGEM da caixa (não há ambiguidade por units_per_box). NÃO commita.
+    Retorna `[{token, units_per_box, rotulo}]`; lista vazia se a alocação não tem caixas definidas."""
+    import secrets
+
+    from models.storage import StorageBoxLabel
+    from services.storage_service import BOX_TOKEN_PREFIX
+
+    packs = await _packs_of(db, allocation.id)
+    for old in (await db.execute(
+        select(StorageBoxLabel).where(
+            StorageBoxLabel.allocation_id == allocation.id, StorageBoxLabel.is_active == True  # noqa: E712
+        )
+    )).scalars().all():
+        old.is_active = False
+        old.status = "consumed"
+    await db.flush()
+    out: list[dict] = []
+    for p in packs:
+        if int(p.units_per_box or 0) <= 0:
+            continue  # defensivo: pack defeituoso (upb=0) não gera etiqueta vazia
+        for _ in range(int(p.box_count or 0)):
+            token = f"{BOX_TOKEN_PREFIX}{secrets.token_hex(8)}"
+            db.add(StorageBoxLabel(token=token, allocation_id=allocation.id,
+                                   units_per_box=p.units_per_box, printed_by=user_id))
+            out.append({"token": token, "units_per_box": p.units_per_box, "rotulo": p.label})
+    await db.flush()
+    return out
 
 
 async def move_box(db, box, to_loc, user) -> dict:
@@ -116,7 +149,7 @@ async def move_box(db, box, to_loc, user) -> dict:
 
         # ── repontar a caixa (mesmo token) + auditoria ───────────────────────
         box.allocation_id = dest.id
-        box.moved_at = datetime.now(timezone.utc)
+        box.moved_at = datetime.now(UTC)
         box.moved_by = getattr(user, "id", None)
 
         # ── ledger net-zero (reusa o ponto único do insert) ──────────────────
@@ -143,7 +176,6 @@ async def move_box(db, box, to_loc, user) -> dict:
 async def open_box(db, box, user) -> dict:
     """Abre a caixa FECHADA `box`: vira unidades SOLTAS no MESMO endereço (status='open'); `qty_units`
     inalterado → sem movimento no ledger. Decrementa o pack do `upb` da caixa p/ `boxed_units` cair."""
-    from models.storage import ProductAllocationPack
 
     if (box.status or "closed") != "closed":
         raise HTTPException(status_code=409, detail="Esta caixa já não está fechada.")

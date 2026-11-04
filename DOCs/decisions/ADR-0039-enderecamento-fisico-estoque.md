@@ -172,6 +172,13 @@ nunca confiado no path; toda resolução de id (location/allocation/produto/cód
   `endereco_movimentar` (ADR-0036). _Follow-ups:_ caixa com produtos MISTURADOS (hoje caixa = 1
   produto/lote, igual à alocação); bipagem da caixa no despacho (estado 'consumed' por baixa de caixa);
   lock otimista p/ move concorrente na mesma caixa (perfil pré-existente das Fases 3b).
+- **Fase 3c.1 — emissão de etiquetas em LOTE (2026-11-04):** `storage_box_service.recreate_box_labels` é
+  o PONTO ÚNICO de (re)emissão das etiquetas de caixa ("emitir = recriar": desativa as ativas →
+  `status='consumed'`, cria 1 por caixa dos packs, carimba o RÓTULO pelo pack de origem); o endpoint
+  single e o novo `POST /storage/box-labels/print-batch` (marca endereços na árvore → expande SUBTREE
+  → dedup por alocação → teto `MAX_LABELS=500` pré-checado → `require_permission('endereco_movimentar')`
+  + escopo por id) reusam o helper. Impressão numa página só, tamanho selecionável 100×50 / 100×150mm,
+  com o Rótulo na etiqueta. Camada aditiva (ADR-0004/0027 intocados); invariante Fase 3c mantida.
 
 ## Consequências
 - Zero regressão no motor de estoque/fiscal (nada grava saldo; tabelas nascem vazias).

@@ -35,12 +35,24 @@
               <button class="btn btn-sm btn-outline-secondary" @click="openBulkModal(null)"><i class="fas fa-layer-group"></i> Gerar em massa</button>
             </div>
           </div>
+          <div v-if="canMove" class="px-2 py-1 border-top bg-light d-flex align-items-center flex-wrap" style="gap:6px">
+            <small class="text-muted"><i class="fas fa-qrcode mr-1"></i>Etiquetas de caixa das marcadas:</small>
+            <select v-model="labelSize" class="form-control form-control-sm" style="width:auto">
+              <option value="100x50">100 × 50 mm</option>
+              <option value="100x150">100 × 150 mm</option>
+            </select>
+            <button class="btn btn-sm btn-outline-primary" :disabled="!selectedLocIds.length || printingBatch" @click="printSelectedBoxLabels">
+              <i class="fas" :class="printingBatch ? 'fa-spinner fa-spin' : 'fa-print'"></i>
+              Emitir<span v-if="selectedLocIds.length"> ({{ selectedLocIds.length }})</span>
+            </button>
+            <button v-if="selectedLocIds.length" class="btn btn-sm btn-link text-muted p-0" @click="selectedLocIds = []">limpar</button>
+          </div>
           <div class="card-body p-2" style="max-height: 70vh; overflow:auto">
             <p v-if="!tree.length" class="text-muted small mb-0">Nenhum endereço ainda. Crie uma área ou gere em massa.</p>
             <StorageNode
               v-for="n in tree" :key="n.id" :node="n" :depth="0" :can-config="canConfig"
-              :selected-id="selectedNode && selectedNode.id"
-              @select="selectNode" @add="openNodeModal" @bulk="openBulkModal"
+              :can-move="canMove" :selected-id="selectedNode && selectedNode.id" :selected-ids="selectedLocIds"
+              @select="selectNode" @add="openNodeModal" @bulk="openBulkModal" @toggle="toggleLoc"
               @edit="n => openNodeModal(n, true)" @remove="removeNode" @label="printLocationLabel" />
           </div>
         </div>
@@ -464,6 +476,31 @@ const canMove = computed(() => auth.hasAction('endereco_movimentar'))
 const showHelp = ref(false)
 const showAllocHelp = ref(false)
 
+// Emissão em lote de etiquetas de caixa (endereços marcados na árvore)
+const selectedLocIds = ref([])
+const labelSize = ref('100x50')
+const printingBatch = ref(false)
+function toggleLoc(node) {
+  const i = selectedLocIds.value.indexOf(node.id)
+  if (i >= 0) selectedLocIds.value.splice(i, 1)
+  else selectedLocIds.value.push(node.id)
+}
+async function printSelectedBoxLabels() {
+  if (!selectedLocIds.value.length) return
+  if (!confirm(`Emitir as etiquetas de caixa dos ${selectedLocIds.value.length} endereço(s) marcado(s) (incluindo sub-endereços)?\n\nAs etiquetas/QR anteriores desses endereços serão SUBSTITUÍDAS (os QR antigos deixam de funcionar).`)) return
+  printingBatch.value = true
+  try {
+    const { data } = await api.post('/storage/box-labels/print-batch', { location_ids: selectedLocIds.value })
+    if (!data.labels.length) { toast.info('Nenhuma caixa definida nos endereços marcados.'); return }
+    printLabels('Etiquetas de caixa', data.labels.map(l => ({
+      title: l.title, sku: l.sku, rotulo: l.rotulo, sub: `${l.units_per_box} un/caixa`,
+      location: l.location, qr: l.token,
+    })), { size: labelSize.value })
+    toast.success(`${data.count} etiqueta(s) enviada(s) para impressão.`)
+  } catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao emitir etiquetas.') }
+  finally { printingBatch.value = false }
+}
+
 const tab = ref('estrutura')
 const warehouseId = ref(null)
 const warehouses = ref([])
@@ -504,7 +541,7 @@ async function loadTree() {
     else toast.error(e?.response?.data?.detail || 'Falha ao carregar a árvore.')
   }
 }
-async function reloadAll() { selectedNode.value = null; nodeContents.value = []; await loadTree() }
+async function reloadAll() { selectedNode.value = null; nodeContents.value = []; selectedLocIds.value = []; await loadTree() }
 
 async function selectNode(node) {
   selectedNode.value = node
@@ -771,26 +808,40 @@ function esc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
-function printLabels(title, items) {
+function printLabels(title, items, opts = {}) {
   const w = window.open('', '_blank')
   if (!w) { toast.warning('Permita pop-ups para imprimir etiquetas.'); return }
   try { w.opener = null } catch { /* ignore */ }
   const cards = items.map(it => `
     <div class="lbl">
-      <div class="code">${esc(it.human)}</div>
+      ${it.location ? `<div class="loc">${esc(it.location)}</div>` : ''}
+      <div class="code">${esc(it.human || it.title || it.sku || '')}</div>
+      ${(it.sku && (it.title || it.human)) ? `<div class="skun">${esc(it.sku)}</div>` : ''}
+      ${it.rotulo ? `<div class="rot">${esc(it.rotulo)}</div>` : ''}
       ${it.barcode ? `<svg class="bc" data-code="${esc(it.barcode)}"></svg>` : ''}
       ${it.qr ? `<div class="qr" data-code="${esc(it.qr)}"></div>` : ''}
-      <div class="sub">${esc(it.sub)}</div>
+      ${it.sub ? `<div class="sub">${esc(it.sub)}</div>` : ''}
     </div>`).join('')
+  // Tamanho de etiqueta selecionável (100×50 ou 100×150). Sem `opts.size` = layout legado (220px).
+  const sizes = { '100x50': [100, 50], '100x150': [100, 150] }
+  const sz = opts.size && sizes[opts.size]
+  const lblCss = sz
+    ? `@page{size:${sz[0]}mm ${sz[1]}mm;margin:2mm} body{margin:0}
+       .lbl{width:${sz[0] - 6}mm;height:${sz[1] - 6}mm;box-sizing:border-box;padding:2mm;border:1px solid #000;text-align:center;page-break-after:always;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}`
+    : `.lbl{display:inline-block;border:1px solid #000;padding:8px;margin:6px;text-align:center;width:220px}`
+  const qrPx = sz && sz[1] >= 150 ? 150 : 90
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"><\/script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"><\/script>
-    <style>body{font-family:sans-serif}.lbl{display:inline-block;border:1px solid #000;padding:8px;margin:6px;text-align:center;width:220px}
-    .code{font-weight:bold;font-size:14px;margin-bottom:4px}.sub{font-size:11px;margin-top:4px}.qr{display:flex;justify-content:center}</style>
+    <style>body{font-family:sans-serif}${lblCss}
+    .loc{font-size:11px;color:#333;margin-bottom:2px}
+    .code{font-weight:bold;font-size:14px;margin-bottom:2px}.skun{font-size:10px;color:#555}
+    .rot{font-weight:bold;font-size:12px;border:1px solid #333;border-radius:3px;padding:0 5px;margin:2px 0;display:inline-block}
+    .sub{font-size:11px;margin-top:2px}.qr{display:flex;justify-content:center;margin-top:2px}</style>
     </head><body>${cards}
     <script>
       document.querySelectorAll('svg.bc').forEach(function(el){ try{ JSBarcode(el,el.dataset.code,{format:'EAN13',height:40,fontSize:12}); }catch(e){ JSBarcode(el,el.dataset.code,{height:40,fontSize:12}); } });
-      document.querySelectorAll('.qr').forEach(function(el){ new QRCode(el,{text:el.dataset.code,width:90,height:90}); });
+      document.querySelectorAll('.qr').forEach(function(el){ new QRCode(el,{text:el.dataset.code,width:${qrPx},height:${qrPx}}); });
       setTimeout(function(){ window.print(); }, 500);
     <\/script></body></html>`)
   w.document.close()
@@ -807,8 +858,9 @@ async function printBoxLabels(a) {
     const { data } = await api.post(`/storage/allocations/${a.id}/box-labels`)
     const sku = data.product?.sku || ''
     printLabels('Etiquetas de caixa', data.labels.map(l => ({
-      human: sku, qr: l.token, sub: `${l.units_per_box} un/caixa`,
-    })))
+      human: sku, rotulo: l.rotulo, qr: l.token, sub: `${l.units_per_box} un/caixa`,
+      location: a.location_full_code,
+    })), { size: labelSize.value })
   } catch (e) { toast.error(e?.response?.data?.detail || 'Falha ao gerar etiquetas.') }
 }
 
