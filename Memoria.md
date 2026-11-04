@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-11-04 15:05 — ESCOL — Modal de ajuda "?" no "Endereçar produto" (campos + como vira estoque)
+
+**Pedido do dono:** um "?" no modal "Endereçar produto" explicando a tela, os campos e como o
+endereçamento se comporta como estoque dos produtos.
+
+**Feito (frontend, EM PRODUÇÃO — commit `f6025a5`):** botão **?** no cabeçalho do modal → abre
+`StorageAllocHelpModal.vue` (novo). Explica: para que serve; cada campo (Localizar produto/EAN/código
+interno, Quantidade, Ordem de picking, Lote-rastreável, Composição de caixas = caixas×un/caixa);
+e **o ponto-chave** — o endereçamento é camada de LOCALIZAÇÃO: **não altera o saldo** (que vem das
+NF-e/pedidos); Σ endereços + "Sem endereço" = saldo (aba Mapa & Reconciliação); transferência é soma
+zero; picking FEFO→ordem→caixa; débito do endereço ao despachar e crédito no retorno; inventário por
+endereço corrige ONDE está, não o contábil. Ilustrado com diagrama SVG (saldo = endereços + sem-endereço)
++ exemplo de composição de caixas (3×10+1×5=35). Build OK, bundle novo, site 200.
+
+---
+
 ## 2026-11-04 14:48 — ESCOL — Campo da geração em massa vira "Qtd. dígitos" (Endereçamento)
 
 **Pedido do dono:** o campo numérico de preenchimento (antes "Zeros à esq.") deve se chamar
