@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-11-04 13:05 — ESCOL — Desabilitar mensageria/IA (envio de mensagem cobrado) para todos os clientes
+
+**Pedido do dono:** desabilitar a mensageria/envio de mensagem em todos os clientes (serviço cobrado,
+não usa) e cadastrar novos clientes sem envio habilitado.
+
+**Diagnóstico (produção):** o envio automático/cobrado é a **IA de atendimento**. Estado: `ai_configs.is_active=1`
+(IA global LIGADA — OpenAI gpt-4o-mini) e `cmig_ai_configs` com **0 registros** (nenhum cliente com
+auto-resposta; default já é off). O auto-envio só ocorre se `is_active` **E** `auto_respond` (ambos) —
+então não havia auto-envio por cliente, mas a IA global ligada cobra quando usada (sugestão/auto-resposta).
+
+**Feito (produção, data-only — sem código):** `UPDATE ai_configs SET is_active=0` (desliga a IA global:
+fim do auto-envio e da sugestão IA = fim da cobrança OpenAI) + `UPDATE cmig_ai_configs SET auto_respond=0`
+(belt-and-suspenders; já era 0). Verificado: is_active=0, 0 auto_respond ligados.
+
+**Default novos clientes:** já nascem OFF (`CMIGAIConfig.auto_respond` default `False`, criado sob demanda;
+nenhum caminho liga). Registrado como instrução permanente: **nunca religar** `is_active`/`auto_respond`
+sem o dono pedir.
+
+**Ainda disponível (grátis, não mexido):** resposta MANUAL do operador na Central de Atendimento e o job
+de sync (ver mensagens recebidas, 15 min). Se quiser parar o sync também, é só pedir.
+
+---
+
 ## 2026-11-03 20:05 — ESCOL — Fix: botão "Área/Raiz" sumia no Endereçamento (admin sem galpão)
 
 **Pedido do dono:** em Estoque > Endereçamento não conseguia criar a árvore — não tinha o botão de adicionar.
