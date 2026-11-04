@@ -6,6 +6,28 @@
 
 ---
 
+## 2026-11-04 19:41 — ESCOL — Etiquetas de caixa em LOTE + tamanho (100×50/100×150) + Rótulo
+
+**Pedido do dono:** checkbox em cada endereço; emitir as etiquetas das caixas de todos os marcados numa
+página só; imprimir o Rótulo na etiqueta; opção de tamanho 100×50mm ou 100×150mm.
+
+**Feito (EM PRODUÇÃO — commit `46937f2`):**
+- **Backend:** ponto único `storage_box_service.recreate_box_labels` ("emitir = recriar": desativa as
+  ativas → consumed, cria 1 por caixa dos packs, carimba o RÓTULO pelo pack de origem; invariante Fase
+  3c). Single refatorado p/ reusar. Novo `POST /storage/box-labels/print-batch` (require_permission
+  endereco_movimentar): valida CADA endereço por escopo, expande SUBTREE, dedup por alocação, teto 500
+  **pré-checado antes de recriar**, devolve lista plana {token,units_per_box,rotulo,sku,title,location}.
+- **Frontend:** checkbox por nó na árvore (gated endereco_movimentar), barra com seletor de tamanho
+  (100×50 / 100×150) + botão "Emitir (N)" (com confirmação — é destrutivo, substitui QR antigos).
+  `printLabels` ganhou `opts.size` (@page só quando size; retrocompatível) + renderiza Rótulo+endereço.
+  Single de caixa também passa rótulo+tamanho.
+- **Auditoria (trio):** adr OK (ADR-0039 Fase 3c.1 documentada); quality 0 CRITICAL, **2 HIGH corrigidos**
+  (pré-check de volume; confirmação no lote) + skip defensivo upb<=0.
+- **Verificado em produção:** 21 testes storage ok; print-batch exercitado (location 99 → 1 etiqueta com
+  rótulo "Barra de Porta Cromada", sku 5267, endereço "A / 1 / 01"); build front OK; site 200.
+
+---
+
 ## 2026-11-04 19:11 — ESCOL — Fix: "Endereçar produto" não achava por SKU
 
 **Pedido do dono:** no modal "Endereçar produto", digitar um SKU não encontrava o produto.
