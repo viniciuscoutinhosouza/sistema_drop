@@ -1,7 +1,12 @@
 <template>
   <div>
     <div class="d-flex justify-content-between align-items-center mb-3">
-      <h5 class="mb-0"><i class="fas fa-dolly mr-2 text-primary"></i>Separação — Pedidos não-FULL</h5>
+      <h5 class="mb-0">
+        <i class="fas fa-dolly mr-2 text-primary"></i>Separação — Pedidos não-FULL
+        <button class="btn btn-sm btn-link text-muted p-0 ml-2" title="Como funciona a Logística" @click="showHelp = true">
+          <i class="fas fa-question-circle"></i>
+        </button>
+      </h5>
       <RouterLink to="/separacao/gaiolas" class="btn btn-outline-secondary btn-sm">
         <i class="fas fa-shipping-fast mr-1"></i> Gaiolas / Transportadora
       </RouterLink>
@@ -404,6 +409,8 @@
         </div>
       </div>
     </div>
+
+    <SeparationHelpModal v-if="showHelp" @close="showHelp = false" />
   </div>
 </template>
 
@@ -415,10 +422,12 @@ import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { platformLogo, shippingModeStyle, PLATFORMS } from '@/utils/constants'
 import { useAuthStore } from '@/stores/auth'
+import SeparationHelpModal from '@/components/separation/SeparationHelpModal.vue'
 
 const toast = useToast()
 const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.user?.role === 'admin')
+const showHelp = ref(false)
 
 // ── Mapa de shipment_status (igual à Gestão de Pedidos) ──
 const SHIPMENT_MAP = {

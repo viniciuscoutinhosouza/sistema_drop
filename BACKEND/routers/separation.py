@@ -87,7 +87,13 @@ def _eligibility_conditions() -> list:
     return [
         Order.is_hidden == False,  # noqa: E712
         # Só separa pedido PAGO (regra do dono). Cobre a lista E add_orders_to_cart (que reusa isto).
-        Order.payment_status == "paid",
+        # Mas "pago" vale p/ venda MANUAL (não separa antes de o cliente pagar). Pedido do Mercado
+        # Livre já é pago NO MARKETPLACE — chega com payment_status='pending' no nosso banco (o sync
+        # ML não carimba 'paid'); exigir 'paid' aqui escondia TODOS os pedidos ML. Logo: ML dispensa.
+        or_(
+            Order.platform == "mercadolivre",  # pago pelo ML (não depende do nosso payment_status)
+            Order.payment_status == "paid",    # manual/demais: exige pago
+        ),
         # Shopee tem despacho próprio (rede Shopee, routers/shopee_logistics.py) — NÃO entra na
         # Separação/Carrinho Gaiola do ML. Filtro aditivo/protetor (mantém ML + manual + NULL).
         or_(Order.platform == None, Order.platform != "shopee"),  # noqa: E711
