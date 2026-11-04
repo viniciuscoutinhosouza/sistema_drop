@@ -372,6 +372,7 @@ async def product_allocations(
                 ProductAllocation.product_id == product_id,
                 ProductAllocation.warehouse_id == meta["warehouse_id"],
                 ProductAllocation.is_active == True,  # noqa: E712
+                ProductAllocation.qty_units > 0,  # alocação zerada não aparece (saiu do endereço)
             ).order_by(ProductAllocation.pick_order, ProductAllocation.id)
         )
     ).scalars().all()
@@ -413,12 +414,16 @@ async def product_pick_plan(
 
 @router.get("/locations/{loc_id}/contents")
 async def location_contents(loc_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """O que tem neste endereço."""
+    """O que tem neste endereço. Alocação ZERADA (qty_units=0) não aparece — "produto que zerou sai do
+    endereço". O registro permanece ATIVO em 0 no banco (reuso ao re-endereçar + FK do ledger
+    ProductAllocationMovement; a convenção da Fase 3b evita envenenar o slot da UNIQUE)."""
     loc = await _get_location(db, loc_id, current_user)
     rows = (
         await db.execute(
             select(ProductAllocation).where(
-                ProductAllocation.location_id == loc_id, ProductAllocation.is_active == True  # noqa: E712
+                ProductAllocation.location_id == loc_id,
+                ProductAllocation.is_active == True,  # noqa: E712
+                ProductAllocation.qty_units > 0,
             ).order_by(ProductAllocation.product_type, ProductAllocation.product_id)
         )
     ).scalars().all()
