@@ -327,7 +327,7 @@
         <div v-if="bulkModal.scheme.type === 'numeric'" class="form-row">
           <div class="col"><label class="small">De</label><input type="number" v-model.number="bulkModal.scheme.start" class="form-control form-control-sm"></div>
           <div class="col"><label class="small">Até</label><input type="number" v-model.number="bulkModal.scheme.end" class="form-control form-control-sm"></div>
-          <div class="col"><label class="small">Zeros à esq.</label><input type="number" v-model.number="bulkModal.scheme.pad" class="form-control form-control-sm"></div>
+          <div class="col"><label class="small">Qtd. dígitos</label><input type="number" v-model.number="bulkModal.scheme.pad" class="form-control form-control-sm"></div>
         </div>
         <div v-else-if="bulkModal.scheme.type === 'letter'" class="form-row">
           <div class="col"><label class="small">De</label><input v-model="bulkModal.scheme.start" maxlength="1" class="form-control form-control-sm"></div>

@@ -82,15 +82,16 @@
           <div class="bulk-in">
             <div class="mock-row"><span>Tipo de nível</span><b>Estante</b></div>
             <div class="mock-row"><span>Esquema</span><b>Faixa numérica</b></div>
-            <div class="mock-row"><span>De / Até / Zeros à esq.</span><b>1 / 8 / 1</b></div>
+            <div class="mock-row"><span>De / Até / Qtd. dígitos</span><b>1 / 8 / 2</b></div>
           </div>
           <div class="bulk-arrow">→</div>
           <div class="bulk-out">
             <span v-for="n in ['01','02','03','04','05','06','07','08']" :key="n" class="chip">Estante {{ n }}</span>
           </div>
         </div>
-        <p class="small text-muted mt-1 mb-0">Esquemas: <strong>numérica</strong> (1 a 8, com zeros à esquerda),
-          <strong>letras</strong> (A a F) ou <strong>lista de nomes</strong> (Mickey, Pateta, Donald).
+        <p class="small text-muted mt-1 mb-0">Esquemas: <strong>numérica</strong> (a <strong>Qtd. dígitos</strong>
+          define o preenchimento: 1 → 1,2,3…; 2 → 01,02,03…), <strong>letras</strong> (A a F) ou
+          <strong>lista de nomes</strong> (Mickey, Pateta, Donald).
           “Marcar como armazenáveis” = os gerados já recebem produto (use quando a faixa É o menor nível).</p>
       </section>
 

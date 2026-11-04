@@ -260,12 +260,9 @@ def generate_bulk_codes(scheme: dict) -> list[str]:
         start, end = int(scheme.get("start")), int(scheme.get("end"))
         if end < start:
             raise ValueError("Faixa numérica inválida (fim < início).")
-        # pad = quantos ZEROS À ESQUERDA adicionar ALÉM da largura natural do maior número da faixa
-        # (ex.: faixa 1..8 com pad=1 → largura 2 → "01".."08"). Antes usava-se `zfill(pad)` como
-        # largura TOTAL, então pad=1 em números de 1 dígito não colocava zero nenhum ("1", não "01").
+        # pad = "Qtd. dígitos" = largura total (zfill). pad=1 → "1".."8"; pad=2 → "01".."08".
         pad = max(0, int(scheme.get("pad") or 0))
-        width = len(str(end)) + pad
-        out = [f"{prefix}{str(i).zfill(width)}{suffix}" for i in range(start, end + 1)]
+        out = [f"{prefix}{str(i).zfill(pad)}{suffix}" for i in range(start, end + 1)]
     elif t == "letter":
         a, b = str(scheme.get("start") or "").strip().upper(), str(scheme.get("end") or "").strip().upper()
         if len(a) != 1 or len(b) != 1 or not a.isalpha() or not b.isalpha() or ord(b) < ord(a):
