@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-11-04 13:49 — ESCOL — Modal de ajuda "?" na Árvore de Endereçamento
+
+**Pedido do dono:** em Estoque > Endereçamento > Árvore de Endereço, um botão "?" que abre um modal
+explicando como funciona a árvore e para que serve cada campo, com imagens.
+
+**Feito (frontend, EM PRODUÇÃO — commit `0041dfd`):** botão **?** no cabeçalho do card "Árvore de
+endereços" → abre `StorageHelpModal.vue` (novo componente). Conteúdo ilustrado (SVG + mockups, sem
+arquivos externos): para que serve; hierarquia maior→menor (diagrama Área→Estante→Coluna→Altura→
+Pallet/Caixa); código completo (ex. MICKEY-E01-A-3); tabela explicando cada campo (Tipo de nível,
+Identificação, Tipo de área, Armazenável, Sequência de picking); Gerar em massa (exemplo faixa
+numérica → Estante 01..08); e 2 exemplos de montagem (sala com estantes / porta-pallet). Build OK,
+bundle novo, site 200.
+
+---
+
 ## 2026-11-04 13:29 — ESCOL — Desligar mensageria do ASAAS (notificações cobradas) nos clientes
 
 **Pedido do dono:** desligar o serviço de mensageria nos clientes do ASAAS (existentes) e em todos os
