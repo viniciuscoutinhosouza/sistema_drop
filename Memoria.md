@@ -6,6 +6,24 @@
 
 ---
 
+## 2026-11-04 14:20 — ESCOL — Fix: "Zeros à esq." na geração em massa do Endereçamento
+
+**Pedido do dono:** ao gerar em massa um sub-endereço "Coluna" pedindo 1 zero à esquerda, não colocou
+o zero (saiu "1".."8" em vez de "01".."08").
+
+**Causa:** `storage_service.generate_bulk_codes` usava `pad` como LARGURA TOTAL (`zfill(pad)`), então
+`pad=1` em números de 1 dígito não colocava zero ("1", não "01"). Mas o campo se chama "Zeros à esq.".
+
+**Fix (EM PRODUÇÃO — commit `21aad79`):** `pad` agora = zeros à esquerda ALÉM da largura natural do
+maior número: `width = len(str(end)) + pad`. Faixa 1..8 com pad=1 → **01..08**; pad=0 → 1..8; faixa que
+cruza dígitos fica uniforme (1..12 pad=1 → 001..012). Testes atualizados + caso do dono (pytest 2 ok);
+exemplo do modal de ajuda ajustado (1/8/1). Backend restart health 200, build front OK, site 200.
+
+**Pendente do dono:** a "Coluna" que já foi criada errada (sem o zero) pode ser corrigida editando a
+Identificação na mão (1→01) ou apagando e gerando de novo com pad=1.
+
+---
+
 ## 2026-11-04 13:49 — ESCOL — Modal de ajuda "?" na Árvore de Endereçamento
 
 **Pedido do dono:** em Estoque > Endereçamento > Árvore de Endereço, um botão "?" que abre um modal
