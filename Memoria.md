@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-11-04 19:11 — ESCOL — Fix: "Endereçar produto" não achava por SKU
+
+**Pedido do dono:** no modal "Endereçar produto", digitar um SKU não encontrava o produto.
+
+**Causa:** `GET /storage/scan/{code}` resolvia produto só por **EAN / código interno**
+(`catalog_product_id_by_ean` + `CMIGProduct.ean` + `product_eans`) — não buscava por SKU.
+
+**Fix (EM PRODUÇÃO — commit `f31c51c`):** fallback por **SKU** no scan — PG por `CatalogProduct.sku`
+(escopado por galpão) e CMIG por `CMIGProduct.sku_cmig` (escopado pelas CMIGs acessíveis),
+**case-insensitive**. Rótulo/placeholder do campo e o modal de ajuda passam a dizer "EAN, SKU ou
+código interno". Verificado em produção: SKU exato e minúsculo resolvem o produto. Backend restart
+health 200, build front OK, site 200. (ruff organizou imports pré-existentes do storage.py.)
+
+---
+
 ## 2026-11-04 15:05 — ESCOL — Modal de ajuda "?" no "Endereçar produto" (campos + como vira estoque)
 
 **Pedido do dono:** um "?" no modal "Endereçar produto" explicando a tela, os campos e como o
