@@ -25,8 +25,18 @@ def test_ean13_check_digit_fecha_com_recalculo():
 
 # ── Geração em massa ────────────────────────────────────────────────────────
 def test_bulk_numeric_com_pad_prefixo_sufixo():
-    out = ss.generate_bulk_codes({"type": "numeric", "start": 1, "end": 3, "pad": 2, "prefix": "P", "suffix": "x"})
+    # pad = zeros à esquerda ALÉM da largura natural do maior nº (end=3 → 1 díg). pad=1 → "01".."03".
+    out = ss.generate_bulk_codes({"type": "numeric", "start": 1, "end": 3, "pad": 1, "prefix": "P", "suffix": "x"})
     assert out == ["P01x", "P02x", "P03x"]
+
+
+def test_bulk_numeric_pad_zeros_a_esquerda():
+    # Caso do dono: Coluna 1..8 com 1 zero à esquerda → "01".."08" (antes pad=1 não colocava zero).
+    assert ss.generate_bulk_codes({"type": "numeric", "start": 1, "end": 8, "pad": 1}) == [f"0{i}" for i in range(1, 9)]
+    # pad=0 → largura natural, sem zero à esquerda: "1".."8".
+    assert ss.generate_bulk_codes({"type": "numeric", "start": 1, "end": 8, "pad": 0}) == [str(i) for i in range(1, 9)]
+    # faixa que cruza dígitos: 1..12 com pad=1 → largura uniforme 3 → "001".."012".
+    assert ss.generate_bulk_codes({"type": "numeric", "start": 1, "end": 12, "pad": 1})[0] == "001"
 
 
 def test_bulk_letter_inclusivo():

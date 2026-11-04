@@ -82,7 +82,7 @@
           <div class="bulk-in">
             <div class="mock-row"><span>Tipo de nível</span><b>Estante</b></div>
             <div class="mock-row"><span>Esquema</span><b>Faixa numérica</b></div>
-            <div class="mock-row"><span>De / Até / Zeros</span><b>1 / 8 / 2</b></div>
+            <div class="mock-row"><span>De / Até / Zeros à esq.</span><b>1 / 8 / 1</b></div>
           </div>
           <div class="bulk-arrow">→</div>
           <div class="bulk-out">
