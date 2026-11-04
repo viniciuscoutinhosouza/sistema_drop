@@ -25,7 +25,11 @@
       <div class="col-md-7">
         <div class="card">
           <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-sitemap mr-1"></i>Árvore de endereços</span>
+            <span>
+              <i class="fas fa-sitemap mr-1"></i>Árvore de endereços
+              <button class="btn btn-sm btn-link text-info p-0 ml-1" title="Como funciona a Árvore de Endereçamento?"
+                      @click="showHelp = true"><i class="fas fa-question-circle"></i></button>
+            </span>
             <div v-if="canConfig">
               <button class="btn btn-sm btn-outline-primary mr-1" @click="openNodeModal(null)"><i class="fas fa-plus"></i> Área/Raiz</button>
               <button class="btn btn-sm btn-outline-secondary" @click="openBulkModal(null)"><i class="fas fa-layer-group"></i> Gerar em massa</button>
@@ -432,6 +436,8 @@
         </div>
       </div>
     </div>
+
+    <StorageHelpModal v-if="showHelp" @close="showHelp = false" />
   </div>
 </template>
 
@@ -441,6 +447,7 @@ import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import StorageNode from '@/components/stock/StorageNode.vue'
+import StorageHelpModal from '@/components/stock/StorageHelpModal.vue'
 
 const toast = useToast()
 const auth = useAuthStore()
@@ -448,6 +455,7 @@ const auth = useAuthStore()
 const isAdmin = computed(() => auth.user?.role === 'admin')
 const canConfig = computed(() => auth.hasAction('endereco_configurar'))
 const canMove = computed(() => auth.hasAction('endereco_movimentar'))
+const showHelp = ref(false)
 
 const tab = ref('estrutura')
 const warehouseId = ref(null)
