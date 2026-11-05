@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-11-05 — CASA — Conta de marketplace DESATIVADA some de todo local operacional — ✅ EM PRODUÇÃO (commit `8bbb18c`)
+
+**Pedido do dono:** conta desativada (`is_active=False`) não deve mais aparecer em NENHUM ponto
+operacional (dropdowns, filtros, listas, estoque). "Sempre manter escondido, em todos os pontos."
+
+**Diagnóstico (varredura back+front):** o front NÃO tem store central de contas — ~13 telas chamam
+`GET /accounts` cada uma por si. O vazamento principal era UM só: `list_accounts` filtrava `is_deleted`
+mas não `is_active`. Jobs de sync e webhooks JÁ filtravam `is_active`.
+
+**Entregue:**
+- **Central** `routers/integrations.py::list_accounts`: param `include_inactive_account` (default False);
+  `_visible` esconde `is_active=False` por padrão → corrige os ~13 dropdowns de uma vez.
+- **Exibição secundária** (`is_active==True`): `atendimento_access.py` (ramo AC), `listings.py`
+  `list_listings` (NÃO o guard de mutação), `stock.py`+`stock_view.load_full_per_account_map(active_only=True)`
+  (Controle de Estoque — opção B: esconde FULL da conta desativada da LEITURA; saldo fica no banco).
+- **Gestão vê tudo** (reativar/config): `IntegrationsView`, `CmigDetailView`, `FullCnpjsView` mandam
+  `include_inactive_account:true`.
+- **NÃO tocado** (contábil/histórico): DRE (filtrar subestimaria receita), captura de NF-e histórica,
+  recompute FULL, lookups por id, guards de mutação, jobs/webhooks.
+
+**Auditoria (quality+consistency):** 1 ALTO corrigido (2ª leitura de FULL na visão principal ainda
+mostrava); DRE mantida íntegra. pytest 385 ok (2 pré-existentes); build front OK.
+
+**Deploy 2026-11-05 (commit `8bbb18c`, sem migration):** FF `d1f78b7..8bbb18c`; build OK (`index-17ffd122.js`);
+PM2 restart; `/docs` 200; `include_inactive_account` no OpenAPI; startup sem ImportError; domínio 200.
+Regra gravada na memória (todo seletor de contas novo nasce filtrando `is_active`). **Consequência a
+lembrar:** pausar anúncio / responder claim aberto de conta recém-desativada exige reativá-la.
+
+---
+
 ## 2026-11-05 — CASA — Shopee na Separação/Carrinho Gaiola (ADR-0005/0020 emendadas) — ✅ EM PRODUÇÃO (commit `d1f78b7`)
 
 **Pedido do dono:** "Em Separar Pedidos, preciso ver os pedidos da SHOPEE que precisam ser separados" —
