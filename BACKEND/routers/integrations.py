@@ -147,6 +147,7 @@ def _serialize_account(acc: MarketplaceAccount, is_owner: bool = False) -> dict:
 @router.get("")
 async def list_accounts(
     include_inactive_cmig: bool = False,
+    include_inactive_account: bool = False,
     cmig_id: int | None = Query(None),
     current_user: User = Depends(require_menu_permission("integrations")),
     db: AsyncSession = Depends(get_db),
@@ -154,8 +155,13 @@ async def list_accounts(
     """Lista as CONTAs visíveis ao usuário. Admin vê todas; AC vê as que
     co-administra ou que pertencem às suas CMIGs.
 
-    Por padrão NÃO inclui contas cujas CMIGs estão inativas (some de todos os
-    seletores). A tela de gestão de Integrações passa include_inactive_cmig=true.
+    Por padrão NÃO inclui contas DESATIVADAS (`is_active=False`) nem contas cujas CMIGs
+    estão inativas — some de todos os seletores operacionais. As telas de GESTÃO/config
+    passam os flags para continuar vendo:
+    - `include_inactive_account=true`: inclui conta desativada (p/ reativar/ver config fiscal).
+      Usado por Integrações (gestão), CmigDetailView (config) e Full/CNPJ (vínculo).
+    - `include_inactive_cmig=true`: inclui conta de CMIG inativa.
+    (Conta arquivada `is_deleted` NUNCA aparece, mesmo com os flags.)
 
     `cmig_id` é um FILTRO ADICIONAL (AND) aplicado por cima da visibilidade de cada
     ramo — NUNCA amplia o que o usuário já poderia ver (ver CRITICAL-2). Usado pela
@@ -167,9 +173,12 @@ async def list_accounts(
         inactive_cmig_ids = {r[0] for r in rows.all()}
 
     def _visible(acc) -> bool:
-        # Exclui conta arquivada (is_deleted) e CMIG inativa; e, quando cmig_id vier,
-        # restringe à CMIG pedida. Só REMOVE itens — jamais amplia a visibilidade do ramo.
+        # Exclui conta arquivada (is_deleted), conta DESATIVADA (is_active=False, salvo
+        # include_inactive_account) e CMIG inativa; e, quando cmig_id vier, restringe à CMIG
+        # pedida. Só REMOVE itens — jamais amplia a visibilidade do ramo.
         if acc.is_deleted:
+            return False
+        if not include_inactive_account and not acc.is_active:
             return False
         if cmig_id is not None and acc.cmig_id != cmig_id:
             return False

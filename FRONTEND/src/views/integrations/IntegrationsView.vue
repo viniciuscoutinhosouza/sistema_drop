@@ -408,9 +408,10 @@ const savingBling  = ref(false)
 async function loadAccounts() {
   loading.value = true
   try {
-    // Gestão de contas vê todas, inclusive as de CMIGs inativas.
+    // Gestão de contas vê TODAS — inclusive CMIGs inativas e contas DESATIVADAS
+    // (is_active=false) — senão não daria para reativá-las nem ver a config fiscal.
     // Quando escopada a uma CMIG, pede ao backend só as contas daquela CMIG.
-    const params = { include_inactive_cmig: true }
+    const params = { include_inactive_cmig: true, include_inactive_account: true }
     if (scopedCmigId.value) params.cmig_id = scopedCmigId.value
     const { data } = await api.get('/accounts', { params })
     accounts.value = data

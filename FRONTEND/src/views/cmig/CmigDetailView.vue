@@ -235,7 +235,8 @@ onMounted(async () => {
   loadNfeConfigs()
   loadAIConfig()
   // Carregar CMs da CMIG
-  const { data: accData } = await api.get('/accounts', { params: { cmig_id: cmigId.value, include_inactive_cmig: true } }).catch(() => ({ data: [] }))
+  // Config da CMIG: mostra TODAS as contas da CMIG, inclusive desativadas (p/ ver/editar a config fiscal).
+  const { data: accData } = await api.get('/accounts', { params: { cmig_id: cmigId.value, include_inactive_cmig: true, include_inactive_account: true } }).catch(() => ({ data: [] }))
   cms.value = Array.isArray(accData) ? accData : (accData?.items || [])
 })
 

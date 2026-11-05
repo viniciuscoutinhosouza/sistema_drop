@@ -211,7 +211,9 @@ async function load() {
 async function loadMeta() {
   const [{ data: c }, { data: a }] = await Promise.all([
     api.get('/cmigs'),
-    api.get('/accounts'),
+    // Vínculo CNPJ↔conta é config/gestão: vê TODAS (desativada E de CMIG inativa) para não quebrar
+    // o editar de um mapeamento existente cuja conta foi desligada (select em branco → zeraria o vínculo).
+    api.get('/accounts', { params: { include_inactive_account: true, include_inactive_cmig: true } }),
   ])
   cmigs.value = Array.isArray(c) ? c : (c?.items || [])
   accounts.value = Array.isArray(a) ? a : []

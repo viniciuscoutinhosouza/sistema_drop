@@ -38,7 +38,10 @@ async def get_accessible_account_ids(db: AsyncSession, user: User) -> list[int]:
             select(MarketplaceAccount.id)
             .join(CMIG, MarketplaceAccount.cmig_id == CMIG.id)
             .join(CMIGAdministrator, CMIGAdministrator.cmig_id == CMIG.id)
-            .where(CMIGAdministrator.user_id == user.id)
+            .where(
+                CMIGAdministrator.user_id == user.id,
+                MarketplaceAccount.is_active == True,  # noqa: E712 — conta desativada some do atendimento (paridade c/ o ramo admin)
+            )
         )
         return [r[0] for r in result.all()]
     raise HTTPException(

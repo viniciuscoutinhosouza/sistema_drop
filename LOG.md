@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-11-05 — fix(accounts): conta de marketplace DESATIVADA some dos locais operacionais
+
+Conta `MarketplaceAccount.is_active=False` deixa de aparecer em dropdowns/filtros/listas/estoque
+operacionais. Estende o padrão existente do `is_deleted` (invariante `is_deleted ⇒ is_active=False`).
+
+- **Central** `routers/integrations.py` `list_accounts`: novo parâmetro `include_inactive_account`
+  (default False). O helper `_visible` passa a esconder `is_active=False` por padrão — corrige de uma
+  vez os ~13 dropdowns do front (não há store central de contas; cada view chama `GET /accounts`).
+- **Secundários** (`is_active==True` na EXIBIÇÃO): `services/atendimento_access.py` (ramo AC, paridade
+  c/ admin), `routers/listings.py` `list_listings` (NÃO o guard de mutação `:121`), `routers/stock.py`
+  + `services/stock_view.py` `load_full_per_account_map(active_only=True)` (Controle de Estoque —
+  opção B do dono: esconde FULL de conta desativada da LEITURA; saldo permanece no banco; ledger/card/
+  recompute ADR-0019 INTOCADOS).
+- **Frontend**: telas de GESTÃO/config (`IntegrationsView`, `CmigDetailView`, `FullCnpjsView`) mandam
+  `include_inactive_account:true` (continuam vendo p/ reativar/editar config/vínculo); operacionais
+  herdam o default (escondem).
+- **Deliberadamente NÃO tocado** (correção/histórico): `dre_service` (DRE é contábil — filtrar
+  subestimaria receita de conta desativada no meio do mês), `invoices.py:1333` (captura de NF-e de
+  pedido histórico), `full_stock_service` recompute, lookups por id de pedido/claim/mensagem, guards
+  de mutação, jobs e webhooks (que já filtravam `is_active`).
+- **Consequências operacionais** (registrar): pausar/encerrar anúncio e responder claim/conversa ABERTA
+  de uma conta recém-desativada exigem REATIVAR a conta (a UI operacional não os mostra mais).
+- Auditoria (quality + consistency): 1 ALTO (2ª leitura de FULL na visão principal) corrigido; DRE
+  mantida íntegra. pytest 385 ok (2 pré-existentes); build front OK.
+
+---
+
 ## 2026-11-04 — feat(separation): Shopee na Separação/Carrinho Gaiola (ADR-0005/0020 emendadas)
 
 A Separação deixa de ser só-ML e inclui **pedidos Shopee** com fluxo completo (ver+separar+`ship_order`+

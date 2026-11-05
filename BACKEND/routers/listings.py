@@ -148,7 +148,10 @@ async def list_listings(
     result = await db.execute(
         select(ProductListing, MarketplaceAccount)
         .join(MarketplaceAccount, ProductListing.account_id == MarketplaceAccount.id)
-        .where(ProductListing.product_id == product_id)
+        .where(
+            ProductListing.product_id == product_id,
+            MarketplaceAccount.is_active == True,  # noqa: E712 — anúncio de conta desativada some da lista (operacional)
+        )
         .order_by(ProductListing.created_at)
     )
     return [_serialize_listing(listing, account) for listing, account in result.all()]

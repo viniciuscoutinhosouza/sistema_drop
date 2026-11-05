@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.cmig import CMIGProduct
 from models.full_stock import FullStock
+from models.integration import MarketplaceAccount
 from models.product import CatalogProduct
 
 
@@ -105,6 +106,7 @@ async def load_full_per_account_map(
     cmig_ids: Iterable[int] = (),
     account_ids: Iterable[int] | None = None,
     follow_pg_link: bool = True,
+    active_only: bool = False,
 ) -> dict[tuple[str, int], dict[int, dict]]:
     """Pré-carrega FullStock em batch.
 
@@ -114,6 +116,11 @@ async def load_full_per_account_map(
     espelhado também sob a chave ('pg', pg_id) — útil quando o anúncio aponta para o PG.
     `follow_pg_link=False` (lista de Controle de Estoque): cada FULL aparece SÓ na sua
     chave real (CMIG), evitando exibir o mesmo FULL na linha PG e na linha CMIG.
+
+    `active_only=True` (SÓ a LEITURA operacional, ex.: Controle de Estoque): esconde o FULL
+    de conta DESATIVADA (`is_active=False`). NÃO usar no card/ledger/recompute (ADR-0019),
+    que leem o saldo real independentemente do status da conta — o saldo permanece no banco,
+    só não é exibido na tela operacional.
     """
     pg_ids = list({int(i) for i in pg_ids if i})
     cmig_ids = list({int(i) for i in cmig_ids if i})
@@ -157,6 +164,11 @@ async def load_full_per_account_map(
         account_ids = list({int(a) for a in account_ids if a})
         if account_ids:
             q = q.where(FullStock.marketplace_account_id.in_(account_ids))
+    if active_only:
+        # Esconde FULL de conta desativada na leitura operacional (não altera saldo no banco).
+        q = q.join(
+            MarketplaceAccount, MarketplaceAccount.id == FullStock.marketplace_account_id
+        ).where(MarketplaceAccount.is_active == True)  # noqa: E712
 
     cmig_requested = set(cmig_ids)
 

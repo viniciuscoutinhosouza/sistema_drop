@@ -113,6 +113,9 @@ async def sync_month(cmig_id: int, year: int, month: int) -> dict:
                 select(MarketplaceAccount.id).where(
                     MarketplaceAccount.cmig_id == cmig_id,
                     MarketplaceAccount.platform == "mercadolivre",
+                    # NÃO filtra is_active: a DRE é demonstrativo contábil. Filtrar aqui
+                    # SUBESTIMARIA receita/tarifa numa CMIG multi-conta se uma conta vendeu
+                    # no mês e foi desativada depois (o ramo ao vivo usaria dados incompletos).
                 )
             )
         ).scalars().all()

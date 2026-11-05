@@ -115,7 +115,10 @@ async def _collect_stock_items(
     full_id_q = (
         select(FullStock.product_type, FullStock.product_id, MarketplaceAccount.id)
         .join(MarketplaceAccount, MarketplaceAccount.id == FullStock.marketplace_account_id)
-        .where(FullStock.qty > 0)
+        .where(
+            FullStock.qty > 0,
+            MarketplaceAccount.is_active == True,  # noqa: E712 — estoque FULL de conta desativada some da LEITURA (opção B); saldo permanece no banco (recompute/replay intocado)
+        )
     )
     if cmig_id is not None:
         full_id_q = full_id_q.where(MarketplaceAccount.cmig_id == cmig_id)
@@ -284,6 +287,7 @@ async def _collect_stock_items(
             cmig_ids=[it["product_id"] for it in items if it["product_type"] == "cmig"],
             account_ids=full_scope_account_ids,
             follow_pg_link=False,
+            active_only=True,  # Controle de Estoque: esconde FULL de conta desativada (opção B do dono)
         )
     for item in items:
         acct_map = full_map.get((item["product_type"], item["product_id"]), {})
