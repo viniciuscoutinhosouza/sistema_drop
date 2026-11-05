@@ -117,3 +117,16 @@ Enums do `get_attribute_tree` (em `attribute_info`, confirmados ao vivo): `input
 2=combo (single) / 3=texto livre / 4-5=multi; `format_type` 2 = quantitativo (número + unidade de
 `attribute_unit_list`). A normalização para o shape do front vive em `shopee_catalog.py`
 (`_normalize_attr`/`_derive_kind`). Categoria da Shopee só publica em **folha** (`has_children=false`).
+
+## Emenda (2026-11-04) — Separação passa a incluir Shopee
+
+Supersede o ponto original "logística fora da separação (picking é só ML)" / "`separation.py` exclui a
+Shopee do picking". Por decisão do dono, a Shopee entra no **Carrinho Gaiola** com **fluxo completo**
+(ver + separar + `ship_order` + etiqueta Shopee + NF-e própria anexada). **A regra de ouro permanece
+intacta e foi verificada pelo trio de auditoria:** toda a costura Shopee entrou por **ramo/rota/função
+nova** — classificador único `_order_bucket`/`_is_shopee`, rota `GET /carts/{id}/orders/{oid}/shopee-label`,
+e o **ponto único `services/shopee_dispatch.py`** (user-agnóstico, em `services/`, não importa routers)
+reusado tanto pela Separação quanto por `routers/shopee_logistics.py` (que passou a **delegar**). Nenhuma
+linha Shopee dentro de bloco `if platform == "mercadolivre"`. Fiscal segue **ANEXAR** o XML da emissão
+própria (ADR-0015/0017), não emitir pela Shopee; DC-e barrado. Detalhes do fluxo/estoque na emenda da
+ADR-0005.

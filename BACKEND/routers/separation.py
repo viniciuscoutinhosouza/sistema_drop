@@ -69,11 +69,62 @@ _SHIPMENT_DONE = ("shipped", "delivered", "not_delivered", "cancelled")
 _STATUS_DONE = ("separated", "shipped", "cancelled")
 
 
+def _is_shopee(order: Order) -> bool:
+    """Pedido Shopee — 3º balde da separação (nem ML-com-shipment, nem manual). Tem logística
+    PRÓPRIA (ship_order + etiqueta Shopee via services.shopee_dispatch), então NUNCA cai no balde
+    'manual' (etiqueta interna). Separação Shopee entrou pela decisão do dono (fluxo completo)."""
+    return order.platform == "shopee"
+
+
 def _is_manual(order: Order) -> bool:
     """Pedido tratado como 'manual' na separação: venda direta ou ML sem shipment (sem etiqueta
-    oficial do ML). Mesmo predicado usado na geração de etiqueta (cart_labels). ML-com-shipment
-    é o único que exige 'Pronto p/ Envio' (ready_to_ship) para entrar na gaiola."""
-    return not (order.platform == "mercadolivre" and order.shipment_id)
+    oficial do ML). Shopee NÃO é manual (tem ramo próprio). Mesmo predicado usado na geração de
+    etiqueta (cart_labels). ML-com-shipment é o único que exige 'Pronto p/ Envio' (ready_to_ship)
+    para entrar na gaiola."""
+    return not _is_shopee(order) and not (order.platform == "mercadolivre" and order.shipment_id)
+
+
+def _order_bucket(order: Order) -> str:
+    """Classificador ÚNICO de balde de etiqueta/despacho: 'ml' (etiqueta oficial por conta),
+    'shopee' (logística Shopee própria) ou 'manual' (etiqueta interna). Rotear SEMPRE por aqui —
+    nunca repetir o predicado inline, senão o pedido Shopee cairia no 'else' manual (violação da
+    regra de ouro ADR-0020: ramo Shopee dentro do bloco ML/manual)."""
+    if order.platform == "mercadolivre" and order.shipment_id:
+        return "ml"
+    if _is_shopee(order):
+        return "shopee"
+    return "manual"
+
+
+def _shopee_dispatched(order: Order) -> bool:
+    """Pedido Shopee já DESPACHADO na Shopee (ship_order feito). Remover/cancelar a gaiola reverteria
+    o status local enquanto o pedido já saiu no marketplace → divergência silenciosa. Bloquear."""
+    return _is_shopee(order) and (order.shipment_status or "") in ("shipped", "delivered")
+
+
+async def _claim_own_emission(db: AsyncSession, order: Order) -> bool:
+    """Claim atômico anti-duplo-clique para EMISSÃO PRÓPRIA (Shopee/manual): marca nfe_status='pending'
+    só se o pedido ainda não tem chave nem emissão em curso. Espelha o claim do ramo ML (a emissão
+    própria não tinha — HIGH da auditoria): em dois POSTs concorrentes, só UM ganha o UPDATE atômico.
+    Preserva a retomada: se a transmissão falhou e foi revertida (nfe_status→None, com invoice_id já
+    criado), um novo clique ganha o claim e `_emit_own_nfe` retoma o rascunho pelo order.invoice_id."""
+    claim = await db.execute(
+        sa_update(Order)
+        .where(Order.id == order.id, Order.nfe_key.is_(None), Order.nfe_status.is_(None))
+        .values(nfe_status="pending")
+    )
+    await db.commit()
+    return getattr(claim, "rowcount", 0) == 1
+
+
+async def _release_own_claim(db: AsyncSession, order: Order) -> None:
+    """Reverte o claim 'pending' quando a emissão própria falhou sem gerar chave (permite reemitir)."""
+    await db.execute(
+        sa_update(Order)
+        .where(Order.id == order.id, Order.nfe_status == "pending", Order.nfe_key.is_(None))
+        .values(nfe_status=None)
+    )
+    await db.commit()
 
 
 def _eligibility_conditions() -> list:
@@ -92,11 +143,12 @@ def _eligibility_conditions() -> list:
         # ML não carimba 'paid'); exigir 'paid' aqui escondia TODOS os pedidos ML. Logo: ML dispensa.
         or_(
             Order.platform == "mercadolivre",  # pago pelo ML (não depende do nosso payment_status)
+            Order.platform == "shopee",        # pago na Shopee (idem — o marketplace confirma o pagto)
             Order.payment_status == "paid",    # manual/demais: exige pago
         ),
-        # Shopee tem despacho próprio (rede Shopee, routers/shopee_logistics.py) — NÃO entra na
-        # Separação/Carrinho Gaiola do ML. Filtro aditivo/protetor (mantém ML + manual + NULL).
-        or_(Order.platform == None, Order.platform != "shopee"),  # noqa: E711
+        # Shopee AGORA entra na Separação (fluxo completo — decisão do dono): picking + ship_order +
+        # etiqueta Shopee por ramo próprio (services.shopee_dispatch). A antiga exclusão por
+        # plataforma foi removida; o já-despachado é barrado pelo shipment_status abaixo.
         Order.shipping_mode != "full",  # exclui FULL e NULL
         or_(
             Order.shipment_status == None,  # noqa: E711
@@ -547,9 +599,11 @@ async def add_orders_to_cart(
         if not order:
             skipped.append(oid)  # não pago / inacessível / já em gaiola / FULL / despachado
             continue
-        # ML-com-shipment exige "Pronto p/ Envio" (etiqueta do ML). Manual (venda direta) já basta
-        # estar pago (elegibilidade) — não tem shipment_status do marketplace.
-        if not _is_manual(order) and order.shipment_status != "ready_to_ship":
+        # ML-com-shipment exige "Pronto p/ Envio" (etiqueta do ML). Shopee pode entrar ainda em
+        # 'handling' (INVOICE_PENDING — a NF-e é emitida/anexada DENTRO da gaiola) e vira
+        # ready_to_ship quando a Shopee valida; o ship_order no despacho revalida. Manual (venda
+        # direta) já basta estar pago (elegibilidade) — não tem shipment_status do marketplace.
+        if _order_bucket(order) == "ml" and order.shipment_status != "ready_to_ship":
             skipped.append(oid)
             continue
 
@@ -615,6 +669,12 @@ async def remove_order_from_cart(
         raise HTTPException(status_code=404, detail="Pedido não está nesta gaiola")
 
     order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if order and _shopee_dispatched(order):
+        raise HTTPException(
+            status_code=409,
+            detail="Pedido Shopee já despachado na Shopee — não pode sair da gaiola (o envio já "
+                   "ocorreu no marketplace).",
+        )
     if order:
         order.picking_cart_id = None
         # Como imprimir etiqueta marca separado, ao remover revertemos o status.
@@ -1039,29 +1099,58 @@ async def deliver_cart(
         )
     now = datetime.now(UTC)
     cart.carrier_name = (body.get("carrier_name") or "").strip() or None
-    cart.status = "delivered"
-    cart.delivered_by = current_user.id
-    cart.delivered_at = now
 
     pcos = (
         await db.execute(select(PickingCartOrder).where(PickingCartOrder.cart_id == cart_id))
     ).scalars().all()
     orders: list[Order] = []
+    failed_ship: list[dict] = []  # Shopee que não despacharam — NÃO marcados shipped (falha alto por pedido)
+    to_debit: list[Order] = []    # SÓ ML/manual: baixa de estoque via confirm_dispatch (ver abaixo)
     for pco in pcos:
         order = (await db.execute(select(Order).where(Order.id == pco.order_id))).scalar_one_or_none()
         if not order:
             continue
+        # Shopee: o despacho REAL é o ship_order na Shopee (irreversível). Garante-o ANTES de marcar
+        # shipped — idempotente (já despachado via 'Etiqueta Shopee' = ok). Falha (ex.: NF-e não
+        # validada) → pedido fica 'separated' e é reportado; não marca shipped, não derruba o lote.
+        if _is_shopee(order):
+            try:
+                from services import shopee_dispatch
+                await shopee_dispatch.ship_if_needed(order, db)
+            except HTTPException as he:
+                failed_ship.append({"order_id": order.id,
+                                    "error": (he.detail if isinstance(he.detail, str) else str(he.detail))[:200]})
+                continue
+            except Exception as exc:  # noqa: BLE001
+                logger.error("deliver_cart ship Shopee FALHOU order=%s: %s", order.id, exc)
+                failed_ship.append({"order_id": order.id, "error": str(exc)[:200]})
+                continue
+            # Shopee NÃO entra no confirm_dispatch: o estoque Shopee é event-sourced — a reserva é
+            # liberada (release_reservation) e o físico debitado pelo REPLAY quando o carrier marca
+            # SHIPPED (webhook_service). Chamar confirm_dispatch aqui logaria 'dispatch' e, no SHIPPED,
+            # o release_reservation (que só reconhece 'unreserve') debitaria a reserva DE NOVO →
+            # reserved_quantity negativo → oversell (CRITICAL da auditoria). Só marca o workflow.
+        else:
+            to_debit.append(order)
         order.status = "shipped"
         order.shipped_at = now
         order.dispatched_at = now
         order.dispatched_by = current_user.id
         orders.append(order)
+
+    # A gaiola só é dada como ENTREGUE se nenhum Shopee ficou pendente de despacho — senão fica
+    # 'separated' p/ o operador resolver (validar NF-e) e reentregar (tudo idempotente no reprocesso).
+    if not failed_ship:
+        cart.status = "delivered"
+        cart.delivered_by = current_user.id
+        cart.delivered_at = now
     await db.commit()
 
-    # Baixa de estoque (confirm_dispatch é idempotente e faz commit próprio)
+    # Baixa de estoque ML/manual (confirm_dispatch é idempotente e faz commit próprio). Shopee fica
+    # de fora (event-sourced) — ver comentário no laço acima.
     from services.stock_reservation_service import confirm_dispatch
     failed: list[int] = []
-    for order in orders:
+    for order in to_debit:
         try:
             await confirm_dispatch(db, order)
         except Exception as exc:
@@ -1071,7 +1160,8 @@ async def deliver_cart(
     return {
         "ok": True,
         "delivered_orders": [o.id for o in orders],
-        "failed_dispatch": failed,  # pedidos shipped sem baixa de estoque — requer reprocesso
+        "failed_dispatch": failed,   # pedidos shipped sem baixa de estoque — requer reprocesso
+        "failed_ship": failed_ship,  # Shopee não despachados (gaiola segue 'separated' até resolver)
     }
 
 
@@ -1094,8 +1184,19 @@ async def cancel_cart(
     pcos = (
         await db.execute(select(PickingCartOrder).where(PickingCartOrder.cart_id == cart_id))
     ).scalars().all()
+    loaded = []
     for pco in pcos:
         order = (await db.execute(select(Order).where(Order.id == pco.order_id))).scalar_one_or_none()
+        loaded.append((pco, order))
+    # Guard: não cancelar gaiola com Shopee já despachado (reverter status ≠ realidade no marketplace).
+    dispatched = [o.id for _pco, o in loaded if o and _shopee_dispatched(o)]
+    if dispatched:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Gaiola tem pedido(s) Shopee já despachado(s) na Shopee {dispatched} — não pode "
+                   "ser cancelada. Conclua a entrega desses pedidos.",
+        )
+    for pco, order in loaded:
         if order:
             order.picking_cart_id = None
             if order.status == "separated":
@@ -1171,6 +1272,7 @@ async def cart_label_jobs(
 
     by_acc: dict[int, list[int]] = {}
     manual: list[int] = []
+    shopee: list[int] = []
     blocked = 0
     for pco in pcos:
         if pco.label_printed_at is not None:
@@ -1181,8 +1283,11 @@ async def cart_label_jobs(
         if await _scan_blocks_label(db, cart, pco):
             blocked += 1
             continue
-        if order.platform == "mercadolivre" and order.shipment_id:
+        bucket = _order_bucket(order)
+        if bucket == "ml":
             by_acc.setdefault(order.account_id, []).append(order.id)
+        elif bucket == "shopee":
+            shopee.append(order.id)
         else:
             manual.append(order.id)
 
@@ -1194,6 +1299,13 @@ async def cart_label_jobs(
         jobs.append({
             "kind": "ml", "account_id": acc_id, "account_name": _account_label(acc),
             "order_ids": ids, "count": len(ids),
+        })
+    if shopee:
+        # Shopee: gerar a etiqueta DESPACHA na Shopee (ship_order) — ramo próprio no front
+        # (chama a rota Shopee por pedido), não o /labels.pdf do ML/manual.
+        jobs.append({
+            "kind": "shopee", "account_id": None, "account_name": "Shopee (despacha + etiqueta)",
+            "order_ids": shopee, "count": len(shopee),
         })
     if manual:
         jobs.append({
@@ -1241,7 +1353,7 @@ async def cart_labels(
         order = await _load_order_scoped(db, pco.order_id, wh)
         if not order:
             continue
-        is_manual = not (order.platform == "mercadolivre" and order.shipment_id)
+        is_manual = _is_manual(order)  # exclui Shopee (ramo próprio)
         if order_id is None:
             # lote (account/manual): não reimprime etiqueta já impressa (evita re-fetch no ML)
             if pco.label_printed_at is not None:
@@ -1257,6 +1369,16 @@ async def cart_labels(
     if not targets:
         raise HTTPException(status_code=404, detail="Sem pedidos para etiquetar")
 
+    # Shopee NÃO sai por aqui: a etiqueta Shopee só existe APÓS o ship_order (despacha na Shopee) e
+    # vem do carrier (rota própria /carts/{id}/orders/{oid}/shopee-label). Falha alto se vier um.
+    shopee_ids = [o.id for _, o in targets if _is_shopee(o)]
+    if shopee_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Pedido(s) Shopee {shopee_ids} têm etiqueta própria (despacho na Shopee) — "
+                   "use a ação 'Etiqueta Shopee', não a etiqueta ML/manual.",
+        )
+
     # Gate de pagamento (regra do dono): a etiqueta só pode ser impressa após o pagamento confirmado.
     unpaid = [o.id for _, o in targets if (o.payment_status or "") != "paid"]
     if unpaid:
@@ -1266,7 +1388,7 @@ async def cart_labels(
         )
 
     ml = [(p, o) for p, o in targets if o.platform == "mercadolivre" and o.shipment_id]
-    manual_t = [(p, o) for p, o in targets if not (o.platform == "mercadolivre" and o.shipment_id)]
+    manual_t = [(p, o) for p, o in targets if _is_manual(o)]  # Shopee já barrado acima
 
     if ml:
         accs = {o.account_id for _, o in ml}
@@ -1319,6 +1441,101 @@ async def cart_labels(
     )
 
 
+@router.get("/carts/{cart_id}/orders/{order_id}/shopee-label")
+async def cart_shopee_label(
+    cart_id: int,
+    order_id: int,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Despacha o pedido SHOPEE da gaiola e devolve a etiqueta (PDF humano ou ZPL térmico Shopee
+    Xpress). Diferente do ML, GERAR A ETIQUETA = DESPACHAR na Shopee (ship_order, irreversível):
+    gate NF-e validada → ship_order (idempotente) → etiqueta. Pré-requisito: NF-e emitida e anexada
+    (passo 'Emitir NF-e' da gaiola) — senão falha alto (400 com mensagem). 202 enquanto a etiqueta
+    está sendo gerada (o pedido JÁ foi despachado; clicar de novo baixa a etiqueta)."""
+    cart = await _get_cart_scoped(db, cart_id, current_user)
+    wh = _order_warehouse_clause(current_user)
+    pco = (
+        await db.execute(select(PickingCartOrder).where(
+            PickingCartOrder.cart_id == cart_id, PickingCartOrder.order_id == order_id))
+    ).scalar_one_or_none()
+    if not pco:
+        raise HTTPException(status_code=404, detail="Pedido não está nesta gaiola")
+    order = await _load_order_scoped(db, order_id, wh)
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if not _is_shopee(order):
+        raise HTTPException(status_code=400, detail="Rota exclusiva de pedido Shopee")
+    if await _scan_blocks_label(db, cart, pco):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Pedido #{order.id}: bipe todos os itens antes de despachar/etiquetar",
+        )
+
+    from services import shopee_dispatch
+    resolved = await shopee_dispatch.dispatch_and_label(order, db)
+    if resolved is None:
+        return Response(
+            status_code=202,
+            content='{"status":"processing","detail":"Shopee gerando a etiqueta — o pedido já foi '
+                    'despachado; clique de novo em instantes."}',
+            media_type="application/json",
+        )
+    data, media, ext = resolved
+    # Despachado + etiqueta pronta → marca a etapa ETIQUETA (igual ao ML: 'label_printed').
+    now = datetime.now(UTC)
+    pco.label_printed_at = now
+    pco.label_printed_by = current_user.id
+    if (order.status or "") in ("downloaded", "paid", "label_generated"):
+        order.status = "label_printed"
+    await db.commit()
+    disp = "inline" if media == "application/pdf" else "attachment"
+    return Response(
+        content=data, media_type=media,
+        headers={"Content-Disposition": f'{disp}; filename="shopee-{order.id}.{ext}"'},
+    )
+
+
+async def _shopee_attach_invoice(
+    db: AsyncSession, order: Order, *, account=None, token: str | None = None
+) -> dict:
+    """Anexa a NF-e própria (já emitida) ao pedido Shopee — opção A (automático na gaiola, o operador
+    não vai à tela Fiscal). Idempotente/best-effort: devolve o status pro relatório, NUNCA derruba o
+    lote. 'sem_nfe' = NF-e ainda não autorizada (anexa num próximo clique)."""
+    from services import shopee_service
+    from services.fiscal.order_docs import resolve_nfe_xml
+    from services.shopee_auth import get_valid_shopee_token
+
+    if order.shopee_invoice_status == "validated":
+        return {"shopee_invoice": "validated"}
+    resolved = await resolve_nfe_xml(db, order)
+    if not resolved:
+        return {"shopee_invoice": "sem_nfe"}
+    xml_bytes, chave, kind = resolved
+    if kind == "dce":
+        return {"shopee_invoice_error": "DC-e (conta CPF) não é anexável na Shopee (só NF-e modelo 55)"}
+    if account is None or token is None:
+        account = (
+            await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+        ).scalar_one_or_none()
+        if not account or account.platform != "shopee":
+            return {"shopee_invoice_error": "conta Shopee não encontrada"}
+        token = await get_valid_shopee_token(account, db)
+    try:
+        await shopee_service.upload_invoice_doc(
+            token, account.shop_id, order.platform_order_id, xml_bytes,
+            filename=f"{chave or order.platform_order_id}.xml", file_type="nfe", mime="application/xml")
+    except HTTPException as he:
+        return {"shopee_invoice_error": (he.detail if isinstance(he.detail, str) else str(he.detail))[:200]}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("shopee upload_invoice order=%s: %s", order.id, exc)
+        return {"shopee_invoice_error": str(exc)[:200]}
+    order.shopee_invoice_status = "uploaded"
+    order.shopee_invoice_uploaded_at = datetime.now(UTC)
+    await db.commit()
+    return {"shopee_invoice": "uploaded"}
+
+
 @router.post("/carts/{cart_id}/emit-nfe")
 async def cart_emit_nfe(
     cart_id: int,
@@ -1344,19 +1561,65 @@ async def cart_emit_nfe(
     for pco in pcos:
         if only and pco.order_id not in only:
             continue
-        if pco.label_printed_at is None:
-            results.append({"order_id": pco.order_id, "skipped": "sem etiqueta impressa"})
-            continue
         order = await _load_order_scoped(db, pco.order_id, wh)
         if not order:
             continue
+        # ML/manual: a NF-e vem DEPOIS da etiqueta (exige etiqueta impressa). Shopee é o inverso —
+        # a etiqueta só sai pós-ship, que exige NF-e validada —, então Shopee NÃO exige etiqueta aqui.
+        if not _is_shopee(order) and pco.label_printed_at is None:
+            results.append({"order_id": pco.order_id, "skipped": "sem etiqueta impressa"})
+            continue
         if order.nfe_key or order.nfe_status in ("authorized", "pending", "in_process"):
-            results.append({"order_id": order.id, "nfe_status": order.nfe_status, "already": True})
+            # Shopee: mesmo com a NF-e já autorizada do nosso lado, garante o ANEXO na Shopee (opção A).
+            if _is_shopee(order):
+                r = {"order_id": order.id, "nfe_status": order.nfe_status, "already": True}
+                r.update(await _shopee_attach_invoice(db, order))
+                results.append(r)
+            else:
+                results.append({"order_id": order.id, "nfe_status": order.nfe_status, "already": True})
+            continue
+        # Pedido SHOPEE: emissão PRÓPRIA SEFAZ (como o manual) + anexa automaticamente na Shopee
+        # (opção A). ANTES, probe na Shopee: se a nota já está validada (loja Invoice Issuer, em que a
+        # própria Shopee emite), NÃO reemite — evita NF-e duplicada. Falha-alto por pedido.
+        if _is_shopee(order):
+            try:
+                from services import shopee_dispatch
+                acc, token = await shopee_dispatch.resolve_account_token(db, order)
+                if await shopee_dispatch.invoice_is_validated(order, token, acc.shop_id, db):
+                    results.append({"order_id": order.id, "mode": "shopee",
+                                    "shopee_invoice": "validated", "already": True})
+                    continue
+                # Claim atômico anti-duplo-clique (a emissão própria não tinha — HIGH da auditoria).
+                if not await _claim_own_emission(db, order):
+                    results.append({"order_id": order.id, "skipped": "emissão já em andamento"})
+                    continue
+                try:
+                    from routers.orders import _emit_own_nfe
+                    out = await _emit_own_nfe(order, None, current_user, db, confirm=True)
+                except Exception:
+                    await _release_own_claim(db, order)
+                    raise
+                r = {"order_id": order.id, "mode": "shopee", "nfe_status": out.get("nfe_status"),
+                     "ambiente": out.get("ambiente")}
+                if out.get("warnings"):
+                    r["warnings"] = out["warnings"]
+                r.update(await _shopee_attach_invoice(db, order, account=acc, token=token))
+                results.append(r)
+            except HTTPException as he:
+                detail = he.detail if isinstance(he.detail, str) else str(he.detail)
+                results.append({"order_id": order.id, "error": detail[:300]})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("cart_emit_nfe (shopee) order=%s: %s", order.id, exc)
+                results.append({"order_id": order.id, "error": str(exc)[:200]})
             continue
         # Pedido MANUAL (venda direta): emissão PRÓPRIA SEFAZ. Reusa o roteador oficial
         # (`_emit_own_nfe`, idempotente por invoice_id — NÃO usa o claim ML). confirm=True transmite.
         # Falha-alto POR PEDIDO (CMIG sem cert/config etc.) sem derrubar o lote.
         if _is_manual(order):
+            # Claim atômico anti-duplo-clique (a emissão própria não tinha — HIGH da auditoria).
+            if not await _claim_own_emission(db, order):
+                results.append({"order_id": order.id, "skipped": "emissão já em andamento"})
+                continue
             try:
                 from routers.orders import _emit_own_nfe
                 out = await _emit_own_nfe(order, None, current_user, db, confirm=True)
@@ -1366,9 +1629,11 @@ async def cart_emit_nfe(
                     r["warnings"] = out["warnings"]
                 results.append(r)
             except HTTPException as he:
+                await _release_own_claim(db, order)
                 detail = he.detail if isinstance(he.detail, str) else str(he.detail)
                 results.append({"order_id": order.id, "error": detail[:300]})
             except Exception as exc:  # noqa: BLE001
+                await _release_own_claim(db, order)
                 logger.warning("cart_emit_nfe (própria) order=%s: %s", order.id, exc)
                 results.append({"order_id": order.id, "error": str(exc)[:200]})
             continue
@@ -1518,6 +1783,16 @@ async def _bundle_ensure_nfe(db: AsyncSession, entries: list) -> None:
     Reusa o claim atômico anti-dupla de cart_emit_nfe + _sync_nfe para trazer o
     resultado (a nota pode já sair autorizada)."""
     for _pco, order in entries:
+        # Shopee: garante o ANEXO da NF-e própria na Shopee (upload idempotente/best-effort). A
+        # EMISSÃO em si vem do passo 'Emitir NF-e' (precisa do usuário) — aqui só anexamos o que já
+        # foi autorizado. Não bloqueia o bundle; 'sem_nfe' é tratado dentro do helper.
+        if _is_shopee(order):
+            if order.shopee_invoice_status != "validated":
+                try:
+                    await _shopee_attach_invoice(db, order)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("bundle shopee attach order=%s: %s", order.id, exc)
+            continue
         if order.nfe_key or order.nfe_status in ("authorized", "pending", "in_process"):
             continue
         if order.platform != "mercadolivre":
@@ -1664,6 +1939,7 @@ async def cart_bundle(
     included: list[tuple[PickingCartOrder, Order, str, bytes, bytes]] = []
     ml_by_acc: dict[int, list[Order]] = {}
     manual_orders: list[Order] = []
+    shopee_orders: list[Order] = []
     for pco, order in entries:
         label = f"Pedido #{order.id} ({order.buyer_name or 's/ nome'})"
         docs = await _bundle_docs(db, order)
@@ -1676,6 +1952,8 @@ async def cart_bundle(
             avisos.append(f"{label}: bipagem incompleta — etiqueta não gerada; NF-e incluída.")
         elif order.platform == "mercadolivre" and order.shipment_id:
             ml_by_acc.setdefault(order.account_id, []).append(order)
+        elif _is_shopee(order):
+            shopee_orders.append(order)
         else:
             manual_orders.append(order)
 
@@ -1723,6 +2001,28 @@ async def cart_bundle(
             label_ok.update(o.id for o in manual_orders)
         except Exception as exc:  # noqa: BLE001
             avisos.append(f"Etiquetas manuais: falha ({str(exc)[:120]}).")
+    # Shopee: GERAR A ETIQUETA = DESPACHAR (ship_order). Best-effort por pedido — a etiqueta (PDF ou
+    # ZPL Shopee Xpress) vem do carrier; None = ainda gerando (baixar o pacote de novo); erro (ex.:
+    # NF-e não validada) vira aviso, sem derrubar o ZIP. Ramo próprio (regra de ouro ADR-0020).
+    for order in shopee_orders:
+        try:
+            from services import shopee_dispatch
+            resolved = await shopee_dispatch.dispatch_and_label(order, db)
+        except HTTPException as he:
+            det = he.detail if isinstance(he.detail, str) else str(he.detail)
+            avisos.append(f"Pedido Shopee #{order.id}: {det[:160]}")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            avisos.append(f"Pedido Shopee #{order.id}: falha no despacho/etiqueta ({str(exc)[:120]}).")
+            continue
+        if resolved is None:
+            avisos.append(
+                f"Pedido Shopee #{order.id}: despachado; etiqueta ainda em geração — baixe o pacote de novo em instantes."
+            )
+            continue
+        data, _media, ext = resolved
+        label_files.append((f"Etiquetas/shopee_{order.id}.{ext}", data))
+        label_ok.update({order.id})
 
     # 3b) Declaração de Conteúdo (postal, ZPL .txt) por pedido — a MESMA da tela de Pedidos,
     # para que o Carrinho Gaiola não fique com comportamento divergente. Best-effort.

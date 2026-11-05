@@ -92,8 +92,19 @@ function askDeliver(c) { deliverModal.cart = c; deliverModal.carrier = ''; deliv
 
 async function confirmDeliver() {
   try {
-    await api.post(`/separation/carts/${deliverModal.cart.id}/deliver`, { carrier_name: deliverModal.carrier })
-    toast.success('Gaiola entregue à transportadora')
+    const { data } = await api.post(`/separation/carts/${deliverModal.cart.id}/deliver`, { carrier_name: deliverModal.carrier })
+    const fship = data.failed_ship || []   // Shopee não despachados (NF-e não validada, fora de janela…)
+    const fdisp = data.failed_dispatch || []  // ML/manual sem baixa de estoque
+    // Falhar alto, nunca em silêncio: se algo pendente, a gaiola NÃO foi marcada entregue (segue
+    // em "Aguardando coleta") — o operador precisa ver o porquê e reprocessar.
+    if (fship.length) {
+      const motivos = fship.map(f => `#${f.order_id}: ${f.error || 'falha no despacho'}`).join(' | ')
+      toast.warning(`Gaiola NÃO entregue — ${fship.length} pedido(s) Shopee não despachado(s). Resolva e entregue de novo. ${motivos}`.slice(0, 400))
+    } else if (fdisp.length) {
+      toast.warning(`Gaiola entregue, mas ${fdisp.length} pedido(s) ficaram sem baixa de estoque: ${fdisp.join(', ')} — requer reprocesso.`)
+    } else {
+      toast.success('Gaiola entregue à transportadora')
+    }
     deliverModal.show = false
     await load()
   } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao entregar') }

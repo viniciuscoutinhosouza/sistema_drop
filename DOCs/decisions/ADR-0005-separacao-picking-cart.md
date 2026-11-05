@@ -142,3 +142,28 @@ mesmo gatilho e no mesmo ramo **não-FULL** do débito escalar — nunca no `/se
 (`product_allocations.qty_units`), **nunca** o saldo escalar; é best-effort e **não derruba o despacho**
 (espelha o `failed_dispatch`). O retorno ao vendável (`confirm_pending_return`/`validate_return_items`
 aprovado) credita o endereço de volta. Ponto único `services/storage_debit_service.py`.
+
+## Emenda (2026-11-04) — Shopee na Separação
+
+A separação deixa de ser exclusiva de ML/manual e passa a incluir **pedidos Shopee** (decisão do dono —
+fluxo completo: ver + separar + despachar + etiqueta + NF-e). Classificador **único** `_order_bucket`
+roteia 3 baldes — `ml` / `shopee` / `manual` (e `_is_manual` deixa de englobar Shopee). O balde `shopee`
+tem logística **própria** (ponto único `services/shopee_dispatch.py`, reusado também por
+`routers/shopee_logistics.py`):
+
+- **Ordem invertida vs ML:** a NF-e é **emissão própria SEFAZ** + **anexada na Shopee** (opção A,
+  automática no passo "Emitir NF-e" da gaiola) ANTES da etiqueta — porque a etiqueta Shopee só sai
+  **pós-`ship_order`**, que exige NF-e validada pela Shopee (BR). **Gerar a etiqueta Shopee = despachar**
+  (`ship_order`, irreversível), via rota própria `GET /carts/{id}/orders/{oid}/shopee-label` (202
+  enquanto gera). DC-e (CPF, modelo 99) **não** é anexável na Shopee.
+- **Estoque (invariante ADR-0004/0019 INTOCADO):** o `deliver_cart` NÃO chama `confirm_dispatch` para
+  Shopee — o estoque Shopee é **event-sourced** (reserva liberada + físico debitado pelo replay quando o
+  carrier marca SHIPPED, via `webhook_service`). Chamar `confirm_dispatch` causaria dupla baixa da
+  reserva (`reserved_quantity` negativo). ML/manual seguem com `confirm_dispatch`.
+- **Falha-alto por pedido:** no `deliver_cart`, um Shopee que não despacha (ex.: NF-e não validada) fica
+  `separated`, é reportado em `failed_ship[]` e **a gaiola NÃO vira `delivered`** (operador resolve e
+  reentrega — idempotente). Guards novos (`_shopee_dispatched`): remover/cancelar gaiola é **bloqueado
+  (409)** se o Shopee já foi despachado. Claim atômico anti-duplo-clique também na emissão PRÓPRIA.
+
+Regra de ouro ADR-0020 preservada: toda a costura Shopee entrou por ramo/rota/função nova, nunca dentro
+de `if platform == "mercadolivre"`.

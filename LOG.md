@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-11-04 — feat(separation): Shopee na Separação/Carrinho Gaiola (ADR-0005/0020 emendadas)
+
+A Separação deixa de ser só-ML e inclui **pedidos Shopee** com fluxo completo (ver+separar+`ship_order`+
+etiqueta+NF-e própria anexada) — decisão do dono. Regra de ouro ADR-0020 intacta (tudo por ramo/rota/
+função nova; nada em `if platform=='mercadolivre'`).
+
+- **Novo `services/shopee_dispatch.py`** (ponto único, user-agnóstico, não importa routers): gate NF-e
+  validada → `ship_order` (idempotente) → etiqueta; `normalize_label`. `routers/shopee_logistics.py`
+  passou a **delegar** (fim das cópias).
+- **`routers/separation.py`**: classificador único `_order_bucket` (ml/shopee/manual); elegibilidade
+  inclui Shopee; rota `GET /carts/{id}/orders/{oid}/shopee-label` (gerar etiqueta = **despachar**, 202 se
+  gerando); `cart_emit_nfe` ramo Shopee (emite própria + **anexa automático na Shopee** — opção A; probe
+  anti-duplicata p/ Invoice Issuer; claim atômico anti-duplo-clique); `_bundle_ensure_nfe`+`bundle.zip`
+  ramo Shopee; `deliver_cart` Shopee (ship antes de shipped; **NÃO** chama `confirm_dispatch` p/ Shopee —
+  estoque event-sourced; `failed_ship` não derruba o lote; gaiola só `delivered` se sem falha); guards
+  anti-remover/cancelar Shopee já despachado.
+- **Front**: `printShopeeLabel` (202/PDF/ZPL), ramos Shopee em etiqueta/NF-e/DANFE, botão NF-e liberado
+  pré-etiqueta p/ Shopee, `CartsListView` surfacea `failed_ship` (falha-alto), HelpModal atualizado.
+- **Auditoria (trio):** 1 CRÍTICO (dupla baixa da reserva no deliver) + 1 HIGH (dupla NF-e própria
+  concorrente) corrigidos; ADR-checker CONFORME. pytest 385 ok (2 pré-existentes) + 15 testes novos;
+  build front OK. **A validar em produção** (ciclo Shopee real).
+
+---
+
 ## 2026-11-03 — feat(estoque): Rastreio por caixa física — Endereçamento Fase 3c (ADR-0039)
 
 A etiqueta/QR (`storage_box_labels`, já uma caixa física) ganha CICLO DE VIDA e vira unidade movível de

@@ -31,6 +31,13 @@
           <span class="arr">›</span>
           <div class="step"><span class="n">5</span><div><b>Etiqueta + despacho</b><br>gera etiqueta e manda p/ transportadora</div></div>
         </div>
+        <p class="small text-muted mt-2 mb-0">
+          <i class="fas fa-store mr-1"></i><strong>Shopee tem a ordem invertida:</strong> primeiro a
+          <strong>NF-e</strong> (o sistema emite a nota própria e <strong>anexa na Shopee</strong>
+          automaticamente) e só depois a <strong>Etiqueta</strong> — e nela, atenção:
+          <strong>gerar a etiqueta da Shopee JÁ DESPACHA o pedido na Shopee</strong> (ato irreversível).
+          Se a Shopee ainda não validou a nota, o botão avisa “clique de novo em instantes”.
+        </p>
       </section>
 
       <!-- 3. Quais pedidos aparecem -->
@@ -41,7 +48,7 @@
           <tbody>
             <tr><td class="f">Pago</td><td>Venda <strong>manual</strong> só aparece <strong>depois de paga</strong>. Pedido do <strong>Mercado Livre</strong> já é pago no marketplace — aparece assim que chega (não depende do pagamento no nosso sistema).</td></tr>
             <tr><td class="f">Não-FULL</td><td>Pedido <strong>FULL</strong> é despachado pela estrutura do ML — <strong>não</strong> entra na separação.</td></tr>
-            <tr><td class="f">Não é Shopee</td><td>A Shopee tem a rede de logística própria dela — fica de fora desta tela.</td></tr>
+            <tr><td class="f">Shopee também entra</td><td>Pedido <strong>Shopee</strong> agora aparece e é separado aqui — com uma diferença no fim do fluxo (veja o aviso abaixo).</td></tr>
             <tr><td class="f">Ainda não despachado</td><td>Se já está <em>a caminho / entregue / cancelado</em>, sai da lista.</td></tr>
             <tr><td class="f">Fora de gaiola</td><td>Assim que você põe o pedido numa gaiola, ele sai de “a separar” e passa a viver dentro do carrinho.</td></tr>
             <tr><td class="f">Do seu galpão</td><td>Cada galpão vê só os próprios pedidos (admin vê todos).</td></tr>

@@ -122,7 +122,7 @@
                 </span>
               </td>
               <td @click.stop>
-                <button v-if="o.nfe_url || o.nfe_key" class="btn btn-xs btn-success" title="Imprimir DANFE" @click="openDanfe(o.id)">
+                <button v-if="o.nfe_url || o.nfe_key" class="btn btn-xs btn-success" title="Imprimir DANFE" @click="openDanfe(o.id, o.platform)">
                   <i class="fas fa-file-invoice mr-1"></i>Emitida
                 </button>
                 <span v-else-if="['pending','in_process'].includes(o.nfe_status)" class="badge badge-info">
@@ -161,7 +161,7 @@
         </table>
       </div>
       <div v-if="!loading && pending.length" class="card-footer py-2 text-muted small">
-        {{ displayedOrders.length }} de {{ pending.length }} pedido(s) pago(s) — selecionáveis: venda direta + ML Pronto p/ Envio
+        {{ displayedOrders.length }} de {{ pending.length }} pedido(s) pago(s) — selecionáveis: venda direta + ML Pronto p/ Envio + Shopee
       </div>
     </div>
 
@@ -313,11 +313,11 @@
               </td>
               <td class="text-right text-nowrap">
                 <button class="btn btn-xs btn-outline-secondary" :disabled="!canPrintLabel(o)"
-                        :title="canPrintLabel(o) ? 'Imprimir etiqueta' : 'Bipe todos os itens primeiro'" @click="printOrderLabel(o)">
+                        :title="!canPrintLabel(o) ? 'Bipe todos os itens primeiro' : (o.platform === 'shopee' ? 'Despachar na Shopee + etiqueta (irreversível — exige NF-e já emitida)' : 'Imprimir etiqueta')" @click="printOrderLabel(o)">
                   <i class="fas fa-tag"></i>
                 </button>
-                <button class="btn btn-xs btn-outline-info ml-1" :disabled="!o.label_printed"
-                        :title="o.label_printed ? 'Emitir + imprimir NF-e' : 'Imprima a etiqueta primeiro'" @click="emitPrintOrderNfe(o)">
+                <button class="btn btn-xs btn-outline-info ml-1" :disabled="o.platform !== 'shopee' && !o.label_printed"
+                        :title="o.platform === 'shopee' ? 'Emitir NF-e + anexar na Shopee (faça ANTES da etiqueta)' : (o.label_printed ? 'Emitir + imprimir NF-e' : 'Imprima a etiqueta primeiro')" @click="emitPrintOrderNfe(o)">
                   <i class="fas fa-file-invoice"></i>
                 </button>
                 <button v-if="o.item_status !== 'separated'" class="btn btn-xs btn-outline-success ml-1"
@@ -693,11 +693,36 @@ async function printCartLabelsBoth(params) {
   saveLabelBoth(pdfResp, zplResp)
 }
 async function printOrderLabel(o) {
+  // Shopee: gerar a etiqueta DESPACHA na Shopee (ship_order) e devolve o waybill do carrier (PDF ou
+  // ZPL). Rota própria — NÃO o /labels.pdf do ML/manual (regra de ouro ADR-0020).
+  if (o.platform === 'shopee') return printShopeeLabel(o.id)
   try {
     await printCartLabelsBoth({ order_id: o.id, layout: layout.value })
     await refreshCart()
   } catch (e) {
     let msg = 'Erro ao gerar etiqueta'
+    try { msg = JSON.parse(await e.response.data.text()).detail || msg } catch { /* ignore */ }
+    toast.error(msg)
+  }
+}
+// Shopee: despacha (ship_order) + baixa a etiqueta do carrier. 202 = despachado mas etiqueta ainda
+// gerando (clicar de novo). Erro (ex.: NF-e não validada na Shopee) aparece claro (falha alto).
+async function printShopeeLabel(orderId) {
+  try {
+    const resp = await api.get(
+      `/separation/carts/${activeCart.value.id}/orders/${orderId}/shopee-label`,
+      { responseType: 'blob' })
+    if (resp.status === 202) {
+      toast.info(`Shopee #${orderId}: despachado — etiqueta sendo gerada. Clique de novo em instantes.`)
+      await refreshCart()
+      return
+    }
+    const isPdf = (resp.headers['content-type'] || '').includes('pdf')
+    openAndSaveBlobResponse(resp, `shopee-${orderId}.${isPdf ? 'pdf' : 'zpl'}`,
+      isPdf ? 'application/pdf' : 'application/octet-stream')
+    await refreshCart()
+  } catch (e) {
+    let msg = 'Erro ao despachar/etiquetar o pedido Shopee'
     try { msg = JSON.parse(await e.response.data.text()).detail || msg } catch { /* ignore */ }
     toast.error(msg)
   }
@@ -708,6 +733,11 @@ async function printAllLabels() {
     const jobs = data.jobs || []
     if (!jobs.length) return toast.warning('Nenhuma etiqueta pronta para imprimir (bipe os pedidos no modo bipagem).')
     for (const job of jobs) {
+      if (job.kind === 'shopee') {
+        // Shopee: cada pedido despacha + baixa a etiqueta própria (não combina por conta como o ML).
+        for (const oid of (job.order_ids || [])) await printShopeeLabel(oid)
+        continue
+      }
       const params = job.kind === 'manual' ? { manual: true, layout: layout.value } : { account_id: job.account_id }
       await printCartLabelsBoth(params)
     }
@@ -717,15 +747,30 @@ async function printAllLabels() {
 }
 
 // ── NF-e na gaiola ──
-async function openDanfe(orderId) {
+async function openDanfe(orderId, platform) {
+  // Shopee tem rota de NF-e própria (inclui a nota da emissão própria anexada à Shopee). M11.
+  if (platform === 'shopee') { await openPdf(`/shopee/orders/${orderId}/nfe`, 'get', null, { kind: 'danfe' }); return }
   await openPdf(`/separation/orders/${orderId}/danfe`, 'get')
 }
 async function emitPrintOrderNfe(o) {
   try {
-    await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, { order_ids: [o.id] })
-    // sincroniza/marca e descobre quais já têm nota
-    const { data } = await api.get(`/separation/carts/${activeCart.value.id}/nfe`, { params: { order_id: o.id, mark: 1 } })
-    const ready = (data.nfe || []).filter(n => n.nfe_key || n.nfe_url)
+    const { data } = await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, { order_ids: [o.id] })
+    // Shopee: emite a NF-e própria + ANEXA automaticamente na Shopee (opção A). Sem etiqueta antes
+    // (a etiqueta Shopee só sai pós-ship). Reporta o status do anexo.
+    if (o.platform === 'shopee') {
+      const r = (data.results || [])[0] || {}
+      if (r.error) { toast.error(`NF-e Shopee #${o.id}: ${r.error}`); await refreshCart(); return }
+      const inv = r.shopee_invoice
+      if (inv === 'uploaded' || inv === 'validated') toast.success(`NF-e do #${o.id} emitida e anexada na Shopee (${inv}). Agora gere a etiqueta (despacha).`)
+      else if (inv === 'sem_nfe') toast.info(`NF-e do #${o.id} solicitada — a anexação na Shopee ocorre assim que a nota for autorizada.`)
+      else if (r.shopee_invoice_error) toast.warning(`NF-e do #${o.id}: anexo na Shopee falhou — ${r.shopee_invoice_error}`)
+      else toast.info(`NF-e do #${o.id} processada.`)
+      await refreshCart()
+      return
+    }
+    // sincroniza/marca e descobre quais já têm nota (ML/manual)
+    const { data: nf } = await api.get(`/separation/carts/${activeCart.value.id}/nfe`, { params: { order_id: o.id, mark: 1 } })
+    const ready = (nf.nfe || []).filter(n => n.nfe_key || n.nfe_url)
     if (ready.length) for (const n of ready) await openDanfe(n.order_id)
     else toast.info(`NF-e do #${o.id} solicitada — DANFE ainda processando no ML`)
     await refreshCart()
@@ -744,10 +789,12 @@ async function cartNfe(confirmFirst) {
     if (ok.length) toast.success(`NF-e processada(s): ${ok.length}`)
     if (errs.length) toast.warning(`${errs.length} com erro: ${errs.map(e => '#' + e.order_id + ' ' + (e.error || '')).join(' | ').slice(0, 300)}`)
     if (!ok.length && !errs.length) toast.info('Nenhum pedido elegível (já com nota ou sem etiqueta).')
-    // Abre DANFE dos ML prontos (emissão própria pode não ter DANFE via esta rota).
+    // Abre DANFE dos ML prontos (emissão própria pode não ter DANFE via esta rota). Shopee é EXCLUÍDO
+    // aqui: a DANFE da Shopee tem rota própria (/shopee/orders/{id}/nfe) — abrir pela rota ML dá 400.
     try {
+      const shopeeIds = new Set((activeCart.value?.orders || []).filter(o => o.platform === 'shopee').map(o => o.id))
       const { data: nf } = await api.get(`/separation/carts/${activeCart.value.id}/nfe`, { params: { mark: 1 } })
-      const ready = (nf.nfe || []).filter(n => n.nfe_key || n.nfe_url)
+      const ready = (nf.nfe || []).filter(n => (n.nfe_key || n.nfe_url) && !shopeeIds.has(n.order_id))
       for (const n of ready) await openDanfe(n.order_id)
     } catch { /* own-emission pode não ter DANFE via ML */ }
     await refreshCart()
