@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-11-04 22:20 — CASA — Fix: telas travando em "carregando" (deadlock no refresh do token) — ✅ EM PRODUÇÃO (commit `d53a478`)
+
+**Relato do dono:** dashboard, dashboard Marketplace e outras telas ficavam só "carregando", não atualizavam.
+
+**Diagnóstico (NÃO era o servidor travado):** backend saudável e respondendo rápido; o `/auth/refresh`
+inclusive respondeu 200 de outro IP. O IP do dono (CASA) tomava **401 em tudo**, inclusive no
+`POST /auth/refresh`. Causa imediata: o **refresh token da sessão CASA venceu** (7 dias parado — o dono
+vinha trabalhando da ESCOL). Causa do "trava" (em vez de ir pro login): **deadlock no interceptor Axios**.
+
+**Bug (causa-raiz):** o refresh era feito pela instância `api` (que tem o interceptor de 401). Quando o
+refresh respondia 401, o PRÓPRIO interceptor interceptava esse 401 e, com `refreshing===true`, enfileirava
+o refresh em vez de deixar o erro subir → o `await` nunca lançava → o `catch` (removeItem + redirect
+`/login`) nunca rodava → tela carregando pra sempre. Cada F5 do dono reiniciava e re-travava (por isso
+vários `auth/refresh 401` no log).
+
+**Fix (EM PRODUÇÃO — commit `d53a478`, só frontend):** o refresh passa a usar **axios PURO** (sem
+interceptor), URL completa `/api/v1/auth/refresh`, em `composables/useApi.js` E no gêmeo
+`stores/auth.js::doRefresh` (estava exportado sem chamador — armadilha pronta). Rede de segurança: guard
+no interceptor que desloga direto se um 401 vier do próprio `/auth/refresh`. Pré-audit (consistency-auditor)
+aprovou + exigiu o fix do gêmeo (incorporado). Verificado: `npm run build` OK; deploy em produção
+(fast-forward `5cbf46b..d53a478`, bundle novo `index-a4b2e161.js` servido pelo nginx, domínio 200,
+backend intacto sem restart). **Follow-up (não bloqueante):** unificar refresh/logout numa fonte única;
+o interceptor atualizar o estado reativo do Pinia (hoje só o localStorage).
+
+---
+
 ## 2026-11-04 20:25 — ESCOL — Fix: Separar Pedidos não mostrava nenhum pedido (ML) + modal de ajuda
 
 **Pedido do dono:** em Logística > Separar Pedidos não aparecia nenhum pedido; e criar um "?" explicando
@@ -352,39 +378,3 @@ erro; `npm run build` OK (bundle novo `SeparationView-*.js`); `/docs` e domínio
 `pick-plan` (`/storage/products/{pt}/{id}/pick-plan` e `/separation/carts/{id}/pick-plan`) ativas no
 OpenAPI. Follow-ups: Fase 2.5 (débito do endereço ao separar/despachar); Fase 3 (inventário por
 endereço, transferência em massa, box tracking).
-
----
-
-## 2026-10-30 23:59 — CASA — Endereçamento Físico de Estoque (Fase 1, ADR-0039) — ✅ EM PRODUÇÃO (31/10, commit `01ac132`)
-
-> **Deploy feito em 2026-10-31:** migrations 173 (15 blocos/0 erro) e 174 (1 bloco/0 erro) aplicadas
-> no Oracle; 5 tabelas + `product_eans.source` + 4 permissões (admin/go) confirmadas; PM2 online sem
-> erro; bundle novo no nginx; `/docs` e domínio 200; rotas `/api/v1/storage` no OpenAPI. **Pendente do
-> dono:** habilitar `endereco_configurar`/`endereco_movimentar` em perfis não-sistema (ex.:
-> `go.harmonyexpress`) pela tela Perfil, se quiser que operadores específicos usem. Próximo: **Fase 2** (picking).
-
-
-**Pedido:** estrutura para organizar fisicamente o galpão, com vários modelos (salas com
-armários/estantes, porta-pallet com estante→coluna→altura→pallet, e misto), hierarquia do maior ao
-menor, **identificação por ramo** (Sala Mickey estantes 1..8; Pateta 1..5; letras A..C ou A..F),
-**caixas** homogêneas/heterogêneas (5×12, ou 3×10+4×8+1×20), produto em vários endereços com ordem
-de picking, FEFO para rastreáveis, **etiqueta/QR nas caixas fechadas** e **código interno** p/
-produto sem EAN. Usabilidade apresentada e aprovada; decisões: aditivo / Fase 1
-(estrutura+alocação+mapa) / caixas padrão+livre. Picking (rota+FEFO) é Fase 2 — regra do dono:
-esgotar caixa aberta primeiro, preservar fechada (facilita contagem).
-
-**Entregue (camada ADITIVA — nada grava saldo; reconcilia com o escalar, balde "sem endereço"):**
-- Migrations **173** (6 tabelas + `product_eans.source`) e **174** (seed permissões, zero-regressão).
-- Backend: `models/storage.py`, `services/storage_service.py` (full_code+recompute subárvore, geração
-  em massa por ramo, EAN-13 interno prefixo 2+DV único, reconciliação), `services/product_scope.py`,
-  `routers/storage.py` (`/api/v1/storage`, 23 rotas), permissões `endereco_configurar`/`endereco_movimentar`.
-- Frontend: `StorageAddressingView.vue` + `StorageNode.vue` recursivo, rota `estoque/enderecamento`,
-  menu Estoque; QR/código de barras via CDN (sem dep no bundle).
-- Escopo por galpão em toda resolução de id (anti-IDOR). ADR-0039 criada; prefixo no CLAUDE.md.
-
-**Auditoria (trio):** ADR-checker APROVADO; consistency 1 CRÍTICO + 2 médios; quality 1 CRÍTICO
-(XSS→roubo de token na impressão de etiqueta) + 2 ALTO + médios — **TODOS corrigidos**. Verificado:
-pytest **327 ok** (2 pré-existentes), build OK.
-
-**Pendente (decisão do dono):** rodar **migrations 173/174** + deploy (DEV não conecta no Oracle —
-wallet ausente — então o caminho real só roda em produção). Nada commitado ainda.
