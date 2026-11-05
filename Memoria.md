@@ -6,6 +6,45 @@
 
 ---
 
+## 2026-11-05 — CASA — Shopee na Separação/Carrinho Gaiola (ADR-0005/0020 emendadas) — ✅ EM PRODUÇÃO (commit `d1f78b7`)
+
+**Pedido do dono:** "Em Separar Pedidos, preciso ver os pedidos da SHOPEE que precisam ser separados" —
+e escolheu o **fluxo completo** (não só ver): separar + despachar + etiqueta + NF-e, dentro da tela.
+
+**Contexto:** a Separação era só-ML de propósito (ADR-0005/0020: "picking é só ML; Shopee tem logística
+própria"). Mudança estrutural (nível Full) revertendo essa decisão, por pedido do dono.
+
+**Entregue (regra de ouro ADR-0020 intacta — tudo por ramo/rota/função nova):**
+- **Novo `services/shopee_dispatch.py`** (ponto único, user-agnóstico, não importa routers): gate NF-e
+  validada → `ship_order` (idempotente) → etiqueta. `shopee_logistics.py` passou a **delegar** (fim das
+  cópias do miolo).
+- **`separation.py`**: classificador único `_order_bucket` (ml/shopee/manual); Shopee entra na
+  elegibilidade; rota `GET /carts/{id}/orders/{oid}/shopee-label` (gerar etiqueta = **DESPACHA** na
+  Shopee; 202 se gerando); `cart_emit_nfe` ramo Shopee (emite própria SEFAZ + **anexa automático na
+  Shopee** — o dono escolheu "upload automático"; probe anti-duplicata p/ loja Invoice Issuer; claim
+  atômico anti-duplo-clique); `_bundle_ensure_nfe`+`bundle.zip` ramo Shopee; `deliver_cart` Shopee (ship
+  antes de shipped; **NÃO** chama `confirm_dispatch` p/ Shopee — estoque event-sourced; `failed_ship` não
+  derruba o lote; gaiola só `delivered` se sem falha); guards anti-remover/cancelar Shopee já despachado.
+- **Front**: `printShopeeLabel` (202/PDF/ZPL), ramos Shopee em etiqueta/NF-e/DANFE, botão NF-e liberado
+  **antes** da etiqueta (ordem Shopee invertida), `CartsListView` surfacea `failed_ship` (falha-alto),
+  HelpModal atualizado.
+
+**Ordem do operador (Shopee):** bipar → **Emitir NF-e** (emite + anexa na Shopee) → **Etiqueta**
+(DESPACHA; se validando, "clique de novo") → **Separar (foto)** → **Entregar**.
+
+**Auditoria (trio):** quality-guardian **1 CRÍTICO** (dupla baixa da reserva no deliver → `reserved_quantity`
+negativo) + **1 HIGH** (dupla NF-e própria concorrente) — **ambos corrigidos**; consistency-auditor (lacunas
+de front corrigidas: deliver silencioso, DANFE Shopee, help modal); adr-consistency-checker **CONFORME**.
+pytest **385 ok** (2 pré-existentes) + 15 testes novos; build front OK.
+
+**Deploy 2026-11-05 (commit `d1f78b7`, sem migration):** fast-forward `d53a478..d1f78b7`; `npm run build`
+OK; PM2 restart; `/docs` 200; rota `/shopee-label` no OpenAPI; bundle novo no nginx; domínio 200.
+**Pendente do dono:** validar com um pedido Shopee REAL (o DEV não fala com a Shopee) — percorrer
+emitir NF-e→etiqueta/ship→entregar→SHIPPED e conferir que `reserved_quantity` NÃO fica negativo.
+**Follow-ups:** pular Declaração de Conteúdo postal p/ Shopee no bundle; botão DANFE Shopee dentro da gaiola.
+
+---
+
 ## 2026-11-04 22:20 — CASA — Fix: telas travando em "carregando" (deadlock no refresh do token) — ✅ EM PRODUÇÃO (commit `d53a478`)
 
 **Relato do dono:** dashboard, dashboard Marketplace e outras telas ficavam só "carregando", não atualizavam.
@@ -316,65 +355,4 @@ incorporados (divergência visível/`over`, desativar etiqueta no decréscimo vi
 anti-corrida, `resolve_base_product`). Verificado: pytest **345 ok** (2 pré-existentes), build front OK.
 Trio sobre a implementação em curso.
 
-**Deploy PENDENTE do dono:** rodar **migration 176** em produção + deploy. Não deployado ainda.
-
----
-
-## 2026-10-31 — CASA — Endereçamento Fase 2.5: Débito do endereço ao despachar (ADR-0039) — ✅ EM PRODUÇÃO (commit `5d70a5b`)
-
-> **Deploy feito em 2026-11-01:** fast-forward `f750a05..5d70a5b`; **migration 175** aplicada (5 blocos/0
-> erro, idempotente; `product_allocation_movements` criada, COUNT=0); PM2 online sem erro; build do front
-> OK; `/docs` e domínio 200; rota `/api/v1/storage/allocation-movements` no OpenAPI. Zero-regressão (tabela
-> nasce vazia; hooks só agem em pedidos despachados após o deploy).
-
-**O que:** a SUGESTÃO da Fase 2 virou MOVIMENTO. Ao DESPACHAR (entrega da gaiola → `confirm_dispatch`,
-mesmo gatilho do saldo escalar) o endereço físico é **debitado**; no RETORNO ao vendável, **creditado**
-de volta. **Nunca grava saldo escalar** (ADR-0004 intocado) — só move `product_allocations.qty_units`
-e loga em `product_allocation_movements` (migration 175).
-
-**Entregue:**
-- `services/storage_debit_service.py` (ponto único): `debit_order_addresses` (staged — o
-  `confirm_dispatch` commita; idempotente por `(order_id,'dispatch')`; atômico plan/apply; best-effort,
-  nunca derruba o despacho) debita na ordem do picking (reusa `storage_picking.order_allocations`),
-  **preservando a variante vendida**, expandindo **kit→componentes**, consumindo **solta antes de abrir
-  caixa** (+desativa `StorageBoxLabel`). `credit_order_addresses` devolve a qtd REAL por produto, **só
-  no ramo aprovado**, idempotente por `return_id`, sem super-creditar (teto = debitado − devolvido).
-- 3 hooks em `stock_reservation_service.py` (`confirm_dispatch` débito; `confirm_pending_return` e
-  `validate_return`/`validate_return_items` crédito). Extrato `GET /storage/allocation-movements`.
-- Migration 175 + `ProductAllocationMovement`. ADR-0039 (Status/Faseamento/Invariante) + emenda ADR-0005.
-
-**Auditoria (trio):** ADR-checker APROVADO; consistency 0 crítico/alto (2 CRÍTICOS+4 ALTOS do plano
-incorporados); quality 0 crítico/alto. 3 MÉDIOS corrigidos (qty_units negativo em over-débito
-cross-target → acumulador por alocação; rollback que descartava estado do chamador → débito virou
-staged sem rollback; `validate_return` não-NF-e passou a creditar o endereço). Follow-up documentado:
-retorno de KIT não credita componentes (espelha o escalar) + reconcile-fix admin. Verificado: pytest
-**345 ok** (2 pré-existentes em test_orders).
-
-**Deploy PENDENTE do dono:** rodar **migration 175** em produção + deploy do backend. Sem migration o
-endpoint/hook não funcionam. Não deployado ainda.
-
----
-
-## 2026-10-31 — CASA — Endereçamento Fase 2: Picking por endereço (ADR-0039) — ✅ EM PRODUÇÃO (commit `f750a05`)
-
-**O que:** a lista de separação e a bipagem do Carrinho Gaiola passam a dizer **onde pegar cada item
-e em que ordem** — SUGESTÃO (não debita; débito fica p/ Fase 2.5, conforme decisão do dono).
-
-**Entregue:**
-- `services/storage_picking.py` (ponto único `pick_plan_for` + ordenação pura `order_allocations`):
-  **FEFO → `pick_order` → caixa aberta → `pick_sequence` → `full_code`**. FEFO = mesmo ORDER BY do
-  débito de lote (ADR-0027); alocação rastreável sem lote vai ao fim; inclui alocações de variante.
-- Rotas de leitura escopadas: `GET /storage/products/{pt}/{id}/pick-plan` e
-  `GET /separation/carts/{id}/pick-plan`. Coluna "Endereço (ordem)" no PDF + painel "Rota de picking"
-  na bipagem (`SeparationView.vue`). `get_cart` intocado. Anotação blindada (try/except — nunca
-  derruba a separação). **Sem migration** (só leitura).
-
-**Auditoria (trio):** ADR aprovado; consistency 0 crítico/alto; quality 0 crítico/alto (1 MÉDIO de
-blindagem corrigido). Verificado: pytest **336 ok**, build OK. ADR-0039 Fase 2 + emenda ADR-0005.
-
-**Deploy (feito 2026-10-31):** commit `f750a05` em produção (`/home/ubuntu/app`, fast-forward
-`01ac132..f750a05`); **sem migration** (Fase 2 é só leitura). PM2 `sistema-drop-backend` online sem
-erro; `npm run build` OK (bundle novo `SeparationView-*.js`); `/docs` e domínio **200**; as 2 rotas
-`pick-plan` (`/storage/products/{pt}/{id}/pick-plan` e `/separation/carts/{id}/pick-plan`) ativas no
-OpenAPI. Follow-ups: Fase 2.5 (débito do endereço ao separar/despachar); Fase 3 (inventário por
-endereço, transferência em massa, box tracking).
+**Deploy feito em 2026-11-01** (commit `0e4978e` + migration 176) — ver cabeçalho desta entrada.
