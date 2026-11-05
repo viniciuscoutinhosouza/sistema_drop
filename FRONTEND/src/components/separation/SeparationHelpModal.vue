@@ -17,27 +17,53 @@
         </p>
       </section>
 
-      <!-- 2. O fluxo -->
+      <!-- 2. O fluxo — separado por marketplace (a ordem muda!) -->
       <section>
         <h6 class="hl"><i class="fas fa-route text-info mr-1"></i>O fluxo, do pedido ao despacho</h6>
-        <div class="flow small">
-          <div class="step"><span class="n">1</span><div><b>Pedido elegível</b><br>entra na lista “Pedidos a separar”</div></div>
-          <span class="arr">›</span>
-          <div class="step"><span class="n">2</span><div><b>Nova Gaiola</b><br>marque os pedidos e crie o carrinho</div></div>
-          <span class="arr">›</span>
-          <div class="step"><span class="n">3</span><div><b>Separar / bipar</b><br>recolhe os produtos pela rota</div></div>
-          <span class="arr">›</span>
-          <div class="step"><span class="n">4</span><div><b>NF-e</b><br>emite a nota fiscal</div></div>
-          <span class="arr">›</span>
-          <div class="step"><span class="n">5</span><div><b>Etiqueta + despacho</b><br>gera etiqueta e manda p/ transportadora</div></div>
+        <p class="small mb-1">Os passos 1-3 são iguais; a diferença está no fim — <strong>a ordem de NF-e e
+          etiqueta muda conforme o marketplace</strong>.</p>
+
+        <!-- Mercado Livre / Venda direta -->
+        <div class="mp-flow">
+          <div class="mp-tag ml"><i class="fas fa-shopping-cart mr-1"></i>Mercado Livre e Venda Direta</div>
+          <div class="flow small">
+            <div class="step"><span class="n">1</span><div><b>Pedido elegível</b><br>entra na lista “Pedidos a separar”</div></div>
+            <span class="arr">›</span>
+            <div class="step"><span class="n">2</span><div><b>Nova Gaiola</b><br>marque os pedidos e crie o carrinho</div></div>
+            <span class="arr">›</span>
+            <div class="step"><span class="n">3</span><div><b>Separar / bipar</b><br>recolhe os produtos pela rota</div></div>
+            <span class="arr">›</span>
+            <div class="step"><span class="n">4</span><div><b>Etiqueta</b><br>oficial do ML (ou interna, na venda direta)</div></div>
+            <span class="arr">›</span>
+            <div class="step"><span class="n">5</span><div><b>NF-e</b><br>emite a nota (depois da etiqueta)</div></div>
+            <span class="arr">›</span>
+            <div class="step"><span class="n">6</span><div><b>Entregar</b><br>dá baixa no estoque e fecha a gaiola</div></div>
+          </div>
         </div>
-        <p class="small text-muted mt-2 mb-0">
-          <i class="fas fa-store mr-1"></i><strong>Shopee tem a ordem invertida:</strong> primeiro a
-          <strong>NF-e</strong> (o sistema emite a nota própria e <strong>anexa na Shopee</strong>
-          automaticamente) e só depois a <strong>Etiqueta</strong> — e nela, atenção:
-          <strong>gerar a etiqueta da Shopee JÁ DESPACHA o pedido na Shopee</strong> (ato irreversível).
-          Se a Shopee ainda não validou a nota, o botão avisa “clique de novo em instantes”.
-        </p>
+
+        <!-- Shopee -->
+        <div class="mp-flow mt-2">
+          <div class="mp-tag shopee"><i class="fas fa-store mr-1"></i>Shopee <span class="badge badge-warning ml-1">ordem invertida</span></div>
+          <div class="flow small">
+            <div class="step"><span class="n">1</span><div><b>Pedido elegível</b><br>entra na lista “Pedidos a separar”</div></div>
+            <span class="arr">›</span>
+            <div class="step"><span class="n">2</span><div><b>Nova Gaiola</b><br>marque os pedidos e crie o carrinho</div></div>
+            <span class="arr">›</span>
+            <div class="step"><span class="n">3</span><div><b>Separar / bipar</b><br>recolhe os produtos pela rota</div></div>
+            <span class="arr">›</span>
+            <div class="step"><span class="n">4</span><div><b>NF-e primeiro</b><br>emite a nota própria e <b>anexa na Shopee</b> (automático)</div></div>
+            <span class="arr">›</span>
+            <div class="step danger"><span class="n">5</span><div><b>Etiqueta = DESPACHA</b><br>gerar a etiqueta já envia o pedido na Shopee (irreversível)</div></div>
+            <span class="arr">›</span>
+            <div class="step"><span class="n">6</span><div><b>Entregar</b><br>fecha a gaiola (estoque Shopee baixa quando o envio é confirmado)</div></div>
+          </div>
+          <p class="small text-muted mt-1 mb-0">
+            <i class="fas fa-exclamation-triangle text-warning mr-1"></i>Na Shopee, <strong>primeiro a
+            NF-e, depois a etiqueta</strong> — a etiqueta só sai após o despacho. Se a Shopee ainda está
+            validando a nota, o botão da etiqueta avisa <em>“clique de novo em instantes”</em>. Se faltar a
+            NF-e, a entrega <strong>não</strong> fecha a gaiola e avisa o motivo (nada é marcado em silêncio).
+          </p>
+        </div>
       </section>
 
       <!-- 3. Quais pedidos aparecem -->
@@ -94,4 +120,10 @@ defineEmits(['close'])
 .flow .step{flex:1;min-width:120px;background:#f8f9fa;border:1px solid #e9ecef;border-radius:6px;padding:6px 8px;display:flex;gap:6px;align-items:flex-start}
 .flow .n{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#0d6efd;color:#fff;font-weight:600;font-size:11px;flex:none}
 .flow .arr{align-self:center;color:#999;font-size:18px}
+.flow .step.danger{background:#fff4f4;border-color:#f1c2c2}
+.flow .step.danger .n{background:#dc3545}
+.mp-flow{border:1px solid #eee;border-radius:8px;padding:8px}
+.mp-tag{display:inline-block;font-weight:600;font-size:12px;padding:2px 8px;border-radius:12px;margin-bottom:6px}
+.mp-tag.ml{background:#fff3cd;color:#664d03}
+.mp-tag.shopee{background:#fde2d4;color:#8a3b12}
 </style>
