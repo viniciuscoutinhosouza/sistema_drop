@@ -39,6 +39,20 @@ api.interceptors.response.use(
   async (error) => {
     const original = error.config
 
+    // Um 401 vindo DO PRÓPRIO /auth/refresh significa que o refresh token morreu —
+    // nunca tentar "refrescar o refresh". Desloga limpo e para. (Rede de segurança:
+    // a chamada de refresh abaixo usa um axios puro que NÃO passa por este interceptor,
+    // então normalmente isto nem dispara — mas protege contra qualquer chamador futuro
+    // que volte a usar a instância `api` no refresh. Sem isto, o interceptor se
+    // reentrava no próprio refresh e travava em deadlock → tela carregando pra sempre.)
+    if (error.response?.status === 401 && original?.url?.endsWith('/auth/refresh')) {
+      refreshing = false
+      processQueue(error)
+      localStorage.removeItem('auth')
+      window.location.href = '/login'
+      return Promise.reject(error)
+    }
+
     // Only handle 401 and only if we haven't already retried
     if (error.response?.status === 401 && !original._retry) {
       original._retry = true
@@ -61,7 +75,11 @@ api.interceptors.response.use(
 
         if (!refreshToken) throw new Error('No refresh token')
 
-        const { data } = await api.post('/auth/refresh', { refresh_token: refreshToken })
+        // axios PURO (não a instância `api`) de propósito: o refresh NÃO pode passar
+        // pelo interceptor de 401 — se passar e o próprio refresh responder 401, o
+        // interceptor se reentra e trava em deadlock. baseURL não se aplica ao axios
+        // puro, por isso a URL completa `/api/v1/auth/refresh`.
+        const { data } = await axios.post('/api/v1/auth/refresh', { refresh_token: refreshToken })
         const newAccessToken = data.access_token
 
         // Update stored auth

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import axios from 'axios'
 import api from '@/composables/useApi'
 import { useUiStore } from './ui'
 
@@ -94,7 +95,11 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function doRefresh() {
-    const { data } = await api.post('/auth/refresh', { refresh_token: refreshToken.value })
+    // axios PURO (não `api`): o refresh não pode passar pelo interceptor de 401 —
+    // senão um refresh token vencido faz o interceptor se reentrar no próprio refresh
+    // e travar em deadlock (mesmo bug do useApi.js). URL completa porque o axios puro
+    // não tem o baseURL `/api/v1`.
+    const { data } = await axios.post('/api/v1/auth/refresh', { refresh_token: refreshToken.value })
     accessToken.value = data.access_token
     refreshToken.value = data.refresh_token
     // Atualiza user com os campos que o backend manda frescos no refresh —
