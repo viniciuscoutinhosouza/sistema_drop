@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-11-06 — CASA — Fix: NF-e quebrava ao emitir (bairro do ML vinha como objeto) — ✅ EM PRODUÇÃO (commit `600ae1f`)
+
+**Pedido do dono:** a venda ML `2000019354389432` dava erro ao emitir a NF-e — identificar e corrigir.
+
+**Diagnóstico (produção):** NÃO era mais o CPF (o fix `5ed146a` resolveu — o documento resolve certo
+via billing_info). O fluxo passava do gate do CPF e quebrava no INSERT do cliente com
+`DPY-3002: Python value of type "dict" is not supported`: o ML devolve `neighborhood`/`city`/`state`
+como objeto `{id,name}` e o **bairro** (`neighborhood`) ia cru para a coluna String `people.neighborhood`.
+`city`/`state` já eram desembrulhados na mesma função; o `neighborhood` ficou de fora. Afetava todo
+pedido ML novo cujo comprador ainda não existia como `Person`. Bug EXPOSTO pelo `5ed146a` (que destravou
+o gate), não causado por ele.
+
+**Fix (EM PRODUÇÃO — commit `600ae1f`, só backend, sem migration):** criado `services/address_parser.py`
+como **ponto único** (`parse_buyer_address`/`addr_text`) que desembrulha `{id,name}`, trata dict legado
+serializado, normaliza UF (`BR-SP`→`SP`; falha alto em UF inválida) e sempre devolve `str`. A emissão de
+NF-e (`invoices._upsert_customer_from_order`) e a **etiqueta** (`label_service._format_address` — tinha o
+MESMO defeito, imprimia o objeto no papel) passam a usar o helper. eShip/content_declaration já tratavam;
+o XML da NF-e lê das colunas da Person → conserta por consequência.
+
+**Auditoria:** consistency-auditor (achou e mandou incluir a etiqueta no fix) + quality-guardian
+(0 crítico/alto, LGPD/segurança OK). Suíte 391 ok (2 pré-existentes) + 7 testes novos. **Verificado em
+produção:** HEAD do servidor `600ae1f`, backend online sem ImportError, `/docs` 200, domínio 200, e o
+pedido 14302 reproduzido no venv de produção → cliente montado (customer id=4825, UF=PR) em vez do
+DPY-3002.
+
+**Pendente do dono:** emitir a NF-e desse pedido (14302 / `2000019354389432`) pela tela — agora deve sair.
+Se falhar, aí é na transmissão SEFAZ (não testável sem emitir de verdade) — me mandar a mensagem exata.
+
+---
+
 ## 2026-11-06 — ESCOL — Fix: NF-e não emitia "sem CPF/CNPJ" (ML não devolve mais o doc no GET /orders) — ✅ EM PRODUÇÃO (commit `5ed146a`)
 
 **Pedido do dono:** 2 vendas ML (14035 Maria Angela SP→MT; 14304 Dhaniel CNPJ) não emitiam NF-e pelo
@@ -353,69 +383,3 @@ Endereçamento FECHADA por completo** (1, 2, 2.5, 3a, 3b, 3c). Pendente só exer
 rotas de caixa quando o dono criar a 1ª etiqueta (`storage_box_labels` vazia hoje).
 
 ---
-
-## 2026-11-01 — CASA — Endereçamento Fase 3b: Transferência entre endereços (ADR-0039) — ✅ EM PRODUÇÃO (commit `e08997a`)
-
-> **Deploy feito em 2026-11-03 (CASA):** fast-forward `0e4978e..e08997a` (10 arquivos, +523/-22);
-> **migration 177** aplicada (`run_migration.py`, 2 blocos/0 erro, idempotente; constraint
-> `CK_PALLOC_MOV_REASON` confirmada no Oracle = `('dispatch','return','adjust','transfer_out','transfer_in')`
-> — superset do antigo, zero-regressão); `npm run build` OK; PM2 `sistema-drop-backend` online sem
-> traceback/ImportError; `/docs` e domínio público **200**; rotas `/api/v1/storage/transfer` e
-> `/api/v1/storage/locations/{loc_id}/transfer-all` no OpenAPI. Follow-up restante da Fase 3: **box
-> tracking** (rastreio por caixa física).
-
-**O que:** move estoque de um endereço para outro **no mesmo galpão**. Interno: muda só o local, Σ
-`qty_units` do produto **não muda** → **nunca toca o saldo escalar** (ADR-0004) nem lotes. Loga
-`transfer_out`(−N) + `transfer_in`(+N) = net-zero.
-
-**Entregue:**
-- **Migration 177**: CHECK `reason` += `transfer_out`/`transfer_in` (5 valores).
-- `services/storage_transfer_service.py` (ponto único): `transfer_quantity` (atômico, fail-loud, 409 em
-  corrida) + `transfer_location_all` (esvaziar endereço, all-or-nothing). Dois caminhos exclusivos:
-  **reassign** (move total p/ destino vazio → só `location_id`, preserva caixas) × **geral** (parcial/merge
-  → debita origem via `_plan_pack_open`+`box_labels_to_close`, credita solto no destino; origem zerada fica
-  ativa em 0 (convenção do débito, não envenena o slot da UNIQUE; sem hard-delete). Trava mesmo-galpão (admin);
-  `lot_id` preservado; `base_product_*` via `resolve_base_product`.
-- `routers/storage.py`: `POST /storage/transfer`, `POST /storage/locations/{id}/transfer-all`;
-  `move_allocation` delega (ganhou ledger + merge); regex `reason` do extrato → 5 valores.
-- Front: botão **Transferir** por alocação (qty + destino) + **Esvaziar para…** no nó.
-
-**Auditoria do plano (trio):** ADR aprovado c/ ressalvas; consistency C1 (invariante) + ALTOS — TODOS
-incorporados (caminhos exclusivos, regex, snapshot do local, etiquetas, contrato do move, trava
-mesmo-galpão). Trio sobre a implementação: ADR aprovado (0 bloqueador); consistency C1+ALTOS
-resolvidos (1 MÉDIO = teste net-zero adicionado); quality 0 crítico, **1 HIGH corrigido** (slot
-envenenado — origem zerada agora fica `is_active=True`, alinhada ao débito da Fase 2.5). Verificado:
-pytest **359 ok** (2 pré-existentes), build front OK.
-
----
-
-## 2026-11-01 — CASA — Endereçamento Fase 3a: Inventário por endereço (ADR-0039) — ✅ EM PRODUÇÃO (commit `0e4978e`)
-
-> **Deploy feito em 2026-11-01:** fast-forward `5d70a5b..0e4978e`; **migration 176** aplicada (4 blocos/0
-> erro, idempotente; CHECK `ck_palloc_mov_reason` = `('dispatch','return','adjust')`; colunas
-> `last_counted_at/by` em `storage_locations` confirmadas); PM2 online sem erro; build front OK
-> (`StorageAddressingView-*.js` novo); `/docs` e domínio 200; rotas `/storage/locations/{id}/count` e
-> `/storage/inventory/to-count` no OpenAPI. Smoke funcional (bipar contagem logado) a exercitar na tela.
-
-**O que:** o operador conta fisicamente um endereço e o sistema ajusta `product_allocations.qty_units`
-para bater com o contado (movimento `reason='adjust'`). Corrige **ONDE** o estoque está — **nunca o
-saldo escalar** (ADR-0004) nem `product_lots` (ADR-0027). Inventário de endereço ≠ inventário contábil:
-a divergência aparece (flag **`over`** = endereçado > saldo = físico lançado além do contábil).
-
-**Entregue:**
-- **Migration 176**: CHECK `reason` += `'adjust'`; `storage_locations` += `last_counted_at/by`.
-- `services/storage_inventory_service.py` (ponto único): `apply_count` fail-loud, atômico, bloqueia kit,
-  conta por `(produto, lot_id)` com SEM-LOTE, cria alocação p/ produto achado (upsert anti-corrida
-  `.is_(None)`+409), pula `delta=0`, abre caixa reusando `_plan_pack_open` + desativa `StorageBoxLabel`
-  pelo helper **compartilhado** com o débito; devolve divergência pós-contagem (contábil × endereçado).
-- `storage_service.py`: `resolve_base_product` + `box_labels_to_close`. Débito (Fase 2.5) refatorado p/
-  usar o helper. Rotas: `POST /storage/locations/{id}/count`, `GET /storage/inventory/to-count`, filtro
-  `reason`/`location_id` no `/allocation-movements`. Front: aba **Inventário** (lista a contar + painel de
-  contagem + adicionar produto + resultado destacando `over` + ajustes recentes).
-
-**Auditoria do plano (trio):** ADR aprovado c/ ressalvas; consistency/ADR 0 bloqueador — ALTOS
-incorporados (divergência visível/`over`, desativar etiqueta no decréscimo via helper único, upsert
-anti-corrida, `resolve_base_product`). Verificado: pytest **345 ok** (2 pré-existentes), build front OK.
-Trio sobre a implementação em curso.
-
-**Deploy feito em 2026-11-01** (commit `0e4978e` + migration 176) — ver cabeçalho desta entrada.

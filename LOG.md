@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-11-06 — fix(fiscal): parser único de endereço do ML (corrige DPY-3002 na NF-e e etiqueta)
+
+Emissão de NF-e própria quebrava com `DPY-3002: Python value of type "dict" is not supported` ao
+inserir o cliente em `people`: o ML devolve `neighborhood`/`city`/`state` como objeto `{id,name}` e o
+`neighborhood` ia **cru** para a coluna String `people.neighborhood`. Bug exposto pelo fix `5ed146a`
+(destravou o gate de CPF via billing_info → o fluxo passou a alcançar o INSERT do cliente). Confirmado
+em produção na venda ML `2000019354389432` (pedido 14302).
+
+- **NOVO `services/address_parser.py`** — ponto único `parse_buyer_address(raw)` + `addr_text(v)`:
+  desembrulha `{id,name}`, trata dict serializado legado (`ast.literal_eval`), normaliza UF
+  (`BR-SP`→`SP`; **falha alto** devolvendo `''` em UF inválida, não inventa `NÁ`) e **sempre** devolve
+  `str`. Cobre os 2 formatos de `shipping_address` (ML cru × normalizado do pedido manual).
+- `routers/invoices.py::_upsert_customer_from_order` — usa o helper (antes tratava city/state mas
+  **não** neighborhood); remove a `_parse_shipping_address` inline (sem outros usuários).
+- `services/label_service.py::_format_address` — mesmo defeito (imprimia o objeto serializado na
+  etiqueta ML); passa a usar o helper. eShip e `content_declaration` já desembrulhavam → não tocados.
+  O XML da NF-e lê das colunas da `Person` → corrigir o upsert conserta o XML por consequência.
+- `tests/test_address_parser.py` (7 casos). Suíte 391 passed (2 falhas pré-existentes).
+
+Auditado: consistency-auditor (paridade — achou e incluiu o `label_service` no fix) + quality-guardian
+(0 CRÍTICO/ALTO, LGPD/segurança OK, `ast.literal_eval` não executa código). **Verificado em produção**
+(commit `600ae1f`): HEAD do servidor, PM2 online sem ImportError, `/docs` 200, domínio HTTPS 200, e o
+pedido 14302 reproduzido no venv de produção → `_upsert_customer_from_order` OK (customer id=4825,
+UF=PR) em vez do DPY-3002. **Pendente do dono:** emitir a NF-e real desse pedido pela tela (fecha o
+caminho ponta-a-ponta — não testável no DEV).
+
+---
+
 ## 2026-11-05 — fix(accounts): conta de marketplace DESATIVADA some dos locais operacionais
 
 Conta `MarketplaceAccount.is_active=False` deixa de aparecer em dropdowns/filtros/listas/estoque
