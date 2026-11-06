@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-11-06 — ESCOL — Fix: NF-e não emitia "sem CPF/CNPJ" (ML não devolve mais o doc no GET /orders) — ✅ EM PRODUÇÃO (commit `5ed146a`)
+
+**Pedido do dono:** 2 vendas ML (14035 Maria Angela SP→MT; 14304 Dhaniel CNPJ) não emitiam NF-e pelo
+sistema — investigar e corrigir.
+
+**Diagnóstico (produção):** o 14035 estava com `buyer_document` NULL → `create_invoice_from_order` ⇒
+`_upsert_customer_from_order` retorna None ⇒ 400 "Pedido sem CPF/CNPJ do comprador". MAS o comprador
+TEM CPF (96***04) — ele vive no `GET /orders/{id}/billing_info` do ML (o `GET /orders` **não devolve
+mais** o documento, privacidade). O eShip já busca isso via `ensure_buyer_document`; **a emissão de
+NF-e NÃO buscava** — lia `order.buyer_document` direto. Por isso pedido já enviado ao WMS (doc
+preenchido pelo eShip) emitia, e pedido ainda não enviado (ex.: 14035, `downloaded`) falhava. O 14304
+já tinha o doc (foi enviado ao eShip → `shipped`) e no meu teste o rascunho+prévia montam OK — era só
+reemitir.
+
+**Fix (EM PRODUÇÃO — commit `5ed146a`, só backend, sem migration):** reusa o ponto único
+`ensure_buyer_document(db, order)` (platform-aware: ML→billing_info, Shopee→fonte própria, manual→no-op)
+no início de `create_invoice_from_order`, antes de montar a nota — best-effort com `logger.warning`.
+Descartada a ideia inicial de "consumidor não identificado" (o CPF existe; seria mudança fiscal
+desnecessária e arriscada — o consistency-auditor apontou 3 CRÍTICOS contra ela).
+
+**Auditoria (trio):** quality-guardian 0 CRÍTICO/ALTO (1 MÉDIO do log incorporado); adr-checker CONFORME
+(regra de ouro ADR-0020 intacta — ramo por plataforma dentro do helper); consistency-auditor sem lacuna
+de paridade (todos os caminhos de emissão própria convergem em `create_invoice_from_order`; Faturador ML/
+DC-e/upload Shopee não montam destinatário → não precisam). **Verificado em produção:** 14035
+`buyer_document` NULL→96***04, rascunho+prévia do XML montam OK; backend restart health 200, startup
+sem erro, código deployado confere.
+
+**Pendente do dono:** reemitir os 2 pedidos pela tela (agora deve sair). Se o 14304 ainda falhar, é na
+TRANSMISSÃO SEFAZ (não testável sem emitir de verdade) — me mandar a mensagem exata. Follow-up BAIXO:
+`webhook_service.py:597` ainda grava `buyer_document` da fonte que o ML aposentou (já compensado pelo fix).
+
+---
+
 ## 2026-11-05 — CASA — Conta de marketplace DESATIVADA some de todo local operacional — ✅ EM PRODUÇÃO (commit `8bbb18c`)
 
 **Pedido do dono:** conta desativada (`is_active=False`) não deve mais aparecer em NENHUM ponto
