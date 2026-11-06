@@ -4588,6 +4588,20 @@ async def create_invoice_from_order(
         raise HTTPException(status_code=400, detail="Pedido sem CMIG vinculada")
     cmig = await _check_cmig_access(order.cmig_id, current_user, db)
 
+    # Garante o CPF/CNPJ do comprador ANTES de montar a nota. O ML não devolve mais o documento no
+    # GET /orders (privacidade) — ele vive no billing_info e é buscado por `ensure_buyer_document`
+    # (mesma fonte que o eShip usa). Sem isto, pedido ainda não enviado ao WMS chega aqui com
+    # `buyer_document` NULL e a emissão falharia "sem CPF/CNPJ" mesmo o comprador tendo informado o
+    # documento. Platform-aware (ML→billing_info, Shopee→fonte própria, manual→no-op); best-effort —
+    # se a busca falhar, o upsert abaixo ainda dá a mensagem clara de documento ausente.
+    try:
+        from integrations.eship.service import ensure_buyer_document
+        await ensure_buyer_document(db, order)
+    except Exception as exc:  # noqa: BLE001 — token/ML indisponível não deve derrubar a emissão
+        # As falhas ESPERADAS (token/billing_info indisponível) já são tratadas dentro de
+        # ensure_buyer_document; o que escapa aqui é inesperado — loga (sem PII) em vez de silenciar.
+        logger.warning("create_invoice_from_order: ensure_buyer_document falhou order=%s: %s", order_id, exc)
+
     if order.invoice_id:
         existing = (
             await db.execute(select(Invoice).where(Invoice.id == order.invoice_id))
