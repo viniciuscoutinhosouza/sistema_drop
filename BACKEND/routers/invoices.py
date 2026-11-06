@@ -27,6 +27,7 @@ from models.product import CatalogProduct
 from models.user import User
 from services import audit_service
 from services import ml_service as _ml
+from services.address_parser import parse_buyer_address
 from services.file_naming import TIPO_DANFE, TIPO_NFE, order_download_filename
 from services.fiscal import dfe_service, sefaz_service
 from services.fiscal.icms_table import compute_difal, get_icms_rate
@@ -4479,18 +4480,6 @@ async def outbound_sequence_report(
 # ── Geração de NFe a partir de Pedido (saída automática) ─────────────────────
 
 
-def _parse_shipping_address(raw: str | None) -> dict:
-    """O campo orders.shipping_address é JSON-string (CLOB). Parseia tolerante."""
-    if not raw:
-        return {}
-    try:
-        if isinstance(raw, dict):
-            return raw
-        return _json.loads(raw)
-    except (ValueError, TypeError):
-        return {}
-
-
 def _detect_person_type(document: str) -> str:
     digits = "".join(c for c in (document or "") if c.isdigit())
     return "PJ" if len(digits) == 14 else "PF"
@@ -4510,26 +4499,17 @@ async def _upsert_customer_from_order(
         )
     ).scalar_one_or_none()
 
-    addr = _parse_shipping_address(order.shipping_address)
-    # Mapeamento tolerante (formato do ML pode variar)
-    street = addr.get("street_name") or addr.get("street") or addr.get("logradouro") or ""
-    number = str(addr.get("street_number") or addr.get("number") or "") or ""
-    neighborhood = addr.get("neighborhood") or addr.get("bairro") or ""
-    city = (
-        (addr.get("city") or {}).get("name")
-        if isinstance(addr.get("city"), dict)
-        else addr.get("city") or addr.get("municipio") or ""
-    )
-    state = (
-        (addr.get("state") or {}).get("id")
-        if isinstance(addr.get("state"), dict)
-        else addr.get("state") or addr.get("uf") or ""
-    )
-    if isinstance(state, str) and len(state) > 2:
-        # ML às vezes manda "BR-SP" — pegar últimos 2 chars
-        state = state[-2:]
-    zip_code = addr.get("zip_code") or addr.get("cep") or ""
-    complement = addr.get("comment") or addr.get("complement") or addr.get("complemento") or ""
+    # Parser único e tolerante: o ML devolve neighborhood/city/state como objeto
+    # `{id,name}`. Desembrulha tudo e devolve SEMPRE str — senão o dict ia cru para
+    # a coluna String `people.neighborhood` → Oracle DPY-3002. (services/address_parser)
+    addr = parse_buyer_address(order.shipping_address)
+    street = addr["street"]
+    number = addr["number"]
+    neighborhood = addr["neighborhood"]
+    city = addr["city"]
+    state = addr["state"]
+    zip_code = addr["zip_code"]
+    complement = addr["complement"]
 
     if existing:
         # Atualiza endereço se vazio

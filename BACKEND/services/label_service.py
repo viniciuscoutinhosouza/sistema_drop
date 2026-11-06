@@ -28,6 +28,8 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
+from services.address_parser import parse_buyer_address
+
 # A4 = 210 x 297 mm
 PAGE_W, PAGE_H = A4
 PAGE_MARGIN = 10 * mm  # margem da pagina inteira
@@ -80,13 +82,16 @@ def _format_address(shipping_address_raw: Any) -> list[str]:
     elif isinstance(shipping_address_raw, dict):
         data = shipping_address_raw
     lines: list[str] = []
-    rua = data.get("street") or data.get("rua") or ""
-    numero = data.get("number") or data.get("address_number") or data.get("numero") or ""
-    complemento = data.get("complement") or data.get("complemento") or ""
-    bairro = data.get("neighborhood") or data.get("bairro") or ""
-    cidade = data.get("city") or data.get("cidade") or ""
-    uf = data.get("state") or data.get("uf") or ""
-    cep = data.get("zip_code") or data.get("cep") or ""
+    # Parser único (services/address_parser): o ML manda neighborhood/city/state como
+    # objeto `{id,name}` — sem desembrulhar, a etiqueta imprimia o dict serializado.
+    addr = parse_buyer_address(data)
+    rua = addr["street"]
+    numero = addr["number"]
+    complemento = addr["complement"]
+    bairro = addr["neighborhood"]
+    cidade = addr["city"]
+    uf = addr["state"]
+    cep = addr["zip_code"]
     if rua or numero:
         parte = f"{rua}, {numero}".strip(", ")
         if complemento:
