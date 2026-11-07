@@ -672,9 +672,17 @@ async def emitir(
 
 
 def _mesma_identidade_fiscal(chave_a: str, chave_b: str | None) -> bool:
-    """True se as duas chaves são a MESMA nota fiscal (mesmo cUF/CNPJ/modelo/série/número),
+    """True se as duas chaves são a MESMA nota fiscal (mesmo cUF/AAMM/CNPJ/modelo/série/número),
     diferindo só no cNF+DV. Impede vincular a nota à chave de OUTRO documento na recuperação
-    do 539 — a mensagem da SEFAZ é texto e não pode ser fonte de verdade sem esta trava."""
+    do 539 — a mensagem da SEFAZ é texto e não pode ser fonte de verdade sem esta trava.
+
+    O **AAMM (ano/mês de emissão) É parte da identidade**: um número reemitido no MESMO mês (o caso
+    legítimo do 539 — resposta perdida e re-transmissão com cNF novo) mantém o AAMM; um número que a
+    SEFAZ já consumiu num MÊS ANTERIOR (contador dessincronizado reusando o número) tem AAMM
+    diferente e é OUTRA venda — recuperar nesse caso vincularia o pedido à nota errada. Sem o AAMM na
+    trava, o nº 10 de agosto passava como "a mesma nota" do nº 10 de novembro. O custo é recusar a
+    raríssima re-transmissão que cruza a virada do mês (23:59→00:01) — aceitável: vira 'rejected' e o
+    operador reemite com o próximo número."""
     from services.fiscal.sefaz.chave import parse_chave
 
     if not chave_b:
@@ -683,7 +691,7 @@ def _mesma_identidade_fiscal(chave_a: str, chave_b: str | None) -> bool:
         a, b = parse_chave(chave_a), parse_chave(chave_b)
     except Exception:  # noqa: BLE001
         return False
-    return all(a[k] == b[k] for k in ("c_uf", "cnpj", "modelo", "serie", "n_nf"))
+    return all(a[k] == b[k] for k in ("c_uf", "aamm", "cnpj", "modelo", "serie", "n_nf"))
 
 
 async def _tentar_recuperar_539(

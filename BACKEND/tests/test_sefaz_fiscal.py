@@ -122,3 +122,30 @@ def test_iddest_interestadual_quando_uf_diferente():
 def test_csosn_nao_suportado_levanta():
     with pytest.raises(XmlBuildError):
         montar_xml_nfe(_nota(csosn="900"))
+
+
+# ── Recuperação do 539: identidade fiscal inclui o AAMM (ano/mês) ──────────────
+
+def _ch(aamm: str, c_nf: str, n_nf: int = 10):
+    return kv.montar_chave(
+        c_uf="35", aamm=aamm, cnpj="59951479000275",
+        modelo=55, serie=3, n_nf=n_nf, tp_emis=1, c_nf=c_nf,
+    )
+
+
+def test_mesma_identidade_fiscal_rejeita_mes_diferente():
+    """Regressão do incidente 06/11: o nº 10 de AGOSTO (AAMM 2608) NÃO pode ser tratado como a
+    mesma nota do nº 10 de NOVEMBRO (AAMM 2611) — senão a recuperação do 539 vincula o pedido à
+    nota de outra venda. O AAMM é parte da identidade."""
+    from services.fiscal.sefaz_service import _mesma_identidade_fiscal
+
+    chave_nov = _ch("2611", "44744381")
+    chave_ago = _ch("2608", "16968356")
+    # Mês diferente → NÃO é a mesma nota (o bug deixava passar).
+    assert _mesma_identidade_fiscal(chave_ago, chave_nov) is False
+    # Mesmo mês, só muda o cNF → É a mesma nota (caso legítimo do 539: re-transmissão).
+    assert _mesma_identidade_fiscal(_ch("2611", "99999999"), chave_nov) is True
+    # Número diferente → não é a mesma nota.
+    assert _mesma_identidade_fiscal(_ch("2611", "44744381", n_nf=11), chave_nov) is False
+    # Sem chave → False.
+    assert _mesma_identidade_fiscal(chave_nov, None) is False
