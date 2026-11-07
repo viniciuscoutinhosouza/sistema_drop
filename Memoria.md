@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-11-07 — ESCOL — Fix: recuperação do 539 vinculava nota de OUTRO mês (incidente nº 10) — ✅ EM PRODUÇÃO (commit `34b5afe`)
+
+**Pedido do dono:** a nota 8909 (pedido 14302) foi emitida pelo sistema mas aparece com "Rejeição 539
+Duplicidade"; e notas próprias precisam ser reportadas ao ML/Shopee. Investigar + plano.
+
+**Diagnóstico (produção):** a 8909 está "autorizada" na tela, MAS os logs mostram que ela foi
+**mal-vinculada à chave de uma nota de AGOSTO**. Sequência: a 8909 transmitiu o nº 10 em novembro
+(chave AAMM 2611, cNF 44744381) → SEFAZ rejeitou com **539** porque o nº 10 já fora autorizado em
+**agosto** (chave AAMM 2608, cNF 16968356, dhRecbto 10/08 — outra venda) → a recuperação do 539
+vinculou a 8909 à chave de agosto. **Causa-raiz (bug):** `_mesma_identidade_fiscal` comparava
+`c_uf/cnpj/modelo/serie/n_nf` mas **NÃO o AAMM** → nº 10 de agosto passou como "a mesma nota" do nº 10
+de novembro. Consequência: o pedido 14302 **não tem nota própria válida** (a dele foi rejeitada); a
+#6638 (nº 9, chave de agosto, emissão de out) provavelmente tem o mesmo defeito. Contador da série 3
+dessincronizado (agosto consumiu números que o contador reusou). **Confirmei a Distribuição DFe NÃO
+recupera XML próprio (cStat 641 "indisponível para o emitente")** — então `recuperar_xml_por_chave`
+não serve p/ nota própria.
+
+**Fix item 1 (EM PRODUÇÃO — commit `34b5afe`, só backend, sem migration):** incluído o **AAMM** na
+identidade de `_mesma_identidade_fiscal`. 539 de mês diferente agora é **recusado** (nota→`rejected`,
+operador reemite) em vez de vincular à nota errada. Teste de regressão novo (suíte fiscal 8 passed no
+servidor). Backend restart health 200. **NÃO enviei a chave de agosto ao ML** (seria reportar a venda
+errada) — parei a tempo.
+
+**Pendente (itens 2-3, com o dono):** (2) destravar a numeração da série 3 (contador em 11; confirmar
+o próximo número livre na SEFAZ) e (3) desvincular a 8909 (e checar #6638) da chave de agosto →
+reemitir a nota do 14302 com número seguro → aí reporta ao ML. Estrutural: emissão salvar XML + reportar
+ML/Shopee como passo visível/re-tentável.
+
+---
+
 ## 2026-11-06 — CASA — Fix: NF-e quebrava ao emitir (bairro do ML vinha como objeto) — ✅ EM PRODUÇÃO (commit `600ae1f`)
 
 **Pedido do dono:** a venda ML `2000019354389432` dava erro ao emitir a NF-e — identificar e corrigir.
