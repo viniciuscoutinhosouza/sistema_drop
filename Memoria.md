@@ -29,10 +29,26 @@ operador reemite) em vez de vincular à nota errada. Teste de regressão novo (s
 servidor). Backend restart health 200. **NÃO enviei a chave de agosto ao ML** (seria reportar a venda
 errada) — parei a tempo.
 
-**Pendente (itens 2-3, com o dono):** (2) destravar a numeração da série 3 (contador em 11; confirmar
-o próximo número livre na SEFAZ) e (3) desvincular a 8909 (e checar #6638) da chave de agosto →
-reemitir a nota do 14302 com número seguro → aí reporta ao ML. Estrutural: emissão salvar XML + reportar
-ML/Shopee como passo visível/re-tentável.
+**Remediação feita (dados):** 8909 resetada (`authorized`→`rejected`, chave de agosto removida); pedido
+14302 com `nfe_status`/`nfe_key` limpos; **baixa fantasma de estoque revertida** (a falsa autorização
+tinha `stock_updated=True`; recomputado → PG 342 = 21, correto).
+
+**Descoberta decisiva (07/11):** a **série 3 do CNPJ da MIG (000275) está consumida na SEFAZ até 51+**
+por um emissor FORA do sistema (outro sistema MIG — Bling/ERP?). Testado ao vivo: reemissão deu **539
+em TODOS** os números 11–51 (10 tentativas). O fix funcionou perfeito (todos viraram `rejected` limpo,
+zero mal-vínculo). A única nota série 3 REAL do sistema é a **nº 1** (jul); 8/9/10 eram mal-vínculos.
+A CMIG 161 (série 3 até 415840) é **outro cliente** (Pegoraro/Harmony, CNPJ diferente, notas de entrada)
+— sem relação. **Conclusão: série 3 é inviável p/ emissão própria da MIG.**
+
+**Decisão do dono (07/11):** NÃO usar a emissão própria do sistema p/ o 14302 — **vai emitir no
+ML/Shopee**. Parei antes de testar série dedicada (100/900). Config fiscal deixada em série 3 / next 52
+(emissão própria abandonada por ora).
+
+**Follow-ups:** (a) se algum dia quiser o sistema emitindo NF-e própria da MIG, **definir uma série
+dedicada** (a 3 está morta — confirmar uma livre com a contabilidade); (b) #6638 (nº 9) é outro
+mal-vínculo (sem pedido) — resetar quando for tratar; (c) estrutural: emissão própria **salvar o XML**
+(a recuperação por consulta não salvava → Distribuição DFe dá 641 p/ nota própria) e **reportar ML/Shopee**
+como passo visível/re-tentável (hoje a tela Fiscal não reporta ao ML).
 
 ---
 
