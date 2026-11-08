@@ -27,7 +27,10 @@ test/disconnect); importar categorias/produtos/kits é fase seguinte. Decisão: 
   (secret cifrado Fernet) editáveis na tela (`PATCH /credentials`); `_creds_from` usa as da CMIG ou o
   app padrão do `.env` como fallback. Secret nunca retorna; vazio = manter.
 - **Frontend:** `CmigBlingConfigCard.vue` (credenciais Client ID/Secret + connect via popup/status/test/
-  disconnect) no `CmigDetailView`.
+  disconnect). **UI em Administração ▸ Integrações**, no card da conta Bling (modal reusa o
+  `CmigBlingConfigCard` com o `cmig_id` da conta) — substitui o modal legado de "API Key", removido da
+  tela; o card foi **retirado do `CmigDetailView`** (decisão do dono 08/11: configurar onde ficam as
+  outras contas). Backend legado (`POST /accounts/{id}/bling/connect`) permanece inerte (sem UI).
 - Pré-auditado (consistency-auditor: 1 crítico do endpoint legado + 2 paridades, todos incorporados) +
   trio de fecho. Suíte **401 passed** (2 falhas pré-existentes) + 9 testes novos; `npm run build` OK.
 - **Pendente do dono:** registrar o app no Bling (client_id/secret/redirect/escopos) → `.env` →

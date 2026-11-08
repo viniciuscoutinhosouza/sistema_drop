@@ -29,9 +29,11 @@ CMIG com o Bling**. Depois: tornar o **Client ID/Secret configuráveis na integr
   Oracle, 5 rotas+callback no OpenAPI, `/docs` 200, domínio 200, `.env` com 3 chaves. App padrão do
   dono (client_id `258cbbf…`) já no `.env`.
 
-**Pendente do dono (só ele faz — OAuth real não é testável no DEV):** abrir CMIG → card "Integração
-Bling (ERP)" → (opcional) ajustar Client ID/Secret → **Conectar** → autorizar no Bling → ver "Conectado".
-Se o card não habilitar p/ um perfil não-admin, habilitar `bling_gerenciar` no Perfil de Acesso.
+**Pendente do dono (só ele faz — OAuth real não é testável no DEV):** em **Administração ▸ Integrações**,
+na conta **Bling**, botão **"Integração Bling (ERP)"** → (opcional) ajustar Client ID/Secret → **Conectar**
+→ autorizar no Bling → ver "Conectado". (A UI foi MOVIDA do card da CMIG para Integrações a pedido do dono
+em 08/11 — commit da emenda a confirmar; backend por-CMIG intocado.) Se não habilitar p/ perfil não-admin,
+habilitar `bling_gerenciar` no Perfil de Acesso.
 **Fase 2+ (próxima):** importar categorias, produtos e kits do Bling (direção leitura Bling→sistema).
 
 ---

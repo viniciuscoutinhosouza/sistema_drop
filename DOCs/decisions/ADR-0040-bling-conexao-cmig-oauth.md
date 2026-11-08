@@ -49,8 +49,11 @@ com as diferenças que o escopo por-CMIG exige.
 - **Legado preservado, deprecado:** `validate_api_key`/`sync_product` ficam em `bling_service.py`
   marcados **DEPRECADO** (o endpoint antigo `/accounts/{id}/bling/connect` não quebra). `MarketplaceAccount.
   api_key 'Para Bling'` é legado **ignorado** pelo fluxo novo — candidato a remoção numa limpeza futura.
-- **Front:** card **`CmigBlingConfigCard`** dentro do `CmigDetailView` (onde a config por-CMIG já vive),
-  gated por `hasAction('bling_gerenciar')` — conectar (popup) / status / testar / desconectar.
+- **Front:** componente **`CmigBlingConfigCard`** (gated por `hasAction('bling_gerenciar')` — credenciais
+  / conectar via popup / status / testar / desconectar) exibido em **Administração ▸ Integrações**, no
+  modal da **conta Bling** (reusa o componente com o `cmig_id` da conta). Substitui o modal legado de
+  "API Key" (removido). _(Emenda 2026-11-08: a UI nasceu no `CmigDetailView` e foi movida para
+  Integrações a pedido do dono — é onde as demais contas são conectadas; o backend por-CMIG não mudou.)_
 
 ## Consequências
 

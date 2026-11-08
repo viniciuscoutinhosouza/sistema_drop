@@ -83,17 +83,19 @@
 
             <!-- Status OAuth / conexão -->
             <div>
+              <!-- Status OAuth é da conta de marketplace (ML/Shopee). Bling tem conexão própria por
+                   CMIG — o estado dela aparece dentro do modal "Integração Bling (ERP)". -->
               <!-- Alerta: token revogado / precisa reconectar -->
-              <div v-if="acc.requires_reauth" class="alert alert-danger py-2 mb-2">
+              <div v-if="acc.requires_reauth && acc.platform !== 'bling'" class="alert alert-danger py-2 mb-2">
                 <i class="fas fa-exclamation-circle mr-1"></i>
                 <strong>Token inválido.</strong> Reconecte a conta abaixo para restaurar a integração.
               </div>
 
-              <div v-if="acc.is_active && !acc.requires_reauth" class="d-flex align-items-center mb-2">
+              <div v-if="acc.platform !== 'bling' && acc.is_active && !acc.requires_reauth" class="d-flex align-items-center mb-2">
                 <span class="badge badge-success mr-2">Conectado</span>
                 <small v-if="acc.platform_username" class="text-muted">@{{ acc.platform_username }}</small>
               </div>
-              <div v-else-if="!acc.is_active" class="alert alert-secondary py-2 mb-2">
+              <div v-else-if="acc.platform !== 'bling' && !acc.is_active" class="alert alert-secondary py-2 mb-2">
                 <i class="fas fa-plug mr-1"></i> Não conectado via OAuth.
               </div>
 
@@ -110,8 +112,7 @@
               </button>
               <button v-else-if="acc.platform === 'bling'"
                       class="btn btn-sm btn-info btn-block" @click="openBlingModal(acc)">
-                <i class="fas fa-key mr-1"></i>
-                {{ acc.is_active ? 'Atualizar API Key' : 'Configurar Bling' }}
+                <i class="fas fa-plug mr-1"></i> Integração Bling (ERP)
               </button>
             </div>
           </div>
@@ -305,28 +306,24 @@
       </div>
     </div>
 
-    <!-- ─── Modal: Bling API Key ──────────────────────────────────────────── -->
+    <!-- ─── Modal: Bling (ERP) — conexão OAuth por CMIG ───────────────────── -->
     <div v-if="modal.bling" class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,.5)">
-      <div class="modal-dialog">
+      <div class="modal-dialog modal-lg">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title"><i class="fas fa-key mr-2"></i> Configurar Bling V3</h5>
+            <h5 class="modal-title"><i class="fas fa-plug mr-2"></i> Integração Bling (ERP)</h5>
             <button class="close" @click="modal.bling = false"><span>&times;</span></button>
           </div>
           <div class="modal-body">
-            <div v-if="blingError" class="alert alert-danger">{{ blingError }}</div>
-            <div class="form-group">
-              <label>API Key do Bling V3 <span class="text-danger">*</span></label>
-              <input v-model="blingApiKey" type="text" class="form-control"
-                     placeholder="Cole aqui a chave de API do Bling" />
+            <div v-if="!blingTarget || !blingTarget.cmig_id" class="alert alert-warning mb-0">
+              <i class="fas fa-exclamation-triangle mr-1"></i>
+              Esta conta não tem CMIG vinculada. Vincule uma CMIG à conta (botão Editar) antes de
+              conectar o Bling — a conexão do Bling é por empresa (CMIG).
             </div>
+            <CmigBlingConfigCard v-else :cmig-id="Number(blingTarget.cmig_id)" />
           </div>
           <div class="modal-footer">
-            <button class="btn btn-secondary" @click="modal.bling = false">Cancelar</button>
-            <button class="btn btn-info" :disabled="savingBling || !blingApiKey" @click="saveBling">
-              <i v-if="savingBling" class="fas fa-spinner fa-spin mr-1"></i>
-              {{ savingBling ? 'Conectando...' : 'Conectar' }}
-            </button>
+            <button class="btn btn-secondary" @click="modal.bling = false">Fechar</button>
           </div>
         </div>
       </div>
@@ -350,6 +347,7 @@ import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import CollaboratorsModal from '@/components/common/CollaboratorsModal.vue'
+import CmigBlingConfigCard from '@/components/cmigs/CmigBlingConfigCard.vue'
 
 const { show: toast } = useToast()
 const route = useRoute()
@@ -399,11 +397,8 @@ const savingEdit = ref(false)
 
 // OTP
 
-// Bling
+// Bling (ERP) — conexão OAuth por CMIG (o modal reusa CmigBlingConfigCard com o cmig_id da conta)
 const blingTarget  = ref(null)
-const blingApiKey  = ref('')
-const blingError   = ref('')
-const savingBling  = ref(false)
 
 async function loadAccounts() {
   loading.value = true
@@ -585,24 +580,7 @@ async function connectOAuth(account) {
 
 function openBlingModal(account) {
   blingTarget.value = account
-  blingApiKey.value = ''
-  blingError.value = ''
   modal.value.bling = true
-}
-
-async function saveBling() {
-  savingBling.value = true
-  blingError.value = ''
-  try {
-    await api.post(`/accounts/${blingTarget.value.id}/bling/connect`, { api_key: blingApiKey.value })
-    modal.value.bling = false
-    toast('Bling conectado com sucesso!', 'success')
-    await loadAccounts()
-  } catch (err) {
-    blingError.value = err.response?.data?.detail || 'Erro ao conectar Bling'
-  } finally {
-    savingBling.value = false
-  }
 }
 
 async function disconnect(account) {
