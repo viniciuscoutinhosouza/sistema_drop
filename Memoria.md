@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-11-08 — CASA — Integração Bling (ERP) por CMIG via OAuth2 — Fase 1 (conexão) — ✅ EM PRODUÇÃO (commits `32477b0` + `1270923`)
+
+**Pedido do dono:** criar uma SKILL sobre a API do Bling + planejar e implementar a **conexão da Conta
+CMIG com o Bling**. Depois: tornar o **Client ID/Secret configuráveis na integração da conta**.
+
+**Entregue (EM PRODUÇÃO):**
+- **Skill `bling-api`** (`.claude/skills/bling-api/`) + `DOCs/integracao-bling-registro-app.md` (passo a
+  passo do dono registrar o app). Itens não validados ao vivo marcados `[confirmar]`.
+- **Conexão OAuth2 POR CMIG** (ADR-0040, não `MarketplaceAccount` — molde Google Drive ADR-0038):
+  tabela `cmig_bling_accounts` (tokens cifrados Fernet, UNIQUE cmig_id, UPSERT na reconexão),
+  `services/bling_service.py` (authorize/exchange/get_valid_token com refresh sob lock por-CMIG;
+  state CIFRADO anti-IDOR), `routers/bling.py` (`/api/v1/cmigs/{cmig_id}/bling` autenticado + callback
+  público). Permissão `bling_gerenciar` (ac/admin) AND `assert_cmig_access`. Card `CmigBlingConfigCard`
+  no CmigDetailView. Migrations 179 (tabela) + 180 (permissão).
+- **Credenciais do app configuráveis POR CMIG** (migration 181): `client_id` + `client_secret_enc`
+  (cifrado) editáveis no card; `PATCH /credentials`; `.env` (`BLING_CLIENT_ID/SECRET`) = app PADRÃO
+  fallback. Secret nunca retorna; vazio = manter.
+- Trio de auditoria 2x (feature + delta): 0 CRÍTICO; 2 HIGH da 1ª rodada corrigidos (html.escape no
+  callback + refresh do 401 sob lock). `pytest` 401 ok (2 pré-existentes) + 12 testes Bling; build OK.
+- **Deploy verificado em produção** (`1270923`): migrations 179/180/181 aplicadas, tabela+colunas no
+  Oracle, 5 rotas+callback no OpenAPI, `/docs` 200, domínio 200, `.env` com 3 chaves. App padrão do
+  dono (client_id `258cbbf…`) já no `.env`.
+
+**Pendente do dono (só ele faz — OAuth real não é testável no DEV):** abrir CMIG → card "Integração
+Bling (ERP)" → (opcional) ajustar Client ID/Secret → **Conectar** → autorizar no Bling → ver "Conectado".
+Se o card não habilitar p/ um perfil não-admin, habilitar `bling_gerenciar` no Perfil de Acesso.
+**Fase 2+ (próxima):** importar categorias, produtos e kits do Bling (direção leitura Bling→sistema).
+
+---
+
 ## 2026-11-07 — ESCOL — Fix: recuperação do 539 vinculava nota de OUTRO mês (incidente nº 10) — ✅ EM PRODUÇÃO (commit `34b5afe`)
 
 **Pedido do dono:** a nota 8909 (pedido 14302) foi emitida pelo sistema mas aparece com "Rejeição 539
