@@ -25,25 +25,37 @@ from services import bling_service as bling  # noqa: E402
 bling.settings = get_settings()  # o módulo capturou settings no import — realinha com o env do teste
 
 
-def test_configurado_true():
-    assert bling.configurado() is True
+def test_global_creds_do_env():
+    assert bling._global_creds() == ("test_client_id", "test_client_secret")
+
+
+def test_creds_from_none_usa_global():
+    # Sem conta/credenciais próprias → cai no app padrão do .env
+    assert bling._creds_from(None) == ("test_client_id", "test_client_secret")
+
+
+def test_creds_from_conta_override():
+    from services import crypto
+
+    class _Conta:
+        client_id = "cmig-cid"
+        client_secret_enc = crypto.encrypt("cmig-secret")
+    assert bling._creds_from(_Conta()) == ("cmig-cid", "cmig-secret")  # da CMIG, não a global
 
 
 def test_basic_auth_header_format():
-    h = bling._basic_auth_header()
+    h = bling._basic_auth_header("cid", "sec")
     assert h.startswith("Basic ")
-    raw = base64.b64decode(h[len("Basic "):]).decode()
-    assert raw == "test_client_id:test_client_secret"
+    assert base64.b64decode(h[len("Basic "):]).decode() == "cid:sec"
 
 
 def test_authorize_url_carrega_params():
-    url = bling.authorize_url("STATE123")
+    url = bling.authorize_url("STATE123", "test_client_id")
     assert bling.AUTH_URL in url
     assert "response_type=code" in url
     assert "client_id=test_client_id" in url
     assert "state=STATE123" in url
-    # redirect_uri vai urlencoded
-    assert "redirect_uri=" in url
+    assert "redirect_uri=" in url  # urlencoded
 
 
 def test_state_roundtrip_carrega_cmig_e_user():
@@ -75,11 +87,32 @@ def test_state_expirado_rejeitado(monkeypatch):
         bling.decode_state(s)
 
 
-def test_nao_configurado(monkeypatch):
+def test_sem_credenciais_levanta(monkeypatch):
     monkeypatch.setattr(bling.settings, "BLING_CLIENT_ID", "")
-    assert bling.configurado() is False
+    monkeypatch.setattr(bling.settings, "BLING_CLIENT_SECRET", "")
+    assert bling._global_creds() == (None, None)
     with pytest.raises(bling.BlingNaoConfigurado):
-        bling._exigir_config()
+        bling._creds_from(None)  # sem CMIG e sem .env → falha alto
+
+
+@pytest.mark.asyncio
+async def test_save_credentials_upsert(mock_db):
+    from services import crypto
+
+    mock_db.set_result(None)  # sem conta → cria
+    conta = await bling.save_credentials(mock_db, 5, "cid-x", "secret-x", connected_by=1)
+    assert conta.client_id == "cid-x"
+    assert conta.client_secret_enc and crypto.decrypt(conta.client_secret_enc) == "secret-x"
+    assert mock_db.added and mock_db.committed
+
+    # 2ª chamada com secret VAZIO mantém o secret atual (só atualiza o client_id)
+    mock_db.reset()
+    mock_db.set_result(conta)
+    conta2 = await bling.save_credentials(mock_db, 5, "cid-y", "", connected_by=1)
+    assert conta2 is conta
+    assert conta2.client_id == "cid-y"
+    assert crypto.decrypt(conta2.client_secret_enc) == "secret-x"  # secret preservado
+    assert mock_db.added == []
 
 
 # ── UPSERT da conexão (auditoria item 3: UNIQUE(cmig_id) → reconexão atualiza, não duplica) ──

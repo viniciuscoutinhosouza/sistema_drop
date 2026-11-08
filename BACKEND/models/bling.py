@@ -21,6 +21,10 @@ class CMIGBlingAccount(Base):
 
     id = Column(Integer, primary_key=True)
     cmig_id = Column(Integer, ForeignKey("cmigs.id"), nullable=False)
+    # Credenciais do app Bling CONFIGURÁVEIS por CMIG (migration 181). Opcional: se ausentes, usa o
+    # app padrão do .env (BLING_CLIENT_ID/SECRET). client_id não é segredo; o secret fica CIFRADO.
+    client_id = Column(String(200))
+    client_secret_enc = Column(String(2000))     # cifrado (Fernet) — nunca em claro
     access_token_enc = Column(Text)              # cifrado (Fernet) — curto (~6h)
     refresh_token_enc = Column(Text)             # cifrado (Fernet) — ~30 dias, rotaciona no refresh
     token_expires_at = Column(TIMESTAMP(timezone=True))

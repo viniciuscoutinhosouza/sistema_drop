@@ -64,21 +64,43 @@ class BlingNaoConectado(Exception):
 
 # ── Configuração ──────────────────────────────────────────────────────────────
 
-def configurado() -> bool:
-    return bool(settings.BLING_CLIENT_ID and settings.BLING_CLIENT_SECRET)
+def _global_creds() -> tuple[str | None, str | None]:
+    """App Bling PADRÃO do servidor (.env). Usado quando a CMIG não tem credenciais próprias."""
+    return (settings.BLING_CLIENT_ID or None, settings.BLING_CLIENT_SECRET or None)
 
 
-def _exigir_config() -> tuple[str, str]:
-    if not configurado():
-        raise BlingNaoConfigurado(
-            "Bling não configurado. Defina BLING_CLIENT_ID e BLING_CLIENT_SECRET no .env do servidor."
-        )
-    return settings.BLING_CLIENT_ID, settings.BLING_CLIENT_SECRET
+def _creds_from(conta: CMIGBlingAccount | None) -> tuple[str, str]:
+    """Credenciais do app Bling a usar: as PRÓPRIAS da CMIG (se cadastradas) ou o app padrão do .env.
+    Levanta BlingNaoConfigurado se não houver nenhuma."""
+    if conta is not None and conta.client_id and conta.client_secret_enc:
+        try:
+            return conta.client_id, crypto.decrypt(conta.client_secret_enc)
+        except Exception as e:  # noqa: BLE001 — secret cifrado ilegível (master key trocada?)
+            raise BlingNaoConfigurado("Credenciais Bling da CMIG ilegíveis (cifragem).") from e
+    cid, secret = _global_creds()
+    if cid and secret:
+        return cid, secret
+    raise BlingNaoConfigurado(
+        "Bling sem credenciais: cadastre o Client ID e o Secret na integração desta CMIG "
+        "(ou configure BLING_CLIENT_ID/SECRET no servidor)."
+    )
 
 
-def _basic_auth_header() -> str:
-    cid, secret = _exigir_config()
-    raw = f"{cid}:{secret}".encode()
+async def resolve_creds(db, cmig_id: int) -> tuple[str, str]:
+    return _creds_from(await active_account(db, cmig_id))
+
+
+async def configurado_para(db, cmig_id: int) -> bool:
+    """Há credenciais para esta CMIG (próprias OU app padrão do .env)?"""
+    conta = await active_account(db, cmig_id)
+    if conta is not None and conta.client_id and conta.client_secret_enc:
+        return True
+    cid, secret = _global_creds()
+    return bool(cid and secret)
+
+
+def _basic_auth_header(client_id: str, client_secret: str) -> str:
+    raw = f"{client_id}:{client_secret}".encode()
     return "Basic " + base64.b64encode(raw).decode()
 
 
@@ -123,14 +145,13 @@ async def active_account(db, cmig_id: int) -> CMIGBlingAccount | None:
     ).scalar_one_or_none()
 
 
-def authorize_url(state: str) -> str:
+def authorize_url(state: str, client_id: str) -> str:
     """URL de consentimento do Bling para onde a tela manda o usuário."""
-    cid, _ = _exigir_config()
     from urllib.parse import urlencode
 
     params = {
         "response_type": "code",
-        "client_id": cid,
+        "client_id": client_id,
         "state": state,
         "redirect_uri": settings.BLING_REDIRECT_URI,
     }
@@ -139,15 +160,34 @@ def authorize_url(state: str) -> str:
     return AUTH_URL + "?" + urlencode(params)
 
 
+async def save_credentials(db, cmig_id: int, client_id: str | None, client_secret: str | None,
+                           connected_by: int | None = None) -> CMIGBlingAccount:
+    """Salva as credenciais PRÓPRIAS do app Bling desta CMIG (upsert). client_secret vazio = manter o
+    atual. O secret é CIFRADO; o client_id fica em claro (não é segredo)."""
+    conta = await active_account(db, cmig_id)
+    if conta is None:
+        conta = CMIGBlingAccount(cmig_id=cmig_id, connected_by_user_id=connected_by)
+        db.add(conta)
+    conta.client_id = (client_id or "").strip() or None
+    if client_secret and client_secret.strip():
+        conta.client_secret_enc = crypto.encrypt(client_secret.strip())
+    if connected_by and not conta.connected_by_user_id:
+        conta.connected_by_user_id = connected_by
+    await db.commit()
+    await db.refresh(conta)
+    return conta
+
+
 async def exchange_code(db, code: str, cmig_id: int, connected_by: int | None = None) -> CMIGBlingAccount:
     """Troca o `code` do callback pelos tokens (Basic auth, server-side) e faz UPSERT da conexão da
     CMIG (UMA por CMIG — reconexão atualiza a linha, não cria 2ª)."""
-    _exigir_config()
+    conta = await active_account(db, cmig_id)
+    cid, secret = _creds_from(conta)  # credenciais próprias da CMIG ou app padrão do .env
     async with httpx.AsyncClient(timeout=TIMEOUT) as c:
         r = await c.post(
             TOKEN_URL,
             headers={
-                "Authorization": _basic_auth_header(),
+                "Authorization": _basic_auth_header(cid, secret),
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
             },
@@ -162,7 +202,6 @@ async def exchange_code(db, code: str, cmig_id: int, connected_by: int | None = 
         raise BlingNaoConectado("O Bling não devolveu os tokens esperados (access/refresh).")
     expires_at = datetime.now(UTC) + timedelta(seconds=int(dados.get("expires_in") or 21600))
 
-    conta = await active_account(db, cmig_id)
     if conta is None:
         conta = CMIGBlingAccount(cmig_id=cmig_id, connected_by_user_id=connected_by)
         db.add(conta)
@@ -197,10 +236,11 @@ async def disconnect(db, cmig_id: int) -> bool:
         return False
     if conta.refresh_token_enc:
         try:
+            cid, secret = _creds_from(conta)
             async with httpx.AsyncClient(timeout=TIMEOUT) as c:
                 await c.post(
                     REVOKE_URL,
-                    headers={"Authorization": _basic_auth_header()},
+                    headers={"Authorization": _basic_auth_header(cid, secret)},
                     data={"token": crypto.decrypt(conta.refresh_token_enc), "token_type_hint": "refresh_token"},
                 )
         except Exception as e:  # noqa: BLE001
@@ -222,7 +262,6 @@ def _lock_for(cmig_id: int) -> asyncio.Lock:
 
 async def get_valid_token(db, cmig_id: int) -> str:
     """access_token válido da CMIG, renovando pelo refresh quando falta pouco p/ expirar."""
-    _exigir_config()
     conta = await active_account(db, cmig_id)
     if not conta or not conta.refresh_token_enc:
         raise BlingNaoConectado("Esta CMIG não está conectada ao Bling. Conecte na tela da CMIG.")
@@ -252,11 +291,12 @@ async def get_valid_token(db, cmig_id: int) -> str:
 
 
 async def _refresh(db, conta: CMIGBlingAccount) -> str:
+    cid, secret = _creds_from(conta)
     async with httpx.AsyncClient(timeout=TIMEOUT) as c:
         r = await c.post(
             TOKEN_URL,
             headers={
-                "Authorization": _basic_auth_header(),
+                "Authorization": _basic_auth_header(cid, secret),
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
             },

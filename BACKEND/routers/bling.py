@@ -59,21 +59,48 @@ async def status(
     """Estado da integração Bling desta CMIG (só leitura do banco — nunca toca a API)."""
     await _check_cmig_access(cmig_id, current_user, db)
     conta = await bling.active_account(db, cmig_id)
+    configurado = await bling.configurado_para(db, cmig_id)
+    conectado = bool(conta and conta.refresh_token_enc)
     saida = {
-        "configurado": bling.configurado(),
-        "conectado": bool(conta),
-        "empresa_id": conta.bling_company_id if conta else None,
-        "empresa_nome": conta.bling_company_name if conta else None,
-        "conectado_em": conta.connected_at.isoformat() if (conta and conta.connected_at) else None,
+        "configurado": configurado,
+        "conectado": conectado,
+        # credenciais do app Bling desta CMIG (client_id em claro; secret NUNCA sai do servidor)
+        "client_id": conta.client_id if conta else None,
+        "credenciais_proprias": bool(conta and conta.client_id and conta.client_secret_enc),
+        "secret_configurado": bool(conta and conta.client_secret_enc),
+        "empresa_id": conta.bling_company_id if conectado else None,
+        "empresa_nome": conta.bling_company_name if conectado else None,
+        "conectado_em": conta.connected_at.isoformat() if (conectado and conta.connected_at) else None,
         "ultimo_uso": conta.last_used_at.isoformat() if (conta and conta.last_used_at) else None,
         "ultimo_erro": conta.last_error if conta else None,
-        "escopo": conta.scope if conta else None,
+        "escopo": conta.scope if conectado else None,
         "redirect_uri": settings.BLING_REDIRECT_URI,
         "aviso": None,
     }
-    if not bling.configurado():
-        saida["aviso"] = "Faltam BLING_CLIENT_ID e BLING_CLIENT_SECRET no .env do servidor."
+    if not configurado:
+        saida["aviso"] = ("Cadastre o Client ID e o Secret do app Bling desta CMIG abaixo "
+                          "(ou configure um app padrão no servidor).")
     return saida
+
+
+@router.patch("/credentials")
+async def save_credentials(
+    cmig_id: int,
+    body: dict,
+    current_user: User = Depends(require_permission("bling_gerenciar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Salva as credenciais PRÓPRIAS do app Bling desta CMIG. `client_secret` vazio mantém o atual."""
+    await _check_cmig_access(cmig_id, current_user, db)
+    client_id = (body.get("client_id") or "").strip()
+    client_secret = body.get("client_secret")  # pode vir vazio = manter
+    if not client_id:
+        raise HTTPException(status_code=422, detail="Client ID é obrigatório.")
+    try:
+        conta = await bling.save_credentials(db, cmig_id, client_id, client_secret, connected_by=current_user.id)
+    except Exception as e:  # noqa: BLE001
+        raise _erro(e)
+    return {"ok": True, "client_id": conta.client_id, "secret_configurado": bool(conta.client_secret_enc)}
 
 
 @router.get("/authorize")
@@ -85,8 +112,9 @@ async def authorize(
     """Devolve a URL de consentimento do Bling (com state cifrado carregando esta CMIG)."""
     await _check_cmig_access(cmig_id, current_user, db)
     try:
+        cid, _ = await bling.resolve_creds(db, cmig_id)
         state = bling.encode_state(cmig_id, current_user.id)
-        return {"url": bling.authorize_url(state)}
+        return {"url": bling.authorize_url(state, cid)}
     except Exception as e:  # noqa: BLE001
         raise _erro(e)
 

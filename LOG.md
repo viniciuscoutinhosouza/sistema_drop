@@ -23,7 +23,11 @@ test/disconnect); importar categorias/produtos/kits é fase seguinte. Decisão: 
   + **180** (seed permissão `bling_gerenciar`). `config.py` (`BLING_CLIENT_ID/SECRET/REDIRECT_URI`).
   Permissão `bling_gerenciar` (menu `cmig`, default ac/admin) — gate = permissão AND `assert_cmig_access`
   (ADR-0036).
-- **Frontend:** `CmigBlingConfigCard.vue` (connect via popup/status/test/disconnect) no `CmigDetailView`.
+- **Credenciais do app por CMIG (migration 181):** `cmig_bling_accounts.client_id`/`client_secret_enc`
+  (secret cifrado Fernet) editáveis na tela (`PATCH /credentials`); `_creds_from` usa as da CMIG ou o
+  app padrão do `.env` como fallback. Secret nunca retorna; vazio = manter.
+- **Frontend:** `CmigBlingConfigCard.vue` (credenciais Client ID/Secret + connect via popup/status/test/
+  disconnect) no `CmigDetailView`.
 - Pré-auditado (consistency-auditor: 1 crítico do endpoint legado + 2 paridades, todos incorporados) +
   trio de fecho. Suíte **401 passed** (2 falhas pré-existentes) + 9 testes novos; `npm run build` OK.
 - **Pendente do dono:** registrar o app no Bling (client_id/secret/redirect/escopos) → `.env` →

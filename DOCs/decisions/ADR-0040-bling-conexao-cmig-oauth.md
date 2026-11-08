@@ -35,6 +35,12 @@ com as diferenças que o escopo por-CMIG exige.
   ts}`), validado por frescor (TTL 15 min) e integridade — **nunca** do path (anti-IDOR). **Padrão novo
   no codebase** (o Drive usa `state` plano por ser conta única); fica como base para futuras
   integrações OAuth por-CMIG.
+- **Credenciais do app configuráveis POR CMIG** (migration 181): cada CMIG pode ter o **próprio**
+  `client_id` + `client_secret` (secret **CIFRADO** Fernet em `cmig_bling_accounts.client_secret_enc`;
+  `client_id` em claro — não é segredo), editáveis no card. Resolução em `_creds_from(conta)`: usa as da
+  CMIG se cadastradas, senão o **app padrão do `.env`** (`BLING_CLIENT_ID/SECRET`) como fallback. Endpoint
+  `PATCH /credentials` (secret vazio = manter o atual; nunca devolve o secret). Permite tanto um app
+  compartilhado (só `.env`) quanto um app por CMIG, sem acoplar.
 - **OAuth server-side:** troca do `code` e refresh com **Basic auth** (base64 `client_id:client_secret`)
   — o secret nunca vai ao frontend. O **refresh ROTACIONA** o refresh_token (persistimos o novo par) e
   roda **sob lock por-CMIG** (não global — não serializa CMIGs distintas). `code` do Bling expira em

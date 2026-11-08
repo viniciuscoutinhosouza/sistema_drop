@@ -17,10 +17,33 @@
           </span>
         </div>
 
-        <!-- Config ausente no servidor -->
+        <!-- Sem credenciais -->
         <div v-if="!status.configurado" class="alert alert-warning py-2 small mb-2">
           <i class="fas fa-exclamation-triangle mr-1"></i>
-          {{ status.aviso || 'Bling não configurado no servidor (BLING_CLIENT_ID/SECRET).' }}
+          {{ status.aviso || 'Bling sem credenciais — cadastre o Client ID e o Secret abaixo.' }}
+        </div>
+
+        <!-- Credenciais do app Bling desta CMIG (opcional: se vazias, usa o app padrão do servidor) -->
+        <div v-if="canEdit && !status.conectado" class="mb-3">
+          <label class="small font-weight-bold mb-1 d-block">Credenciais do app Bling (Client ID / Secret)</label>
+          <div class="row">
+            <div class="col-md-6 form-group mb-2">
+              <input v-model="creds.client_id" class="form-control form-control-sm" placeholder="Client ID" />
+            </div>
+            <div class="col-md-6 form-group mb-2">
+              <input v-model="creds.client_secret" type="password" autocomplete="new-password"
+                     class="form-control form-control-sm"
+                     :placeholder="status.secret_configurado ? '•••••••• (deixe em branco para manter)' : 'Client Secret'" />
+            </div>
+          </div>
+          <div class="d-flex align-items-center justify-content-between">
+            <small class="text-muted">
+              {{ status.credenciais_proprias ? 'Usando credenciais próprias desta CMIG.' : 'Sem credenciais próprias — usa o app padrão do servidor, se houver.' }}
+            </small>
+            <button class="btn btn-sm btn-outline-primary" :disabled="savingCreds || !creds.client_id" @click="saveCreds">
+              <i class="fas" :class="savingCreds ? 'fa-spinner fa-spin' : 'fa-save'"></i> Salvar credenciais
+            </button>
+          </div>
         </div>
 
         <!-- Conectado: detalhes -->
@@ -72,7 +95,9 @@ const loading = ref(true)
 const connecting = ref(false)
 const testing = ref(false)
 const disconnecting = ref(false)
+const savingCreds = ref(false)
 const status = ref({})
+const creds = ref({ client_id: '', client_secret: '' })
 let popup = null
 let poll = null
 
@@ -92,10 +117,28 @@ async function load() {
   try {
     const { data } = await api.get(`/cmigs/${props.cmigId}/bling/status`)
     status.value = data
+    creds.value.client_id = data.client_id || ''
+    creds.value.client_secret = ''
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao carregar status do Bling')
   } finally {
     loading.value = false
+  }
+}
+
+async function saveCreds() {
+  savingCreds.value = true
+  try {
+    await api.patch(`/cmigs/${props.cmigId}/bling/credentials`, {
+      client_id: creds.value.client_id,
+      client_secret: creds.value.client_secret,
+    })
+    toast.success('Credenciais do Bling salvas')
+    await load()
+  } catch (e) {
+    toast.error(e.response?.data?.detail || 'Erro ao salvar credenciais')
+  } finally {
+    savingCreds.value = false
   }
 }
 
