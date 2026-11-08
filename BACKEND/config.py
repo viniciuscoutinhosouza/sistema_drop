@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     #   (NÃO é partner.test-stable.shopeemobile.com — esse é um sandbox antigo e dá error_sign).
     SHOPEE_API_BASE: str = "https://partner.shopeemobile.com/api/v2"
 
+    # Bling ERP (API v3 — OAuth2 por CMIG). client_id/secret do app registrado em
+    # developer.bling.com.br (Central de Extensões → Área do Integrador). O REDIRECT_URI tem de
+    # bater EXATO com o "Link de redirecionamento" cadastrado no app, senão a troca do code dá
+    # invalid_grant. Ver skill `bling-api` + DOCs/integracao-bling-registro-app.md.
+    BLING_CLIENT_ID: str = ""
+    BLING_CLIENT_SECRET: str = ""
+    BLING_REDIRECT_URI: str = "http://localhost:8000/api/v1/integrations/bling/callback"
+
     # Platform fee (R$) charged per order payment
     PLATFORM_FEE: float = 2.00
 

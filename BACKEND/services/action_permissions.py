@@ -36,6 +36,10 @@ ACTION_PERMISSIONS: list[dict] = [
      "menu": "cmig", "default_base_roles": ["ac", "admin"]},
     {"key": "cmig_tipo_fiscal", "label": "Alterar tipo fiscal da CMIG (CPF ⇄ CNPJ)",
      "menu": "cmig", "default_base_roles": ["ac", "admin"]},
+    # Integração Bling (ERP) por CMIG — conectar/desconectar/testar a conta Bling da CMIG via OAuth2
+    # (skill bling-api). Capacidade AND escopo (assert_cmig_access). Default = quem gerencia a CMIG.
+    {"key": "bling_gerenciar", "label": "Gerenciar integração Bling da CMIG (conectar/desconectar)",
+     "menu": "cmig", "default_base_roles": ["ac", "admin"]},
     {"key": "cmig_fiscal_config", "label": "Configuração fiscal da CMIG + certificado digital (A1)",
      "menu": "fiscal_config", "default_base_roles": ["ac", "admin"]},
     {"key": "cmig_dce_authorized",

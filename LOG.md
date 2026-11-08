@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-11-08 — feat(bling): integração Bling (ERP) por CMIG via OAuth2 — Fase 1 (conexão) + skill
+
+Conectar cada CMIG à conta Bling dela (OAuth2 Bling API v3). Fase 1 = **só conexão** (status/connect/
+test/disconnect); importar categorias/produtos/kits é fase seguinte. Decisão: por-CMIG (ADR-0040),
+**não** `MarketplaceAccount`. Molde = Google Drive (ADR-0038).
+
+- **Skill `bling-api`** (`.claude/skills/bling-api/`): SKILL.md + 5 referências (OAuth, produtos/estoque,
+  pedidos/NF-e/contatos, webhooks/erros/limites, integração no Sistema Drop). Itens não validados ao
+  vivo marcados `[confirmar]`. + `DOCs/integracao-bling-registro-app.md` (passo a passo p/ o dono
+  registrar o app).
+- **Backend:** `services/bling_service.py` reescrito (OAuth: authorize/exchange UPSERT/`get_valid_token`
+  refresh **sob lock por-CMIG** que rotaciona o refresh; throttle 3req/s + 401→refresh→replay; `state`
+  CIFRADO `{cmig_id,user_id,nonce,ts}` c/ frescor — anti-IDOR; legado `validate_api_key`/`sync_product`
+  mantidos DEPRECADOS p/ não quebrar o endpoint antigo). `routers/bling.py` (autenticado em
+  `/api/v1/cmigs/{cmig_id}/bling` + callback público `/integrations/bling/callback`). `models/bling.py`
+  (`CMIGBlingAccount`, UNIQUE cmig_id, tokens `*_enc` CLOB cifrados Fernet). Migrations **179** (tabela)
+  + **180** (seed permissão `bling_gerenciar`). `config.py` (`BLING_CLIENT_ID/SECRET/REDIRECT_URI`).
+  Permissão `bling_gerenciar` (menu `cmig`, default ac/admin) — gate = permissão AND `assert_cmig_access`
+  (ADR-0036).
+- **Frontend:** `CmigBlingConfigCard.vue` (connect via popup/status/test/disconnect) no `CmigDetailView`.
+- Pré-auditado (consistency-auditor: 1 crítico do endpoint legado + 2 paridades, todos incorporados) +
+  trio de fecho. Suíte **401 passed** (2 falhas pré-existentes) + 9 testes novos; `npm run build` OK.
+- **Pendente do dono:** registrar o app no Bling (client_id/secret/redirect/escopos) → `.env` →
+  prova ponta-a-ponta (OAuth não é testável no DEV, igual ML/Shopee).
+
+---
+
 ## 2026-11-06 — fix(fiscal): parser único de endereço do ML (corrige DPY-3002 na NF-e e etiqueta)
 
 Emissão de NF-e própria quebrava com `DPY-3002: Python value of type "dict" is not supported` ao

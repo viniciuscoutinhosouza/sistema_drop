@@ -86,6 +86,9 @@
             <!-- Integração eShip (WMS) -->
             <CmigEShipConfigCard v-if="cmig" :cmig-id="Number(cmig.id)" />
 
+            <!-- Integração Bling (ERP) — conexão OAuth por CMIG -->
+            <CmigBlingConfigCard v-if="cmig" :cmig-id="Number(cmig.id)" />
+
             <!-- Colaboradores -->
             <div class="card" v-if="canManageCmig">
               <div class="card-header">
@@ -206,6 +209,7 @@ import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import CmigFiscalConfigCard from '@/components/cmigs/CmigFiscalConfigCard.vue'
 import CmigEShipConfigCard from '@/components/cmigs/CmigEShipConfigCard.vue'
+import CmigBlingConfigCard from '@/components/cmigs/CmigBlingConfigCard.vue'
 import CollaboratorsModal from '@/components/common/CollaboratorsModal.vue'
 
 const route = useRoute()

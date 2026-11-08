@@ -9,6 +9,7 @@ from models.cmig import (  # noqa: F401
     CMIGProductComponent,
     CMIGProductImage,
 )
+from models.bling import CMIGBlingAccount  # noqa: F401 — conexão OAuth2 Bling por CMIG
 from models.competitor_analysis import CompetitorAnalysis  # noqa: F401
 from models.dre import DREEntry, DRESnapshot  # noqa: F401
 from models.financial import FinancialTransaction  # noqa: F401

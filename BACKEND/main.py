@@ -87,6 +87,7 @@ from routers import (
     claims,
     cmig_reports,
     cmigs,
+    bling,
     competitor_analysis,
     credits,
     customer_credits,
@@ -215,6 +216,9 @@ from integrations.eship.router import router as eship_router  # noqa: E402
 app.include_router(eship_router, prefix=f"{PREFIX}/integrations/eship", tags=["eShip"])
 # Google Drive (armazenamento de imagens).
 app.include_router(google_drive.router, prefix=f"{PREFIX}/integrations/google-drive", tags=["GoogleDrive"])
+# Bling (ERP) por CMIG via OAuth2: rotas autenticadas escopadas pela CMIG + callback público.
+app.include_router(bling.router, prefix=f"{PREFIX}/cmigs/{{cmig_id}}/bling", tags=["Bling"])
+app.include_router(bling.public_router, prefix=f"{PREFIX}/integrations/bling", tags=["Bling"])
 
 
 _os.makedirs("static/uploads/cmig-products", exist_ok=True)
