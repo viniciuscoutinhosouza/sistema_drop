@@ -99,6 +99,19 @@
                 <i class="fas fa-plug mr-1"></i> Não conectado via OAuth.
               </div>
 
+              <!-- Status da conexão Bling (por CMIG — não é o is_active da conta) -->
+              <div v-if="acc.platform === 'bling'" class="mb-2">
+                <span v-if="blingStatus[acc.cmig_id] && blingStatus[acc.cmig_id].conectado" class="badge badge-success">
+                  <i class="fas fa-check mr-1"></i>Conectado<span v-if="blingStatus[acc.cmig_id].empresa_nome"> — {{ blingStatus[acc.cmig_id].empresa_nome }}</span>
+                </span>
+                <span v-else-if="acc.cmig_id" class="badge badge-secondary">
+                  <i class="fas fa-plug mr-1"></i>Não conectado
+                </span>
+                <span v-else class="badge badge-warning">
+                  <i class="fas fa-exclamation-triangle mr-1"></i>Sem CMIG vinculada
+                </span>
+              </div>
+
               <!-- Botão de conexão por plataforma -->
               <button v-if="acc.platform === 'mercadolivre'"
                       class="btn btn-sm btn-warning btn-block" @click="connectOAuth(acc)">
@@ -323,7 +336,7 @@
             <CmigBlingConfigCard v-else :cmig-id="Number(blingTarget.cmig_id)" />
           </div>
           <div class="modal-footer">
-            <button class="btn btn-secondary" @click="modal.bling = false">Fechar</button>
+            <button class="btn btn-secondary" @click="modal.bling = false; loadBlingStatuses()">Fechar</button>
           </div>
         </div>
       </div>
@@ -399,6 +412,7 @@ const savingEdit = ref(false)
 
 // Bling (ERP) — conexão OAuth por CMIG (o modal reusa CmigBlingConfigCard com o cmig_id da conta)
 const blingTarget  = ref(null)
+const blingStatus  = ref({})   // { [cmig_id]: { conectado, empresa_nome, ... } }
 
 async function loadAccounts() {
   loading.value = true
@@ -410,10 +424,23 @@ async function loadAccounts() {
     if (scopedCmigId.value) params.cmig_id = scopedCmigId.value
     const { data } = await api.get('/accounts', { params })
     accounts.value = data
+    loadBlingStatuses()
   } catch {
     toast('Erro ao carregar contas', 'danger')
   } finally {
     loading.value = false
+  }
+}
+
+// Status da conexão Bling é POR CMIG (tabela própria), não é o is_active da conta. Busca p/ cada
+// conta Bling com CMIG vinculada e guarda por cmig_id — alimenta o selo "Conectado" do card.
+async function loadBlingStatuses() {
+  const alvos = accounts.value.filter(a => a.platform === 'bling' && a.cmig_id)
+  for (const a of alvos) {
+    try {
+      const { data } = await api.get(`/cmigs/${a.cmig_id}/bling/status`)
+      blingStatus.value = { ...blingStatus.value, [a.cmig_id]: data }
+    } catch { /* silencioso — o modal mostra o detalhe/erro */ }
   }
 }
 
