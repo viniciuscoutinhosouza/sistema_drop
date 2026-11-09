@@ -34,10 +34,15 @@ na conta **Bling**, botão **"Integração Bling (ERP)"** → (opcional) ajustar
 → autorizar no Bling → ver "Conectado". (A UI foi MOVIDA do card da CMIG para Integrações a pedido do dono
 em 08/11 — commit da emenda a confirmar; backend por-CMIG intocado.) Se não habilitar p/ perfil não-admin,
 habilitar `bling_gerenciar` no Perfil de Acesso.
-**Fase 2 (importar categorias/produtos/kits → CMIG ou PG) IMPLEMENTADA 08/11** (migrations 182/183,
-`bling_import_service` + job assíncrono + `CmigBlingImport.vue`; upsert pular/atualizar; imagens
-baixadas; estoque não importado; kit→componentes; guard product_mode). Variações entram flat (follow-up
-= agrupar pai+variantes). **A deployar + validar com import real.**
+**Fase 2 (importar categorias/produtos/kits → CMIG ou PG) ✅ EM PRODUÇÃO 08/11 (commit `f3f4859`)**
+(migrations 182/183 aplicadas, `bling_import_service` + job assíncrono + `CmigBlingImport.vue` no card
+Bling; upsert pular/atualizar; imagens baixadas anti-SSRF; estoque NÃO importado — zera só no create;
+kit→componentes destino CMIG; guard product_mode; dedup escopado por galpão). Trio: quality-guardian
+pegou 3 CRÍTICOS (coluna `catalog_products.bling_product_id` que NÃO existia — pré-auditoria errou — +
+estoque zerado no update) + 2 ALTOS (escopo PG, SSRF) — todos corrigidos e re-verificados.
+**Pendente do dono:** exercitar a importação REAL pela tela (Administração ▸ Integrações → conta Bling →
+Importar catálogo). **Follow-ups:** variações entram flat (agrupar pai+variantes); seletor por produto/
+categoria (backend pronto, UI só "importar tudo"); kit no destino PG.
 
 ---
 
