@@ -6,6 +6,40 @@
 
 ---
 
+## 2026-11-09 — ESCOL — Fix: kit importado do Bling no PG entrava CHAPADO (sem componentes) — ✅ EM PRODUÇÃO (commit `259dbc0`)
+
+**Pedido do dono:** analisar 2 produtos importados (um item simples `03MLAG8X03PCT10` e um kit
+`10und-0,3ml-sol8mmm`); rever TODO o cadastro importado e criar script pra corrigir.
+
+**Diagnóstico (Bling CMIG 141 "Vergina Store", galpão 1):** os kits (Bling `formato=E`, com
+`estrutura.componentes`) foram importados pro **PG** mas entraram **chapados** (`is_composite=0`, sem
+componentes). Causa-raiz: `bling_import_service._link_kit` fazia `if target != "cmig": return` — só
+ligava componente no destino CMIG (ADR-0023), **nunca no PG** (apesar de existir `CatalogProductComponent`).
+Escopo real: **1550 kits** no Bling, **1520 no PG, TODOS chapados**. A quantidade do componente vem da
+**Estrutura do Bling**, não do SKU (o dono corrigiu: "PCT10" é forma de compra; validado com o exemplo
+`30-UND-...-BLISTER-A` = 30× `BLISTER-0,3ML-SR8MM`). **Nota pendente do dono:** o kit `10und-0,3ml-sol8mmm`
+está com **1×** na Estrutura do Bling (não 10) — o fix espelha o Bling; se for 10, ajustar no Bling e re-rodar.
+
+**Fix raiz (EM PRODUÇÃO — commit `259dbc0`, só backend, sem migration):** ramo `target=="pg"` em
+`_link_kit` — resolve kit+componentes por **`(warehouse_id, bling_product_id)`** (PG é global, bling_id
+não é único cross-galpão), cria `CatalogProductComponent(composite_id, component_id, quantity)` espelhando
+o Bling, `is_composite=True`+`stock_quantity=0` (derivado ADR-0023). **Falha-alto:** componente faltando
+→ NÃO marca composto (kit meio-ligado calcularia `composite_stock` errado) + reporta. Guard `child.id!=kit.id`.
+Ramo CMIG intocado. Trio: consistency-auditor (pré) 5 correções incorporadas; quality-guardian **LIBEROU**
+(0 crít/alto); adr-checker **CONFORME** (ADR-0023/0026/0004). 7 testes do import OK.
+
+**Backfill (one-off, reusou o `_link_kit` corrigido, idempotente, commit por kit):** rodado em produção
+(galpão 1). **Resultado: 1420 kits ligados, 100 pendentes, 0 erros.** Os 100 pendentes dependem de **41
+componentes distintos** (produtos simples `formato=S`, `situacao=A` no Bling) que **não foram importados
+pro PG** — ficaram corretamente chapados (falha-alto). **Próximo passo:** importar esses 41 componentes
+(ex.: re-rodar a importação Bling) e re-rodar o backfill → os 100 kits ligam (idempotente).
+
+**Follow-ups (quality-guardian, não-bloqueantes):** abortar o job se `warehouse_id` None (defensivo);
+após marcar `is_composite`, disparar `schedule_push`/recompute dos componentes se o kit tiver anúncio
+publicado (hoje são produtos recém-importados sem listing — reconcilia no job horário).
+
+---
+
 ## 2026-11-08 — CASA — Integração Bling (ERP) por CMIG via OAuth2 — Fase 1 (conexão) — ✅ EM PRODUÇÃO (commits `32477b0` + `1270923`)
 
 **Pedido do dono:** criar uma SKILL sobre a API do Bling + planejar e implementar a **conexão da Conta
