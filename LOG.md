@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-11-08 — fix(bling): import falhava em tudo por rate limit 429 (throttle no limite exato)
+
+Import real (2469 produtos, destino PG) falhou em ~668/668: o throttle do `bling_service` estava em
+**1/3s (3 req/s = o limite EXATO do Bling)** → borda da janela de 1s gerava `429 TOO_MANY_REQUESTS` e o
+retry único (1s) não bastava num import sustentado. **Fix:** throttle para **0,45s (~2,2 req/s)**, margem
+sob o limite; e `request()` reescrito com **retry + backoff** em 429 (até 4 tentativas: 1/2.5/4/5.5s) +
+refresh de 401 uma vez. Removido o param `_retry` (virou loop). Job que estava rodando foi interrompido
+(restart do backend) e marcado `cancelled`; nenhum dado gravado (cada falha dava rollback). Backend-only.
+
+---
+
 ## 2026-11-08 — feat(bling): Fase 2 — importar categorias/produtos/kits do Bling → CMIG ou PG (ADR-0040)
 
 Importa o catálogo do Bling (categorias + produtos + kits) para dentro do sistema; destino **CMIG ou

@@ -44,10 +44,10 @@ STATE_TTL_SECONDS = 900                      # o state (CSRF + cmig_id) vale 15 
 # Escopos do roadmap (catálogo). O Bling usa os escopos do CADASTRO do app; mandamos por cortesia.
 ESCOPO_PADRAO = ""
 
-# Throttle conservador: o Bling limita ~3 req/s por conta. Para a Fase 1 (conexão) as chamadas são
-# esparsas; um intervalo mínimo por-processo já protege. Refinar p/ token-bucket por-CMIG nas fases
-# de sincronização.
-_MIN_INTERVALO = 1.0 / 3.0
+# Throttle: o Bling limita 3 req/s por conta (HARD — 429 TOO_MANY_REQUESTS na borda da janela de 1s).
+# Ficar no limite exato (1/3s) gera 429 em import sustentado → usamos MARGEM (≈2,2 req/s) + o retry
+# com backoff no `request` cobre picos. (Global por-processo; refinar p/ token-bucket por-CMIG depois.)
+_MIN_INTERVALO = 0.45
 _ultimo_call = 0.0
 _throttle_lock = asyncio.Lock()
 # Lock de refresh POR CMIG (não global — não serializa CMIGs distintas).
@@ -358,40 +358,45 @@ async def company_info(db, cmig_id: int) -> dict | None:
     return await _fetch_empresa(token)
 
 
-async def request(db, cmig_id: int, method: str, path: str, *, params=None, json_body=None, _retry=True):
-    """Chamada autenticada à API do Bling (throttle + refresh em 401 + retry em 429/5xx).
+async def request(db, cmig_id: int, method: str, path: str, *, params=None, json_body=None):
+    """Chamada autenticada à API do Bling (throttle + refresh em 401 + **retry com backoff em 429**/5xx).
 
-    `path` começa com '/'. Devolve o JSON (ou levanta HTTPException para o router propagar)."""
-    await _throttle()
-    token = await get_valid_token(db, cmig_id)
+    `path` começa com '/'. Devolve o JSON (ou levanta HTTPException para o router propagar). O 429 do
+    Bling (3 req/s) é tratado com várias tentativas e backoff — num import sustentado picos de 429 são
+    esperados e NÃO devem derrubar o produto."""
     url = f"{API_BASE}{path}"
-    async with httpx.AsyncClient(timeout=TIMEOUT) as c:
-        r = await c.request(
-            method, url,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            params=params, json=json_body,
-        )
-    if r.status_code == 401 and _retry:
-        # token pode ter virado inválido antes de expirar → força refresh (SOB LOCK por-CMIG: o
-        # refresh do Bling rotaciona o refresh_token; dois refresh concorrentes invalidariam a
-        # conexão). Re-check dentro do lock: se outra corrotina já renovou, não renova de novo.
-        async with _lock_for(cmig_id):
-            conta = await active_account(db, cmig_id)
-            if conta and conta.refresh_token_enc:
-                exp = conta.token_expires_at
-                if exp is not None and exp.tzinfo is None:
-                    exp = exp.replace(tzinfo=UTC)
-                ja_renovado = bool(conta.access_token_enc and exp and exp - MARGEM_RENOVACAO > datetime.now(UTC))
-                if not ja_renovado:
-                    await _refresh(db, conta)
-        return await request(db, cmig_id, method, path, params=params, json_body=json_body, _retry=False)
-    if r.status_code == 429 and _retry:
-        await asyncio.sleep(1.0)
-        return await request(db, cmig_id, method, path, params=params, json_body=json_body, _retry=False)
-    if r.status_code >= 400:
-        raise HTTPException(status_code=502 if r.status_code >= 500 else r.status_code,
-                            detail=f"Bling {r.status_code}: {r.text[:300]}")
-    return r.json() if r.content else {}
+    refreshed = False
+    for attempt in range(5):                         # 1 tentativa + até 4 retries
+        await _throttle()
+        token = await get_valid_token(db, cmig_id)
+        async with httpx.AsyncClient(timeout=TIMEOUT) as c:
+            r = await c.request(
+                method, url,
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                params=params, json=json_body,
+            )
+        if r.status_code == 401 and not refreshed:
+            # token inválido antes de expirar → refresh SOB LOCK por-CMIG (o refresh do Bling rotaciona;
+            # 2 refresh concorrentes invalidariam a conexão). Re-check: se outra corrotina já renovou, não.
+            refreshed = True
+            async with _lock_for(cmig_id):
+                conta = await active_account(db, cmig_id)
+                if conta and conta.refresh_token_enc:
+                    exp = conta.token_expires_at
+                    if exp is not None and exp.tzinfo is None:
+                        exp = exp.replace(tzinfo=UTC)
+                    ja_renovado = bool(conta.access_token_enc and exp and exp - MARGEM_RENOVACAO > datetime.now(UTC))
+                    if not ja_renovado:
+                        await _refresh(db, conta)
+            continue
+        if r.status_code == 429 and attempt < 4:
+            await asyncio.sleep(1.0 + attempt * 1.5)  # backoff: 1, 2.5, 4, 5.5s
+            continue
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502 if r.status_code >= 500 else r.status_code,
+                                detail=f"Bling {r.status_code}: {r.text[:300]}")
+        return r.json() if r.content else {}
+    raise HTTPException(status_code=429, detail="Bling: limite de requisições (3/s) atingido após retries")
 
 
 # ── LEGADO (DEPRECADO) ──────────────────────────────────────────────────────────
