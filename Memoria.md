@@ -34,7 +34,10 @@ na conta **Bling**, botão **"Integração Bling (ERP)"** → (opcional) ajustar
 → autorizar no Bling → ver "Conectado". (A UI foi MOVIDA do card da CMIG para Integrações a pedido do dono
 em 08/11 — commit da emenda a confirmar; backend por-CMIG intocado.) Se não habilitar p/ perfil não-admin,
 habilitar `bling_gerenciar` no Perfil de Acesso.
-**Fase 2+ (próxima):** importar categorias, produtos e kits do Bling (direção leitura Bling→sistema).
+**Fase 2 (importar categorias/produtos/kits → CMIG ou PG) IMPLEMENTADA 08/11** (migrations 182/183,
+`bling_import_service` + job assíncrono + `CmigBlingImport.vue`; upsert pular/atualizar; imagens
+baixadas; estoque não importado; kit→componentes; guard product_mode). Variações entram flat (follow-up
+= agrupar pai+variantes). **A deployar + validar com import real.**
 
 ---
 

@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-11-08 — feat(bling): Fase 2 — importar categorias/produtos/kits do Bling → CMIG ou PG (ADR-0040)
+
+Importa o catálogo do Bling (categorias + produtos + kits) para dentro do sistema; destino **CMIG ou
+PG** escolhido na hora. Direção LEITURA; **estoque NÃO importado** (SSOT local).
+
+- **migrations 182** (`bling_product_id` em cmig_products+índice, `bling_category_id` em categories,
+  tabela `bling_import_jobs`) **+ 183** (seed permissão `bling_importar` ac/admin).
+- **`services/bling_import_service.py`**: listar categorias/produtos; **job assíncrono** (molde ADR-0011,
+  `task_db` por worker, progresso/contadores) com **upsert** (por `bling_product_id`→SKU; `skip`/
+  `update`), **imagens baixadas** (URL S3 do Bling expira; valida magic-byte+tamanho via `image_upload`),
+  **fiscal** (NCM/CEST/origem via `product_import.norm_*`), **categoria** via `resolve_or_create_category_id`,
+  **estoque=0 só no create** (update NÃO zera saldo real), **kit→componentes** (`CMIGProductComponent`,
+  2 passadas, ADR-0023, destino CMIG), guard **`product_mode`** (ADR-0024/0029) + captura de erro no worker.
+- **rotas** `/cmigs/{id}/bling/{categories,products,import,import/{job}}` (`bling_importar` AND escopo).
+- **front** `CmigBlingImport.vue` (destino/conflito/toggles + roda + poll de progresso) no card Bling.
+- Reusa helpers existentes (categoria/fiscal/imagem/job/throttle) — pré-auditado pelo consistency-auditor.
+- **Limitação v1:** variações entram **flat** (um produto por SKU), não agrupadas pai+variantes (follow-up,
+  pendente shape real de `variacoes`). `pytest` 6 testes novos de mapeamento; build OK.
+
+---
+
 ## 2026-11-08 — feat(bling): integração Bling (ERP) por CMIG via OAuth2 — Fase 1 (conexão) + skill
 
 Conectar cada CMIG à conta Bling dela (OAuth2 Bling API v3). Fase 1 = **só conexão** (status/connect/

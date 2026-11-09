@@ -75,6 +75,11 @@
           </template>
         </div>
         <p v-else class="small text-muted mb-0">Você não tem permissão para gerenciar esta integração.</p>
+
+        <!-- Importar catálogo do Bling (ADR-0040 Fase 2) — só quando conectado + permissão -->
+        <CmigBlingImport
+          v-if="status.conectado && authStore.hasAction('bling_importar')"
+          :cmig-id="Number(cmigId)" />
       </div>
     </div>
   </div>
@@ -85,6 +90,7 @@ import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
+import CmigBlingImport from '@/components/cmigs/CmigBlingImport.vue'
 
 const props = defineProps({ cmigId: { type: Number, required: true } })
 

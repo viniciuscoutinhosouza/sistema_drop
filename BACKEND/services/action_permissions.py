@@ -40,6 +40,8 @@ ACTION_PERMISSIONS: list[dict] = [
     # (skill bling-api). Capacidade AND escopo (assert_cmig_access). Default = quem gerencia a CMIG.
     {"key": "bling_gerenciar", "label": "Gerenciar integração Bling da CMIG (conectar/desconectar)",
      "menu": "cmig", "default_base_roles": ["ac", "admin"]},
+    {"key": "bling_importar", "label": "Importar catálogo do Bling (categorias/produtos/kits → CMIG ou PG)",
+     "menu": "cmig", "default_base_roles": ["ac", "admin"]},
     {"key": "cmig_fiscal_config", "label": "Configuração fiscal da CMIG + certificado digital (A1)",
      "menu": "fiscal_config", "default_base_roles": ["ac", "admin"]},
     {"key": "cmig_dce_authorized",

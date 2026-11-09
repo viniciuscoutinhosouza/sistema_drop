@@ -12,6 +12,7 @@ class Category(Base):
     parent_id = Column(Integer, ForeignKey("categories.id"))
     ml_category_id = Column(String(50))
     shopee_category_id = Column(Integer)
+    bling_category_id = Column(String(40))  # origem Bling (ADR-0040 Fase 2, migration 182)
     # Isolamento por galpão (migration 145): categoria pertence a um warehouse; não aparece em outro.
     warehouse_id = Column(Integer, ForeignKey("warehouses.id"), nullable=True)
 
@@ -59,6 +60,7 @@ class CatalogProduct(Base):
     ean = Column(String(14))
     origin = Column(Integer, default=0)
     csosn = Column(String(3))  # ICMS CSOSN para Faturador ML (ex: "102" Simples Nacional)
+    bling_product_id = Column(String(40))  # origem Bling (ADR-0040 Fase 2, migration 182)
     category_id = Column(Integer, ForeignKey("categories.id"))
     video_id = Column(String(100))
     attributes_json = Column(String)  # CLOB

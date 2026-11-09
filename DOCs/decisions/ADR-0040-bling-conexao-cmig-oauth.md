@@ -67,10 +67,20 @@ com as diferenças que o escopo por-CMIG exige.
 
 ## Roadmap (fases futuras — cada uma com sua ADR)
 
-- **Fase 2+ (direção Bling → Sistema Drop, LEITURA):** importar **categorias, produtos e kits** do
-  Bling. Mapear para o modelo (CMIGProduct / catálogo / kit = estoque derivado dos componentes,
-  ADR-0023). **Não** importar saldo (estoque segue SSOT local event-sourced, ADR-0004/0019) — importar
-  catálogo ≠ importar estoque.
+- **Fase 2 — IMPORTAR do Bling (implementada 2026-11-08):** `services/bling_import_service.py` +
+  rotas `/cmigs/{cmig_id}/bling/{categories,products,import,import/{job}}` (permissão **`bling_importar`**
+  AND `assert_cmig_access`). **Job assíncrono** (molde ADR-0011: `asyncio.create_task` + `task_db` por
+  worker + progresso/contadores em `bling_import_jobs`, migration 182). **Upsert** por `bling_product_id`
+  (migrations 182: coluna em `cmig_products`+índice, `catalog_products` já tinha; `bling_category_id` em
+  `categories`) → SKU; `on_conflict` **skip|update** (skip não toca o existente, inclusive na passada de
+  kit; update **não** zera estoque real — `stock_quantity=0` só no create). **Não importa estoque**
+  (SSOT local, ADR-0004/0019). Imagens **baixadas** (URL S3 do Bling expira) via `image_upload` (magic
+  byte+tamanho). Fiscal (NCM/CEST/origem) via `product_import.norm_*`; categoria via
+  `resolve_or_create_category_id`. **Kit** (`estrutura.componentes`) → `CMIGProductComponent` em 2
+  passadas, `is_composite`+stock 0 (ADR-0023), só destino CMIG. Guard **`product_mode.
+  assert_product_group_allowed`** (ADR-0024/0029) antes de agendar. Front: `CmigBlingImport` no card.
+  **Limitação v1 (follow-up):** variações entram **flat** (um produto por SKU), não agrupadas em
+  pai+variantes — pendente confirmar o shape de `variacoes` contra a API real.
 - Confirmar os `[confirmar]` da skill `bling-api` contra a API real (host v3, validade do access_token,
   nomes de campo, webhooks) quando houver credencial.
 - Limpeza: aposentar o endpoint legado `/accounts/{id}/bling/connect` + coluna `api_key`.

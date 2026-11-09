@@ -152,6 +152,94 @@ async def disconnect(
     return {"ok": True}
 
 
+# ── Importação de catálogo (ADR-0040 Fase 2) ───────────────────────────────────
+
+@router.get("/categories")
+async def bling_categories(
+    cmig_id: int,
+    current_user: User = Depends(require_permission("bling_importar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lista as categorias de produto do Bling desta CMIG (para o preview da importação)."""
+    await _check_cmig_access(cmig_id, current_user, db)
+    try:
+        from services import bling_import_service as imp
+        return {"categorias": await imp.list_categories(db, cmig_id)}
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise _erro(e)
+
+
+@router.get("/products")
+async def bling_products(
+    cmig_id: int,
+    pagina: int = 1,
+    limite: int = 100,
+    id_categoria: int | None = None,
+    current_user: User = Depends(require_permission("bling_importar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Preview paginado dos produtos do Bling desta CMIG."""
+    await _check_cmig_access(cmig_id, current_user, db)
+    try:
+        from services import bling_import_service as imp
+        return await imp.list_products(db, cmig_id, pagina=pagina, limite=limite, id_categoria=id_categoria)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise _erro(e)
+
+
+@router.post("/import")
+async def bling_import(
+    cmig_id: int,
+    body: dict,
+    current_user: User = Depends(require_permission("bling_importar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Inicia a importação (job assíncrono). body: {target:'cmig'|'pg', on_conflict:'skip'|'update',
+    options:{product_ids?[], images?, kits?}}. Devolve o id do job p/ acompanhar em GET /import/{id}."""
+    await _check_cmig_access(cmig_id, current_user, db)
+    target = (body.get("target") or "").strip()
+    on_conflict = (body.get("on_conflict") or "skip").strip()
+    options = body.get("options") or {}
+    try:
+        from services import bling_import_service as imp
+        job = await imp.start_import(db, cmig_id=cmig_id, target=target, on_conflict=on_conflict,
+                                     options=options, user_id=current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise _erro(e)
+    return {"job_id": job.id, "status": job.status}
+
+
+@router.get("/import/{job_id}")
+async def bling_import_status(
+    cmig_id: int,
+    job_id: int,
+    current_user: User = Depends(require_permission("bling_importar")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Status/progresso do job de importação."""
+    await _check_cmig_access(cmig_id, current_user, db)
+    from models.bling import BlingImportJob
+    job = (await db.execute(
+        select(BlingImportJob).where(BlingImportJob.id == job_id, BlingImportJob.cmig_id == cmig_id)
+    )).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job de importação não encontrado")
+    return {
+        "id": job.id, "status": job.status, "progresso": job.progress_step, "total": job.total,
+        "criados": job.created_count, "atualizados": job.updated_count,
+        "pulados": job.skipped_count, "falhas": job.failed_count, "erro": job.error,
+        "target": job.target, "on_conflict": job.on_conflict,
+    }
+
+
 # ── Callback público (SEM login — quem chama é o Bling) ─────────────────────────
 
 @public_router.get("/callback", response_class=HTMLResponse)

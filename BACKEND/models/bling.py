@@ -40,3 +40,30 @@ class CMIGBlingAccount(Base):
         # Uma conexão Bling por CMIG. A reconexão faz UPDATE in-place (upsert), nunca 2ª linha.
         UniqueConstraint("cmig_id", name="uq_bling_cmig"),
     )
+
+
+class BlingImportJob(Base):
+    """Job de importação assíncrona do Bling → CMIG/PG (ADR-0040 Fase 2, migration 182).
+
+    Molde: competitor_analyses (ADR-0011) — rodado em asyncio.create_task com sessão própria
+    (task_db), progresso + contadores persistidos por produto (sobrevive a reload; permite status)."""
+
+    __tablename__ = "bling_import_jobs"
+
+    id = Column(Integer, primary_key=True)
+    cmig_id = Column(Integer, ForeignKey("cmigs.id"), nullable=False)
+    target = Column(String(10), nullable=False)        # cmig | pg
+    on_conflict = Column(String(10), nullable=False)   # skip | update
+    options_json = Column(Text)
+    status = Column(String(20), nullable=False, default="running")  # running|done|error|cancelled
+    progress_step = Column(String(200))
+    total = Column(Integer, nullable=False, default=0)
+    created_count = Column(Integer, nullable=False, default=0)
+    updated_count = Column(Integer, nullable=False, default=0)
+    skipped_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    result_json = Column(Text)
+    error = Column(String(2000))
+    requested_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(TIMESTAMP(timezone=True), server_default=text("SYSTIMESTAMP"))
+    finished_at = Column(TIMESTAMP(timezone=True))

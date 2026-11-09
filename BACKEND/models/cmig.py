@@ -133,6 +133,8 @@ class CMIGProduct(Base):
     # variacoes ja foram importadas e bloquear duplicacao.
     source_listing_id = Column(Integer, ForeignKey("product_listings.id"), nullable=True)
     source_variation_id = Column(String(100), nullable=True)
+    # Origem Bling (ADR-0040 Fase 2, migration 182): id do produto no Bling p/ dedup + re-sync.
+    bling_product_id = Column(String(40), nullable=True)
     is_composite = Column(Boolean, nullable=False, default=False)
     is_active = Column(Boolean, nullable=False, default=True)
     # Rastreabilidade (ADR-0027) — combináveis; default 0 = não rastreável (zero regressão).
