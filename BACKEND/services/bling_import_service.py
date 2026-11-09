@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from database import task_db
 from models.bling import BlingImportJob
 from models.cmig import CMIG, CMIGProduct, CMIGProductComponent, CMIGProductImage
-from models.product import CatalogProduct, CatalogProductImage
+from models.product import CatalogProduct, CatalogProductComponent, CatalogProductImage
 from services import bling_service as bling
 from services.image_upload import MAX_IMAGE_BYTES, save_image, sniff_image_ext
 from services.product_import import norm_cest, norm_ncm, resolve_or_create_category_id
@@ -432,13 +432,18 @@ async def _run(job_id: int) -> None:
                                 created_count=created, updated_count=updated,
                                 skipped_count=skipped, failed_count=failed)
 
-        # 2ª passada: componentes dos kits (resolve por bling_product_id dentro do destino)
+        # 2ª passada: componentes dos kits (resolve por bling_product_id dentro do destino/escopo)
         for bid in (kit_ids if want_kits else []):
             try:
                 async with task_db() as db:
                     detail = await get_detail(db, cmig_id, bid)
-                    await _link_kit(db, target, cmig_id, bid, _kit_components(detail))
+                    res = await _link_kit(db, target, cmig_id, bid, _kit_components(detail),
+                                          warehouse_id=warehouse_id)
                     await db.commit()
+                # Falha alto (PG): kit cujo(s) componente(s) não foram importados fica chapado — reporta.
+                if res and res.get("missing"):
+                    errors.append({"bling_id": bid,
+                                   "motivo": f"kit não vinculado: componente(s) ausente(s) no galpão: {res['missing']}"})
             except Exception as e:  # noqa: BLE001
                 errors.append({"bling_id": bid, "motivo": f"kit: {str(e)[:150]}"})
                 logger.warning("[bling-import %s] kit %s falhou: %s", job_id, bid, e)
@@ -482,30 +487,81 @@ async def _run(job_id: int) -> None:
             pass
 
 
-async def _link_kit(db, target, cmig_id, kit_bling_id, components) -> None:
-    """Liga os componentes ao kit (CMIGProductComponent). Só p/ destino CMIG (o composto vive no
-    CMIGProduct — ADR-0023). Resolve componente por bling_product_id dentro do destino."""
-    if target != "cmig" or not components:
-        return
-    kit = (await db.execute(
-        select(CMIGProduct).where(CMIGProduct.cmig_id == cmig_id,
-                                  CMIGProduct.bling_product_id == str(kit_bling_id))
-    )).scalars().first()
-    if not kit:
-        return
-    kit.is_composite = True
-    kit.stock_quantity = 0                                # kit = estoque derivado (ADR-0023)
-    # limpa componentes antigos (re-sync) e recria
-    for old in (await db.execute(
-        select(CMIGProductComponent).where(CMIGProductComponent.composite_id == kit.id)
-    )).scalars().all():
-        db.delete(old)
-    await db.flush()
-    for comp in components:
-        child = (await db.execute(
+async def _link_kit(db, target, cmig_id, kit_bling_id, components, *, warehouse_id=None):
+    """Liga os componentes ao kit (ADR-0023 — o composto vive no produto, estoque derivado na leitura).
+
+    - **CMIG** → `CMIGProductComponent`, escopo `cmig_id` (comportamento histórico intocado).
+    - **PG** → `CatalogProductComponent`, escopo **`warehouse_id`** (PG é global, sem cmig_id, e
+      `bling_product_id` NÃO é único cross-galpão — resolver só pelo bling_id colaria componente do
+      galpão errado).
+
+    No ramo PG **falha alto**: se QUALQUER componente não existir no galpão, NÃO marca o kit como
+    composto (deixa chapado) e devolve-o em `missing` — um kit meio-ligado calcularia `composite_stock`
+    ERRADO (ele ignora componente não resolvido e reportaria montável maior que o real). Guard
+    `child.id != kit.id` (auto-referência de dado sujo). Retorna `{'linked': bool, 'missing': [bling_id]}`
+    no ramo PG; `None` no ramo CMIG (compat)."""
+    if not components:
+        return None
+
+    if target == "cmig":
+        kit = (await db.execute(
             select(CMIGProduct).where(CMIGProduct.cmig_id == cmig_id,
-                                      CMIGProduct.bling_product_id == comp["bling_id"])
+                                      CMIGProduct.bling_product_id == str(kit_bling_id))
         )).scalars().first()
-        if child and child.id != kit.id:
-            db.add(CMIGProductComponent(composite_id=kit.id, cmig_product_id=child.id, quantity=comp["qty"]))
-    await db.flush()
+        if not kit:
+            return None
+        kit.is_composite = True
+        kit.stock_quantity = 0                                # kit = estoque derivado (ADR-0023)
+        # limpa componentes antigos (re-sync) e recria
+        for old in (await db.execute(
+            select(CMIGProductComponent).where(CMIGProductComponent.composite_id == kit.id)
+        )).scalars().all():
+            db.delete(old)
+        await db.flush()
+        for comp in components:
+            child = (await db.execute(
+                select(CMIGProduct).where(CMIGProduct.cmig_id == cmig_id,
+                                          CMIGProduct.bling_product_id == comp["bling_id"])
+            )).scalars().first()
+            if child and child.id != kit.id:
+                db.add(CMIGProductComponent(composite_id=kit.id, cmig_product_id=child.id, quantity=comp["qty"]))
+        await db.flush()
+        return None
+
+    if target == "pg":
+        kit = (await db.execute(
+            select(CatalogProduct).where(CatalogProduct.warehouse_id == warehouse_id,
+                                         CatalogProduct.bling_product_id == str(kit_bling_id))
+        )).scalars().first()
+        if not kit:
+            return {"linked": False, "missing": []}
+        # resolve TODOS os componentes ANTES de decidir — só marca composto se todos existirem.
+        resolved: list[tuple[int, int]] = []
+        missing: list[str] = []
+        for comp in components:
+            child = (await db.execute(
+                select(CatalogProduct).where(CatalogProduct.warehouse_id == warehouse_id,
+                                             CatalogProduct.bling_product_id == str(comp["bling_id"]))
+            )).scalars().first()
+            if child and child.id != kit.id:
+                resolved.append((child.id, comp["qty"]))
+            else:
+                missing.append(str(comp["bling_id"]))
+        # limpa componentes antigos (re-sync) sempre, antes de decidir o estado final
+        for old in (await db.execute(
+            select(CatalogProductComponent).where(CatalogProductComponent.composite_id == kit.id)
+        )).scalars().all():
+            db.delete(old)
+        await db.flush()
+        if missing:
+            kit.is_composite = False   # falha alto: kit com componente faltando NÃO vira composto
+            await db.flush()
+            return {"linked": False, "missing": missing}
+        for child_id, qty in resolved:
+            db.add(CatalogProductComponent(composite_id=kit.id, component_id=child_id, quantity=qty))
+        kit.is_composite = True
+        kit.stock_quantity = 0                                # kit = estoque derivado (ADR-0023)
+        await db.flush()
+        return {"linked": True, "missing": []}
+
+    return None
