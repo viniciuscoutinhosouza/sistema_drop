@@ -139,6 +139,21 @@ def _image_links(detail: dict) -> list[str]:
     return out
 
 
+def _bling_qty(detail: dict) -> int | None:
+    """Quantidade de estoque do Bling (p/ baseline). Prefere saldo FÍSICO; cai no virtual. Devolve
+    **None quando NÃO há campo de saldo** no detalhe — "sem dado" ≠ "zero": como o baseline reseta o
+    saldo, zerar por campo ausente apagaria estoque real. None → o produto é pulado do baseline."""
+    est = detail.get("estoque") or {}
+    for k in ("saldoFisicoTotal", "saldoVirtualTotal", "saldoFisico", "saldoVirtual", "saldo"):
+        v = est.get(k)
+        if v is not None:
+            try:
+                return max(0, int(float(v)))
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
 def _kit_components(detail: dict) -> list[dict]:
     """[{bling_id, qty}] a partir de estrutura.componentes (shape tolerante)."""
     est = detail.get("estrutura") or {}
@@ -284,7 +299,10 @@ async def _upsert_product(db, *, target, cmig_id, warehouse_id, detail, on_confl
     # imagens (só quando criando, ou atualizando sem imagem ainda — não duplica)
     if want_images:
         ImgModel = CMIGProductImage if target == "cmig" else CatalogProductImage
-        fk = "cmig_product_id" if target == "cmig" else "catalog_product_id"
+        # FK da tabela de imagem: CMIGProductImage.cmig_product_id × CatalogProductImage.PRODUCT_ID
+        # (nomes diferentes! usar 'catalog_product_id' aqui estourava AttributeError e derrubava TODO
+        # produto PG com imagem).
+        fk = "cmig_product_id" if target == "cmig" else "product_id"
         has_img = (await db.execute(
             select(func.count()).select_from(ImgModel).where(getattr(ImgModel, fk) == obj.id)
         )).scalar() or 0
@@ -347,12 +365,15 @@ async def _run(job_id: int) -> None:
             if not job:
                 return
             cmig_id, target, on_conflict = job.cmig_id, job.target, job.on_conflict
+            user_id = job.requested_by
             opts = json.loads(job.options_json or "{}")
             cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
             warehouse_id = cmig.warehouse_id if cmig else None
 
         want_images = bool(opts.get("images", True))
         want_kits = bool(opts.get("kits", True))
+        want_stock = bool(opts.get("import_stock", False))   # importar estoque = evento baseline (opt-in)
+        stock_counts: dict[int, int] = {}
         # Seleção: lista de ids do Bling (preview marcou) OU 'tudo' (varre as páginas).
         selected = opts.get("product_ids")
 
@@ -385,7 +406,14 @@ async def _run(job_id: int) -> None:
                     outcome, _obj = await _upsert_product(
                         db, target=target, cmig_id=cmig_id, warehouse_id=warehouse_id,
                         detail=detail, on_conflict=on_conflict, want_images=want_images)
+                    pid = _obj.id if _obj is not None else None   # capturado dentro do bloco (atachado)
                     await db.commit()
+                # coleta o estoque Bling (não-kit, não-pulado) p/ o inventário baseline no fim.
+                # None = Bling não informou saldo → NÃO reseta (não vira item de baseline).
+                if want_stock and pid and outcome != "skipped" and not comps:
+                    _q = _bling_qty(detail)
+                    if _q is not None:
+                        stock_counts[pid] = _q
                 # só liga componentes de kit que foi criado/atualizado (pular = não mexer no existente)
                 if comps and want_kits and outcome != "skipped":
                     kit_ids.append(bid)
@@ -414,6 +442,19 @@ async def _run(job_id: int) -> None:
             except Exception as e:  # noqa: BLE001
                 errors.append({"bling_id": bid, "motivo": f"kit: {str(e)[:150]}"})
                 logger.warning("[bling-import %s] kit %s falhou: %s", job_id, bid, e)
+
+        # ESTOQUE (opt-in): cria UM inventário BASELINE finalizado resetando o saldo = qtd Bling
+        # (SSOT-correto, ADR-0004/0019 — não escreve stock_quantity direto). Kits excluídos (ADR-0023).
+        if want_stock and stock_counts:
+            await _progress(job_id, "Aplicando estoque (inventário baseline)…")
+            try:
+                async with task_db() as db:
+                    from services.inventory_service import import_stock_baseline
+                    await import_stock_baseline(db, target=target, cmig_id=cmig_id,
+                                                warehouse_id=warehouse_id, counts=stock_counts, user_id=user_id)
+            except Exception as e:  # noqa: BLE001 — falha do estoque não invalida o catálogo já importado
+                errors.append({"estoque": f"falha ao aplicar inventário baseline: {str(e)[:200]}"})
+                logger.exception("[bling-import %s] inventário baseline falhou", job_id)
 
         async with task_db() as db:
             job = (await db.execute(select(BlingImportJob).where(BlingImportJob.id == job_id))).scalar_one_or_none()

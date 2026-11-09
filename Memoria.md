@@ -40,8 +40,11 @@ Bling; upsert pular/atualizar; imagens baixadas anti-SSRF; estoque NÃO importad
 kit→componentes destino CMIG; guard product_mode; dedup escopado por galpão). Trio: quality-guardian
 pegou 3 CRÍTICOS (coluna `catalog_products.bling_product_id` que NÃO existia — pré-auditoria errou — +
 estoque zerado no update) + 2 ALTOS (escopo PG, SSRF) — todos corrigidos e re-verificados.
-**Pendente do dono:** exercitar a importação REAL pela tela (Administração ▸ Integrações → conta Bling →
-Importar catálogo). **Follow-ups:** variações entram flat (agrupar pai+variantes); seletor por produto/
+**Estoque (09/11):** toggle "Importar estoque" (opt-in) cria um **inventário baseline** finalizado que
+reseta o saldo = qtd Bling (SSOT-correto, `services/inventory_service.import_stock_baseline`; kits fora).
+**Fix 429 (09/11):** throttle do `bling_service` estava no limite exato (3/s) → import falhava em tudo;
+ajustado p/ ~2,2 req/s + backoff. **Pendente do dono:** exercitar a importação REAL pela tela
+(Administração ▸ Integrações → conta Bling → Importar catálogo). **Follow-ups:** variações entram flat (agrupar pai+variantes); seletor por produto/
 categoria (backend pronto, UI só "importar tudo"); kit no destino PG.
 
 ---

@@ -52,15 +52,25 @@
         <input type="checkbox" class="custom-control-input" id="blKits" v-model="opts.kits">
         <label class="custom-control-label small" for="blKits">Importar kits (componentes)</label>
       </div>
+      <div class="custom-control custom-switch" title="Reseta o saldo local para a quantidade do Bling (inventário baseline)">
+        <input type="checkbox" class="custom-control-input" id="blStock" v-model="opts.stock">
+        <label class="custom-control-label small" for="blStock">Importar estoque</label>
+      </div>
       <span v-if="preview" class="small text-muted ml-auto">
         {{ preview.itens.length }} produtos nesta página{{ preview.tem_mais ? '+' : '' }}
       </span>
     </div>
 
     <p class="small text-muted mb-2">
-      Importa o catálogo inteiro do Bling (categorias + produtos + kits). O estoque NÃO é importado
-      (continua controlado aqui). As variações entram como produtos próprios por SKU.
+      Importa o catálogo inteiro do Bling (categorias + produtos + kits). As variações entram como
+      produtos próprios por SKU. Por padrão o estoque NÃO é tocado (continua controlado aqui).
     </p>
+    <div v-if="opts.stock" class="alert alert-warning py-2 small mb-2">
+      <i class="fas fa-exclamation-triangle mr-1"></i>
+      <strong>Importar estoque</strong> cria um <strong>inventário baseline</strong>: o saldo local de
+      cada produto é <strong>resetado para a quantidade do Bling</strong> na data da importação (os
+      kits ficam de fora — estoque de kit é derivado dos componentes).
+    </div>
 
     <button class="btn btn-sm btn-success" :disabled="running" @click="start">
       <i class="fas" :class="running ? 'fa-spinner fa-spin' : 'fa-play'"></i>
@@ -79,7 +89,7 @@ const toast = useToast()
 
 const target = ref('cmig')
 const onConflict = ref('skip')
-const opts = reactive({ images: true, kits: true })
+const opts = reactive({ images: true, kits: true, stock: false })
 const preview = ref(null)
 const job = ref(null)
 const running = ref(false)
@@ -99,7 +109,7 @@ async function start() {
     const { data } = await api.post(`/cmigs/${props.cmigId}/bling/import`, {
       target: target.value,
       on_conflict: onConflict.value,
-      options: { images: opts.images, kits: opts.kits },
+      options: { images: opts.images, kits: opts.kits, import_stock: opts.stock },
     })
     toast.success('Importação iniciada')
     watchJob(data.job_id)

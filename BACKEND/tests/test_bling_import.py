@@ -78,6 +78,15 @@ def test_kit_components_shape_tolerante():
     assert imp._kit_components(d) == [{"bling_id": "999", "qty": 3}, {"bling_id": "888", "qty": 1}]
 
 
+def test_bling_qty_ausente_vira_none_nao_zero():
+    # baseline reseta o saldo → "sem campo de saldo" NUNCA pode virar 0 (apagaria estoque real)
+    assert imp._bling_qty({}) is None
+    assert imp._bling_qty({"estoque": {}}) is None
+    assert imp._bling_qty({"estoque": {"saldoFisicoTotal": 7}}) == 7
+    assert imp._bling_qty({"estoque": {"saldoVirtualTotal": "3.0"}}) == 3
+    assert imp._bling_qty({"estoque": {"saldoFisicoTotal": -5}}) == 0   # clamp ≥ 0
+
+
 def test_origin_fora_da_faixa_vira_zero():
     assert imp._common_fields({"codigo": "X", "tributacao": {"origem": 99}})["origin"] == 0
     assert imp._common_fields({"codigo": "X", "tributacao": {"origem": "2"}})["origin"] == 2

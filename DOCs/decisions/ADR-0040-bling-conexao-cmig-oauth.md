@@ -81,6 +81,12 @@ com as diferenças que o escopo por-CMIG exige.
   assert_product_group_allowed`** (ADR-0024/0029) antes de agendar. Front: `CmigBlingImport` no card.
   **Limitação v1 (follow-up):** variações entram **flat** (um produto por SKU), não agrupadas em
   pai+variantes — pendente confirmar o shape de `variacoes` contra a API real.
+  **Estoque (opt-in):** importar estoque do Bling respeita o SSOT event-sourced (ADR-0004/0019) — NÃO
+  escreve `stock_quantity` direto; cria um **Inventário `baseline` finalizado** (`services/inventory_
+  service.import_stock_baseline`) que reseta o saldo = qtd Bling na data e deixa o `stock_calculator`/
+  recompute derivar o cache. Kits excluídos (ADR-0023). `_MIN_INTERVALO` do `bling_service` ajustado p/
+  ~2,2 req/s (margem sob o limite de 3/s do Bling) + retry/backoff de 429 (o import em massa estourava
+  429 no limite exato).
 - Confirmar os `[confirmar]` da skill `bling-api` contra a API real (host v3, validade do access_token,
   nomes de campo, webhooks) quando houver credencial.
 - Limpeza: aposentar o endpoint legado `/accounts/{id}/bling/connect` + coluna `api_key`.

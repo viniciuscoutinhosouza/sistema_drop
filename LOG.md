@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-11-09 — feat(bling): importar ESTOQUE do Bling via inventário baseline (SSOT-correto)
+
+O dono pediu importar também o estoque. Como o estoque é SSOT local event-sourced (ADR-0004/0019 —
+`stock_quantity` é cache recomputado; escrever direto é apagado no recompute), fazemos por EVENTO: um
+Inventário `mode='baseline'` FINALIZADO que reseta o saldo = qtd Bling na data (o `stock_calculator`
+respeita; recompute deriva o cache). Decisão do dono: "inventário baseline".
+
+- NOVO `services/inventory_service.py::import_stock_baseline` (reusa `recompute_cmig/pg_product_stock` +
+  `schedule_push`; espelha a finalização de `routers/inventories.py`; EXCLUI kits — ADR-0023).
+- `services/bling_import_service.py`: coleta a qtd Bling (`saldoFisicoTotal`→`saldoVirtualTotal`) por
+  produto não-kit/não-pulado; se `options.import_stock`, cria o baseline no fim. Falha do estoque não
+  invalida o catálogo (vira erro no job).
+- FRONTEND: toggle "Importar estoque" (default OFF) + aviso de que RESETA o saldo local p/ o do Bling.
+- Sem migration (reusa `inventories`/`inventory_items`). py_compile OK, 21 testes Bling/health; build OK.
+
+---
+
 ## 2026-11-08 — fix(bling): import falhava em tudo por rate limit 429 (throttle no limite exato)
 
 Import real (2469 produtos, destino PG) falhou em ~668/668: o throttle do `bling_service` estava em
