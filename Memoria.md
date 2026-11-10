@@ -38,12 +38,18 @@ mapeamento (`sandbox` one-off, grupo por kit, is_composite só se todos resolver
 (spot-check OK: AZUL→AZUL). Os 6 por typo de SKU o dono confirmou (bikes `LK-8004A`, escadas `MJT-400`)
 e foram ligados. **100/100 kits de-para ligados; 0 meio-ligados; is_composite=1 no galpão 1 = 1538,
 2012 componentes.** A correção dos kits está COMPLETA.
-**Pendente do dono (importante) — atualizar o Bling:** os 100 kits de-para têm a Estrutura no Bling
-apontando pro produto SIMPLES não importado; nosso vínculo manual aponta pro produto VARIAÇÃO. **Risco:
-uma re-importação do Bling DESLIGARIA esses 100** (o `_link_kit` não acha o componente por bling_id →
-`is_composite=False`). Pra durar, corrigir a Estrutura desses 100 kits no Bling pra referenciar o
-bling_id do produto mapeado. **Escreve no ERP do dono — apresentar o de-para (kit→novo componente) e
-pegar aprovação explícita antes de escrever.**
+**Atualizar o Bling — descoberta + decisão do dono (caminho 1):** gerei a planilha "SKU atual → SKU
+Novo" dos 100 (varredura das Estruturas Bling; `/tmp/bling_update_plan.csv`, enviada ao dono). **Bloqueio
+descoberto:** os produtos que o dono mapeou (SKU_Novo: 5190/5192/5169/320/LK-8004A/MJT-400…) estão **SEM
+`bling_product_id`** no PG (pré-existentes; a importação pulou por SKU igual), e o item que o kit
+referencia no Bling (ex.: `16713377684`) **não está no PG**. Logo NÃO dá pra repontar a Estrutura do
+Bling pro produto mapeado (ele não é item do Bling). Em 69/100 o código já bate (Estrutura Bling já
+referencia o código certo — nada a corrigir lá); 30 com SKU diferente; 1 múltiplo. **Decisão do dono
+(caminho 1):** ELE cuida do Bling ("depois eu atualizo os SKU dos produtos"); eu NÃO escrevo no ERP.
+**Consequência aceita pelo dono:** uma re-importação DESLIGA os 100 vínculos manuais (até ele acertar os
+produtos/SKUs no Bling → aí a importação casa por ID). Alternativa oferecida e NÃO escolhida (caminho 2):
+setar `bling_product_id` nos 41 produtos PG pré-existentes p/ ligá-los ao item Bling → durável sem tocar
+no ERP. **Correção dos kits FINALIZADA (1420 backfill + 100 de-para); Bling fica por conta do dono.**
 
 **Follow-ups (quality-guardian, não-bloqueantes):** abortar o job se `warehouse_id` None (defensivo);
 após marcar `is_composite`, disparar `schedule_push`/recompute dos componentes se o kit tiver anúncio
