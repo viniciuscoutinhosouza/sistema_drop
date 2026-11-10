@@ -29,10 +29,17 @@ Ramo CMIG intocado. Trio: consistency-auditor (pré) 5 correções incorporadas;
 (0 crít/alto); adr-checker **CONFORME** (ADR-0023/0026/0004). 7 testes do import OK.
 
 **Backfill (one-off, reusou o `_link_kit` corrigido, idempotente, commit por kit):** rodado em produção
-(galpão 1). **Resultado: 1420 kits ligados, 100 pendentes, 0 erros.** Os 100 pendentes dependem de **41
-componentes distintos** (produtos simples `formato=S`, `situacao=A` no Bling) que **não foram importados
-pro PG** — ficaram corretamente chapados (falha-alto). **Próximo passo:** importar esses 41 componentes
-(ex.: re-rodar a importação Bling) e re-rodar o backfill → os 100 kits ligam (idempotente).
+(galpão 1). **Resultado: 1420 kits ligados, 100 pendentes, 0 erros.** Os 100 pendentes referenciavam no
+Bling um PRODUTO SIMPLES não importado, enquanto o estoque mora num **produto de VARIAÇÃO separado**
+(outro bling_id) — por isso o match por bling_id falhou. **Auto-link por nome (fuzzy) foi DESCARTADO**
+(provado inseguro: colapsa cor/tamanho — ex.: 75CM-AZUL casava com produto ROSA). Solução segura (opção B
+do dono): planilha de-para o dono preencheu o SKU PG correto de cada kit; apliquei **exatamente** o
+mapeamento (`sandbox` one-off, grupo por kit, is_composite só se todos resolverem). **94 de 100 ligados**
+(spot-check OK: AZUL→AZUL). **6 pendentes por erro de digitação de SKU:** 3 bikes `LK8004A`→`LK-8004A`
+(falta hífen), 3 escadas `MJT-401/402/403` (não existem; só `MJT-400`) — aguardando o dono confirmar o
+SKU certo. **Total is_composite=1 no galpão 1: 1532; 0 kits meio-ligados.** **Pendente do dono:** (a)
+confirmar os 6 SKUs; (b) "depois atualizo o Bling" — corrigir a Estrutura desses kits no Bling pra
+apontar pro produto certo (match por ID em imports futuros) — a confirmar o approach (escrita no ERP).
 
 **Follow-ups (quality-guardian, não-bloqueantes):** abortar o job se `warehouse_id` None (defensivo);
 após marcar `is_composite`, disparar `schedule_push`/recompute dos componentes se o kit tiver anúncio
