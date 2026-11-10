@@ -35,11 +35,15 @@ Bling um PRODUTO SIMPLES não importado, enquanto o estoque mora num **produto d
 (provado inseguro: colapsa cor/tamanho — ex.: 75CM-AZUL casava com produto ROSA). Solução segura (opção B
 do dono): planilha de-para o dono preencheu o SKU PG correto de cada kit; apliquei **exatamente** o
 mapeamento (`sandbox` one-off, grupo por kit, is_composite só se todos resolverem). **94 de 100 ligados**
-(spot-check OK: AZUL→AZUL). **6 pendentes por erro de digitação de SKU:** 3 bikes `LK8004A`→`LK-8004A`
-(falta hífen), 3 escadas `MJT-401/402/403` (não existem; só `MJT-400`) — aguardando o dono confirmar o
-SKU certo. **Total is_composite=1 no galpão 1: 1532; 0 kits meio-ligados.** **Pendente do dono:** (a)
-confirmar os 6 SKUs; (b) "depois atualizo o Bling" — corrigir a Estrutura desses kits no Bling pra
-apontar pro produto certo (match por ID em imports futuros) — a confirmar o approach (escrita no ERP).
+(spot-check OK: AZUL→AZUL). Os 6 por typo de SKU o dono confirmou (bikes `LK-8004A`, escadas `MJT-400`)
+e foram ligados. **100/100 kits de-para ligados; 0 meio-ligados; is_composite=1 no galpão 1 = 1538,
+2012 componentes.** A correção dos kits está COMPLETA.
+**Pendente do dono (importante) — atualizar o Bling:** os 100 kits de-para têm a Estrutura no Bling
+apontando pro produto SIMPLES não importado; nosso vínculo manual aponta pro produto VARIAÇÃO. **Risco:
+uma re-importação do Bling DESLIGARIA esses 100** (o `_link_kit` não acha o componente por bling_id →
+`is_composite=False`). Pra durar, corrigir a Estrutura desses 100 kits no Bling pra referenciar o
+bling_id do produto mapeado. **Escreve no ERP do dono — apresentar o de-para (kit→novo componente) e
+pegar aprovação explícita antes de escrever.**
 
 **Follow-ups (quality-guardian, não-bloqueantes):** abortar o job se `warehouse_id` None (defensivo);
 após marcar `is_composite`, disparar `schedule_push`/recompute dos componentes se o kit tiver anúncio
