@@ -6,6 +6,43 @@
 
 ---
 
+## 2026-11-11 — ESCOL — Emissão automática NF-e: fix do claim + PG correção em massa (Excel) — ✅ EM PRODUÇÃO
+
+**Contexto:** o dono ligou a **emissão automática de NF-e** (ADR-0041) na conta MIG (ML, modo own) e
+perguntou como aplicar aos pedidos já prontos sem NF-e. Diagnóstico: o job `auto_fiscal` (5/5min) só
+processa pedidos **armados** (`auto_fiscal_status`), e o arm só é disparado por **webhook** — pedidos
+já prontos antes de ligar NÃO são armados. Pior: achei um **BUG** que fazia a emissão automática nunca
+funcionar.
+
+**Fix 1 — bug do claim (EM PRODUÇÃO, commit `5fde462`):** `arm_if_eligible` filtrava
+`nfe_status NOT IN (...)`. No Oracle, **`NULL NOT IN (...)` = UNKNOWN → o pedido SEM NF-e (o que precisa
+emitir) era EXCLUÍDO** → o claim nunca armava → job sempre ocioso (`checked=0`). Corrigido com
+`or_(nfe_status IS NULL, nfe_status NOT IN (...))`, alinhado ao `_light_eligible`. Quality-guardian
+liberou (0 crít/alto). **Teste com 2 pedidos:** agora armam e o job processa.
+
+**2 BLOQUEIOS FISCAIS reais revelados pelo teste (não são bugs — são dados):**
+1. **Série contaminada:** pedido 13060 emitiu na **série 1 nº 9** e tomou **539 Duplicidade** — a série 1
+   (e a 3) estão ocupadas na SEFAZ pelo outro emissor MIG. **Enquanto a MIG não tiver uma série
+   REALMENTE livre, NENHUMA emissão própria passa.** (O fix do AAMM de antes funcionou: recusou vincular
+   a nota de outro mês → ficou `rejected`.) `manual_nfe_serie` da MIG hoje = 1.
+2. **Produto sem NCM:** pedido 14447 (kit PG) → `error "Item 1 sem NCM"`. Emissão não monta nota sem NCM.
+
+**Fix 2 — tela PG: correção em massa via Excel (EM PRODUÇÃO, commit `5b0ed5d`)** — a pedido do dono,
+pra preencher NCM (e demais campos fiscais) rápido. `GET /pg/export` (xlsx com valores atuais + coluna
+`id` chave estável, escopado por galpão anti-IDOR, filtro `missing_ncm`) + `POST /pg/import?on_conflict=update`
+(casa por id→sku SEMPRE filtrando warehouse; aplica só campos não-vazios, vazio=mantém; não cria). Front:
+botões "Exportar p/ Excel" + "Importar correções" + filtro "Só sem NCM" em `SupplierProductListView`.
+Reusa `product_import` (+csosn, build_export_xlsx, update_fields, parse require_core). Trio: consistency
+(pré) 3 CRÍTICOS incorporados (id+warehouse, require_core, csosn); quality liberado; adr CONFORME.
+Round-trip verificado; pytest 63 ok; build front OK; `/pg/export` no OpenAPI; domínio 200.
+
+**Pendente do dono:** (a) **série livre** p/ a MIG (com a contabilidade — 1 e 3 estão queimadas); (b)
+**preencher NCM** dos produtos (usar Exportar p/ Excel → preencher → Importar correções); (c) depois,
+armar os 14 pedidos prontos sem NF-e (eu faço) — mas só vale após (a)+(b), senão falham. Follow-ups
+(quality, não-bloqueantes): avisar CEST sem NCM; teto de alíquota; maxlen dos campos fiscais textuais.
+
+---
+
 ## 2026-11-09 — ESCOL — Fix: kit importado do Bling no PG entrava CHAPADO (sem componentes) — ✅ EM PRODUÇÃO (commit `259dbc0`)
 
 **Pedido do dono:** analisar 2 produtos importados (um item simples `03MLAG8X03PCT10` e um kit
