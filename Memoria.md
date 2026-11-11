@@ -51,6 +51,19 @@ sem NF-e que já têm NCM** (emitem na série 1 agora); os sem NCM esperam o pre
 são armados pelo webhook. Follow-ups (quality, não-bloqueantes): avisar CEST sem NCM; teto de alíquota;
 maxlen dos campos fiscais textuais.
 
+**NF-e de KIT — Parte 1 (EM PRODUÇÃO 11/11, commit `8dd3359`):** o dono apontou que `create_invoice_from_order`
+puxava NCM/CEST/origem/tributação **só do CMIGProduct** → produto só-PG (kits/simples do Bling) entrava sem
+NCM ("Item sem NCM") mesmo tendo NCM no PG. Fix: `base = cmig_product OR pg_product` (resolve_item_fiscal já
+aceita CatalogProduct); **NÃO vincula catalog_product_id** no InvoiceItem (estoque continua order-driven —
+baixa vem do PEDIDO; vincular dobraria no replay de venda). Verificado: 14447 agora monta com ncm=95069100.
+Destrava os 107 simples + faz o kit emitir (1 linha, NCM do kit). **Diagnóstico do estoque confirmado:** na
+venda de kit, quem BAIXA são os **COMPONENTES** (kit=estoque derivado 0; `affected_products_from_order`/
+`storage_debit` expandem kit→componentes, order-driven), mas a NF-e (hoje) sai com o KIT — inconsistente.
+**Parte 2 PENDENTE (dono aprovou fazer, bloco focado): explodir o kit nos COMPONENTES só no XML da nota**
+(InvoiceItem gravado continua KIT p/ não mexer no estoque; rateio proporcional ao preço sugerido; NCM/CST
+por componente). Risco a tratar (consistency-auditor): NÃO persistir componentes como InvoiceItem (dobraria
+baixa — replay lê InvoiceItem.catalog_product_id). Antes de codar a Parte 2: mapear o dedup venda-nota×pedido.
+
 ---
 
 ## 2026-11-09 — ESCOL — Fix: kit importado do Bling no PG entrava CHAPADO (sem componentes) — ✅ EM PRODUÇÃO (commit `259dbc0`)
