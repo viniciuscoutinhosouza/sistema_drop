@@ -36,10 +36,20 @@ Reusa `product_import` (+csosn, build_export_xlsx, update_fields, parse require_
 (pré) 3 CRÍTICOS incorporados (id+warehouse, require_core, csosn); quality liberado; adr CONFORME.
 Round-trip verificado; pytest 63 ok; build front OK; `/pg/export` no OpenAPI; domínio 200.
 
-**Pendente do dono:** (a) **série livre** p/ a MIG (com a contabilidade — 1 e 3 estão queimadas); (b)
-**preencher NCM** dos produtos (usar Exportar p/ Excel → preencher → Importar correções); (c) depois,
-armar os 14 pedidos prontos sem NF-e (eu faço) — mas só vale após (a)+(b), senão falham. Follow-ups
-(quality, não-bloqueantes): avisar CEST sem NCM; teto de alíquota; maxlen dos campos fiscais textuais.
+**SÉRIE 1 RESOLVIDA (11/11):** o dono confirmou série 2=ML, 3=Shopee, 1=ERP antigo (poucas notas).
+Testei a série 1 pulando de 5 em 5 (pedido real 14621, com NCM): **11,15,20,25,30 → 539** (o ERP usou
+até ~30); **número 35 → AUTORIZOU (cStat 100)**. Série 1 **livre a partir do 35**; `manual_nfe_serie=1`,
+contador agora **36**. O pedido 14621 emitiu NF-e REAL (série 1 nº 35) e o **fluxo completo funcionou
+ponta-a-ponta**: SEFAZ autorizou → ML invoice_data PREENCHIDO (fiscal_key/série/número) → **etiqueta
+liberada**. (Obs.: nossas tentativas antigas 5-10 deixaram invoices rejeitadas que bloqueiam esses nºs
+por UNIQUE(serie,number) no nosso banco — por isso testei a partir de 11+.)
+
+**Estado: emissão automática DESTRAVADA** (claim corrigido + série 1 livre + fluxo provado). Falta só,
+POR PRODUTO, o **NCM** (produto sem NCM → `error "Item sem NCM"`). **Pendente do dono:** (a) **preencher
+NCM** dos produtos (Exportar p/ Excel → preencher → Importar correções); (b) eu **armo os pedidos prontos
+sem NF-e que já têm NCM** (emitem na série 1 agora); os sem NCM esperam o preenchimento. Novos pedidos já
+são armados pelo webhook. Follow-ups (quality, não-bloqueantes): avisar CEST sem NCM; teto de alíquota;
+maxlen dos campos fiscais textuais.
 
 ---
 
