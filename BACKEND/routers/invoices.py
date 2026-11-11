@@ -4703,7 +4703,19 @@ async def create_invoice_from_order(
                 )
             ).scalar_one_or_none()
 
-        if not cmig_product:
+        # PG (CatalogProduct) do item — para puxar NCM/CEST/origem/tributação quando NÃO há espelho
+        # CMIG (produto só-PG ficava com NCM nulo → "Item sem NCM" mesmo tendo NCM no PG). NÃO vincula
+        # catalog_product_id no InvoiceItem: o estoque continua order-driven (a baixa vem do PEDIDO,
+        # não da nota) — vincular aqui arriscaria dupla contagem no replay de venda.
+        pg_product = None
+        _pg_id = oi.catalog_product_id or (cmig_product.pg_product_id if cmig_product else None)
+        if _pg_id:
+            pg_product = (
+                await db.execute(select(CatalogProduct).where(CatalogProduct.id == _pg_id))
+            ).scalar_one_or_none()
+        base = cmig_product or pg_product   # fonte fiscal do item (CMIG tem prioridade)
+
+        if base is None:
             items_unmapped.append(oi.sku or oi.title or f"item #{seq}")
 
         unit_price = Decimal(str(oi.unit_price or 0))
@@ -4714,25 +4726,24 @@ async def create_invoice_from_order(
             item_number=seq,
             cmig_product_id=cmig_product.id if cmig_product else None,
             cfop=cfop,
-            ncm=cmig_product.ncm if cmig_product else None,
-            cest=cmig_product.cest if cmig_product else None,
-            description=(oi.title or (cmig_product.title if cmig_product else "(sem descrição)"))[
-                :500
-            ],
-            ean=cmig_product.ean if cmig_product else None,
+            ncm=base.ncm if base else None,
+            cest=base.cest if base else None,
+            description=(oi.title or (base.title if base else "(sem descrição)"))[:500],
+            ean=base.ean if base else None,
             unit="UN",
             quantity=quantity,
             unit_value=unit_price,
             total_value=(quantity * unit_price).quantize(Decimal("0.01")),
-            origin=cmig_product.origin if cmig_product else 0,
+            origin=(base.origin if base else 0) or 0,
         )
         # Snapshot fiscal (cascata produto → default CMIG → fallback). Padrão do snapshot imutável
         # de rastro/med (ADR-0027): grava CST/alíquotas no item na CRIAÇÃO; não sobrescreve valor
         # já presente. No Regime Normal (CRT 3) falha alto se faltar CST de ICMS (fiscal_resolver).
-        if cmig_product and cfg:
+        # Agora resolve para CMIG OU PG (resolve_item_fiscal aceita os dois).
+        if base is not None and cfg:
             from services.fiscal.fiscal_resolver import apply_fiscal_snapshot, resolve_item_fiscal
             try:
-                apply_fiscal_snapshot(item, resolve_item_fiscal(cmig_product, cfg))
+                apply_fiscal_snapshot(item, resolve_item_fiscal(base, cfg))
             except sefaz_service.SefazServiceError as e:
                 # Fail-loud de configuração fiscal (ex.: CRT 3 sem CST de ICMS) → 400, não 500.
                 raise HTTPException(status_code=400, detail=str(e)) from e
