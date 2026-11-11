@@ -26,7 +26,7 @@ DESENHO (incorpora o pre-audit):
 import logging
 import re
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
 from models.integration import MarketplaceAccount
 from models.order import Order
@@ -95,7 +95,13 @@ async def arm_if_eligible(db, order: Order, account: MarketplaceAccount) -> bool
         .where(
             Order.id == order.id,
             Order.auto_fiscal_status.is_(None),
-            Order.nfe_status.notin_(["authorized", "pending", "in_process"]),
+            # NULL NOT IN (...) é UNKNOWN no Oracle → excluía o pedido SEM NF-e (nfe_status NULL),
+            # que é justamente o que precisa emitir. Trata NULL explicitamente (espelha _light_eligible,
+            # que já usa `(nfe_status or "") in (...)`). Sem isto o claim nunca armava e o job ficava ocioso.
+            or_(
+                Order.nfe_status.is_(None),
+                Order.nfe_status.notin_(["authorized", "pending", "in_process"]),
+            ),
         )
         .values(auto_fiscal_status=_ST_EMITTING)
     )
