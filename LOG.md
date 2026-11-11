@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-11-10 — feat(separation): filtro + ordenação por Modo de Envio em "Separar Pedidos"
+
+O dono pediu, na tela Logística ▸ Separar Pedidos, um filtro por Modos de Envio e ordenação pelo
+cabeçalho da coluna "Modo". `SeparationView.vue` já mostrava a coluna "Modo" (`shipping_mode`) mas
+sem filtro nem sort. Adicionado (frontend-only, reaproveitando os padrões da própria view):
+- `filterMode` + computed `modeOptions` (`[...new Set(pending.map(o=>o.shipping_mode))]` ordenado por
+  label); `<select>` "Modos de envio" no card-header; condição no `displayedOrders`; incluído em
+  `hasFilters`/`clearFilters`.
+- Cabeçalho "Modo" agora sortable (`setSort('mode')`/`sortIcon('mode')`); chave `mode` no `keyFn`
+  ordenando pelo label PT do modo (`shippingModeStyle(...).label`).
+Lightweight (1 arquivo). Pré-auditado (consistency-auditor: aprovado, em paridade). `npm run build` OK.
+
+---
+
+## 2026-11-10 — style(orders): renomeia label da modalidade "Coletado" → "Coleta"
+
+O dono notou ambiguidade: o pedido #2000018980059212 mostrava modo de entrega "Coletado" estando
+ainda "Aguardando"/sem NF-e. Causa: a palavra "Coletado" era usada em DOIS lugares — (a) nome da
+**modalidade** logística (`shipping_mode='coletado'` = `cross_docking`, ML coleta no vendedor) e
+(b) **evento** de status (`shipped` = "Coletado p/ Entrega"). O badge da modalidade parecia afirmar
+que já havia sido coletado. Renomeado **só o label da modalidade** para "Coleta" (valor interno
+`coletado` intacto; evento "Coletado p/ Entrega" preservado):
+- `services/shipping_mode.py` `MODE_LABELS[MODE_COLETADO]` → "Coleta"
+- `utils/constants.js` badge `coletado.label`/`title` → "Coleta"
+- `views/orders/OrderListView.vue` opção do filtro → "Coleta"
+- `components/separation/SeparationHelpModal.vue` texto de ajuda → "Coleta"
+Lightweight (4 arquivos, rename puro). `npm run build` OK.
+
+---
+
 ## 2026-11-09 — feat(bling): importar ESTOQUE do Bling via inventário baseline (SSOT-correto)
 
 O dono pediu importar também o estoque. Como o estoque é SSOT local event-sourced (ADR-0004/0019 —

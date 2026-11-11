@@ -24,6 +24,10 @@
           <option value="">Todos os status</option>
           <option v-for="s in shipmentOptions" :key="s" :value="s">{{ shipmentLabel(s) }}</option>
         </select>
+        <select v-model="filterMode" class="form-control form-control-sm mr-2" style="max-width:150px" title="Modo de envio (Full, Flex, Agência, Correios, Coleta…)">
+          <option value="">Modos de envio</option>
+          <option v-for="m in modeOptions" :key="m" :value="m">{{ shippingModeStyle(m).label }}</option>
+        </select>
         <select v-model="filterPlatform" class="form-control form-control-sm mr-2" style="max-width:140px">
           <option value="">Marketplaces</option>
           <option v-for="p in platformOptions" :key="p" :value="p">{{ platformLabel(p) }}</option>
@@ -73,7 +77,7 @@
               <th class="sortable" @click="setSort('platform')">MKT <i :class="sortIcon('platform')"></i></th>
               <th class="sortable" @click="setSort('cmig')">Conta CMIG <i :class="sortIcon('cmig')"></i></th>
               <th class="sortable" @click="setSort('shipment')">Envio <i :class="sortIcon('shipment')"></i></th>
-              <th>Modo</th>
+              <th class="sortable" @click="setSort('mode')">Modo <i :class="sortIcon('mode')"></i></th>
               <th class="sortable" @click="setSort('nfe')">NF-e <i :class="sortIcon('nfe')"></i></th>
               <th class="sortable" @click="setSort('sale')">Venda (Mkt) <i :class="sortIcon('sale')"></i></th>
               <th class="sortable" @click="setSort('delivery')">Prev. Entrega <i :class="sortIcon('delivery')"></i></th>
@@ -451,7 +455,8 @@ const nfeEmitting = reactive({})
 
 const filterPlatform = ref('')
 const filterCmig = ref('')
-const filterShipment = ref('')
+const filterShipment = ref('ready_to_ship')   // default: só os prontos p/ envio (o dono separa esses)
+const filterMode = ref('')
 const filterNfe = ref('')
 const filterProduct = ref('')
 const filterItems = ref('')
@@ -507,14 +512,17 @@ function selectable(o) { return o.shipment_status === 'ready_to_ship' || o.platf
 // ── Opções de filtro ──
 const platformOptions = computed(() => [...new Set(pending.value.map(o => o.platform).filter(Boolean))])
 const shipmentOptions = computed(() => [...new Set(pending.value.map(o => o.shipment_status).filter(Boolean))])
+const modeOptions = computed(() =>
+  [...new Set(pending.value.map(o => o.shipping_mode).filter(Boolean))]
+    .sort((a, b) => shippingModeStyle(a).label.localeCompare(shippingModeStyle(b).label)))
 const cmigOptions = computed(() => {
   const map = new Map()
   for (const o of pending.value) if (o.cmig_id && !map.has(o.cmig_id)) map.set(o.cmig_id, { id: o.cmig_id, name: o.cmig_name || `CMIG ${o.cmig_id}` })
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
 })
-const hasFilters = computed(() => !!(filterPlatform.value || filterCmig.value || filterShipment.value || filterNfe.value || filterProduct.value || filterItems.value || search.value))
+const hasFilters = computed(() => !!(filterPlatform.value || filterCmig.value || filterShipment.value || filterMode.value || filterNfe.value || filterProduct.value || filterItems.value || search.value))
 function platformLabel(key) { return PLATFORMS.find(p => p.key === key)?.label || key }
-function clearFilters() { filterPlatform.value = ''; filterCmig.value = ''; filterShipment.value = ''; filterNfe.value = ''; filterProduct.value = ''; filterItems.value = ''; search.value = '' }
+function clearFilters() { filterPlatform.value = ''; filterCmig.value = ''; filterShipment.value = ''; filterMode.value = ''; filterNfe.value = ''; filterProduct.value = ''; filterItems.value = ''; search.value = '' }
 function matchesProduct(o, q) {
   const s = q.toLowerCase()
   return (o.items || []).some(it => (it.sku || '').toLowerCase().includes(s) || (it.title || '').toLowerCase().includes(s))
@@ -531,6 +539,7 @@ const displayedOrders = computed(() => {
     if (filterPlatform.value && o.platform !== filterPlatform.value) return false
     if (filterCmig.value && String(o.cmig_id) !== String(filterCmig.value)) return false
     if (filterShipment.value && o.shipment_status !== filterShipment.value) return false
+    if (filterMode.value && o.shipping_mode !== filterMode.value) return false
     if (filterNfe.value === 'emitida' && !hasNfe(o)) return false
     if (filterNfe.value === 'pendente' && hasNfe(o)) return false
     if (filterProduct.value && !matchesProduct(o, filterProduct.value)) return false
@@ -544,6 +553,7 @@ const displayedOrders = computed(() => {
     platform: o => o.platform || '',
     cmig: o => (o.cmig_name || '').toLowerCase(),
     shipment: o => o.shipment_status || '',
+    mode: o => (shippingModeStyle(o.shipping_mode).label || '').toLowerCase(),
     nfe: o => (hasNfe(o) ? '1' : '0'),
     sale: o => o.created_at || '',
     delivery: o => o.estimated_delivery_date || o.estimated_delivery_final || '',
