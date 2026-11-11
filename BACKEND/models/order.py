@@ -74,6 +74,11 @@ class Order(Base):
     # preenchido no get_order_detail); pré-requisito do ship_order no BR.
     shopee_invoice_status = Column(String(20))
     shopee_invoice_uploaded_at = Column(TIMESTAMP(timezone=True))
+    # Emissão automática de NF-e (ADR-0041, migration 184) — "lane" de workflow/observabilidade,
+    # NÃO a verdade fiscal (SSOT = nfe_status/Invoice). status: None|emitting|emitted|done|error.
+    auto_fiscal_status = Column(String(16))
+    auto_fiscal_error = Column(String(500))
+    auto_fiscal_attempts = Column(Integer, nullable=False, default=0)
     invoice_id = Column(Integer, ForeignKey("invoices.id"))
     estimated_delivery_date = Column(Date)
     estimated_handling_limit = Column(Date)

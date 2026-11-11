@@ -51,6 +51,10 @@ class MarketplaceAccount(Base):
     #   'own'                  = emissão própria SEFAZ (ADR-0015/0028) + informa o ML (invoice_data)
     # Roteia o comando de emissão em Pedidos não-FULL (services/fiscal/emission_router.py).
     nfe_emission_mode = Column(String(12), nullable=False, default="marketplace")
+    # Emissão AUTOMÁTICA de NF-e ao ficar "Pronto p/ Envio" (ADR-0041, migration 184). OPT-IN por
+    # conta (default False = zero regressão). O opt-in SUBSTITUI a confirmação por-pedido da ADR-0030
+    # como ato de consentimento do dono. Roteado por nfe_emission_mode; só age em produção.
+    nfe_auto_emit = Column(Boolean, nullable=False, default=False)
     otp_verified = Column(Boolean, nullable=False, default=False)
     requires_reauth = Column(Boolean, nullable=False, default=False)
     last_sync_at = Column(TIMESTAMP(timezone=True))

@@ -1345,9 +1345,17 @@ async def hide_order(
     return {"ok": True}
 
 
-async def _get_order_checked(db: AsyncSession, order_id: int, current_user: User) -> Order:
-    """Fetch order with role-based access check."""
+async def _get_order_checked(db: AsyncSession, order_id: int, current_user: User | None) -> Order:
+    """Fetch order with role-based access check.
+
+    `current_user=None` = ator de SISTEMA (emissão automática, ADR-0041): pula o escopo (não há
+    usuário a escopar; a legitimidade vem do opt-in por conta). Inalcançável por rota."""
     query = select(Order).where(Order.id == order_id)
+    if current_user is None:
+        order = (await db.execute(query)).scalar_one_or_none()
+        if not order:
+            raise HTTPException(status_code=404, detail="Pedido não encontrado")
+        return order
     if is_conta(current_user):
         query = query.where(_ac_visible_filter(current_user))
     elif is_galpao(current_user):
@@ -1608,7 +1616,7 @@ def _extract_nfe_fields(invoice: dict) -> tuple[str | None, str | None, str | No
     return nfe_key, nfe_status, nfe_url
 
 
-async def _emit_own_nfe(order: Order, account, current_user: User, db: AsyncSession, confirm: bool) -> dict:
+async def _emit_own_nfe(order: Order, account, current_user: User | None, db: AsyncSession, confirm: bool) -> dict:
     """Emissão PRÓPRIA (SEFAZ) 1-clique de um pedido não-FULL (migration 151).
 
     Reusa os endpoints oficiais (create-from-order + transmit) — não duplica o núcleo fiscal
@@ -1760,10 +1768,13 @@ async def _emit_own_nfe(order: Order, account, current_user: User, db: AsyncSess
 async def emit_order_nfe(
     order_id: int,
     body: dict | None = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Roteador ÚNICO de emissão de NF-e de um pedido NÃO-FULL (migration 151).
+
+    `current_user=None` = ator de SISTEMA (emissão automática, ADR-0041): reusa ESTE mesmo roteador
+    (um só switch — regra de ouro ADR-0020) com escopo pulado. Inalcançável por rota.
 
     - FULL → 400 (a NF-e de venda é emitida pelo Mercado Livre, ADR-0010/0022).
     - Shopee → emissão PRÓPRIA + anexo (a Shopee não tem Faturador).

@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-11-10 — feat(fiscal): emissão AUTOMÁTICA de NF-e + etiqueta com DANFE ao ficar "Pronto p/ Envio" (ADR-0041)
+
+O dono pediu: por conta, quando a NF-e for **Própria**, emitir sozinho na SEFAZ ao ficar "Pronto p/
+Envio", informar ao marketplace e trazer a etiqueta com a DANFE; quando **Pelo Marketplace** (texto
+corrigido, sem "(Faturador do Mercado Livre)"), comandar o marketplace a emitir e trazer a etiqueta.
+Investigado com os especialistas ML/Shopee. A emissão nos 2 modos já existia (ADR-0030) — o que faltava
+era a **automação** + encadeamento da etiqueta. Fases 0/1/3 entregues (a Fase 2 = prova em produção da
+chave da DANFE na etiqueta, só o dono faz; não testável no DEV).
+
+- **Fase 0:** texto "(Faturador do Mercado Livre)" → "Pelo Marketplace" (IntegrationsView).
+- **Fase 1:** migration 184 (`marketplace_accounts.nfe_auto_emit` opt-in default OFF + `orders.auto_fiscal_status/error/attempts`); toggle na conta (UI + PATCH + gate `cmig_fiscal_config`, CNPJ-only); `services/auto_fiscal_dispatch.py` (claim ATÔMICO `arm_if_eligible` + `_do_emit`/`_do_finalize`, reusa o roteador único `emit_order_nfe(current_user=None)` como **ator de sistema** — helpers de escopo tornados None-safe; `created_by_user_id=NULL`); job `tasks/auto_fiscal.py` (5 min, `tracked_job`); hooks de transição ML+Shopee em `webhook_service`; gate de homologação (só emissão própria); recuperação N-6 (não re-transmite 'processing'); PII mascarada; teto nas 2 etapas. ADR-0041 + 9 testes.
+- **Fase 3 (tempo real):** handler do tópico `shipments` do ML (`webhooks.py`); o push da Shopee já assinava `url+body` e já flui pelo hook de arm.
+- **Regra de ouro ADR-0020:** nada de lógica fiscal comum em `if platform==...`; único branch-por-plataforma é a finalização. **Opt-in por conta SUBSTITUI a confirmação por-pedido da ADR-0030.**
+
+**Trio de auditoria:** adr-consistency-checker APROVADO (8 ADRs conformes); consistency-auditor CONSISTENTE (0 CRÍTICO/HIGH); quality-guardian 0 CRÍTICO, **1 ALTO + 3 MÉDIOS corrigidos** (falha silenciosa na finalização → teto+erro persistido; ordem dos gates Invoice Issuer; PII em log/erro; re-transmissão N-6) + LOW. Verificado: pytest 421 ok (2 pré-existentes), compila, `npm run build` ok. **Pendente do dono:** rodar a migration 184 em produção, ligar o toggle numa conta CNPJ e fazer a prova (Fase 2) ML + Shopee. **NÃO deployado ainda.**
+
+---
+
 ## 2026-11-10 — feat(separation): filtro + ordenação por Modo de Envio em "Separar Pedidos"
 
 O dono pediu, na tela Logística ▸ Separar Pedidos, um filtro por Modos de Envio e ordenação pelo

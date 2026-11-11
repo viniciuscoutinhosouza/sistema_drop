@@ -220,12 +220,24 @@
             <div class="form-group" v-if="editCmigIsCnpj">
               <label><i class="fas fa-file-invoice-dollar mr-1 text-info"></i> Emissão de NF-e (pedidos não-FULL)</label>
               <select v-model="editForm.nfe_emission_mode" class="form-control">
-                <option value="marketplace">Pelo Marketplace (Faturador do Mercado Livre)</option>
+                <option value="marketplace">Pelo Marketplace</option>
                 <option value="own">Própria — emitir pelo sistema (SEFAZ)</option>
               </select>
               <small class="text-muted d-block">
                 "Própria" exige certificado A1 + série na Configuração Fiscal da CMIG. A NF-e é
                 emitida pelo sistema e informada ao marketplace. Pedidos FULL seguem sempre pelo ML.
+              </small>
+              <!-- Emissão automática (ADR-0041) -->
+              <div class="custom-control custom-switch mt-2">
+                <input type="checkbox" class="custom-control-input" id="autoEmitSwitch"
+                       v-model="editForm.nfe_auto_emit" />
+                <label class="custom-control-label" for="autoEmitSwitch">
+                  Emitir NF-e automaticamente ao ficar "Pronto p/ Envio"
+                </label>
+              </div>
+              <small class="text-muted d-block">
+                Quando ligado, o pedido não-FULL dispara a emissão sozinho (pelo modo acima) assim que
+                fica pronto p/ envio, e a etiqueta sai com o código da DANFE. Só age em produção.
               </small>
             </div>
 
@@ -395,7 +407,7 @@ const savingNewConta = ref(false)
 
 // Editar CONTA
 const editTarget = ref(null)
-const editForm   = ref({ cmig_id: '', description: '', is_official_store: false, has_flex_override: null, has_full_override: null, nfe_emission_mode: 'marketplace' })
+const editForm   = ref({ cmig_id: '', description: '', is_official_store: false, has_flex_override: null, has_full_override: null, nfe_emission_mode: 'marketplace', nfe_auto_emit: false })
 // Emissão de NF-e local × marketplace só faz sentido em conta CNPJ (CPF é sempre DC-e própria).
 const editCmigIsCnpj = computed(() => {
   const c = cmigs.value.find(c => c.id === editForm.value.cmig_id)
@@ -474,6 +486,7 @@ async function openEditModal(acc) {
     has_flex_override: null,
     has_full_override: null,
     nfe_emission_mode: acc.nfe_emission_mode || 'marketplace',
+    nfe_auto_emit: !!acc.nfe_auto_emit,
   }
   editError.value = ''
   capsState.value = { has_flex_detected: false, has_full_detected: false }
@@ -522,7 +535,10 @@ async function saveEdit() {
       is_official_store: editForm.value.is_official_store,
     }
     // Modo de emissão de NF-e: só envia p/ conta CNPJ (CPF é sempre DC-e própria).
-    if (editCmigIsCnpj.value) payload.nfe_emission_mode = editForm.value.nfe_emission_mode
+    if (editCmigIsCnpj.value) {
+      payload.nfe_emission_mode = editForm.value.nfe_emission_mode
+      payload.nfe_auto_emit = editForm.value.nfe_auto_emit
+    }
     await api.put(`/accounts/${editTarget.value.id}`, payload)
     // Override de capacidades é endpoint separado — só envia se conta é ML
     if (editTarget.value.platform === 'mercadolivre') {

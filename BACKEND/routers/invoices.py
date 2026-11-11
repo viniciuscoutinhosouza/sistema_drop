@@ -58,10 +58,15 @@ def _norm_cest(v):
     return v.replace(".", "").replace("-", "")[:7] or None
 
 
-async def _check_cmig_access(cmig_id: int, user: User, db: AsyncSession) -> CMIG:
+async def _check_cmig_access(cmig_id: int, user: User | None, db: AsyncSession) -> CMIG:
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise HTTPException(status_code=404, detail="CMIG não encontrada")
+    # Ator de SISTEMA (user=None): caminho interno (job de emissão automática, ADR-0041) sem request
+    # — a legitimidade vem do opt-in por conta (nfe_auto_emit), não de um usuário. Pula o escopo de
+    # dados (não há usuário a escopar); NUNCA alcançável por rota (get_current_user sempre injeta user).
+    if user is None:
+        return cmig
     from services.data_scope import assert_cmig_access
 
     await assert_cmig_access(cmig, user, db)
@@ -1641,7 +1646,7 @@ async def delete_invoice(
 # ── Itens ─────────────────────────────────────────────────────────────────────
 
 
-async def _get_invoice_for_edit(invoice_id: int, user: User, db: AsyncSession) -> Invoice:
+async def _get_invoice_for_edit(invoice_id: int, user: User | None, db: AsyncSession) -> Invoice:
     inv = (
         await db.execute(
             select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice_id)
@@ -1969,9 +1974,12 @@ def _validate_ready_to_transmit(inv: Invoice, cfg: CMIGFiscalConfig, person: Per
 async def transmit_invoice(
     invoice_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user),
 ):
-    """Transmite a NFe diretamente à SEFAZ (mTLS + XMLDSig), via série manual configurável."""
+    """Transmite a NFe diretamente à SEFAZ (mTLS + XMLDSig), via série manual configurável.
+
+    `current_user=None` = ator de SISTEMA (emissão automática, ADR-0041): o escopo é pulado
+    (_get_invoice_for_edit → _check_cmig_access são None-safe). Inalcançável por rota."""
     inv = await _get_invoice_for_edit(invoice_id, current_user, db)
     cfg = await _get_fiscal_config(inv.cmig_id, db)
     cmig = (await db.execute(select(CMIG).where(CMIG.id == inv.cmig_id))).scalar_one()
@@ -4553,9 +4561,12 @@ async def _upsert_customer_from_order(
 async def create_invoice_from_order(
     order_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user),
 ):
-    """Cria invoice draft de saída a partir de um pedido de marketplace."""
+    """Cria invoice draft de saída a partir de um pedido de marketplace.
+
+    `current_user=None` = ator de SISTEMA (emissão automática, ADR-0041): escopo pulado
+    (_check_cmig_access None-safe), `created_by_user_id=NULL` (auditável como sistema)."""
     order = (
         await db.execute(
             select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
@@ -4659,7 +4670,7 @@ async def create_invoice_from_order(
         freight_modality=0 if order.shipping_method else None,
         payment_method="99",  # 99 = outros (já pago no marketplace)
         additional_info=f"Pedido marketplace #{order.platform_order_id or order.id}",
-        created_by_user_id=current_user.id,
+        created_by_user_id=current_user.id if current_user else None,  # NULL = ator de sistema (ADR-0041)
     )
     db.add(inv)
     await db.flush()

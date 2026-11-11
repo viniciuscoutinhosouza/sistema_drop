@@ -18,6 +18,7 @@ scheduler = AsyncIOScheduler()
 
 def start_scheduler():
     from integrations.eship.tasks import sync_eship_status
+    from tasks.auto_fiscal import run_auto_fiscal
     from tasks.check_subscriptions import check_overdue_subscriptions
     from tasks.fiscal_alerts import run_fiscal_alerts
     from tasks.release_orphan_reservations_job import run_release_orphan_reservations
@@ -51,6 +52,17 @@ def start_scheduler():
         IntervalTrigger(minutes=15),
         id="sync_pending_nfe",
         name="Sync NF-e Pendentes (destrava 'Processando')",
+        replace_existing=True,
+    )
+
+    # Emissão AUTOMÁTICA de NF-e (ADR-0041): avança os pedidos armados (auto_fiscal_status
+    # emitting→emitted→done). Opt-in por conta (nfe_auto_emit); só age em produção. 5 min = mais
+    # ágil que o poll de 15 min (a emissão é o que o dono quer imediato).
+    scheduler.add_job(
+        run_auto_fiscal,
+        IntervalTrigger(minutes=5),
+        id="auto_fiscal",
+        name="Emissão automática de NF-e (Pronto p/ Envio)",
         replace_existing=True,
     )
 

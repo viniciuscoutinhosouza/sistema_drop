@@ -34,7 +34,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _shopee_order(order_id: int, user: User, db: AsyncSession):
+async def _shopee_order(order_id: int, user: User | None, db: AsyncSession):
     """Resolve o pedido Shopee + conta (RBAC owner/admin) + token válido. 400 se não for Shopee."""
     order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
     if not order:

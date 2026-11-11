@@ -79,6 +79,12 @@ async def ml_webhook(
         return await _handle_ml_questions(db, body, ml_user_id)
     if topic == "claims":
         return await _handle_ml_claims(db, body, ml_user_id)
+    if topic == "shipments" or resource.startswith("/shipments/"):
+        # ADR-0041 Fase 3: tempo real — ao mudar o envio p/ "Pronto p/ Envio", arma a emissão
+        # automática na hora (sem esperar o poll de 15 min). Exige assinar o tópico 'shipments' no
+        # app do ML. Processamento idempotente (não usa a dedup de webhook_events: notificações de
+        # shipment repetem o mesmo resource a cada transição e a dedup dropava o ready_to_ship).
+        return await _handle_ml_shipment(db, resource, ml_user_id)
 
     # Only process order notifications
     if "orders" not in resource and topic != "orders_v2":
@@ -180,6 +186,43 @@ async def _handle_ml_claims(db, body: dict, ml_user_id: str):
 
     asyncio.create_task(sync_account_claims(account.id))
     return {"status": "ok"}
+
+
+async def _handle_ml_shipment(db, resource: str, ml_user_id: str):
+    """Webhook shipments (ADR-0041 Fase 3): ao ficar 'Pronto p/ Envio', arma a emissão automática na
+    hora. NÃO persiste a transição de status aqui (o estoque/confirm_dispatch são dirigidos pelo
+    tópico orders/poll — mutar shipment_status aqui pularia a baixa física). Só lê o status fresco e
+    arma; o claim é atômico/idempotente."""
+    from models.order import Order
+    from services.auto_fiscal_dispatch import arm_if_eligible
+    from services.ml_service import get_shipment
+
+    account = (
+        await db.execute(
+            select(MarketplaceAccount).where(
+                MarketplaceAccount.platform_user_id == ml_user_id,
+                MarketplaceAccount.platform == "mercadolivre",
+                MarketplaceAccount.is_active == True,  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+    if not account:
+        return {"status": "no_integration"}
+
+    shipment_id = resource.rstrip("/").split("/")[-1]
+    order = (
+        await db.execute(select(Order).where(Order.shipment_id == str(shipment_id)))
+    ).scalar_one_or_none()
+    if not order:
+        return {"status": "no_order"}
+
+    try:
+        shipment_data = await get_shipment(account.access_token, str(shipment_id))
+        if ((shipment_data or {}).get("status") or "") == "ready_to_ship":
+            await arm_if_eligible(db, order, account)
+    except Exception as e:  # noqa: BLE001 — webhook não pode derrubar; o poll é a rede de segurança
+        return {"status": "error", "detail": str(e)[:200]}
+    return {"status": "processed"}
 
 
 async def _handle_ml_questions(db, body: dict, ml_user_id: str):

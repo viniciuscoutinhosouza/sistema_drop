@@ -404,6 +404,14 @@ async def process_ml_order(
                                 await confirm_dispatch(db, existing_order)
                             except Exception as exc:
                                 logger.warning("confirm_dispatch order=%s: %s", existing_order.id, exc)
+                        # ADR-0041: ao ficar "Pronto p/ Envio", arma a emissão automática de NF-e
+                        # (opt-in por conta). Claim atômico — best-effort, não derruba o webhook.
+                        if (existing_order.shipment_status or "") == "ready_to_ship":
+                            try:
+                                from services.auto_fiscal_dispatch import arm_if_eligible
+                                await arm_if_eligible(db, existing_order, integration)
+                            except Exception as exc:
+                                logger.warning("auto_fiscal arm order=%s: %s", existing_order.id, exc)
             except Exception:
                 pass
 
@@ -1063,6 +1071,16 @@ async def _update_shopee_order_stock(
         await recompute_after_order_change(order, db)
     except Exception as exc:
         logger.warning("shopee update stock order=%s: %s", order.id, exc)
+
+    # ADR-0041: arma a emissão automática ao ficar pronto p/ envio OU aguardando nota
+    # (na Shopee BR o INVOICE_PENDING→'handling' costuma vir ANTES do ready_to_ship). Claim
+    # atômico — best-effort, não derruba o processamento do webhook.
+    if not is_cancelled and (order.shipment_status or "") in ("handling", "ready_to_ship"):
+        try:
+            from services.auto_fiscal_dispatch import arm_if_eligible
+            await arm_if_eligible(db, order, integration)
+        except Exception as exc:
+            logger.warning("auto_fiscal arm shopee order=%s: %s", order.id, exc)
 
     # Custos (escrow): só na TRANSIÇÃO real (M1: não a cada sync → evita rate limit). Os valores
     # refinam a cada transição e ficam definitivos em COMPLETED. Guard em apply_escrow evita zerar.
