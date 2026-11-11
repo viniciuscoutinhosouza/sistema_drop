@@ -568,6 +568,125 @@ async def load_trace_for_invoice(db: AsyncSession, inv: Invoice, items: list) ->
     return trace
 
 
+async def explode_kits_for_nota(db: AsyncSession, cfg: CMIGFiscalConfig, items: list) -> list:
+    """Explode itens de KIT nos COMPONENTES — SÓ para o XML da nota (ADR-0023).
+
+    O dono exige que a NF-e saia com os COMPONENTES do kit, não com o kit. O estoque, porém,
+    continua dirigido pelo PEDIDO (que já expande kit→componentes); por isso os componentes aqui
+    são itens TRANSIENTES (NÃO persistidos) — persistir geraria dupla baixa no replay de venda.
+    Detecta o kit por `InvoiceItem.catalog_product_id` apontando um CatalogProduct composto
+    (carimbado SÓ em kits por `create_invoice_from_order` — inerte ao estoque por construção).
+
+    Rateio do valor da linha do kit: PROPORCIONAL ao preço sugerido do componente (peso =
+    suggested_price × qtd no kit); resíduo de arredondamento no último componente, de modo que a
+    soma dos componentes == total da linha do kit (ICMSTot casa). Sem preço sugerido em nenhum
+    componente → rateio por quantidade (fallback). NCM/CEST/origem/tributação por componente,
+    fail-loud por componente (como qualquer item).
+    """
+    from models.fiscal import InvoiceItem
+    from models.product import CatalogProduct, CatalogProductComponent
+    from services.fiscal.fiscal_resolver import apply_fiscal_snapshot, resolve_item_fiscal
+    from services.traceability_guard import is_traceable
+
+    out: list = []
+    for it in items:
+        cpid = getattr(it, "catalog_product_id", None)
+        kit = None
+        if cpid:
+            kit = (
+                await db.execute(select(CatalogProduct).where(CatalogProduct.id == cpid))
+            ).scalar_one_or_none()
+        if kit is None or not getattr(kit, "is_composite", False):
+            out.append(it)
+            continue
+
+        rows = (
+            await db.execute(
+                select(CatalogProductComponent.component_id, CatalogProductComponent.quantity)
+                .where(CatalogProductComponent.composite_id == kit.id)
+            )
+        ).all()
+        comps: list = []
+        for comp_id, comp_qty in rows:
+            comp = (
+                await db.execute(select(CatalogProduct).where(CatalogProduct.id == comp_id))
+            ).scalar_one_or_none()
+            if comp is None:
+                raise SefazServiceError(
+                    f"Kit '{kit.title or kit.id}' tem componente ausente (id {comp_id}) — "
+                    "corrija o cadastro do kit antes de emitir."
+                )
+            # ADR-0027: componente rastreável dentro de kit perderia o <rastro>/<med> na explosão
+            # (item transiente sem FK → load_trace não resolve o lote). Falha alto em vez de emitir
+            # sem rastreabilidade (regra do dono: nunca omitir em silêncio). Follow-up: propagar o
+            # rastro por component_id nos itens transientes.
+            if is_traceable(comp):
+                raise SefazServiceError(
+                    f"Kit '{kit.title or kit.id}' contém componente rastreável "
+                    f"('{comp.title or comp.id}') — emitir a NF-e com <rastro>/<med> dos componentes "
+                    "do kit ainda não é suportado. Venda o componente avulso."
+                )
+            comps.append((comp, int(comp_qty or 1)))
+        if not comps:
+            raise SefazServiceError(
+                f"Kit '{kit.title or kit.id}' sem componentes cadastrados — não é possível emitir "
+                "a nota com os componentes do kit."
+            )
+
+        kit_qty = Decimal(str(it.quantity or 1))
+        kit_total = Decimal(str(it.total_value or 0))
+        # Pesos: preço sugerido × qtd no kit; fallback por quantidade se todos zerados.
+        weights = [Decimal(str(getattr(c, "suggested_price", 0) or 0)) * q for c, q in comps]
+        # Preço sugerido negativo geraria valor de item negativo (rejeitado pela SEFAZ) e inflaria o
+        # resíduo do último — falha alto no cadastro em vez de montar uma nota inválida.
+        if any(w < 0 for w in weights):
+            raise SefazServiceError(
+                f"Kit '{kit.title or kit.id}': preço sugerido negativo em componente — corrija o cadastro."
+            )
+        if sum(weights) <= 0:
+            weights = [Decimal(q) for _, q in comps]
+        wsum = sum(weights) or Decimal(1)
+
+        allocated = Decimal("0.00")
+        n = len(comps)
+        for idx, (comp, comp_qty) in enumerate(comps):
+            total_qty = (kit_qty * Decimal(comp_qty)).quantize(Decimal("0.0001"))
+            if idx < n - 1:
+                comp_total = (kit_total * weights[idx] / wsum).quantize(Decimal("0.01"))
+            else:
+                comp_total = (kit_total - allocated).quantize(Decimal("0.01"))  # resíduo no último
+            allocated += comp_total
+            unit_value = (
+                (comp_total / total_qty).quantize(Decimal("0.0001"))
+                if total_qty > 0 else Decimal("0.0000")
+            )
+            virt = InvoiceItem(
+                invoice_id=getattr(it, "invoice_id", None),
+                item_number=it.item_number,  # reindexado abaixo
+                cmig_product_id=None,
+                catalog_product_id=None,     # TRANSIENTE — nunca persistido (stock-safe)
+                sku=comp.sku,                # <cProd> do componente (senão _item sairia "None")
+                cfop=it.cfop,
+                ncm=comp.ncm,
+                cest=comp.cest,
+                description=(comp.title or "(sem descrição)")[:500],
+                ean=comp.ean,
+                unit="UN",
+                quantity=total_qty,
+                unit_value=unit_value,
+                total_value=comp_total,
+                origin=(comp.origin or 0),
+            )
+            if cfg:
+                apply_fiscal_snapshot(virt, resolve_item_fiscal(comp, cfg))
+            out.append(virt)
+
+    # Reindexa item_number sequencial e determinístico (build_nota_emissao reindexa de novo).
+    for i, it in enumerate(out, start=1):
+        it.item_number = i
+    return out
+
+
 async def emitir(
     db: AsyncSession, inv: Invoice, cmig: CMIG, cfg: CMIGFiscalConfig, person: Person, items: list,
 ) -> dict:
@@ -593,6 +712,10 @@ async def emitir(
     await ensure_person_ibge(db, person)
     _estabelecimento(cmig, cfg)
     _cliente(person)
+    # KIT → COMPONENTES (ADR-0023): a nota sai com os componentes do kit. Itens transientes, nunca
+    # persistidos (o estoque é order-driven; persistir componentes dobraria a baixa). Explode ANTES
+    # da validação para que cada componente seja validado (NCM/CST) e falhe alto se faltar algo.
+    items = await explode_kits_for_nota(db, cfg, items)
     _crt = int(cfg.crt or 1)
     for it in items:
         _item(it, crt=_crt)

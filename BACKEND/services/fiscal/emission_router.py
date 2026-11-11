@@ -31,11 +31,17 @@ def _mask_doc(doc) -> str | None:
     return f"{digits[:2]}***{digits[-2:]}"
 
 
-def build_emission_summary(inv, person, cfg, ambiente: str) -> dict:
+def build_emission_summary(inv, person, cfg, ambiente: str, items=None) -> dict:
     """Resumo IRRETRATÁVEL mostrado antes de transmitir à SEFAZ (ato irreversível): destinatário,
-    natureza, CFOP/CST/NCM por item e totais, mais o AMBIENTE (homolog não tem valor fiscal)."""
+    natureza, CFOP/CST/NCM por item e totais, mais o AMBIENTE (homolog não tem valor fiscal).
+
+    `items` (opcional): lista de itens JÁ EXPLODIDA (kit→componentes, ADR-0023) para o resumo bater
+    com o que vai na nota transmitida — senão o dono confirmaria a linha do KIT e a SEFAZ receberia
+    os componentes (divergência prévia-vs-real). O chamador (orders._emit_own_nfe) passa o resultado
+    de `explode_kits_for_nota`. Sem o parâmetro, cai nos itens crus (compat/outros fluxos)."""
+    src = items if items is not None else inv.items
     itens = []
-    for it in sorted(inv.items, key=lambda x: x.item_number or 0):
+    for it in sorted(src, key=lambda x: x.item_number or 0):
         cst = getattr(it, "icms_cst", None) or getattr(it, "csosn", None)
         itens.append(
             {

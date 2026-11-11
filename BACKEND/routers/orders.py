@@ -1638,6 +1638,7 @@ async def _emit_own_nfe(order: Order, account, current_user: User | None, db: As
         transmit_invoice,
     )
     from services.fiscal.emission_router import build_emission_summary
+    from services.fiscal.sefaz_service import explode_kits_for_nota
 
     # 1) Rascunho (idempotente — create_invoice_from_order dá 409 se já houver vínculo).
     if not order.invoice_id:
@@ -1741,7 +1742,11 @@ async def _emit_own_nfe(order: Order, account, current_user: User | None, db: As
         return {
             "ok": True, "mode": "own", "needs_confirmation": True,
             "invoice_id": inv.id, "ambiente": ambiente,
-            "summary": build_emission_summary(inv, person, cfg, ambiente),
+            # Resumo bate com a nota: explode kit→componentes (ADR-0023), igual à transmissão.
+            "summary": build_emission_summary(
+                inv, person, cfg, ambiente,
+                items=await explode_kits_for_nota(db, cfg, list(inv.items)),
+            ),
         }
 
     # 3) Transmite (endpoint oficial: mapeia SefazServiceError/_SefazNetError/_SefazFiscalError e baixa estoque).

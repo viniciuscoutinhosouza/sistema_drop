@@ -2678,7 +2678,10 @@ async def download_danfe(
             await sefaz_service.ensure_person_ibge(db, person)
 
         try:
-            xml = sefaz_service.montar_xml_previa(inv, cmig, cfg, person, list(inv.items))
+            # KIT → COMPONENTES (ADR-0023): a prévia mostra os componentes do kit, igual à emissão
+            # real (itens transientes, não persistidos). Produto simples passa direto.
+            prev_items = await sefaz_service.explode_kits_for_nota(db, cfg, list(inv.items))
+            xml = sefaz_service.montar_xml_previa(inv, cmig, cfg, person, prev_items)
             pdf = await asyncio.to_thread(gerar_danfe_previa, xml)
         except sefaz_service.SefazServiceError as e:
             # Falhar alto: a prévia usa as MESMAS validações da emissão (IBGE/IE/NCM/destinatário)
@@ -4747,6 +4750,14 @@ async def create_invoice_from_order(
             except sefaz_service.SefazServiceError as e:
                 # Fail-loud de configuração fiscal (ex.: CRT 3 sem CST de ICMS) → 400, não 500.
                 raise HTTPException(status_code=400, detail=str(e)) from e
+        # KIT (produto composto PG): carimba catalog_product_id para a EMISSÃO explodir nos
+        # COMPONENTES no XML (ADR-0023 — o dono exige que a NF-e saia com os componentes). SÓ em
+        # kit: comprovadamente INERTE ao estoque (guard de composto retorna derivado; nenhum caminho
+        # de venda conta InvoiceItem de kit — `_kit_assembled_balance` só ret=retorno/direction=in,
+        # `kit_remessa_usage` só purpose=remessa, `_fetch_direct_pg_events` early-return no composto).
+        # Produto simples continua SEM vínculo (stock-safe — a baixa é order-driven).
+        if pg_product is not None and getattr(pg_product, "is_composite", False):
+            item.catalog_product_id = pg_product.id
         db.add(item)
 
     # Vincular order ↔ invoice
