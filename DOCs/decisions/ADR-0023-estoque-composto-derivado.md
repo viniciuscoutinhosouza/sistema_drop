@@ -84,3 +84,20 @@ Regra do dono, adotada como invariante:
 
 **Pendente:** materialização de kit **CMIG** (o guard CMIG ainda retorna 0 — os kits atuais são PG-driven).
 
+
+---
+
+## Emenda 2026-11-11 — NF-e de venda de KIT sai com os COMPONENTES no XML
+
+**Contexto:** a ADR-0023 define o estoque do composto (venda do kit baixa os COMPONENTES, order-driven), mas era **silente sobre o lado fiscal**. Na venda de um kit, a NF-e própria saía com 1 linha = o KIT. **Requisito do dono:** a NF-e deve descrever os **COMPONENTES** do kit (é o que efetivamente sai do galpão).
+
+**Decisão:**
+1. **A NF-e própria de venda de kit é emitida com os COMPONENTES** (explosão determinística no XML), mantendo o estoque order-driven intocado.
+2. A explosão é **SÓ no XML** (`services/fiscal/sefaz_service.py::explode_kits_for_nota`): o item de kit é trocado por itens **TRANSIENTES** dos componentes (nunca `db.add` — persistir dobraria a baixa no replay de venda). Rateio do total da linha **proporcional ao preço sugerido** do componente (resíduo no último → `Σ componentes == total do kit`, `ICMSTot` casa); fallback por quantidade. NCM/CEST/origem/EAN/sku + snapshot fiscal por componente.
+3. O `InvoiceItem` de kit **persistido pode portar `catalog_product_id` do composto** como **PONTEIRO FISCAL inerte ao estoque** (detecção da explosão). A inércia depende de 3 guards que **não podem ser removidos sem reintroduzir dupla baixa**: (a) `calculate_pg_product_stock` early-return no composto (`is_composite`); (b) `_kit_assembled_balance` só lê InvoiceItem com `purpose='retorno'`+`direction='in'`; (c) `kit_remessa_usage`/`kit_assembly` só `purpose='remessa'`. Um refactor desses guards deve preservar a não-materialização.
+4. **Paridade:** explode em TODOS os caminhos que montam o XML — emissão real (`emitir`), prévia do DANFE e **resumo irretratável pré-transmissão** (`build_emission_summary`) — para o dono confirmar os componentes, não o kit.
+5. **Fail-loud:** componente ausente, kit sem componentes, preço sugerido negativo e **componente RASTREÁVEL** (ADR-0027 — a explosão perderia `<rastro>`/`<med>`; bloqueado até propagar o rastro por `component_id`).
+
+**Ligações:** ADR-0027 (rastreabilidade — follow-up do rastro em kit), ADR-0015/0028 (emissão própria — snapshot do kit persiste; componentes são função pura determinística, e o XML autorizado é o imutável), ADR-0037 (devolução clona o `catalog_product_id` → explode simétrico).
+
+**Follow-ups:** propagar `<rastro>`/`<med>` dos componentes (hoje bloqueado); ratear frete/desconto da linha do kit se algum fluxo os setar no item composto; kit **CMIG** (explosão só cobre composto PG via `CatalogProductComponent`).

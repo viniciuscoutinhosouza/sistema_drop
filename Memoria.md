@@ -59,10 +59,17 @@ baixa vem do PEDIDO; vincular dobraria no replay de venda). Verificado: 14447 ag
 Destrava os 107 simples + faz o kit emitir (1 linha, NCM do kit). **Diagnóstico do estoque confirmado:** na
 venda de kit, quem BAIXA são os **COMPONENTES** (kit=estoque derivado 0; `affected_products_from_order`/
 `storage_debit` expandem kit→componentes, order-driven), mas a NF-e (hoje) sai com o KIT — inconsistente.
-**Parte 2 PENDENTE (dono aprovou fazer, bloco focado): explodir o kit nos COMPONENTES só no XML da nota**
-(InvoiceItem gravado continua KIT p/ não mexer no estoque; rateio proporcional ao preço sugerido; NCM/CST
-por componente). Risco a tratar (consistency-auditor): NÃO persistir componentes como InvoiceItem (dobraria
-baixa — replay lê InvoiceItem.catalog_product_id). Antes de codar a Parte 2: mapear o dedup venda-nota×pedido.
+**Parte 2 (EM PRODUÇÃO 11/11, commit `f569052`): NF-e de venda de kit sai com os COMPONENTES no XML.**
+`services/fiscal/sefaz_service.explode_kits_for_nota` troca o item de kit por itens TRANSIENTES dos
+componentes só no XML (nunca `db.add` — estoque order-driven intocado; persistir dobraria a baixa); rateio
+proporcional ao preço sugerido (resíduo no último → soma == total do kit); NCM/CEST/origem/sku/snapshot por
+componente; ligada em emitir+prévia+resumo irretratável (paridade). InvoiceItem de kit porta
+`catalog_product_id` como ponteiro fiscal INERTE ao estoque (comprovado: guard de composto retorna derivado;
+nenhum caminho de venda conta InvoiceItem de kit). Trio: 0 CRITICAL; corrigidos cProd="None"→sku, peso
+negativo→fail-loud, componente rastreável em kit→bloqueado (ADR-0027), build_emission_summary fora de
+paridade. Verificado em prod: 14447 → 2 componentes (502R 118,69 + 5433 44,53 = 163,22); pytest 421 ok;
+emenda na ADR-0023. **Pendente do dono:** emitir uma venda de kit REAL e conferir o DANFE com os componentes.
+Follow-ups: rastro em kit (bloqueado); kit CMIG; ratear frete/desconto da linha do kit.
 
 ---
 
