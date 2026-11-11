@@ -61,6 +61,7 @@ COLUMNS = [
     ("motivo_desoneracao", "mot_des_icms", False, "str"),
     ("cst_cbs_ibs", "ibscbs_cst", False, "str"),
     ("cclasstrib_cbs_ibs", "cclasstrib", False, "str"),
+    ("csosn", "csosn", False, "str"),  # Simples Nacional (par do CST ICMS no CRT 1/2)
 ]
 
 # Nomes alternativos de cabeçalho aceitos no import (além do canônico em COLUMNS[0]).
@@ -92,7 +93,16 @@ _FISCAL_IMPORT_FIELDS = (
     "cfop", "icms_cst", "icms_aliquota", "icms_reducao_bc", "fcp_aliquota",
     "pis_cst", "cofins_cst", "pis_aliquota", "cofins_aliquota",
     "ipi_cst", "ipi_aliquota", "ipi_cenq", "ibscbs_cst", "cclasstrib",
-    "cbenef", "mot_des_icms",
+    "cbenef", "mot_des_icms", "csosn",
+)
+
+# Campos escalares que o import-UPDATE pode preencher/corrigir por produto (whitelist — não mexe
+# em sku/estoque/componentes/imagens/rastreabilidade). Reusado pelo export e pelo update.
+_UPDATE_FIELDS = (
+    "title", "description", "brand", "manufacturer", "model", "ean",
+    "cost_price", "suggested_price", "ncm", "cest", "origin",
+    "weight_kg", "height_cm", "width_cm", "length_cm",
+    *_FISCAL_IMPORT_FIELDS,
 )
 
 
@@ -102,6 +112,16 @@ def fiscal_import_fields(rec: dict) -> dict:
     (ausente = NULL = usa o default da CMIG). `cofins_cst` espelha `pis_cst` quando não vier
     explícito (a planilha traz um único CST de PIS/COFINS)."""
     out = {f: rec[f] for f in _FISCAL_IMPORT_FIELDS if rec.get(f) is not None}
+    if "pis_cst" in out and "cofins_cst" not in out:
+        out["cofins_cst"] = out["pis_cst"]
+    return out
+
+
+def update_fields(rec: dict) -> dict:
+    """Campos escalares a APLICAR num UPDATE de produto existente (import de correção): só os
+    PREENCHIDOS (não-None) — célula vazia = MANTÉM o valor atual. Espelha cofins_cst=pis_cst quando
+    só veio o CST único. Não inclui sku/estoque/componentes/imagens (whitelist `_UPDATE_FIELDS`)."""
+    out = {f: rec[f] for f in _UPDATE_FIELDS if rec.get(f) is not None}
     if "pis_cst" in out and "cofins_cst" not in out:
         out["cofins_cst"] = out["pis_cst"]
     return out
@@ -244,6 +264,42 @@ def build_template_xlsx() -> bytes:
     return out.getvalue()
 
 
+def build_export_xlsx(products) -> bytes:
+    """Planilha de produtos EXISTENTES preenchida com os valores ATUAIS, para correção em massa.
+
+    Colunas: `id` (chave estável — NÃO editar/apagar) + as mesmas colunas de COLUMNS. O dono
+    preenche/corrige e reimporta em 'Importar correções' (modo update): casa por `id`, e célula
+    VAZIA = mantém o valor atual (não apaga). Categoria sai em branco (edite na tela do produto)."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = _SHEET
+    headers = ["id"] + [c[0] for c in COLUMNS]
+    ws.append(headers)
+    head_fill = PatternFill("solid", fgColor="1F3B57")
+    for ci in range(1, len(headers) + 1):
+        hc = ws.cell(row=1, column=ci)
+        hc.fill = head_fill
+        hc.font = Font(bold=True, color="FFFFFF")
+        hc.alignment = Alignment(horizontal="center")
+    for p in products:
+        row = [p.id]
+        for _h, field, _req, _typ in COLUMNS:
+            if field == "category_name":
+                row.append("")   # categoria não é exportada (vazio = mantém no update)
+                continue
+            v = getattr(p, field, None)
+            if field == "origin":
+                v = int(v) if v is not None else 0   # "0" explícito p/ o round-trip não virar vazio
+            row.append(_xlsx_safe("" if v is None else v))
+        ws.append(row)
+    ws.freeze_panes = "A2"
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
 async def resolve_or_create_category_id(db, name, warehouse_id):
     """Resolve a categoria por nome NO GALPÃO (migration 145) e CRIA se não existir (raiz, no galpão
     do produto). Retorna (id, created). Decisão do dono: a importação cria a categoria ausente.
@@ -271,12 +327,17 @@ async def resolve_or_create_category_id(db, name, warehouse_id):
     return cat.id, True
 
 
-def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
+def parse_products_xlsx(data: bytes, *, require_core: bool = True) -> tuple[list[dict], list[dict]]:
     """Lê a planilha e valida cada linha. Retorna (linhas_válidas, erros).
 
-    Cada linha válida: {campos normalizados, "_row": n, "_sku_key": sku.lower()}.
+    Cada linha válida: {campos normalizados, "_row": n, "_sku_key": sku.lower(), "_id": int|None}.
     Erros: [{"row": n, "sku": str, "motivo": str}]. Dedup intra-arquivo (SKU case-insensitive).
     Falha alto (ValueError) em arquivo não-xlsx/corrompido/grande demais — o caller vira 422.
+
+    `require_core=True` (import de CRIAÇÃO): exige sku+titulo+preco_custo. `require_core=False`
+    (import de CORREÇÃO/UPDATE): só exige a CHAVE (coluna `id` OU `sku`); título/preço são opcionais
+    (a planilha enxuta só-com-NCM funciona). A coluna `id` (estável) é lida p/ casar o produto com
+    segurança mesmo se o dono editar o SKU.
     """
     if len(data) > MAX_FILE_BYTES:
         raise ValueError(f"Arquivo acima do limite de {MAX_FILE_BYTES // (1024 * 1024)} MB.")
@@ -310,7 +371,11 @@ def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
             continue
         key = _HEADER_ALIASES.get(key, key)
         hmap.setdefault(key, i)  # 1º cabeçalho vence (não sobrescreve canônico já visto)
-    missing_req = [h for (h, _f, req, _t) in COLUMNS if req and h not in hmap]
+    if require_core:
+        missing_req = [h for (h, _f, req, _t) in COLUMNS if req and h not in hmap]
+    else:
+        # Modo correção/update: basta a chave (id OU sku) — título/preço são opcionais.
+        missing_req = [] if ("id" in hmap or "sku" in hmap) else ["id ou sku"]
     if missing_req:
         raise ValueError(f"Colunas obrigatórias ausentes no cabeçalho: {', '.join(missing_req)}")
 
@@ -330,16 +395,25 @@ def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
             return raw[i] if i is not None and i < len(raw) else None
 
         sku = _s(cell("sku"))
-        rec: dict = {"_row": idx, "sku": sku}
+        _id = None
+        _idraw = _s(cell("id"))
+        if _idraw:
+            try:
+                _id = int(float(_idraw))
+            except (TypeError, ValueError):
+                _id = None
+        rec: dict = {"_row": idx, "sku": sku, "_id": _id}
         try:
-            if not sku:
+            if require_core and not sku:
                 raise ValueError("sku é obrigatório")
-            if not _s(cell("titulo")):
+            if not sku and _id is None:
+                raise ValueError("informe id ou sku")
+            if require_core and not _s(cell("titulo")):
                 raise ValueError("titulo é obrigatório")
-            key = sku.lower()
-            if key in seen:
-                raise ValueError(f"SKU duplicado na planilha: {sku}")
-            seen.add(key)
+            dedup_key = f"id:{_id}" if _id is not None else sku.lower()
+            if dedup_key in seen:
+                raise ValueError(f"linha duplicada na planilha ({sku or ('id ' + str(_id))})")
+            seen.add(dedup_key)
 
             for _h, field, _req, typ in COLUMNS:
                 # Pula cabeçalhos ausentes na planilha. Sem isto, uma coluna com nome
@@ -355,15 +429,17 @@ def parse_products_xlsx(data: bytes) -> tuple[list[dict], list[dict]]:
                 elif typ == "cest":
                     rec[field] = norm_cest(v)
                 elif typ == "origin":
-                    rec[field] = _parse_origin(v)
+                    # Update com origem em branco = MANTER (None). Create = _parse_origin dá 0.
+                    rec[field] = _parse_origin(v) if (require_core or _s(v) != "") else None
                 else:
                     rec[field] = _s(v) or None
-            if rec.get("cost_price") is None:
+            if require_core and rec.get("cost_price") is None:
                 raise ValueError("preco_custo é obrigatório")
-            rec["title"] = _s(cell("titulo"))
+            if require_core:
+                rec["title"] = _s(cell("titulo"))
             rec["sku"] = sku
             _validate_limits(rec)  # cabe nas colunas do banco → erro de linha, não 500 no commit
-            rec["_sku_key"] = key
+            rec["_sku_key"] = sku.lower() if sku else None
             valid.append(rec)
         except ValueError as e:
             errors.append({"row": idx, "sku": sku, "motivo": str(e)})

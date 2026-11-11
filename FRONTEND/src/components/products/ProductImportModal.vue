@@ -3,15 +3,20 @@
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
       <div class="modal-content">
         <div class="modal-header">
-          <h5 class="modal-title"><i class="fas fa-file-excel text-success mr-2"></i>Importar produtos por planilha</h5>
+          <h5 class="modal-title"><i class="fas fa-file-excel text-success mr-2"></i>{{ mode === 'update' ? 'Importar correções (atualizar)' : 'Importar produtos por planilha' }}</h5>
           <button type="button" class="close" @click="close"><span>&times;</span></button>
         </div>
         <div class="modal-body">
-          <p class="text-muted small mb-2">
+          <p v-if="mode === 'update'" class="text-muted small mb-2">
+            Corrija campos em massa. Use <strong>Exportar p/ Excel</strong> na tela, preencha os campos
+            (ex.: NCM) e envie aqui. Casamos por <strong>id</strong> (não apague essa coluna); célula
+            <strong>vazia = mantém</strong> o valor atual. Só atualiza — não cria produto novo.
+          </p>
+          <p v-else class="text-muted small mb-2">
             Cadastre vários produtos <strong>simples</strong> de uma vez. Baixe o modelo, preencha e envie.
             O estoque entra depois pela nota/pedido (como no cadastro normal).
           </p>
-          <button class="btn btn-sm btn-outline-secondary mb-3" @click="downloadTemplate" :disabled="downloading">
+          <button v-if="mode !== 'update'" class="btn btn-sm btn-outline-secondary mb-3" @click="downloadTemplate" :disabled="downloading">
             <i class="fas fa-download mr-1"></i> {{ downloading ? 'Baixando...' : 'Baixar modelo (.xlsx)' }}
           </button>
 
@@ -24,7 +29,12 @@
           </button>
 
           <div v-if="report" class="mt-3">
-            <div class="alert py-2" :class="report.erros && report.erros.length ? 'alert-warning' : 'alert-success'">
+            <div v-if="mode === 'update'" class="alert py-2" :class="report.erros && report.erros.length ? 'alert-warning' : 'alert-success'">
+              <strong>{{ (report.atualizados || []).length }}</strong> produto(s) atualizado(s) de {{ report.total }}.
+              <span v-if="report.nao_encontrados"> — {{ report.nao_encontrados }} não encontrado(s).</span>
+              <span v-if="report.erros && report.erros.length"> — {{ report.erros.length }} com erro.</span>
+            </div>
+            <div v-else class="alert py-2" :class="report.erros && report.erros.length ? 'alert-warning' : 'alert-success'">
               <strong>{{ report.criados }}</strong> produto(s) criado(s) de {{ report.total }}.
               <span v-if="report.erros && report.erros.length"> — {{ report.erros.length }} com erro.</span>
             </div>
@@ -70,6 +80,7 @@ const props = defineProps({
   show: { type: Boolean, default: false },
   endpoint: { type: String, required: true },     // POST .../import
   templateUrl: { type: String, required: true },  // GET  .../import/template
+  mode: { type: String, default: 'create' },      // 'create' | 'update' (correção em massa)
 })
 const emit = defineEmits(['close', 'imported'])
 const toast = useToast()
@@ -104,11 +115,16 @@ async function doImport() {
   try {
     const fd = new FormData()
     fd.append('file', file.value)
-    const { data } = await api.post(props.endpoint, fd, {
+    const url = props.mode === 'update' ? `${props.endpoint}?on_conflict=update` : props.endpoint
+    const { data } = await api.post(url, fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     report.value = data
-    if (data.criados > 0) {
+    if (props.mode === 'update') {
+      const n = (data.atualizados || []).length
+      if (n > 0) { toast.success(`${n} produto(s) atualizado(s).`); emit('imported') }
+      else toast.warning('Nenhum produto atualizado — confira os avisos/erros.')
+    } else if (data.criados > 0) {
       toast.success(`${data.criados} produto(s) importado(s).`)
       emit('imported')
     } else if (data.erros && data.erros.length) {

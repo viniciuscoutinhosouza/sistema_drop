@@ -188,6 +188,7 @@ def _serialize_variant(v: CatalogProductVariant) -> dict:
 async def list_supplier_products(
     search: str | None = None,
     simple_only: bool = False,
+    missing_ncm: bool = False,
     limit: int | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("pg")),
@@ -213,6 +214,8 @@ async def list_supplier_products(
 
     if simple_only:
         stmt = stmt.where(CatalogProduct.is_composite == False)  # noqa: E712
+    if missing_ncm:
+        stmt = stmt.where(or_(CatalogProduct.ncm.is_(None), CatalogProduct.ncm == ""))
     if search:
         like = f"%{search.strip()}%"
         stmt = stmt.where(or_(CatalogProduct.title.ilike(like), CatalogProduct.sku.ilike(like)))
@@ -221,6 +224,61 @@ async def list_supplier_products(
 
     result = await db.execute(stmt)
     return [_serialize_product(p) for p in result.scalars().all()]
+
+
+async def _scoped_pg_query(current_user: User, db: AsyncSession):
+    """SELECT base de CatalogProduct escopado por galpão (ADR-0026) — ponto único p/ export/update.
+    admin=global; não-admin só o(s) galpão(ões); fail-closed sem galpão; `ac` só PG ativo."""
+    from services.warehouse_scope import warehouse_ids_for
+
+    wh_ids = await warehouse_ids_for(current_user, db)
+    stmt = select(CatalogProduct)
+    if wh_ids is not None:
+        if not wh_ids:
+            raise HTTPException(status_code=422, detail="Usuário sem galpão não tem produtos PG.")
+        stmt = stmt.where(CatalogProduct.warehouse_id.in_(wh_ids))
+        if is_conta(current_user):
+            stmt = stmt.where(CatalogProduct.is_active == True)  # noqa: E712
+    return stmt
+
+
+@router.get("/export")
+async def pg_export(
+    ids: str | None = None,
+    search: str | None = None,
+    missing_ncm: bool = False,
+    simple_only: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_menu_permission("pg")),
+):
+    """Exporta produtos PG (.xlsx com os valores ATUAIS) para correção em massa dos campos fiscais.
+
+    Filtra por `ids` (lista separada por vírgula) OU por `search`/`missing_ncm`/`simple_only`.
+    **Escopado por galpão** — os ids do cliente são filtrados pelo escopo (anti-IDOR). A planilha traz
+    a coluna `id` (chave estável) + os campos; reimporte em 'Importar correções' (modo update)."""
+    stmt = await _scoped_pg_query(current_user, db)
+    if ids:
+        try:
+            id_list = [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Lista de ids inválida.")
+        stmt = stmt.where(CatalogProduct.id.in_(id_list))
+    if missing_ncm:
+        stmt = stmt.where(or_(CatalogProduct.ncm.is_(None), CatalogProduct.ncm == ""))
+    if simple_only:
+        stmt = stmt.where(CatalogProduct.is_composite == False)  # noqa: E712
+    if search:
+        like = f"%{search.strip()}%"
+        stmt = stmt.where(or_(CatalogProduct.title.ilike(like), CatalogProduct.sku.ilike(like)))
+    stmt = stmt.order_by(CatalogProduct.sku)
+    products = (await db.execute(stmt)).scalars().all()
+    if not products:
+        raise HTTPException(status_code=404, detail="Nenhum produto no filtro para exportar.")
+    return Response(
+        content=product_import.build_export_xlsx(products),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="produtos_pg.xlsx"'},
+    )
 
 
 @router.get("/import/template")
@@ -236,18 +294,64 @@ async def pg_import_template(current_user: User = Depends(require_menu_permissio
 @router.post("/import")
 async def pg_import(
     file: UploadFile = File(...),
+    on_conflict: str = Query("skip"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_menu_permission("pg")),
 ):
     """Importa produtos PG SIMPLES de uma planilha .xlsx para o galpão do usuário.
 
-    Validate-all-then-insert: valida tudo, carrega os SKUs existentes (unique GLOBAL do PG) em 1
-    query, cruza, e insere só as válidas num commit. Relatório por linha (criados/erros/avisos)."""
+    `on_conflict='skip'` (padrão, tela 'Importar'): CRIA produtos; SKU existente vira erro de linha.
+    `on_conflict='update'` (tela 'Importar correções'): ATUALIZA produtos existentes (casa por `id`,
+    cai p/ SKU), preenchendo SÓ os campos não-vazios (célula vazia = mantém); linha sem alvo no galpão
+    vira aviso (não cria). Escopado por galpão (ADR-0026). Validate-all-then-commit.
+    """
     target_wh = current_user.warehouse_id
     if target_wh is None and not is_global(current_user):
         raise HTTPException(status_code=422, detail="Usuário sem galpão não pode importar produtos PG.")
 
     data = await file.read(product_import.MAX_FILE_BYTES + 1)
+
+    # ── Modo CORREÇÃO (update): atualiza existentes, não cria ────────────────────
+    if on_conflict == "update":
+        from services.warehouse_scope import warehouse_ids_for
+
+        try:
+            valid, errors = product_import.parse_products_xlsx(data, require_core=False)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        wh_ids = await warehouse_ids_for(current_user, db)
+        atualizados: list[dict] = []
+        avisos: list[dict] = []
+        for rec in valid:
+            prod = None
+            if rec.get("_id"):
+                q = select(CatalogProduct).where(CatalogProduct.id == rec["_id"])
+                if wh_ids is not None:
+                    q = q.where(CatalogProduct.warehouse_id.in_(wh_ids))
+                prod = (await db.execute(q)).scalar_one_or_none()
+            if prod is None and rec.get("sku"):
+                q = select(CatalogProduct).where(func.lower(CatalogProduct.sku) == rec["sku"].lower())
+                if wh_ids is not None:
+                    q = q.where(CatalogProduct.warehouse_id.in_(wh_ids))
+                prod = (await db.execute(q)).scalar_one_or_none()
+            if prod is None:
+                avisos.append({"row": rec["_row"], "sku": rec.get("sku"),
+                               "aviso": "produto não encontrado no seu galpão — linha ignorada"})
+                continue
+            changed = []
+            for f, val in product_import.update_fields(rec).items():
+                if getattr(prod, f, None) != val:
+                    setattr(prod, f, val)
+                    changed.append(f)
+            if changed:
+                atualizados.append({"sku": prod.sku, "campos": changed})
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise HTTPException(status_code=422, detail="Falha ao salvar as correções — confira os dados e tente de novo.") from None
+        return {"atualizados": atualizados, "nao_encontrados": len(avisos),
+                "avisos": avisos, "erros": errors, "total": len(valid) + len(errors)}
     try:
         valid, errors = product_import.parse_products_xlsx(data)
     except ValueError as e:

@@ -7,6 +7,12 @@
             <h1 class="m-0">Produtos Gerais (PG)</h1>
           </div>
           <div class="col-sm-6 text-right">
+            <button class="btn btn-outline-info mr-2" :disabled="exporting" @click="exportXlsx" title="Exporta os produtos (filtro atual) para preencher campos no Excel">
+              <i class="fas mr-1" :class="exporting ? 'fa-spinner fa-spin' : 'fa-file-export'"></i> Exportar p/ Excel
+            </button>
+            <button class="btn btn-outline-warning mr-2" @click="correctionModal = true" title="Reimporte a planilha exportada com os campos corrigidos/preenchidos">
+              <i class="fas fa-file-import mr-1"></i> Importar correções
+            </button>
             <button class="btn btn-outline-success mr-2" @click="importModal = true">
               <i class="fas fa-file-excel mr-1"></i> Importar planilha
             </button>
@@ -48,6 +54,9 @@
                 </select>
               </div>
               <div class="col-auto d-flex align-items-center">
+                <label class="small text-muted mb-0 mr-2" style="cursor:pointer" title="Mostra só produtos sem NCM (travam a emissão de NF-e)">
+                  <input type="checkbox" v-model="onlyMissingNcm" class="mr-1" />Só sem NCM
+                </label>
                 <span class="text-muted small">{{ filteredProducts.length }} resultado{{ filteredProducts.length === 1 ? '' : 's' }}</span>
               </div>
             </div>
@@ -180,6 +189,14 @@
     @close="importModal = false"
     @imported="load"
   />
+  <ProductImportModal
+    :show="correctionModal"
+    mode="update"
+    endpoint="/pg/import"
+    template-url="/pg/import/template"
+    @close="correctionModal = false"
+    @imported="load"
+  />
 </template>
 
 <script setup>
@@ -189,15 +206,37 @@ import { useToast } from '@/composables/useToast'
 import api from '@/composables/useApi'
 import StockMovementsModal from '@/components/stock/StockMovementsModal.vue'
 import ProductImportModal from '@/components/products/ProductImportModal.vue'
+import { saveBlobResponse } from '@/utils/download'
 
 const products = ref([])
 const loading  = ref(true)
 const importModal = ref(false)
+const correctionModal = ref(false)
+const exporting = ref(false)
 const categories = ref([])
 
 const searchQuery = ref('')
 const categoryFilter = ref('')
+const onlyMissingNcm = ref(false)
 const sortBy = ref('title_asc')
+
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+async function exportXlsx() {
+  exporting.value = true
+  try {
+    const params = {}
+    if (searchQuery.value.trim()) params.search = searchQuery.value.trim()
+    if (onlyMissingNcm.value) params.missing_ncm = true
+    const resp = await api.get('/pg/export', { params, responseType: 'blob' })
+    saveBlobResponse(resp, 'produtos_pg.xlsx', XLSX_MIME)
+  } catch (err) {
+    const msg = err?.response?.status === 404 ? 'Nenhum produto no filtro atual para exportar.' : 'Falha ao exportar a planilha.'
+    toast.error(msg)
+  } finally {
+    exporting.value = false
+  }
+}
 
 const categoryMap = computed(() => {
   const m = {}
@@ -210,6 +249,7 @@ function _norm(s) { return (s || '').toString().toLowerCase().trim() }
 const filteredProducts = computed(() => {
   let list = products.value
   if (categoryFilter.value) list = list.filter(p => p.category_id == categoryFilter.value)
+  if (onlyMissingNcm.value) list = list.filter(p => !p.ncm)
   const q = _norm(searchQuery.value)
   if (q) {
     list = list.filter(p => _norm(p.title).includes(q) || _norm(p.sku).includes(q))
