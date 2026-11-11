@@ -83,7 +83,7 @@
               <option value="flex">Flex</option>
               <option value="agencia">Agência</option>
               <option value="correios">Correios</option>
-              <option value="coletado">Coletado</option>
+              <option value="coletado">Coleta</option>
               <option value="combinado">Combinado</option>
             </select>
           </div>

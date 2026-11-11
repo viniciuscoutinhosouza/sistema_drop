@@ -81,7 +81,7 @@
           </tbody>
         </table>
         <p class="small text-muted mb-0">
-          <i class="fas fa-info-circle mr-1"></i>Para pedidos ML com envio Coletado/Flex/Correios, só os
+          <i class="fas fa-info-circle mr-1"></i>Para pedidos ML com envio Coleta/Flex/Correios, só os
           que estão <strong>“Prontos p/ Envio”</strong> podem ir para a gaiola — os demais aparecem, mas
           aguardam o marketplace liberar.
         </p>

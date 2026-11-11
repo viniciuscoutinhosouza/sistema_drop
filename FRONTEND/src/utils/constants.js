@@ -45,11 +45,11 @@ export const SHIPPING_MODE_STYLE = {
     title: 'Correios — vendedor leva a uma agencia dos Correios',
   },
   coletado: {
-    label: 'Coletado',
+    label: 'Coleta',
     icon: 'fas fa-people-carry',
     bg: '#0891b2',     // ciano/teal (ML Coleta)
     fg: '#ffffff',
-    title: 'Coletado — Mercado Livre coleta o pacote no vendedor',
+    title: 'Coleta — Mercado Livre coleta o pacote no vendedor',
   },
   combinado: {
     label: 'Combinado',

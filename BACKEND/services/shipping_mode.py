@@ -45,7 +45,7 @@ MODE_LABELS = {
     MODE_FLEX: "Flex",
     MODE_AGENCIA: "Agência",
     MODE_CORREIOS: "Correios",
-    MODE_COLETADO: "Coletado",
+    MODE_COLETADO: "Coleta",
     MODE_COMBINADO: "Combinado",
     MODE_DESCONHECIDO: "—",
 }
