@@ -4514,13 +4514,21 @@ async def _upsert_customer_from_order(
     # `{id,name}`. Desembrulha tudo e devolve SEMPRE str — senão o dict ia cru para
     # a coluna String `people.neighborhood` → Oracle DPY-3002. (services/address_parser)
     addr = parse_buyer_address(order.shipping_address)
-    street = addr["street"]
-    number = addr["number"]
-    neighborhood = addr["neighborhood"]
-    city = addr["city"]
-    state = addr["state"]
-    zip_code = addr["zip_code"]
-    complement = addr["complement"]
+
+    # Clampa cada campo ao tamanho da coluna de `people` — o endereço vem CRU do comprador (ML/Shopee)
+    # e um complemento longo (ex.: 133 chars) estourava a coluna VARCHAR(100) → ORA-12899 derrubava a
+    # transação da emissão e o pedido ficava preso em 'emitting' sem registrar o erro. Trunca em vez de
+    # falhar: o excedente do endereço não invalida a NF-e (o cMun/CEP é o que importa p/ a SEFAZ).
+    def _clip(v, n):
+        return v[:n] if isinstance(v, str) else v
+
+    street = _clip(addr["street"], 255)
+    number = _clip(addr["number"], 20)
+    neighborhood = _clip(addr["neighborhood"], 100)
+    city = _clip(addr["city"], 100)
+    state = _clip(addr["state"], 2)
+    zip_code = _clip(addr["zip_code"], 9)
+    complement = _clip(addr["complement"], 100)
 
     if existing:
         # Atualiza endereço se vazio
@@ -4541,8 +4549,8 @@ async def _upsert_customer_from_order(
         person_type=_detect_person_type(document),
         document=document,
         ie_isento=True,  # consumidor final via marketplace é normalmente isento
-        name=order.buyer_name or "(Sem nome)",
-        email=order.buyer_email,
+        name=_clip(order.buyer_name or "(Sem nome)", 255),
+        email=_clip(order.buyer_email, 255),
         zip_code=zip_code,
         street=street,
         address_number=number,

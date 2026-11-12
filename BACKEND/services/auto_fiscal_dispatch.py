@@ -215,15 +215,29 @@ async def _do_emit(db, order: Order, account: MarketplaceAccount) -> None:
         logger.info("[auto_fiscal] order=%s emitida/comandada (modo %s)", order.id, mode)
     except Exception as e:  # noqa: BLE001 — classifica por tentativas (erro de prontidão reincide)
         detail = sanitize_fiscal_msg(getattr(e, "detail", None) or str(e))
-        order.auto_fiscal_attempts = (order.auto_fiscal_attempts or 0) + 1
-        order.auto_fiscal_error = detail
-        if order.auto_fiscal_attempts >= _MAX_ATTEMPTS:
-            order.auto_fiscal_status = _ST_ERROR
-            logger.warning("[auto_fiscal] order=%s ERRO (teto): %s", order.id, detail)
-        else:
-            logger.info("[auto_fiscal] order=%s falha %s/%s: %s",
-                        order.id, order.auto_fiscal_attempts, _MAX_ATTEMPTS, detail)
-        await db.commit()
+        try:
+            order.auto_fiscal_attempts = (order.auto_fiscal_attempts or 0) + 1
+            order.auto_fiscal_error = detail
+            if order.auto_fiscal_attempts >= _MAX_ATTEMPTS:
+                order.auto_fiscal_status = _ST_ERROR
+                logger.warning("[auto_fiscal] order=%s ERRO (teto): %s", order.id, detail)
+            else:
+                logger.info("[auto_fiscal] order=%s falha %s/%s: %s",
+                            order.id, order.auto_fiscal_attempts, _MAX_ATTEMPTS, detail)
+            await db.commit()
+        except Exception:  # noqa: BLE001 — a exceção pode ter ENVENENADO a sessão (erro de flush no
+            # Oracle, ex.: ORA-12899): gravar attempts/error na mesma sessão falha de novo e o pedido
+            # ficaria preso em 'emitting' com attempts=0, re-tentando pra sempre. Rollback, re-carrega o
+            # pedido numa sessão limpa e registra o erro (falhar alto, nunca em silêncio).
+            await db.rollback()
+            fresh = (await db.execute(select(Order).where(Order.id == order.id))).scalar_one_or_none()
+            if fresh is not None:
+                fresh.auto_fiscal_attempts = (fresh.auto_fiscal_attempts or 0) + 1
+                fresh.auto_fiscal_error = detail
+                if (fresh.auto_fiscal_attempts or 0) >= _MAX_ATTEMPTS:
+                    fresh.auto_fiscal_status = _ST_ERROR
+                logger.warning("[auto_fiscal] order=%s erro registrado após rollback: %s", order.id, detail)
+                await db.commit()
 
 
 async def _recover_processing(db, order: Order) -> None:
