@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-11-12 — ESCOL — NF-e de kit com componentes + armar pedidos prontos (canário) — ✅ EM PRODUÇÃO
+
+**Parte A — NF-e de venda de KIT sai com os COMPONENTES (ADR-0023 emendada, commits `8dd3359`+`f569052`):**
+o 14447 falhava "Item sem NCM"; a raiz é que a nota saía com o KIT. **Parte 1:** emissão puxa
+ncm/cest/origem do **PG** quando não há espelho CMIG (destrava 107 simples + kits do Bling). **Parte 2:**
+`sefaz_service.explode_kits_for_nota` troca o item de kit por itens TRANSIENTES dos componentes só no XML
+(estoque order-driven intocado; rateio proporcional ao preço sugerido; soma == total do kit); InvoiceItem
+de kit porta `catalog_product_id` como ponteiro fiscal inerte. Trio: 0 CRITICAL; corrigidos cProd→sku,
+peso negativo, componente rastreável em kit (bloqueado), resumo pré-transmissão em paridade. Verificado:
+14447 → 2 componentes (502R 118,69 + 5433 44,53 = 163,22); pytest 421 ok. **Pendente do dono:** emitir uma
+venda de kit REAL e conferir o DANFE.
+
+**Parte B — armar pedidos prontos sem NF-e (canário):** 13 elegíveis (conta com auto-emit, produção, todos
+com NCM). O dono escolheu **canário: 4 ML + 1 Shopee**. Resultado: **3 ML autorizadas** (#15113/#15204/#15323)
+✓; #10140 (ML antigo) preso num `pending_authorization` pré-existente **sem CPF** (anomalia, investigar à
+parte); #15168 (Shopee) bloqueado **sem CPF/CNPJ**. Checado: **os 9 Shopee elegíveis estão TODOS sem CPF**
+→ não armados (só gerariam erro). **Shopee não traz o CPF do comprador** (ML busca via billing_info; Shopee
+não) → pedido Shopee não emite NF-e como está. **Decisão pendente do dono:** emitir Shopee a "consumidor
+não identificado" (sem CPF) × buscar o CPF × preencher manual.
+
+**Dois bugs achados+corrigidos no caminho (commit `32a22a3`):** (1) **ORA-12899** — endereço cru do
+comprador (complemento 133 chars) estourava `people.complement` VARCHAR(100) e derrubava a emissão; agora
+clampa cada campo ao tamanho da coluna. (2) `_do_emit` gravava o erro na **mesma sessão envenenada** pelo
+flush → o registro falhava e o pedido ficava preso em `emitting` tent=0 pra sempre; agora rollback +
+recarrega + grava (falhar alto). Deploy verificado (health 200). **Follow-ups:** #10140; rastro em kit
+(bloqueado); kit CMIG.
+
+---
+
 ## 2026-11-11 — ESCOL — Emissão automática NF-e: fix do claim + PG correção em massa (Excel) — ✅ EM PRODUÇÃO
 
 **Contexto:** o dono ligou a **emissão automática de NF-e** (ADR-0041) na conta MIG (ML, modo own) e
