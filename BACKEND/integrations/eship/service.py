@@ -526,13 +526,13 @@ async def ensure_buyer_document(db: AsyncSession, order: Order) -> str:
 
 
 async def _ensure_buyer_document_shopee(db: AsyncSession, order: Order) -> str:
-    """CPF/CNPJ do comprador Shopee para o eShip. A Shopee NÃO devolve o documento no detalhe do
-    pedido (privacidade) — ele só existe quando o COMPRADOR pede a nota (`get_buyer_invoice_info`).
+    """CPF/CNPJ do comprador Shopee para o eShip e para a emissão própria da NF-e.
 
-    Espelha o `populate_buyer_fiscal` (fiscal Shopee): mesmo ponto único de parse
-    (`shopee_service.parse_buyer_invoice`), captura razão social do PJ (`razaoSocialDestinatario`
-    exigido pelo eShip). Comprador que não pediu nota → documento indisponível: devolve '' e a prévia
-    denuncia (falhar alto). Nunca toca o billing_info do ML."""
+    FONTE PRIMÁRIA (verificado ao vivo 2026-11-12): `buyer_cpf_id` do `get_order_detail` — a Shopee
+    devolve o CPF do comprador no PRÓPRIO detalhe do pedido (BR-only), não só quando ele pede a nota.
+    FALLBACK: `get_buyer_invoice_info` (razão social do PJ / `razaoSocialDestinatario` exigido pelo
+    eShip; hoje responde `region_invalid` p/ nós, mas mantido best-effort p/ o dia em que liberarem).
+    Comprador sem documento → devolve '' e a prévia denuncia (falhar alto). Nunca toca o ML."""
     doc = _digits(order.buyer_document)
     if not order.platform_order_id:
         return doc
@@ -543,25 +543,47 @@ async def _ensure_buyer_document_shopee(db: AsyncSession, order: Order) -> str:
         return doc
     try:
         token = await get_valid_shopee_token(acc, db)
-        infos = await shopee_service.get_buyer_invoice_info(token, acc.shop_id, [order.platform_order_id])
-    except Exception as exc:  # noqa: BLE001 — comprador sem nota / conta desconectada → indisponível
-        logger.warning("[eShip] documento Shopee pedido=%s: %s", order.id, exc)
+    except Exception as exc:  # noqa: BLE001 — conta desconectada → indisponível
+        logger.warning("[eShip] token Shopee pedido=%s: %s", order.id, exc)
         return doc
-    parsed = shopee_service.parse_buyer_invoice(infos[0]) if infos else None
-    if not parsed or not parsed["document"]:
-        return doc  # comprador não pediu nota — sem documento fiscal
-    changed = False
-    if parsed["document"] != doc:
-        order.buyer_document = parsed["document"]
-        order.buyer_document_type = parsed["type"]
-        doc = parsed["document"]
-        changed = True
-    razao = (parsed.get("business_name") or "").strip()
-    if razao and razao != (order.buyer_business_name or ""):
-        order.buyer_business_name = razao[:255]
-        changed = True
-    if changed:
-        await db.commit()
+
+    # 1) PRIMÁRIO: buyer_cpf_id do detalhe do pedido (só se ainda não temos documento válido).
+    if len(doc) not in (11, 14):
+        try:
+            dets = await shopee_service.get_order_detail(
+                token, acc.shop_id, [order.platform_order_id],
+            )
+            parsed = shopee_service.doc_from_order_detail(dets[0]) if dets else None
+            if parsed and parsed["document"]:
+                order.buyer_document = parsed["document"]
+                order.buyer_document_type = parsed["type"]
+                doc = parsed["document"]
+                await db.commit()
+        except Exception as exc:  # noqa: BLE001 — sem detalhe / conta fora → tenta o fallback
+            logger.warning("[eShip] buyer_cpf_id Shopee pedido=%s: %s", order.id, exc)
+
+    # 2) FALLBACK: get_buyer_invoice_info — razão social do PJ (ou documento, se o primário não achou).
+    if len(doc) not in (11, 14) or not (order.buyer_business_name or "").strip():
+        try:
+            infos = await shopee_service.get_buyer_invoice_info(token, acc.shop_id, [order.platform_order_id])
+        except Exception as exc:  # noqa: BLE001 — comprador sem nota / region_invalid → indisponível
+            logger.warning("[eShip] invoice_info Shopee pedido=%s: %s", order.id, exc)
+            return doc
+        parsed = shopee_service.parse_buyer_invoice(infos[0]) if infos else None
+        if not parsed or not parsed["document"]:
+            return doc
+        changed = False
+        if parsed["document"] != doc:
+            order.buyer_document = parsed["document"]
+            order.buyer_document_type = parsed["type"]
+            doc = parsed["document"]
+            changed = True
+        razao = (parsed.get("business_name") or "").strip()
+        if razao and razao != (order.buyer_business_name or ""):
+            order.buyer_business_name = razao[:255]
+            changed = True
+        if changed:
+            await db.commit()
     return doc
 
 
@@ -579,9 +601,9 @@ async def _ensure_buyer_document_shopee(db: AsyncSession, order: Order) -> str:
 _TRANSPORTE_CODIGO_INTERIM = "01"
 
 # CPF sentinela de "consumidor não identificado". O eShip EXIGE CPF ou CNPJ no destinatário
-# (MCA9101), mas a Shopee em modo Invoice Issuer NÃO fornece o CPF do comprador por API. A NF-e
-# real (que tem o CPF) é emitida pela Shopee e acompanha a carga; a ordem do WMS é só logística.
-# NÃO usar o CNPJ da MIG aqui — falsificaria o recebedor (parecer fiscal).
+# (MCA9101). HOJE a maioria dos pedidos Shopee TEM o CPF real (campo `buyer_cpf_id` do
+# get_order_detail, preenchido no upsert / em `_ensure_buyer_document_shopee`) — o sentinela só entra
+# no raro pedido SEM documento algum. NÃO usar o CNPJ da MIG aqui — falsificaria o recebedor.
 #
 # O CPF sentinela precisa ser ÚNICO POR PEDIDO. O eShip usa o CPF como CHAVE do cadastro do
 # destinatário (verificado ao vivo: pedidos com o mesmo CPF caem no mesmo `cadastro_id`) — um CPF

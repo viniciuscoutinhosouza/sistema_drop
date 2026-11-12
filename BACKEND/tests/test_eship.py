@@ -764,11 +764,16 @@ async def test_ensure_buyer_document_shopee_busca_no_get_buyer_invoice_info(monk
                  "invoice_detail": {"company_tax_id": "67.763.215/0001-35",
                                     "company_name": "ACME LTDA"}}]
 
+    # PJ: o buyer_cpf_id do detalhe não traz CNPJ → primário devolve None e cai no invoice_info.
+    async def fake_order_detail_sem_cpf(token, shop_id, order_sns, **_kw):
+        return [{}]
+
     # O ML NUNCA deve ser chamado para um pedido Shopee.
     async def nunca_ml(*_a, **_kw):
         raise AssertionError("billing_info do ML não deveria ser chamado para pedido Shopee")
 
     monkeypatch.setattr(service, "get_valid_shopee_token", fake_token)
+    monkeypatch.setattr(service.shopee_service, "get_order_detail", fake_order_detail_sem_cpf)
     monkeypatch.setattr(service.shopee_service, "get_buyer_invoice_info", fake_invoice_info)
     monkeypatch.setattr(service._ml, "get_order_billing_info", nunca_ml)
 
@@ -805,12 +810,67 @@ async def test_ensure_buyer_document_shopee_sem_nota_devolve_vazio(monkeypatch):
     async def fake_invoice_info(token, shop_id, order_sns):
         return [{"error": "buyer did not request invoice"}]
 
+    async def fake_order_detail_sem_cpf(token, shop_id, order_sns, **_kw):
+        return [{}]  # sem buyer_cpf_id → primário não resolve
+
     monkeypatch.setattr(service, "get_valid_shopee_token", fake_token)
+    monkeypatch.setattr(service.shopee_service, "get_order_detail", fake_order_detail_sem_cpf)
     monkeypatch.setattr(service.shopee_service, "get_buyer_invoice_info", fake_invoice_info)
 
     o = Order(id=1, platform="shopee", platform_order_id="SN-9", account_id=1)
     assert await service.ensure_buyer_document(FakeDB(), o) == ""
     assert o.buyer_document is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_buyer_document_shopee_primario_buyer_cpf_id(monkeypatch):
+    """FONTE PRIMÁRIA (2026-11-12): o CPF vem do buyer_cpf_id do get_order_detail — resolve SEM
+    precisar do get_buyer_invoice_info (que, aliás, responde region_invalid p/ nós)."""
+    from models.order import Order
+
+    class FakeAcc:
+        id = 1
+        shop_id = 123
+
+    class FakeScalar:
+        def scalar_one_or_none(self):
+            return FakeAcc()
+
+    class FakeDB:
+        async def execute(self, *_a, **_kw):
+            return FakeScalar()
+
+        async def commit(self):
+            return None
+
+    async def fake_token(acc, db, **_kw):
+        return "t"
+
+    async def fake_order_detail(token, shop_id, order_sns, **_kw):
+        return [{"buyer_cpf_id": "170.000.000-03"}]  # CPF mascarado de exemplo (11 dígitos)
+
+    async def nunca_invoice(*_a, **_kw):
+        raise AssertionError("get_buyer_invoice_info não deveria ser chamado quando o primário resolve")
+
+    monkeypatch.setattr(service, "get_valid_shopee_token", fake_token)
+    monkeypatch.setattr(service.shopee_service, "get_order_detail", fake_order_detail)
+    monkeypatch.setattr(service.shopee_service, "get_buyer_invoice_info", nunca_invoice)
+
+    o = Order(id=1, platform="shopee", platform_order_id="SN-9", account_id=1)
+    doc = await service.ensure_buyer_document(FakeDB(), o)
+    assert doc == "17000000003"
+    assert o.buyer_document_type == "CPF"
+
+
+def test_doc_from_order_detail_cpf_cnpj_invalido():
+    """Helper puro: extrai buyer_cpf_id (só dígitos), classifica por tamanho, None p/ inválido."""
+    from services import shopee_service as ss
+    assert ss.doc_from_order_detail({"buyer_cpf_id": "170.000.000-03"}) == {"document": "17000000003", "type": "CPF"}
+    assert ss.doc_from_order_detail({"buyer_cpf_id": "67763215000135"}) == {"document": "67763215000135", "type": "CNPJ"}
+    assert ss.doc_from_order_detail({"buyer_cpf_id": "123"}) is None       # curto demais
+    assert ss.doc_from_order_detail({"buyer_cpf_id": ""}) is None          # vazio
+    assert ss.doc_from_order_detail({}) is None                           # sem campo
+    assert ss.doc_from_order_detail(None) is None                        # detalhe ausente
 
 
 def _shopee_order_com_endereco(**extra):

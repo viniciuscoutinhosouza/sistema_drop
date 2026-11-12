@@ -185,6 +185,10 @@ async def get_order_list(
 _ORDER_DETAIL_FIELDS = (
     "buyer_user_id,buyer_username,recipient_address,item_list,pay_time,total_amount,"
     "order_status,ship_by_date,create_time,update_time,payment_method,message_to_seller,cod,currency,"
+    # buyer_cpf_id: CPF/CNPJ do comprador (BR-only). VERIFICADO AO VIVO (2026-11-12): a Shopee devolve
+    # o documento no PRÓPRIO detalhe do pedido quando pedido em response_optional_fields — fonte
+    # primária p/ emitir a NF-e própria (antes achávamos que só vinha via get_buyer_invoice_info).
+    "buyer_cpf_id,"
     # invoice_data: chave de acesso da NF-e emitida pela Shopee (Invoice Issuer) sob o CNPJ do
     # vendedor. Alimenta Order.nfe_key → ORDChave no eShip (referência fiscal da ordem do WMS).
     "invoice_data"
@@ -538,6 +542,21 @@ def parse_buyer_invoice(info: dict) -> dict | None:
     doc = re.sub(r"\D", "", str(detail.get("tax_id") or ""))
     return {"document": doc, "type": "CPF" if len(doc) == 11 else None,
             "business_name": None, "name": detail.get("name")}
+
+
+def doc_from_order_detail(detail: dict) -> dict | None:
+    """CPF/CNPJ do comprador a partir do `get_order_detail` (campo `buyer_cpf_id`, BR-only).
+
+    VERIFICADO AO VIVO (2026-11-12): a Shopee devolve o CPF do comprador no PRÓPRIO detalhe do pedido
+    via `buyer_cpf_id` (quando pedido em response_optional_fields) — é a FONTE PRIMÁRIA do documento
+    fiscal Shopee, não só o `get_buyer_invoice_info` (que, aliás, responde `region_invalid` p/ nós).
+    Só dígitos; tipo por tamanho (11=CPF, 14=CNPJ). Retorna None quando não há documento válido."""
+    if not isinstance(detail, dict):
+        return None
+    doc = re.sub(r"\D", "", str(detail.get("buyer_cpf_id") or ""))
+    if len(doc) not in (11, 14):
+        return None
+    return {"document": doc, "type": "CPF" if len(doc) == 11 else "CNPJ"}
 
 
 async def upload_invoice_doc(

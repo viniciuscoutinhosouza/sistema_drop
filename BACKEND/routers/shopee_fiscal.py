@@ -137,26 +137,46 @@ async def populate_buyer_fiscal(
     current_user: User = Depends(require_menu_permission("fiscal_saidas")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Preenche CPF/CNPJ + razão social do pedido Shopee a partir do `get_buyer_invoice_info`.
+    """Preenche CPF/CNPJ + razão social do pedido Shopee para emitir a NF-e própria.
 
-    O detalhe do pedido Shopee NÃO traz documento fiscal — sem isto o pedido não emite NF-e.
-    Fonte fiscal canônica = o que o COMPRADOR pediu na nota. Falha alto se o comprador não pediu.
-    """
+    FONTE PRIMÁRIA (verificado ao vivo 2026-11-12): `buyer_cpf_id` do `get_order_detail` — a Shopee
+    traz o CPF do comprador no PRÓPRIO detalhe do pedido (BR-only). FALLBACK: `get_buyer_invoice_info`
+    (razão social do PJ / documento, se o primário não achou). Falha alto só se NENHUMA fonte tiver o
+    documento. Paridade com o upsert do pedido e com `_ensure_buyer_document_shopee` (eShip)."""
     order, account, token = await _shopee_order(order_id, current_user, db)
-    infos = await shopee_service.get_buyer_invoice_info(token, account.shop_id, [order.platform_order_id])
-    parsed = shopee_service.parse_buyer_invoice(infos[0]) if infos else None
-    if not parsed or not parsed["document"]:
+    doc = doc_type = business_name = name = None
+    # 1) PRIMÁRIO: buyer_cpf_id do detalhe do pedido.
+    try:
+        dets = await shopee_service.get_order_detail(token, account.shop_id, [order.platform_order_id])
+        pr = shopee_service.doc_from_order_detail(dets[0]) if dets else None
+        if pr:
+            doc, doc_type = pr["document"], pr["type"]
+    except Exception as exc:  # noqa: BLE001 — sem detalhe → tenta o fallback
+        logger.warning("[shopee] populate-buyer get_order_detail pedido=%s: %s", order.id, exc)
+    # 2) FALLBACK: get_buyer_invoice_info (razão social do PJ; e documento se o primário não achou).
+    try:
+        infos = await shopee_service.get_buyer_invoice_info(token, account.shop_id, [order.platform_order_id])
+        parsed = shopee_service.parse_buyer_invoice(infos[0]) if infos else None
+    except Exception as exc:  # noqa: BLE001 — comprador sem nota / region_invalid
+        logger.warning("[shopee] populate-buyer invoice_info pedido=%s: %s", order.id, exc)
+        parsed = None
+    if parsed and parsed["document"]:
+        if not doc:
+            doc, doc_type = parsed["document"], parsed["type"]
+        business_name = parsed.get("business_name")
+        name = parsed.get("name")
+    if not doc:
         raise HTTPException(
             status_code=400,
             detail="O comprador não informou dados fiscais (CPF/CNPJ) para este pedido na Shopee — "
                    "sem documento não é possível emitir a NF-e.",
         )
-    order.buyer_document = parsed["document"]
-    order.buyer_document_type = parsed["type"]
-    if parsed["business_name"]:
-        order.buyer_business_name = parsed["business_name"][:255]
-    if parsed["name"]:
-        order.buyer_name = parsed["name"][:255]
+    order.buyer_document = doc
+    order.buyer_document_type = doc_type
+    if business_name:
+        order.buyer_business_name = business_name[:255]
+    if name:
+        order.buyer_name = name[:255]
     await db.commit()
     return {"order_id": order.id, "buyer_document_type": order.buyer_document_type,
             "buyer_document_set": True}

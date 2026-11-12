@@ -821,6 +821,9 @@ async def process_shopee_order(
         )
 
     recipient_address = detail.get("recipient_address") or {}
+    # CPF/CNPJ do comprador já no upsert (campo `buyer_cpf_id` do detalhe, BR-only) — destrava a
+    # emissão de NF-e própria de pedido Shopee (antes `buyer_document` vinha vazio → falhava "sem CPF").
+    _buyer_doc = shopee_service.doc_from_order_detail(detail)
     order = Order(
         dropshipper_id=integration.owner_id,
         account_id=integration.id,
@@ -835,6 +838,8 @@ async def process_shopee_order(
         status="cancelled" if is_cancelled else "downloaded",
         payment_status="pending" if order_status == "UNPAID" else "paid",
         buyer_name=recipient_address.get("name") or "",
+        buyer_document=(_buyer_doc or {}).get("document"),
+        buyer_document_type=(_buyer_doc or {}).get("type"),
         shipping_address=json.dumps(recipient_address, ensure_ascii=False),
         sale_amount=Decimal(str(detail.get("total_amount") or 0)),
         shipping_mode=MODE_DESCONHECIDO,  # Shopee usa rede propria — fora do escopo do bucket ML
@@ -1036,6 +1041,15 @@ async def _update_shopee_order_stock(
         _k = _shopee_nfe_key(detail)
         if _k:
             order.nfe_key = _k
+
+    # Backfill do CPF/CNPJ do comprador (buyer_cpf_id do detalhe, BR-only). Grava só quando vazio →
+    # pedidos criados antes desta costura passam a emitir NF-e sem ida extra à rede na emissão.
+    if not order.buyer_document:
+        from services import shopee_service as _ss
+        _bd = _ss.doc_from_order_detail(detail)
+        if _bd:
+            order.buyer_document = _bd["document"]
+            order.buyer_document_type = _bd["type"]
 
     if is_cancelled:
         order.status = "cancelled"
