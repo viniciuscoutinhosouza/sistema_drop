@@ -6,6 +6,35 @@
 
 ---
 
+## 2026-11-16 — ESCOL — Sync de entrega: ciclo + cobre backlog (pedidos entregues sem avisar) + limpeza Felipe — ✅ EM PRODUÇÃO
+
+**Pedido do dono:** ver quais pedidos da conta MIG já foram entregues + avaliar a rotina que detecta
+entrega "direta sem avisar". **A rotina JÁ existe:** `_refresh_shipments` ([routers/orders.py]) chamada
+pelo job `sync_orders` (15 min) re-consulta o ML e atualiza `shipment_status`→delivered mesmo sem webhook.
+**Falha medida:** usava `order_by(id desc) + limit 200`, mas o backlog ativo é ~320 → os ~120 MAIS ANTIGOS
+nunca eram re-verificados (famintos). MIG tinha **125 presos em 'shipped'** desde julho; spot-check ao vivo:
+4/5 já 'delivered' no ML há meses.
+
+**Ajustes (commits `2033dc4` + `34f62b5`, pré-avaliados pelo consistency-auditor):**
+1. Ordenação **stale-first** (`coalesce(shipped_at,created_at) asc nulls_first`) — prioriza os travados.
+2. Limite **200→500** (cobre o backlog com folga).
+3. **CICLO** (ideia do dono): `_refresh_shipments(cycle=True)` varre TODOS os que precisam refresh em
+   lotes de 500 até esgotar (keyset por id — termina sempre; teto 2000 anti-runaway; commit por lote).
+   `sync_orders` passa `cycle=True`. Endpoints manuais seguem passada única. `_process_one` extraído.
+4. **Catch-up** executado: MIG **delivered 2514→2609 (+95)**, **shipped 125→37 (-88)**. Os 37 restantes:
+   35 são de NOVEMBRO (legítimos em trânsito) + 2 antigos (#3678/#3680) que estão **'shipped=stale' no
+   próprio ML** (não é gap — nosso sistema bate com o ML).
+5. Conta desativada **81** (7 'shipped'): deixados HONESTOS (não ocultos — ocultar distorceria o contábil,
+   filtro is_hidden em sales_report; decisão do auditor). Como a conta é inativa, o refresh agendado não
+   as toca. Follow-up opcional: fechar/ocultar manualmente se o dono quiser.
+
+Idempotente (sem dupla baixa: refresh só muta o Order; FULL guardado por `full_out`). Deploy verificado
+(health 200). **Também nesta sessão:** 3 pedidos antigos da CMIG 81 (Felipe Façanha, desativada) marcados
+`delivered` para sumir da tela Separar Pedidos (operação de dado, trava `cmig_id==81`, sem impacto de estoque
+— itens sem catalog_product_id).
+
+---
+
 ## 2026-11-12 — ESCOL — CPF do comprador Shopee p/ emitir NF-e (buyer_cpf_id) — ✅ EM PRODUÇÃO (CPF); ⏸ bloqueio IBGE pendente
 
 **Pedido do dono:** "rode a skill/agente da Shopee e veja como buscar o CPF do comprador" (pedido Shopee vinha
