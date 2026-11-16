@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-11-15 — fix(bling): importar a CATEGORIA do produto (detalhe traz só categoria.id) + modo Criar×NULL
+
+O dono apontou que a importação do Bling **não trazia a categoria** dos produtos. Diagnóstico confirmado
+ao vivo (CMIG 141, read-only): `GET /produtos/{id}` devolve `categoria` como **só `{id}`** (sem o nome),
+mas o upsert esperava `categoria.descricao` → `resolve_or_create_category_id` NUNCA era chamado → **2381
+produtos PG com `category_id` NULL** (100%). O nome está em `GET /categorias/produtos` (108 categorias,
+já lido por `list_categories`), mas o mapa não era usado.
+
+Correção: `_run` monta 1x (dentro de `task_db()`) o mapa `{bling_category_id: nome}`; `_upsert_product`
+resolve o nome pelo mapa via helper puro `_category_name_for` e chama `resolve_or_create_category_id`,
+que passou a **casar/persistir por `categories.bling_category_id`** (id estável, migration 182 — antes
+sem uso) com fallback por nome — igual ao dedup de produto; evita duplicar no re-sync e liga categoria
+manual à origem. Re-sync **não clobbera** categoria (preenche só quando `category_id` está NULL). A
+origem Bling fica rastreada em `categories.bling_category_id`; o produto liga pelo FK `category_id`.
+
+**Decisão do dono (perguntada antes):** o sistema pergunta no import **Criar categoria × Deixar NULL**,
+válido p/ todos os produtos do lote — `options.category_mode` ('create'|'null', default 'create';
+validado em `start_import`, fail-loud 422). `create=False` só vincula categoria existente, nunca cria.
+Front: seletor "Categoria ausente" no `CmigBlingImport.vue`. CMIG sem galpão → aviso em `errors[]` (não
+engole). Avaliação prévia pelo consistency-auditor (5 apontamentos incorporados, destaque p/ casar por
+`bling_category_id`). pytest 427 ok (2 pré-existentes) + 5 testes novos; build front OK. **Trio de fechamento: 0 CRITICAL/HIGH;**
+quality 2 MEDIUM corrigidos (match por nome escopado ao galpão — sem vazamento cross-galpão quando sem
+galpão; falha ao carregar categorias vai p/ `errors[]`, não só log); adr-checker APROVADO; consistency
+apontou write morto em `catalog_products.bling_category_id` (coluna inexistente) → removido. Follow-ups:
+hierarquia de categoria (campo `pai`); paridade do seletor create/null no import por Excel; UNIQUE em
+`categories.bling_category_id`/`(warehouse_id,name)` p/ dedup sob concorrência (hoje SELECT-then-INSERT).
+
 ## 2026-11-10 — feat(fiscal): emissão AUTOMÁTICA de NF-e + etiqueta com DANFE ao ficar "Pronto p/ Envio" (ADR-0041)
 
 O dono pediu: por conta, quando a NF-e for **Própria**, emitir sozinho na SEFAZ ao ficar "Pronto p/

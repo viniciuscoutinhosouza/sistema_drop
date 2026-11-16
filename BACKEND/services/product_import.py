@@ -300,28 +300,51 @@ def build_export_xlsx(products) -> bytes:
     return out.getvalue()
 
 
-async def resolve_or_create_category_id(db, name, warehouse_id):
-    """Resolve a categoria por nome NO GALPÃO (migration 145) e CRIA se não existir (raiz, no galpão
-    do produto). Retorna (id, created). Decisão do dono: a importação cria a categoria ausente.
+async def resolve_or_create_category_id(db, name, warehouse_id, *, create=True, bling_category_id=None):
+    """Resolve a categoria NO GALPÃO (migration 145) e, opcionalmente, CRIA se não existir. Retorna
+    (id, created).
 
-    Não cria categoria SEM galpão (warehouse_id None → só resolve; evita categoria órfã para admin
-    sem galpão). Comparação case-insensitive para reusar categoria já existente."""
+    Ordem de resolução — espelha o dedup de PRODUTO (bling_product_id → nome):
+    1. `bling_category_id` (id ESTÁVEL da origem Bling, `categories.bling_category_id` migration 182)
+       dentro do galpão — à prova de rename no Bling; evita duplicar categoria no re-sync.
+    2. `name` case-insensitive no galpão (e faz backfill do `bling_category_id` quando uma categoria
+       manual casa pela 1ª vez com a origem Bling).
+    3. CRIA (só se `create=True`), gravando o `bling_category_id` da origem.
+
+    `create=False` (modo "deixar NULL" do import Bling): só VINCULA categoria já existente — nunca cria.
+    `warehouse_id None` (admin sem galpão) nunca cria (evita categoria órfã). Sem nome e sem match por
+    bling_category_id → (None, False). Comparação case-insensitive para reusar categoria existente."""
     from sqlalchemy import func, select
 
     from models.product import Category
 
     nm = (name or "").strip()
-    if not nm:
+    bcid = str(bling_category_id).strip() if bling_category_id not in (None, "", 0, "0") else None
+
+    # 1) id ESTÁVEL da origem Bling (dentro do galpão) — à prova de rename, não duplica no re-sync.
+    if bcid and warehouse_id is not None:
+        row = (await db.execute(
+            select(Category).where(Category.bling_category_id == bcid,
+                                   Category.warehouse_id == warehouse_id))).scalars().first()
+        if row is not None:
+            return row.id, False
+
+    # 2) nome (case-insensitive) DENTRO do galpão (Category é warehouse-scoped, ADR-0026/migration 145).
+    #    Sem galpão NÃO resolve por nome global — evitaria vincular a categoria de OUTRO galpão homônima.
+    if nm and warehouse_id is not None:
+        found = (await db.execute(select(Category).where(
+            func.lower(Category.name) == nm.lower(),
+            Category.warehouse_id == warehouse_id))).scalars().first()
+        if found is not None:
+            if bcid and not found.bling_category_id:
+                found.bling_category_id = bcid
+                await db.flush()
+            return found.id, False
+
+    # 3) cria (salvo modo "deixar NULL", admin sem galpão, ou sem nome).
+    if not create or warehouse_id is None or not nm:
         return None, False
-    q = select(Category.id).where(func.lower(Category.name) == nm.lower())
-    if warehouse_id is not None:
-        q = q.where(Category.warehouse_id == warehouse_id)
-    found = (await db.execute(q)).scalars().first()
-    if found is not None:
-        return found, False
-    if warehouse_id is None:
-        return None, False  # admin sem galpão → não cria categoria órfã
-    cat = Category(name=nm[:200], warehouse_id=warehouse_id)
+    cat = Category(name=nm[:200], warehouse_id=warehouse_id, bling_category_id=bcid)
     db.add(cat)
     await db.flush()  # obtém o id; a próxima linha com o mesmo nome reusa (SELECT autoflush)
     return cat.id, True

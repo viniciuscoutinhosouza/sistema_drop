@@ -41,6 +41,19 @@
                   @click="onConflict = 'update'">Atualizar</button>
         </div>
       </div>
+      <div class="col-md-6 form-group mb-2">
+        <label class="small font-weight-bold mb-1 d-block">
+          Categoria ausente no sistema
+          <i class="fas fa-question-circle text-muted"
+             title="O Bling manda a categoria do produto; se ela ainda não existe aqui, criar (espelha o Bling) ou deixar o produto sem categoria (NULL). Vale para todos os produtos desta importação."></i>
+        </label>
+        <div class="btn-group btn-group-sm btn-block" role="group">
+          <button type="button" class="btn" :class="categoryMode === 'create' ? 'btn-info' : 'btn-outline-info'"
+                  @click="categoryMode = 'create'">Criar categoria</button>
+          <button type="button" class="btn" :class="categoryMode === 'null' ? 'btn-info' : 'btn-outline-info'"
+                  @click="categoryMode = 'null'">Deixar NULL</button>
+        </div>
+      </div>
     </div>
 
     <div class="d-flex align-items-center mb-2" style="gap:1rem">
@@ -89,6 +102,7 @@ const toast = useToast()
 
 const target = ref('cmig')
 const onConflict = ref('skip')
+const categoryMode = ref('create')   // categoria ausente: 'create' (espelha o Bling) | 'null'
 const opts = reactive({ images: true, kits: true, stock: false })
 const preview = ref(null)
 const job = ref(null)
@@ -109,7 +123,7 @@ async function start() {
     const { data } = await api.post(`/cmigs/${props.cmigId}/bling/import`, {
       target: target.value,
       on_conflict: onConflict.value,
-      options: { images: opts.images, kits: opts.kits, import_stock: opts.stock },
+      options: { images: opts.images, kits: opts.kits, import_stock: opts.stock, category_mode: categoryMode.value },
     })
     toast.success('Importação iniciada')
     watchJob(data.job_id)

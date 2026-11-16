@@ -90,3 +90,26 @@ def test_bling_qty_ausente_vira_none_nao_zero():
 def test_origin_fora_da_faixa_vira_zero():
     assert imp._common_fields({"codigo": "X", "tributacao": {"origem": 99}})["origin"] == 0
     assert imp._common_fields({"codigo": "X", "tributacao": {"origem": "2"}})["origin"] == 2
+
+
+def test_common_fields_categoria_so_com_id():
+    # SHAPE REAL do detalhe Bling (verificado ao vivo): o produto traz SÓ `categoria.id`, sem o nome.
+    f = imp._common_fields({"codigo": "X", "categoria": {"id": 13904444}})
+    assert f["_categoria"] == {"id": 13904444}
+
+
+def test_category_name_for_resolve_pelo_mapa():
+    # A correção: o nome NÃO vem do detalhe (só id) — vem do mapa id→nome de list_categories.
+    mapa = {"10638117": "BELEZA - SHP", "13904444": "HASTE FLEXIVEL"}
+    assert imp._category_name_for(mapa, {"id": 13904444}) == (13904444, "HASTE FLEXIVEL")
+    assert imp._category_name_for(mapa, {"id": 10638117}) == (10638117, "BELEZA - SHP")
+
+
+def test_category_name_for_id_fora_do_mapa_vira_none():
+    assert imp._category_name_for({"1": "A"}, {"id": 999}) == (999, None)  # id sem nome no mapa
+
+
+def test_category_name_for_sem_categoria():
+    assert imp._category_name_for({"1": "A"}, {}) == (None, None)        # produto sem categoria
+    assert imp._category_name_for({"1": "A"}, None) == (None, None)      # campo ausente
+    assert imp._category_name_for(None, {"id": 1}) == (1, None)          # mapa vazio (categorias falharam)

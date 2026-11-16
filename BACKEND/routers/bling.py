@@ -199,7 +199,9 @@ async def bling_import(
     db: AsyncSession = Depends(get_db),
 ):
     """Inicia a importação (job assíncrono). body: {target:'cmig'|'pg', on_conflict:'skip'|'update',
-    options:{product_ids?[], images?, kits?}}. Devolve o id do job p/ acompanhar em GET /import/{id}."""
+    options:{product_ids?[], images?, kits?, import_stock?, category_mode?:'create'|'null'}}.
+    category_mode='create' (padrão) cria a categoria ausente espelhando o Bling; 'null' só vincula
+    categoria já existente. Devolve o id do job p/ acompanhar em GET /import/{id}."""
     await _check_cmig_access(cmig_id, current_user, db)
     target = (body.get("target") or "").strip()
     on_conflict = (body.get("on_conflict") or "skip").strip()

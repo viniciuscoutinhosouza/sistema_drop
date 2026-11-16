@@ -120,6 +120,19 @@ def _common_fields(detail: dict) -> dict:
     }
 
 
+def _category_name_for(cat_name_map, categoria):
+    """(bling_cat_id, nome) a partir do `categoria` do DETALHE Bling (só traz `{id}`) + mapa id→nome.
+
+    O detalhe do produto NÃO traz o nome da categoria (só `categoria.id`); o nome vem do mapa montado
+    de `list_categories`. Devolve (None, None) quando não há id ou o id não está no mapa."""
+    if not isinstance(categoria, dict):
+        return None, None
+    bling_cat_id = categoria.get("id")
+    if not bling_cat_id:
+        return None, None
+    return bling_cat_id, (cat_name_map or {}).get(str(bling_cat_id))
+
+
 def _safe_norm(fn, v):
     try:
         return fn(v)
@@ -253,7 +266,8 @@ async def _find_existing(db, target: str, cmig_id: int, warehouse_id, bling_id, 
     return None
 
 
-async def _upsert_product(db, *, target, cmig_id, warehouse_id, detail, on_conflict, want_images):
+async def _upsert_product(db, *, target, cmig_id, warehouse_id, detail, on_conflict, want_images,
+                          cat_name_map=None, category_mode="create"):
     """Cria/atualiza UM produto. Retorna ('created'|'updated'|'skipped', obj|None)."""
     f = _common_fields(detail)
     if not f["sku"]:
@@ -263,11 +277,15 @@ async def _upsert_product(db, *, target, cmig_id, warehouse_id, detail, on_confl
         return "skipped", existing
     created = existing is None
 
-    # categoria interna (reusa helper warehouse-scoped)
-    cat = f["_categoria"]
+    # categoria interna — o DETALHE do Bling traz só `categoria.id` (sem o nome); o NOME vem do
+    # `cat_name_map` (montado 1x de list_categories). Casa/persiste por `bling_category_id` (id estável)
+    # com fallback por nome. `category_mode='null'` só vincula categoria já existente (não cria).
+    bling_cat_id, cat_name = _category_name_for(cat_name_map, f["_categoria"])
     cat_id = None
-    if cat and cat.get("descricao"):
-        cat_id, _ = await resolve_or_create_category_id(db, cat.get("descricao"), warehouse_id)
+    if cat_name:
+        cat_id, _ = await resolve_or_create_category_id(
+            db, cat_name, warehouse_id,
+            create=(category_mode == "create"), bling_category_id=bling_cat_id)
 
     if target == "cmig":
         obj = existing or CMIGProduct(cmig_id=cmig_id)
@@ -288,7 +306,10 @@ async def _upsert_product(db, *, target, cmig_id, warehouse_id, detail, on_confl
     obj.ncm = f["ncm"]
     obj.cest = f["cest"]
     obj.origin = f["origin"]
-    if cat_id:
+    # Preenche a categoria SÓ quando o produto ainda não tem uma — re-sync NUNCA sobrescreve a
+    # classificação manual do operador (decisão: não clobberar no update). A origem Bling da categoria
+    # fica rastreada em `categories.bling_category_id`; o produto liga pelo FK `category_id`.
+    if cat_id and not obj.category_id:
         obj.category_id = cat_id
     obj.bling_product_id = f["_bling_id"]
     if created:
@@ -324,6 +345,8 @@ async def start_import(db, *, cmig_id: int, target: str, on_conflict: str, optio
         raise ValueError("target deve ser 'cmig' ou 'pg'")
     if on_conflict not in ("skip", "update"):
         raise ValueError("on_conflict deve ser 'skip' ou 'update'")
+    if (options or {}).get("category_mode", "create") not in ("create", "null"):
+        raise ValueError("category_mode deve ser 'create' ou 'null'")
     cmig = (await db.execute(select(CMIG).where(CMIG.id == cmig_id))).scalar_one_or_none()
     if not cmig:
         raise ValueError("CMIG não encontrada")
@@ -373,7 +396,30 @@ async def _run(job_id: int) -> None:
         want_images = bool(opts.get("images", True))
         want_kits = bool(opts.get("kits", True))
         want_stock = bool(opts.get("import_stock", False))   # importar estoque = evento baseline (opt-in)
+        # Categoria ausente no sistema: 'create' (espelha o Bling) | 'null' (só vincula existente).
+        # Decisão do dono por import (pergunta antes de iniciar; vale p/ todos os produtos do lote).
+        category_mode = opts.get("category_mode") or "create"
+        if category_mode not in ("create", "null"):
+            category_mode = "create"
         stock_counts: dict[int, int] = {}
+
+        # Mapa {bling_category_id: nome} — o detalhe do produto só traz `categoria.id`; o nome vem daqui
+        # (1 chamada paginada). Montado na sessão do WORKER (task_db), nunca no db do request.
+        cat_name_map: dict[str, str] = {}
+        try:
+            async with task_db() as db:
+                for c in await list_categories(db, cmig_id):
+                    if c.get("id") is not None and c.get("descricao"):
+                        cat_name_map[str(c["id"])] = c["descricao"]
+        except Exception as e:  # noqa: BLE001 — categorias falharam não derruba o import (produtos entram sem categoria)
+            logger.warning("[bling-import %s] categorias falharam: %s", job_id, e)
+            # Falhar alto, nunca em silêncio: o dono precisa saber POR QUE os produtos vieram sem categoria.
+            errors.append({"categoria": f"falha ao carregar categorias do Bling: {str(e)[:200]} — "
+                                        "produtos entram sem categoria."})
+        # Falhar alto, não em silêncio: CMIG sem galpão não pode criar categoria (Category é warehouse-scoped).
+        if cat_name_map and category_mode == "create" and warehouse_id is None:
+            errors.append({"categoria": "CMIG sem galpão: categorias não podem ser criadas — "
+                                        "category_id fica NULL nos produtos."})
         # Seleção: lista de ids do Bling (preview marcou) OU 'tudo' (varre as páginas).
         selected = opts.get("product_ids")
 
@@ -405,7 +451,8 @@ async def _run(job_id: int) -> None:
                     comps = _kit_components(detail)
                     outcome, _obj = await _upsert_product(
                         db, target=target, cmig_id=cmig_id, warehouse_id=warehouse_id,
-                        detail=detail, on_conflict=on_conflict, want_images=want_images)
+                        detail=detail, on_conflict=on_conflict, want_images=want_images,
+                        cat_name_map=cat_name_map, category_mode=category_mode)
                     pid = _obj.id if _obj is not None else None   # capturado dentro do bloco (atachado)
                     await db.commit()
                 # coleta o estoque Bling (não-kit, não-pulado) p/ o inventário baseline no fim.
