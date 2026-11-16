@@ -2760,7 +2760,12 @@ async def _refresh_shipments(
                 (Order.shipment_id == None) & (Order.status != "cancelled"),
             ),
         )
-        .order_by(Order.id.desc())
+        # Prioriza os pedidos TRAVADOS mais antigos (menor shipped_at/created_at), não os mais
+        # recentes — senão, com backlog > limit, os antigos presos em 'shipped' nunca são
+        # re-consultados e ficam congelados (ex.: pedido entregue no ML há meses sem atualizar aqui).
+        # nulls_first: órfão sem shipped_at/created_at tem prioridade MÁXIMA (Oracle ASC joga NULL
+        # pro fim por padrão, o que seria o oposto da intenção).
+        .order_by(func.coalesce(Order.shipped_at, Order.created_at).asc().nulls_first())
         .limit(limit)
     )
 

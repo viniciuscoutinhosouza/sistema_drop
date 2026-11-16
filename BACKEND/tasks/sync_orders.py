@@ -63,7 +63,12 @@ async def sync_all_orders():
                 try:
                     from routers.orders import _refresh_shipments
 
-                    await _refresh_shipments(db, ml_accounts, dropshipper_id=None, limit=200)
+                    # limit=500 cobre o backlog de pedidos ML em estado ativo (~320) com folga —
+                    # com 200 e ordenação antiga (id desc), os ~120 mais antigos ficavam famintos
+                    # (presos em 'shipped' por meses mesmo já entregues no ML). Ver ordenação
+                    # stale-first em _refresh_shipments. ~320 pedidos × 2 chamadas × 0.1s ≈ 3-4 min
+                    # por rodada (dentro da janela de 15 min); teto de rate-limit é por token/conta.
+                    await _refresh_shipments(db, ml_accounts, dropshipper_id=None, limit=500)
                 except Exception as e:
                     stats["errors"] += 1
                     print(f"[SYNC] Error refreshing shipments: {e}")
