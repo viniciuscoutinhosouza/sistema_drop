@@ -2711,6 +2711,9 @@ async def _refresh_shipments(
     ml_accounts: list,
     dropshipper_id: int | None = None,
     limit: int = 100,
+    *,
+    cycle: bool = False,
+    max_total: int = 2000,
 ) -> int:
     """Refresh shipment_status, tracking, dates from ML for orders that need updating.
 
@@ -2719,6 +2722,15 @@ async def _refresh_shipments(
     - Orders with NO shipment_id where ML returns one (re-fetches /orders/{id} first)
 
     When dropshipper_id is given, restricts to that user's orders. Otherwise updates all.
+
+    cycle=False (padrão): UMA passada — os `limit` pedidos mais TRAVADOS (stale-first). Para os
+    endpoints manuais/interativos (curto e barato).
+    cycle=True: VARRE TODOS os pedidos que precisam refresh, em lotes de `limit`, até esgotar (ou o
+    teto `max_total`, trava anti-runaway). Sem isto, com backlog > limit, SEMPRE sobrava pedido por
+    verificar numa rodada. Paginação por KEYSET de id (id asc, id > último lote) — nunca `NOT IN`
+    (Oracle limita a lista a 1000) e termina sempre (after_id só cresce; cada pedido é processado no
+    máximo uma vez por run). No ciclo a ordenação stale-first é redundante (todos entram), mas segue
+    valendo para o modo passada-única.
     """
     import asyncio as _asyncio
 
@@ -2736,45 +2748,32 @@ async def _refresh_shipments(
     if dropshipper_id is not None:
         base_where.append(Order.dropshipper_id == dropshipper_id)
 
-    # Active or missing-data orders that need refresh
-    sq = (
-        select(Order)
-        .where(
-            *base_where,
-            or_(
-                # Has shipment_id but status missing or active
-                (Order.shipment_id != None)
-                & or_(
-                    Order.shipment_status == None,
-                    Order.shipment_status.in_(["pending", "handling", "ready_to_ship", "shipped"]),
-                    Order.shipment_status.in_(["delivered", "not_delivered", "cancelled"])
-                    & (
-                        (Order.estimated_delivery_date == None)
-                        | (Order.estimated_delivery_final == None)
-                    ),
-                    # Backfill: pedidos com shipment mas sem modo classificado
-                    Order.shipping_mode == None,
-                    Order.shipping_mode == "desconhecido",
-                ),
-                # No shipment_id at all — try to recover from /orders/{id}
-                (Order.shipment_id == None) & (Order.status != "cancelled"),
+    # Pedidos em estado ATIVO ou com dado faltando que precisam de re-consulta ao ML.
+    needs_refresh = or_(
+        # Has shipment_id but status missing or active
+        (Order.shipment_id != None)
+        & or_(
+            Order.shipment_status == None,
+            Order.shipment_status.in_(["pending", "handling", "ready_to_ship", "shipped"]),
+            Order.shipment_status.in_(["delivered", "not_delivered", "cancelled"])
+            & (
+                (Order.estimated_delivery_date == None)
+                | (Order.estimated_delivery_final == None)
             ),
-        )
-        # Prioriza os pedidos TRAVADOS mais antigos (menor shipped_at/created_at), não os mais
-        # recentes — senão, com backlog > limit, os antigos presos em 'shipped' nunca são
-        # re-consultados e ficam congelados (ex.: pedido entregue no ML há meses sem atualizar aqui).
-        # nulls_first: órfão sem shipped_at/created_at tem prioridade MÁXIMA (Oracle ASC joga NULL
-        # pro fim por padrão, o que seria o oposto da intenção).
-        .order_by(func.coalesce(Order.shipped_at, Order.created_at).asc().nulls_first())
-        .limit(limit)
+            # Backfill: pedidos com shipment mas sem modo classificado
+            Order.shipping_mode == None,
+            Order.shipping_mode == "desconhecido",
+        ),
+        # No shipment_id at all — try to recover from /orders/{id}
+        (Order.shipment_id == None) & (Order.status != "cancelled"),
     )
 
-    ship_orders = (await db.execute(sq)).scalars().all()
-    updated = 0
-    for order in ship_orders:
+    async def _process_one(order) -> bool:
+        """Re-consulta o envio no ML e aplica ao pedido. True se atualizou (idempotente — só muta o
+        Order; FULL dispara confirm_dispatch, guardado por StockMovement full_out)."""
         account = accounts_map.get(order.account_id)
         if not account or not account.access_token:
-            continue
+            return False
         try:
             shipment_id = order.shipment_id
             # Recover missing shipment_id from /orders/{id}
@@ -2782,33 +2781,71 @@ async def _refresh_shipments(
                 ml_order = await _ml.get_order(account.access_token, order.platform_order_id)
                 shipment_id = (ml_order.get("shipping") or {}).get("id")
                 if not shipment_id:
-                    continue  # order has no shipment in ML either
+                    return False  # order has no shipment in ML either
                 order.shipment_id = str(shipment_id)
 
             sd = await _ml.get_shipment(
                 account.access_token, str(shipment_id), caller_id=account.platform_user_id
             )
             if not sd:
-                continue
+                return False
             costs = {}
             try:
                 costs = await _ml.get_shipment_costs(account.access_token, str(shipment_id))
             except Exception:
                 pass
             _apply_shipment_to_order(order, sd, costs)
-            updated += 1
             # Pedido FULL que chegou a shipped/delivered → baixa o FULL (idempotente).
-            # _apply_shipment_to_order não dispara isso sozinho (diferente do webhook).
             if order.shipping_mode == "full" and (order.shipment_status or "") in {"shipped", "delivered"}:
                 try:
                     from services.stock_reservation_service import confirm_dispatch
                     await confirm_dispatch(db, order)
                 except Exception:
                     pass
+            return True
         except Exception:
-            pass
-        await _asyncio.sleep(0.1)
+            return False
 
+    updated = 0
+
+    if cycle:
+        # VARREDURA completa em lotes (keyset por id asc). after_id só cresce → termina sempre e
+        # processa cada pedido no máximo uma vez por run; max_total limita as chamadas ao ML.
+        after_id = 0
+        processed = 0
+        while processed < max_total:
+            rows = (
+                await db.execute(
+                    select(Order)
+                    .where(*base_where, needs_refresh, Order.id > after_id)
+                    .order_by(Order.id.asc())
+                    .limit(limit)
+                )
+            ).scalars().all()
+            if not rows:
+                break  # backlog esgotado nesta rodada
+            after_id = rows[-1].id
+            processed += len(rows)
+            for order in rows:
+                if await _process_one(order):
+                    updated += 1
+                await _asyncio.sleep(0.1)
+            await db.commit()  # commit por lote (limita o tamanho da transação)
+        return updated
+
+    # Passada única (stale-first) — endpoints manuais / report.
+    rows = (
+        await db.execute(
+            select(Order)
+            .where(*base_where, needs_refresh)
+            .order_by(func.coalesce(Order.shipped_at, Order.created_at).asc().nulls_first())
+            .limit(limit)
+        )
+    ).scalars().all()
+    for order in rows:
+        if await _process_one(order):
+            updated += 1
+        await _asyncio.sleep(0.1)
     if updated:
         await db.commit()
     return updated
