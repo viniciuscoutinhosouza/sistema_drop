@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-11-12 — ESCOL — CPF do comprador Shopee p/ emitir NF-e (buyer_cpf_id) — ✅ EM PRODUÇÃO (CPF); ⏸ bloqueio IBGE pendente
+
+**Pedido do dono:** "rode a skill/agente da Shopee e veja como buscar o CPF do comprador" (pedido Shopee vinha
+sem CPF → NF-e própria falhava "sem CPF/CNPJ"). **Descoberta + PROVADA ao vivo na loja real:** a Shopee
+devolve o CPF no PRÓPRIO `get_order_detail`, campo **`buyer_cpf_id`** (BR-only), quando pedido em
+`response_optional_fields`. 8/9 pedidos reais retornaram CPF de 11 dígitos. O `get_buyer_invoice_info` (que o
+código assumia como única fonte) responde `region_invalid` pra nós.
+
+**Implementado + deployado (commit `58c5a3f`):** `buyer_cpf_id` no `_ORDER_DETAIL_FIELDS` + helper
+`shopee_service.doc_from_order_detail` (ponto único); upsert do pedido Shopee grava buyer_document/type +
+backfill no update; `_ensure_buyer_document_shopee` usa buyer_cpf_id primário + invoice_info fallback (razão
+social PJ); `shopee_fiscal.populate_buyer` mesma fonte. Trio: quality 0 CRITICAL/HIGH, adr CONFORME,
+consistency AJUSTAR atendido (paridade + testes). 47 testes eShip ok (4 novos). Regra de ouro ADR-0020 ok.
+LGPD: nenhum log de CPF. Backfill: 8/9 Shopee prontos ganharam CPF (#15310 sem buyer_cpf_id). **Gate do CPF
+passou** no canário Shopee (sumiu o "sem CPF").
+
+**⏸ BLOQUEIO NOVO revelado (pendente decisão do dono):** os Shopee agora falham um passo adiante —
+**"Destinatário sem código IBGE do município"**. Causa raiz diagnosticada: `services/address_parser.py`
+(`parse_buyer_address`, ponto único) só conhece os campos do ML/manual — **ignora os aliases Shopee**
+(`zipcode`, `state` por extenso, `district`, `full_address`) → Person Shopee nasce com CEP/UF VAZIOS → ViaCEP
+não roda → sem IBGE → SEFAZ barra. **Proposta (aguarda OK):** (1) estender `parse_buyer_address` p/ os aliases
+Shopee + UF por extenso→sigla (reusar `_UF_POR_NOME` do eShip); (2) backfillar CEP/UF das Persons Shopee já
+criadas + derivar IBGE; (3) os 8 emitem. Parser é COMPARTILHADO com ML → rodar pré-avaliação antes. #15168
+foi p/ `error` (esgotou 5 tentativas no erro de CPF ANTES do backfill) — resetar após o fix do IBGE.
+
+---
+
 ## 2026-11-12 — ESCOL — NF-e de kit com componentes + armar pedidos prontos (canário) — ✅ EM PRODUÇÃO
 
 **Parte A — NF-e de venda de KIT sai com os COMPONENTES (ADR-0023 emendada, commits `8dd3359`+`f569052`):**
