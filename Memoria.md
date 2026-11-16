@@ -6,6 +6,36 @@
 
 ---
 
+## 2026-11-16 18:27 — ESCOL — Importar categoria do produto do Bling (criar x NULL) — ✅ EM PRODUÇÃO
+
+**Pedido do dono:** ler o cadastro de produtos do Bling, rever o import — a **categoria não estava sendo
+importada** (produtos entravam com `category_id` NULL) — e **perguntar antes de importar** se, quando a
+categoria não existe no sistema, é p/ criar ou deixar NULL. **Decisão do dono:** o sistema pergunta UMA vez
+antes do import (Criar × Deixar NULL) e a resposta vale p/ todos os produtos do lote.
+
+**Causa-raiz (provada ao vivo):** o detalhe do Bling (`GET /produtos/{id}`) traz só `categoria.id`, **sem o
+nome** → o código nunca resolvia a categoria. O nome vem de `GET /categorias/produtos` (`list_categories`).
+Spot-check em produção: 2381 produtos PG com `category_id` NULL.
+
+**Implementado + deployado (commit `31acb45`):**
+- `product_import.resolve_or_create_category_id`: resolução em 3 passos (bling_category_id no galpão → nome
+  case-insensitive no galpão → cria), reusa `categories.bling_category_id` (migration 182, sem migration nova);
+  match por nome **escopado ao galpão** (anti cross-galpão, ADR-0026).
+- `bling_import_service`: helper puro `_category_name_for`; `_upsert_product` resolve pelo mapa id→nome e
+  preenche `category_id` só quando nulo; `_run` carrega o mapa em `task_db()` e **falha alto** (`errors[]`) se
+  `list_categories` quebrar; `start_import` valida `category_mode in {create,null}`.
+- Front `CmigBlingImport.vue`: seletor "Categoria ausente: Criar categoria × Deixar NULL" (padrão criar).
+- 5 testes puros novos (11 bling ok; suíte 427 ok, 2 pré-existentes).
+
+**Trio:** adr-checker APROVADO; consistency removeu write morto em `catalog_products.bling_category_id`
+(coluna inexistente — só `categories` tem); quality 0 CRITICAL/HIGH (2 MEDIUM corrigidos). Deploy verificado:
+commit no servidor, build front exit 0, PM2 online, `/docs` 200, `category_mode` no código em prod.
+**Pendente do dono:** rodar um import numa CMIG conectada (ex.: 141 "Vergina Store") e conferir as categorias
+preenchidas. Follow-ups (não bloqueiam): hierarquia de categoria (campo `pai`); paridade do seletor no import
+por Excel; UNIQUE em `categories.bling_category_id`/`(warehouse_id,name)` p/ dedup sob concorrência.
+
+---
+
 ## 2026-11-16 — ESCOL — Sync de entrega: ciclo + cobre backlog (pedidos entregues sem avisar) + limpeza Felipe — ✅ EM PRODUÇÃO
 
 **Pedido do dono:** ver quais pedidos da conta MIG já foram entregues + avaliar a rotina que detecta
