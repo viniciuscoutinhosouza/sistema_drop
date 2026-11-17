@@ -4531,15 +4531,23 @@ async def _upsert_customer_from_order(
     complement = _clip(addr["complement"], 100)
 
     if existing:
-        # Atualiza endereço se vazio
+        # Completa o endereço campo-a-campo (não bloco-único por `street`): uma Person criada com
+        # logradouro mas SEM CEP/UF — ex.: pedido Shopee antes do alias de endereço — travava a
+        # emissão por falta de IBGE. Preenche só o que está vazio (nunca sobrescreve o já gravado).
         if not existing.street and street:
             existing.street = street
-            existing.address_number = number or existing.address_number
-            existing.complement = complement or existing.complement
-            existing.neighborhood = neighborhood or existing.neighborhood
-            existing.city = city or existing.city
-            existing.state = state or existing.state
-            existing.zip_code = zip_code or existing.zip_code
+        if not existing.address_number and number:
+            existing.address_number = number
+        if not existing.complement and complement:
+            existing.complement = complement
+        if not existing.neighborhood and neighborhood:
+            existing.neighborhood = neighborhood
+        if not existing.city and city:
+            existing.city = city
+        if not existing.state and state:
+            existing.state = state
+        if not existing.zip_code and zip_code:
+            existing.zip_code = zip_code
         if not existing.email and order.buyer_email:
             existing.email = order.buyer_email
         return existing

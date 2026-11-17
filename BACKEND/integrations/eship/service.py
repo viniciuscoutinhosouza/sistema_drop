@@ -29,6 +29,7 @@ from models.integration import MarketplaceAccount
 from models.order import Order, OrderItem
 from services import ml_service as _ml
 from services import shopee_service
+from services.address_parser import _UF_POR_NOME, _norm_uf  # ponto único do mapa UF-por-nome
 from services.datetime_br import iso_utc
 from services.fiscal.order_docs import resolve_nfe_xml
 from services.ml_auth import get_valid_token
@@ -352,23 +353,6 @@ def _addr_text(v) -> str:
 
 # Nome do estado → UF. A Shopee manda o estado por EXTENSO ("Rio Grande do Sul"), enquanto o
 # eShip exige a sigla de 2 letras. O ML já vinha como `{id:'BR-SP'}` ou "SP".
-_UF_POR_NOME = {
-    "acre": "AC", "alagoas": "AL", "amapa": "AP", "amazonas": "AM", "bahia": "BA",
-    "ceara": "CE", "distrito federal": "DF", "espirito santo": "ES", "goias": "GO",
-    "maranhao": "MA", "mato grosso": "MT", "mato grosso do sul": "MS", "minas gerais": "MG",
-    "para": "PA", "paraiba": "PB", "parana": "PR", "pernambuco": "PE", "piaui": "PI",
-    "rio de janeiro": "RJ", "rio grande do norte": "RN", "rio grande do sul": "RS",
-    "rondonia": "RO", "roraima": "RR", "santa catarina": "SC", "sao paulo": "SP",
-    "sergipe": "SE", "tocantins": "TO",
-}
-
-
-def _norm_uf(s: str) -> str:
-    import unicodedata
-
-    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().strip().lower()
-
-
 def _uf_sigla(v) -> str:
     """UF (2 letras): `{id:'BR-SP'}` → 'SP' (ML); "Rio Grande do Sul" → 'RS' (Shopee); "SP" → 'SP'."""
     raw_id = v.get("id") if isinstance(v, dict) else ""

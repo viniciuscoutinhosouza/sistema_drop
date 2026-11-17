@@ -74,13 +74,42 @@ def test_none_e_lixo_nao_quebram():
         assert addr["neighborhood"] == ""
 
 
-def test_uf_patologica_vira_vazio_nao_lixo():
-    # Dict só com nome por extenso (sem id 'BR-XX'): NÃO inventar 'NÁ' — devolve ''
-    assert parse_buyer_address({"state": {"id": None, "name": "Paraná"}})["state"] == ""
-    assert parse_buyer_address({"state": "Rio Grande do Sul"})["state"] == ""
+def test_uf_nome_por_extenso_vira_sigla():
+    # Nome por extenso (Shopee manda assim) → sigla, via mapa FECHADO _UF_POR_NOME.
+    assert parse_buyer_address({"state": {"id": None, "name": "Paraná"}})["state"] == "PR"
+    assert parse_buyer_address({"state": "Rio Grande do Sul"})["state"] == "RS"
+    assert parse_buyer_address({"state": "Minas Gerais"})["state"] == "MG"
     # Caminhos válidos seguem funcionando
     assert parse_buyer_address({"state": {"id": "BR-SP", "name": "São Paulo"}})["state"] == "SP"
     assert parse_buyer_address({"uf": "pr"})["state"] == "PR"
+    # Nome DESCONHECIDO → '' (nunca inventa UF inválida — fail-loud p/ a SEFAZ)
+    assert parse_buyer_address({"state": "Estado Inexistente"})["state"] == ""
+
+
+def test_endereco_shopee_recipient_address():
+    # recipient_address da Shopee: full_address/district/city/zipcode + estado por extenso.
+    addr = parse_buyer_address({
+        "name": "Fulano", "full_address": "Rua das Flores, 100, Apto 2",
+        "district": "Centro", "city": "Patos de Minas", "state": "Minas Gerais",
+        "zipcode": "38700-001",
+    })
+    assert addr["street"] == "Rua das Flores, 100, Apto 2"
+    assert addr["neighborhood"] == "Centro"
+    assert addr["city"] == "Patos de Minas"
+    assert addr["state"] == "MG"
+    assert addr["zip_code"] == "38700-001"
+
+
+def test_ml_tem_prioridade_sobre_alias_shopee():
+    # ML street_name/zip_code no mesmo dict de um alias Shopee: o ML vence (alias é só fallback).
+    addr = parse_buyer_address({
+        "street_name": "Av Brasil", "street_number": "500", "zip_code": "01000-000",
+        "state": {"id": "BR-SP", "name": "São Paulo"},
+        "full_address": "NAO USAR", "zipcode": "99999-999",
+    })
+    assert addr["street"] == "Av Brasil"
+    assert addr["zip_code"] == "01000-000"
+    assert addr["state"] == "SP"
 
 
 def test_addr_text_isolado():
