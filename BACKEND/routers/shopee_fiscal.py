@@ -85,7 +85,21 @@ async def download_order_nfe(
             status_code=404,
             detail="Pedido sem NF-e na Shopee. Emita/valide a nota (Fiscal → Anexar NF-e) antes de baixar.",
         )
-    content, ctype = await shopee_service.download_invoice_doc(token, account.shop_id, order.platform_order_id)
+    try:
+        content, ctype = await shopee_service.download_invoice_doc(token, account.shop_id, order.platform_order_id)
+    except HTTPException as e:
+        # A Shopee NÃO serve por API a NF-e que ela MESMA emitiu (Invoice Issuer) —
+        # "Don't support Invoice Issuer now". E o DFe por chave dá cStat 641 (emitente não baixa a
+        # própria). O documento só existe no painel da Shopee. Mensagem clara em vez do erro cru.
+        if "invoice issuer" in str(getattr(e, "detail", "")).lower():
+            raise HTTPException(
+                status_code=422,
+                detail="Esta NF-e foi emitida pela PRÓPRIA Shopee (Invoice Issuer) — a Shopee não "
+                       "libera o download por API. Baixe o DANFE/XML no painel da Shopee (Seller "
+                       "Center). A partir de agora o sistema emite a NF-e própria, que fica "
+                       "disponível para download aqui.",
+            )
+        raise
     if not content:
         raise HTTPException(status_code=404, detail="Shopee não retornou o documento fiscal do pedido.")
     is_pdf = content[:4] == b"%PDF" or "pdf" in (ctype or "").lower()
