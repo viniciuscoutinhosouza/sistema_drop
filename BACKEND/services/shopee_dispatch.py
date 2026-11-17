@@ -12,9 +12,9 @@ este módulo é user-agnóstico — recebe o `Order` já resolvido e autorizado.
 """
 from __future__ import annotations
 
+import io
 import logging
 import zipfile
-import io
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -57,6 +57,69 @@ async def invoice_is_validated(order: Order, token: str, shop_id: int, db: Async
         order.shopee_invoice_status = "validated"
         await db.commit()
     return ok
+
+
+async def recognize_shopee_invoice(order: Order, token: str, shop_id: int, db: AsyncSession) -> bool:
+    """RECONHECE a NF-e emitida pela própria Shopee (Invoice Issuer, sob o CNPJ do vendedor) como a
+    nota do pedido — fluxo definido pelo dono: nosso sistema emite a própria, MAS, no período de
+    transição, se a Shopee JÁ emitiu, reconhecemos a dela e NÃO emitimos (senão duplica).
+
+    Quando a Shopee tem NF-e válida (`invoice_data` com number/access_key):
+    - `shopee_invoice_status='validated'` (Vendas mostra validada);
+    - captura `order.nfe_key` da chave da Shopee **só se vazio** (gaiola mostra "Emitida");
+    - `nfe_status='authorized'` **só em produção e só com chave** (barra re-emissão no `_emit_own_nfe`
+      e no auto_fiscal; homologação nunca vira authorized);
+    - DESVINCULA o rascunho próprio órfão (`order.invoice_id` → invoice status='draft') — só
+      desvincula (invoice_id=None); não deleta (FK de log/lotes sem cascade — desvincular já resolve).
+
+    NO-OP (retorna False sem tocar nada) se já existe emissão PRÓPRIA viva (status processing/
+    transmitida/authorized) — nunca mascara uma nota própria legítima. Idempotente. Retorna True se
+    reconheceu (Shopee já emitiu)."""
+    from models.fiscal import CMIGFiscalConfig, Invoice
+
+    # Emissão própria viva? então ela é a verdade — não reconhece a da Shopee (anti-mascaramento).
+    if order.invoice_id:
+        own = (
+            await db.execute(select(Invoice).where(Invoice.id == order.invoice_id))
+        ).scalar_one_or_none()
+        if own and own.status in ("processing", "transmitida", "authorized"):
+            return False
+
+    dets = await shopee_service.get_order_detail(
+        token, shop_id, [order.platform_order_id], optional_fields="invoice_data,order_status")
+    inv = (dets[0].get("invoice_data") if dets else None) or {}
+    key = "".join(ch for ch in str(inv.get("access_key") or "") if ch.isalnum())
+    if not (inv.get("number") or key):
+        return False  # Shopee ainda não emitiu → segue a emissão própria
+
+    changed = False
+    if order.shopee_invoice_status != "validated":
+        order.shopee_invoice_status = "validated"
+        changed = True
+    if not order.nfe_key and len(key) == 44:
+        order.nfe_key = key
+        changed = True
+    # nfe_status='authorized' só em produção + com chave (gaiola/Vendas/auto_fiscal reconhecem).
+    env = "homolog"
+    if order.cmig_id:
+        cfg = (
+            await db.execute(select(CMIGFiscalConfig).where(CMIGFiscalConfig.cmig_id == order.cmig_id))
+        ).scalar_one_or_none()
+        env = (getattr(cfg, "environment", None) or "homolog").lower()
+    if env == "production" and order.nfe_key and order.nfe_status != "authorized":
+        order.nfe_status = "authorized"
+        changed = True
+    # Descarta o rascunho próprio órfão: só DESVINCULA (deletar arrisca FK sem cascade).
+    if order.invoice_id:
+        draft = (
+            await db.execute(select(Invoice).where(Invoice.id == order.invoice_id))
+        ).scalar_one_or_none()
+        if draft and draft.status == "draft":
+            order.invoice_id = None
+            changed = True
+    if changed:
+        await db.commit()
+    return True
 
 
 async def ensure_invoice_validated(order: Order, token: str, shop_id: int, db: AsyncSession) -> None:

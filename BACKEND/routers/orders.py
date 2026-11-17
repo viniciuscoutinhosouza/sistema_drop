@@ -1718,6 +1718,33 @@ async def _emit_own_nfe(order: Order, account, current_user: User | None, db: As
             out["warnings"] = warnings
         return out
 
+    # Anti-duplicação Shopee (Invoice Issuer): no período de transição, a Shopee pode ter emitido a
+    # NF-e (sob o CNPJ do vendedor). ANTES de transmitir a própria, proba a Shopee — se já há nota
+    # válida, RECONHECE (captura chave, marca validated, descarta rascunho) e NÃO emite (senão
+    # duplica). Ponto ÚNICO: cobre botão Vendas + cart (ambos passam por aqui). Regra de ouro
+    # ADR-0020: ramo Shopee próprio. Fail-open: probe falhou (rede) → segue p/ emissão própria.
+    if order.platform == "shopee" and inv.status != "authorized":
+        try:
+            from models.integration import MarketplaceAccount
+            from services.shopee_auth import get_valid_shopee_token
+            from services.shopee_dispatch import recognize_shopee_invoice
+
+            _acc = account if (account and getattr(account, "platform", None) == "shopee") else (
+                await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+            ).scalar_one_or_none()
+            if _acc and _acc.shop_id:
+                _tok = await get_valid_shopee_token(_acc, db)
+                if await recognize_shopee_invoice(order, _tok, _acc.shop_id, db):
+                    return {
+                        "ok": True, "mode": "own", "shopee_issuer": True, "already_existed": True,
+                        "nfe_status": order.nfe_status, "nfe_key": order.nfe_key, "ambiente": ambiente,
+                    }
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[shopee] probe anti-dup falhou order=%s — segue p/ emissão própria", order.id, exc_info=True
+            )
+
     # Já autorizada → idempotente: espelha o estado, não re-emite (unicidade 1 pedido ↔ 1 venda),
     # mas ainda roda os efeitos colaterais (ex.: Shopee anexar numa 2ª passada).
     if inv.status == "authorized":

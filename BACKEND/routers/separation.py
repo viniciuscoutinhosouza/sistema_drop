@@ -1692,7 +1692,9 @@ async def cart_emit_nfe(
             try:
                 from services import shopee_dispatch
                 acc, token = await shopee_dispatch.resolve_account_token(db, order)
-                if await shopee_dispatch.invoice_is_validated(order, token, acc.shop_id, db):
+                # recognize (superset do probe): se a Shopee já emitiu (Invoice Issuer), captura a
+                # chave + marca validated + descarta o rascunho próprio, e NÃO reemite (anti-dup).
+                if await shopee_dispatch.recognize_shopee_invoice(order, token, acc.shop_id, db):
                     results.append({"order_id": order.id, "mode": "shopee",
                                     "shopee_invoice": "validated", "already": True})
                     continue

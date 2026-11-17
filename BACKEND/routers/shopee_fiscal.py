@@ -57,7 +57,29 @@ async def download_order_nfe(
     do vendedor), que não passa pela emissão própria do Drop (logo `resolve_nfe_xml` não a cobre).
     `kind=xml` (padrão) devolve o `nfeProc` autorizado; `kind=danfe` renderiza o PDF. Falha alto
     se o pedido não tem NF-e na Shopee."""
-    order, account, token = await _shopee_order(order_id, current_user, db)
+    # Autorização por ESCOPO de dados (galpão/CMIG), NÃO por dono da conta Shopee: o operador da
+    # gaiola/Vendas que tem acesso ao pedido pode baixar o DANFE/XML (igual ao resto da separação).
+    # Antes usava _shopee_order → _assert_owner_or_admin e travava operador de galpão ("apenas o
+    # proprietário"). A permissão de menu `fiscal_saidas` + escopo da CMIG é o nível certo.
+    from models.cmig import CMIG
+    from models.integration import MarketplaceAccount
+    from services.data_scope import assert_cmig_access
+
+    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if order.platform != "shopee":
+        raise HTTPException(status_code=400, detail="Endpoint disponível apenas para pedidos Shopee")
+    if order.cmig_id:
+        cmig = (await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))).scalar_one_or_none()
+        if cmig:
+            await assert_cmig_access(cmig, current_user, db)
+    account = (
+        await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
+    ).scalar_one_or_none()
+    if not account or account.platform != "shopee":
+        raise HTTPException(status_code=400, detail="Pedido Shopee sem conta Shopee vinculada")
+    token = await get_valid_shopee_token(account, db)
     if not (order.nfe_key or order.shopee_invoice_status == "validated"):
         raise HTTPException(
             status_code=404,
