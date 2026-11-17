@@ -21,6 +21,15 @@ em vez da mensagem genérica "please check result_list". `resolve_label_pdf` é 
 `shopee_dispatch`, endpoint `shopee_logistics`, eShip) → cobre todos. **Verificado:** #16273 →
 `resolve_label_pdf` OK, 9934 bytes (ZIP/ZPL). Dono já pode gerar/baixar a etiqueta na gaiola.
 
+**2ª parte (commit `2106d2e`) — pedido já despachado SAI da gaiola** (requisito do dono): o #16372
+(Invoice Issuer, shipped FORA do sistema) a Shopee recusava reimprimir ("the parcel has been shipped" /
+should_print_first). `dispatch_and_label` agora checa o shipment_status fresco ANTES do nosso ship; se já
+despachado (externo) → `AlreadyDispatchedError` (sincroniza status, não tenta etiqueta); `cart_shopee_label`
++ bundle capturam → **removem o pedido da gaiola** (picking_cart_id=None + delete pco + status shipped) +
+mensagem clara. Distingue de "nós acabamos de despachar" (etiqueta gerada normal). #16372 removido da gaiola
+162. Sweep: 11 ML já-entregues em gaiolas estão em carts `delivered` (fechados, jun/jul) → históricos, sem
+ação. pytest 432 ok.
+
 ---
 
 ## 2026-11-17 — ESCOL — Shopee Invoice Issuer: reconhecer nota + anti-duplicação + download por escopo — ✅ EM PRODUÇÃO
