@@ -684,7 +684,18 @@ async def _shop_post(suffix: str, access_token: str, shop_id: int, body: dict) -
         raise HTTPException(status_code=502, detail=f"Shopee {suffix} HTTP {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
     if data.get("error"):
-        raise HTTPException(status_code=502, detail=f"Shopee {suffix} [{data.get('error')}]: {data.get('message')}")
+        detail = f"Shopee {suffix} [{data.get('error')}]: {data.get('message')}"
+        # batch_api_all_failed: a Shopee manda a mensagem GENÉRICA no topo e a razão REAL por-item no
+        # result_list (fail_error/fail_message). Extrai p/ não perder o diagnóstico ("please check
+        # result_list for detail") — ex.: logistics.tracking_number_invalid, package não pronto, etc.
+        rl = ((data.get("response") or {}).get("result_list")) or data.get("result_list") or []
+        fails = [
+            f"{r.get('order_sn') or '?'}: {(r.get('fail_error') or '')} {(r.get('fail_message') or '')}".strip()
+            for r in rl if r.get("fail_error") or r.get("fail_message")
+        ]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        raise HTTPException(status_code=502, detail=detail)
     return data.get("response", {}) or {}
 
 
@@ -831,9 +842,20 @@ async def resolve_label_pdf(access_token: str, shop_id: int, order_sn: str, *,
             tracking_number = tn.get("tracking_number") or ((tn.get("response") or {}).get("tracking_number"))
         except Exception:  # noqa: BLE001 — sem tracking o create tenta mesmo assim e a Shopee dirá
             tracking_number = None
-    await create_shipping_document(access_token, shop_id, order_sn,
-                                   package_number=package_number, tracking_number=tracking_number,
-                                   doc_type=doc_type)
+    # O create é BEST-EFFORT: a etiqueta pode JÁ ter sido criada numa tentativa anterior — aí a
+    # Shopee recusa o 2º create com `batch_api_all_failed` ("already created"), mas o documento está
+    # pronto. NÃO abortar por isso: segue pro poll, que é a fonte da verdade (READY→baixa; FAILED→erro
+    # real; PROCESSING→None). Antes, o create falhando derrubava tudo e a etiqueta pronta não vinha.
+    try:
+        await create_shipping_document(access_token, shop_id, order_sn,
+                                       package_number=package_number, tracking_number=tracking_number,
+                                       doc_type=doc_type)
+    except Exception:  # noqa: BLE001 — já-criada/transiente: o poll decide (READY/FAILED/PROCESSING)
+        import logging
+        logging.getLogger(__name__).info(
+            "resolve_label_pdf: create recusado (pedido %s) — seguindo p/ o poll (pode já estar pronta)",
+            order_sn,
+        )
     for _ in range(tries):
         res = await get_shipping_document_result(access_token, shop_id, order_sn,
                                                  package_number=package_number,
