@@ -186,7 +186,7 @@
     <div v-if="activeCart" class="card mt-3 border-primary">
       <div class="card-header bg-primary text-white d-flex align-items-center flex-wrap">
         <strong>{{ activeCart.cart_number }}</strong>
-        <span class="badge badge-light ml-2 text-capitalize">{{ activeCart.mode === 'scan' ? 'Bipagem' : 'Manual' }}</span>
+        <span class="badge badge-light ml-2 text-capitalize">{{ activeCart.mode === 'scan' ? 'Bipagem' : activeCart.mode === 'scan_auto' ? 'Bipagem automática' : 'Manual' }}</span>
         <span class="badge ml-2" :class="activeCart.status === 'separated' ? 'badge-success' : 'badge-warning text-dark'">
           {{ activeCart.status === 'separated' ? 'Concluída — pronta p/ transportadora' : 'Em separação' }}
         </span>
@@ -211,6 +211,10 @@
           <button class="btn btn-sm btn-warning text-dark mr-1" @click="downloadBundle" :disabled="downloadingBundle"
                   title="Baixa NF-e (PDF+XML) e etiquetas de todos os pedidos num único ZIP">
             <i class="fas mr-1" :class="downloadingBundle ? 'fa-spinner fa-spin' : 'fa-file-archive'"></i> Baixar tudo (ZIP)
+          </button>
+          <button class="btn btn-sm btn-info mr-1" @click="shareExternalLink" :disabled="sharingLink"
+                  title="Gera um link para um galpão despachar ESTA gaiola sem login no sistema">
+            <i class="fas mr-1" :class="sharingLink ? 'fa-spinner fa-spin' : 'fa-share-alt'"></i> Link externo
           </button>
           <button class="btn btn-sm btn-success mr-1" @click="concludeCart" :disabled="!allSeparated"
                   :title="allSeparated ? '' : 'Separe (com fotos) todos os pedidos para concluir'">
@@ -637,6 +641,21 @@ async function openCart(id, { refresh = false } = {}) {
   } catch { toast.error('Erro ao abrir gaiola') }
 }
 async function refreshCart() { if (activeCart.value) await openCart(activeCart.value.id, { refresh: true }) }
+
+// Link externo da gaiola — gera/copia um link p/ um galpão despachar ESTA gaiola sem login.
+const sharingLink = ref(false)
+async function shareExternalLink() {
+  if (!activeCart.value) return
+  sharingLink.value = true
+  try {
+    const { data } = await api.post(`/separation/carts/${activeCart.value.id}/public-link`)
+    const url = `${window.location.origin}${data.path}`
+    try { await navigator.clipboard.writeText(url); toast.success('Link externo copiado para a área de transferência') }
+    catch { toast.info(`Link externo: ${url}`) }
+    window.prompt('Link externo da gaiola (copie e envie ao galpão):', url)
+  } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao gerar o link externo') }
+  finally { sharingLink.value = false }
+}
 
 // Rota de picking (ADR-0039 Fase 2) — sugestão de onde pegar cada item; não debita o endereço.
 const pickRoute = ref([])

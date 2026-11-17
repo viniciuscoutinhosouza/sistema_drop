@@ -94,6 +94,23 @@ async def public_nfe(
     return await sep.cart_nfe_urls(cart.id, order_id=order_id, mark=mark, current_user=actor, db=db)
 
 
+@router.get("/{token}/orders/{order_id}/danfe")
+async def public_danfe(token: str, order_id: int, db: AsyncSession = Depends(get_db)):
+    """DANFE (PDF) do pedido p/ impressão no link externo. Shopee → reusa download_order_nfe (inclui
+    Invoice Issuer); demais (ML/own) → reusa invoices.download_danfe pela nota do pedido."""
+    cart, actor = await _ctx(token, db)
+    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if order.platform == "shopee":
+        from routers.shopee_fiscal import download_order_nfe
+        return await download_order_nfe(order_id, kind="danfe", current_user=actor, db=db)
+    if order.invoice_id:
+        from routers.invoices import download_danfe
+        return await download_danfe(order.invoice_id, current_user=actor, db=db)
+    raise HTTPException(status_code=404, detail="Pedido sem NF-e para baixar")
+
+
 @router.post("/{token}/orders/{order_id}/scan")
 async def public_scan(token: str, order_id: int, body: dict, db: AsyncSession = Depends(get_db)):
     """Bipagem (modo scan) de um item de um pedido — reusa separation.scan_order_item."""

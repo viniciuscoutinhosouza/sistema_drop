@@ -179,6 +179,12 @@ const routes = [
     component: () => import('@/views/public/PublicCheckoutView.vue'),
   },
 
+  // Link externo da gaiola (sem login, sem layout) — galpão que despacha sem acesso ao sistema.
+  {
+    path: '/gaiola/:token',
+    component: () => import('@/views/public/PublicSeparationView.vue'),
+  },
+
   // Authenticated routes (with AdminLTE layout)
   {
     path: '/',
