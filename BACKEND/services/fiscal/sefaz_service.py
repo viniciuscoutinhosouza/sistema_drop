@@ -185,7 +185,9 @@ def _item(it, numero_item: int | None = None, rastros: tuple = (), med: dict | N
 
     is_simples = crt in (1, 2, 4)
     codigo = it.sku or str(it.cmig_product_id or it.id)
-    descricao = it.description or ""
+    # xProd da NF-e: máx 120 e o pattern de string PROÍBE espaço no início/fim (rejeição cStat 225).
+    # Título de produto cadastrado com espaço no fim ("...MIG Rosa ") derrubava a nota. strip+cap+strip.
+    descricao = (it.description or "").strip()[:120].strip()
     origem = str(it.origin if it.origin is not None else 0)
     unidade = it.unit or "UN"
     cest = (_digits(it.cest) or None) if it.cest else None
