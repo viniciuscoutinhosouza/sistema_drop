@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-11-17 — ESCOL — Shopee Invoice Issuer: reconhecer nota + anti-duplicação + download por escopo — ✅ EM PRODUÇÃO
+
+**Dono reportou o #16372 (Shopee):** gaiola não mostra "emitida"; Vendas "emitida MAS não anexada" (Shopee
+não libera etiqueta); download DANFE/XML dá "apenas o proprietário". **Causa raiz:** a **Shopee emitiu a
+NF-e (Invoice Issuer)** — `order.nfe_key` = chave série 3 válida na Shopee — mas o nosso sistema tinha um
+rascunho de emissão própria (invoice 9663 draft) + `shopee_invoice_status=None`. **Decisão do dono:** fluxo
+2 (nosso sistema emite), MAS **verifica antes se a Shopee já emitiu** (transição) p/ não duplicar; se já
+existe → reconhece a da Shopee.
+
+**Fix (commits `d71cecc`→`a10f3b0`, pré-avaliado + trio):**
+1. `recognize_shopee_invoice` (shopee_dispatch): quando a Shopee tem NF-e válida → `shopee_invoice_status=
+   validated` + captura `nfe_key` (só se vazio) + `nfe_status=authorized` (só prod) + **apaga** o rascunho
+   próprio fresco (ou cancela+zera se tiver log). NO-OP se há emissão própria autorizada.
+2. `_emit_own_nfe`: ramo Shopee proba ANTES de transmitir → se reconheceu, não emite (ponto único: botão
+   Vendas + cart). `cart_emit_nfe` delega ao recognize.
+3. `download_order_nfe`: autorização por **escopo CMIG/galpão** (não dono da conta) → operador baixa.
+   **FAIL-CLOSED** se `cmig_id` nulo (fecha IDOR achado pelo quality-guardian).
+4. **Shopee recusa servir NF-e de Invoice Issuer por API** ("Don't support Invoice Issuer now") e o DFe por
+   chave dá cStat 641 (emitente não baixa a própria) → mensagem clara: baixar no **painel da Shopee**.
+
+**Verificado:** #16372 reconhecido (nfe_status=authorized, validated, draft 9663 apagado) → gaiola mostra
+"Emitida", Vendas "validada". pytest 432 ok. Trio: quality-guardian CRITICAL(IDOR)+HIGH(draft órfão)
+**corrigidos**. **Follow-up (HIGH do dono):** CORRIDA do Issuer — se a Shopee emite ASSÍNCRONO e o probe não
+vê ainda, podemos emitir própria + Shopee emite → 2 notas. Mitigação futura: **gate de modo por conta**
+(own × Issuer) em vez do fail-open. Como o dono está saindo do Issuer, o risco é transitório.
+
+---
+
 ## 2026-11-17 — ESCOL — Venda de KIT não auto-emitia NF-e (índice uq_sla + savepoint + xProd) — ✅ EM PRODUÇÃO
 
 **Dono viu 2 pedidos de KIT (#16381, #16401) sem NF-e automática na tela Separar** (simples emitiam).
