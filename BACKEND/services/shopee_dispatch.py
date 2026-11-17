@@ -236,6 +236,16 @@ async def resolve_label(
     return normalize_label(raw)
 
 
+class AlreadyDispatchedError(Exception):
+    """Pedido Shopee JÁ despachado FORA do nosso fluxo (ex.: Invoice Issuer / Seller Center): a Shopee
+    recusa reimprimir a etiqueta ("the parcel has been shipped") e o pedido deve SAIR da gaiola/
+    pronto-p-envio (requisito do dono). Carrega o shipment_status fresco."""
+
+    def __init__(self, status: str):
+        self.status = status
+        super().__init__(status)
+
+
 async def dispatch_and_label(
     order: Order, db: AsyncSession, *,
     account: MarketplaceAccount | None = None, token: str | None = None,
@@ -243,8 +253,20 @@ async def dispatch_and_label(
 ) -> tuple[bytes, str, str] | None:
     """Fluxo completo por pedido Shopee: gate NF-e validada → ship_order (idempotente) → etiqueta.
     Retorna (bytes, media, ext) ou None se a etiqueta ainda está em geração (chamador trata 202/aviso).
-    Levanta HTTPException (falha alto) em NF-e não validada / recusa da Shopee."""
+    Levanta HTTPException (falha alto) em NF-e não validada / recusa da Shopee.
+
+    Levanta `AlreadyDispatchedError` se o pedido JÁ estava despachado ANTES desta chamada (externo) —
+    a etiqueta não é mais gerável e o pedido sai da gaiola (o chamador trata)."""
     if account is None or token is None:
         account, token = await resolve_account_token(db, order)
-    await ship_if_needed(order, db, account=account, token=token)
+    # Já despachado FORA do nosso fluxo? → não tenta etiqueta (Shopee recusa) e sinaliza p/ sair da
+    # gaiola. Checa o status fresco ANTES de qualquer ship_order nosso (distingue de "nós acabamos de
+    # despachar", caso em que a etiqueta DEVE ser gerada no fluxo normal abaixo).
+    st_now = await _current_shipment_status(order, token, account.shop_id)
+    if st_now in _SHIPPED_STATES:
+        if order.shipment_status != st_now:
+            order.shipment_status = st_now
+            await db.commit()
+        raise AlreadyDispatchedError(st_now)
+    await perform_ship(order, account, token, db)
     return await resolve_label(order, db, account=account, token=token, doc_type=doc_type)

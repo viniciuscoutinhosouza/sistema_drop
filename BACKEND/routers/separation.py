@@ -1580,7 +1580,22 @@ async def cart_shopee_label(
         )
 
     from services import shopee_dispatch
-    resolved = await shopee_dispatch.dispatch_and_label(order, db)
+    try:
+        resolved = await shopee_dispatch.dispatch_and_label(order, db)
+    except shopee_dispatch.AlreadyDispatchedError:
+        # Já despachado FORA do nosso fluxo (ex.: Invoice Issuer / Seller Center) → SAI da gaiola/
+        # pronto-p-envio (requisito do dono): a Shopee recusa reimprimir ("parcel has been shipped").
+        order.picking_cart_id = None
+        if (order.status or "") not in ("shipped", "separated", "cancelled"):
+            order.status = "shipped"
+        db.delete(pco)  # cascade remove picking_cart_items
+        await db.commit()
+        return Response(
+            status_code=409,
+            content='{"status":"already_shipped","detail":"Pedido já foi despachado na Shopee — '
+                    'removido da gaiola. A etiqueta não é mais gerável por aqui."}',
+            media_type="application/json",
+        )
     if resolved is None:
         return Response(
             status_code=202,
@@ -2117,6 +2132,19 @@ async def cart_bundle(
         try:
             from services import shopee_dispatch
             resolved = await shopee_dispatch.dispatch_and_label(order, db)
+        except shopee_dispatch.AlreadyDispatchedError:
+            # Já despachado fora do fluxo → SAI da gaiola/pronto-p-envio (requisito do dono).
+            order.picking_cart_id = None
+            if (order.status or "") not in ("shipped", "separated", "cancelled"):
+                order.status = "shipped"
+            _pco = (
+                await db.execute(select(PickingCartOrder).where(PickingCartOrder.order_id == order.id))
+            ).scalar_one_or_none()
+            if _pco:
+                db.delete(_pco)
+            await db.commit()
+            avisos.append(f"Pedido Shopee #{order.id}: já despachado na Shopee — removido da gaiola.")
+            continue
         except HTTPException as he:
             det = he.detail if isinstance(he.detail, str) else str(he.detail)
             avisos.append(f"Pedido Shopee #{order.id}: {det[:160]}")
