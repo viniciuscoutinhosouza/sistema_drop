@@ -130,3 +130,32 @@ dupla. Registrado aqui; ajustar a captura do Faturador na Fase 4.
   ADR-0020 (regra de ouro Shopee), ADR-0023 (kit derivado), ADR-0024 (guard ponto único),
   ADR-0025 (permissões de ação).
 - Design detalhado + auditoria: `design_rastreabilidade.md` + `design_rastreabilidade_v2.md` (scratchpad).
+
+---
+
+## Nota 2026-11-17 — Alocação FEFO em SAVEPOINT + índice uq_sla_order_serial parcial
+
+**Contexto:** venda de KIT não auto-emitia NF-e (produção). Causa raiz confirmada ao vivo
+(`ORA-00001: unique constraint (ADMIN.UQ_SLA_ORDER_SERIAL) violated`): a alocação FEFO da emissão
+(`load_trace_for_invoice` → `allocate_order_lots`) expande kit→componentes e insere **uma
+`stock_lot_allocations` por componente**, todas com `serial_id=NULL`. O índice UNIQUE
+`uq_sla_order_serial (order_id, serial_id)` (migration 144) **colide** duas linhas `(order_id
+não-nulo, serial_id NULL)` no Oracle (chave não é toda-nula → é indexada). Produto simples (1
+alocação) passava; KIT (2+ componentes) estourava na 2ª. E o `except` da alocação só logava, sem
+rollback → sessão envenenada → emissão caía com `PendingRollbackError`.
+
+**Correção:**
+1. **Índice parcial** (migration 185): `uq_sla_order_serial` vira
+   `(CASE WHEN serial_id IS NOT NULL THEN order_id END, serial_id)` — linha de LOTE (serial NULL)
+   fica com chave toda-nula → Oracle não indexa → N alocações de lote por pedido liberadas; dedupe de
+   SERIAL por pedido preservada. A unicidade de LOTE segue no índice
+   `uq_sla_order_lot (order_id, product_type, product_id, lot_id)` (a mesma chave da idempotência do
+   `allocate_fefo`), intocado.
+2. **SAVEPOINT**: `allocate_order_lots` roda em `db.begin_nested()` (novo no `AsyncSyncSession`, via
+   `_DB_EXECUTOR`) tanto na emissão (`load_trace_for_invoice`) quanto no despacho (`confirm_dispatch`).
+   Se a alocação best-effort falhar, `nested.rollback()` desfaz **só** o sub-ledger e limpa o estado da
+   sessão — **nunca** envenena a transação externa (emissão/despacho). Convergência emissão↔despacho
+   garantida pela idempotência de `allocate_fefo` por `(order_id, product_type, product_id, lot_id)`.
+
+Invariante `Σ balance == stock_quantity` intacto (a alocação é débito do sub-ledger; `recompute_lots`
+reconstrói o balance). O motor escalar nunca é tocado.

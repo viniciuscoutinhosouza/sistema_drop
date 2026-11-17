@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-11-17 — ESCOL — Venda de KIT não auto-emitia NF-e (índice uq_sla + savepoint + xProd) — ✅ EM PRODUÇÃO
+
+**Dono viu 2 pedidos de KIT (#16381, #16401) sem NF-e automática na tela Separar** (simples emitiam).
+Causa raiz confirmada ao vivo (`ORA-00001 UQ_SLA_ORDER_SERIAL`): na emissão, `allocate_order_lots` expande
+kit→componentes e insere **1 `stock_lot_allocations` por componente** (serial_id=NULL). O índice UNIQUE
+`uq_sla_order_serial (order_id, serial_id)` (migration 144) **colide 2 linhas (order não-nulo, serial NULL)**
+no Oracle. Simples (1 alocação) passa; KIT (2+) estoura na 2ª. E o `except` da alocação só logava sem
+rollback → sessão envenenada → emissão caía com PendingRollbackError → auto_fiscal 'error' (tent=5).
+
+**Fix (commits `d830303` + `9dc6d6a`, trio: quality 0 critical, adr CONFORME):**
+1. **Migration 185**: `uq_sla_order_serial` vira PARCIAL (`CASE WHEN serial_id IS NOT NULL THEN order_id`) —
+   lote (serial NULL) deixa de ser restringido; dedupe de serial preservada. Aplicada em produção.
+2. **SAVEPOINT**: `db.begin_nested()` novo no AsyncSyncSession (via `_DB_EXECUTOR`); `allocate_order_lots`
+   roda em savepoint no `load_trace_for_invoice` E no `confirm_dispatch` → alocação best-effort nunca mais
+   envenena a emissão/despacho. Nota na ADR-0027.
+3. **xProd**: `_item` faz `strip()[:120].strip()` na descrição — produto com espaço no fim do título
+   ("...MIG Rosa ") dava cStat 225 (schema). Vale p/ ML/Shopee/kit.
+
+**Verificado:** #16381 (nº 132) e #16401 (nº 133) AUTORIZADAS **com os COMPONENTES na nota** (5204 Rolo Bastão
+31,60 + 5467 Foam Roller 35,46; explode_kits_for_nota, ADR-0023). Bônus: **#15559 (Shopee pendente) também
+autorizou** (nº 134 — era o mesmo envenenamento, não oversell). pytest 432 ok (2 pré-existentes). Órfãos de
+diagnóstico 9665/9679 (status None) deixados inertes. **Impacto:** afetava TODO pedido de kit — agora resolvido.
+
+---
+
 ## 2026-11-17 — ESCOL — NF-e própria de Shopee ponta a ponta: IBGE + CFOP + schema (7/8 autorizadas) — ✅ EM PRODUÇÃO
 
 **Fecha o bloqueio de IBGE da Shopee** (pendente desde 12/11) e **mais 2 camadas fiscais** que surgiram ao
