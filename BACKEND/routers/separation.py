@@ -992,8 +992,9 @@ async def scan_locate(
     }
 
 
-# ── Config global: código de fim das fotos (modo Bipagem automática) ──────────
+# ── Config global: códigos do modo Bipagem automática ─────────────────────────
 _FINISH_CODE_KEY = "separation.finish_photos_code"
+_TAKE_PHOTO_KEY = "separation.take_photo_code"
 
 
 @router.get("/config")
@@ -1001,10 +1002,13 @@ async def get_separation_config(
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Config da separação visível ao operador (p/ o front conhecer o código de fim das fotos)."""
+    """Config da separação visível ao operador (p/ o front conhecer os códigos de foto)."""
     from services.app_config_service import get_config
 
-    return {"finish_photos_code": await get_config(db, _FINISH_CODE_KEY)}
+    return {
+        "finish_photos_code": await get_config(db, _FINISH_CODE_KEY),
+        "take_photo_code": await get_config(db, _TAKE_PHOTO_KEY),
+    }
 
 
 @router.put("/config")
@@ -1013,16 +1017,75 @@ async def set_separation_config(
     current_user: User = Depends(require_menu_permission("separacao")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Edita o código de fim das fotos — admin-only (config global do sistema)."""
+    """Edita os códigos de FIM das fotos e de TIRAR foto — admin-only (config global do sistema).
+    Ambos opcionais; valida ≤60 e barra colisão contra o valor EFETIVO do outro (stored/default)."""
     if not is_global(current_user):
         raise HTTPException(status_code=403, detail="Apenas administradores alteram esta configuração")
-    from services.app_config_service import set_config
+    from services.app_config_service import get_config, set_config
 
-    code = (body.get("finish_photos_code") or "").strip()
-    if not code or len(code) > 60:
-        raise HTTPException(status_code=422, detail="Informe um código (até 60 caracteres)")
-    await set_config(db, _FINISH_CODE_KEY, code, user_id=current_user.id)
-    return {"ok": True, "finish_photos_code": code}
+    finish_in = body.get("finish_photos_code")
+    take_in = body.get("take_photo_code")
+    if finish_in is None and take_in is None:
+        raise HTTPException(status_code=422, detail="Informe finish_photos_code e/ou take_photo_code")
+
+    def _clean(value: str | None) -> str:
+        code = (value or "").strip()
+        if not code or len(code) > 60:
+            raise HTTPException(status_code=422, detail="Informe um código (até 60 caracteres)")
+        return code
+
+    # Valores EFETIVOS após este update (campo enviado → limpo; campo omitido → atual stored/default).
+    eff_finish = _clean(finish_in) if finish_in is not None else await get_config(db, _FINISH_CODE_KEY)
+    eff_take = _clean(take_in) if take_in is not None else await get_config(db, _TAKE_PHOTO_KEY)
+    if (eff_finish or "").strip().upper() == (eff_take or "").strip().upper():
+        raise HTTPException(
+            status_code=422,
+            detail="Os códigos de FIM das fotos e de TIRAR foto não podem ser iguais.",
+        )
+
+    if finish_in is not None:
+        await set_config(db, _FINISH_CODE_KEY, eff_finish, user_id=current_user.id, commit=False)
+    if take_in is not None:
+        await set_config(db, _TAKE_PHOTO_KEY, eff_take, user_id=current_user.id, commit=False)
+    await db.commit()
+    return {"ok": True, "finish_photos_code": eff_finish, "take_photo_code": eff_take}
+
+
+def _render_code_label_pdf(title: str, subtitle: str, code: str | None) -> bytes:
+    """Página A4 com um código grande em CODE128 + QR (operador bipa da bancada).
+    Ponto único reusado pelos labels de FIM das fotos e de TIRAR foto."""
+    import io as _io2
+
+    from reportlab.lib.pagesizes import A4 as _A4
+    from reportlab.lib.units import mm as _mm
+    from reportlab.lib.utils import ImageReader as _ImageReader
+    from reportlab.pdfgen import canvas as _canvas
+
+    from services.label_service import _barcode_png, _qr_png
+
+    buf = _io2.BytesIO()
+    c = _canvas.Canvas(buf, pagesize=_A4)
+    w, _h = _A4
+    cx = w / 2
+    y = 250 * _mm
+    c.setFont("Helvetica-Bold", 16)
+    c.drawCentredString(cx, y, title)
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(cx, y - 7 * _mm, subtitle)
+    c.setFont("Helvetica-Bold", 22)
+    c.drawCentredString(cx, y - 22 * _mm, code or "—")
+
+    png128 = _barcode_png(code or "", "code128")
+    if png128:
+        c.drawImage(_ImageReader(_io2.BytesIO(png128)), cx - 60 * _mm, y - 55 * _mm,
+                    width=120 * _mm, height=25 * _mm, preserveAspectRatio=True, mask="auto")
+    qr_png = _qr_png(code or "")
+    if qr_png:
+        c.drawImage(_ImageReader(_io2.BytesIO(qr_png)), cx - 25 * _mm, y - 100 * _mm,
+                    width=50 * _mm, height=50 * _mm, preserveAspectRatio=True, mask="auto")
+    c.showPage()
+    c.save()
+    return buf.getvalue()
 
 
 @router.get("/finish-code-label.pdf")
@@ -1031,53 +1094,82 @@ async def finish_code_label(
     db: AsyncSession = Depends(get_db),
 ):
     """PDF para imprimir o código de FINALIZAR fotos como CODE128 + QR (operador bipa da bancada)."""
-    import io as _io2
-
-    from reportlab.lib.pagesizes import A4 as _A4
-    from reportlab.lib.units import mm as _mm
-    from reportlab.lib.utils import ImageReader as _ImageReader
-    from reportlab.pdfgen import canvas as _canvas
-
     from services.app_config_service import get_config
-    from services.label_service import _barcode_png
 
     code = await get_config(db, _FINISH_CODE_KEY)
-
-    qr_png = None
-    try:
-        import qrcode as _qrcode
-
-        qbuf = _io2.BytesIO()
-        _qrcode.make(code).save(qbuf, format="PNG")
-        qr_png = qbuf.getvalue()
-    except Exception:  # noqa: BLE001 — sem qrcode, imprime só o CODE128
-        qr_png = None
-
-    buf = _io2.BytesIO()
-    c = _canvas.Canvas(buf, pagesize=_A4)
-    w, _h = _A4
-    cx = w / 2
-    y = 250 * _mm
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(cx, y, "FINALIZAR FOTOS — Separação")
-    c.setFont("Helvetica", 10)
-    c.drawCentredString(cx, y - 7 * _mm, "Bipe este código para encerrar as fotos do pedido.")
-    c.setFont("Helvetica-Bold", 22)
-    c.drawCentredString(cx, y - 22 * _mm, code or "—")
-
-    png128 = _barcode_png(code or "", "code128")
-    if png128:
-        img = _ImageReader(_io2.BytesIO(png128))
-        c.drawImage(img, cx - 60 * _mm, y - 55 * _mm, width=120 * _mm, height=25 * _mm,
-                    preserveAspectRatio=True, mask="auto")
-    if qr_png:
-        c.drawImage(_ImageReader(_io2.BytesIO(qr_png)), cx - 25 * _mm, y - 100 * _mm,
-                    width=50 * _mm, height=50 * _mm, preserveAspectRatio=True, mask="auto")
-    c.showPage()
-    c.save()
+    pdf = _render_code_label_pdf(
+        "FINALIZAR FOTOS — Separação",
+        "Bipe este código para encerrar as fotos do pedido.",
+        code,
+    )
     return Response(
-        content=buf.getvalue(), media_type="application/pdf",
+        content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": 'inline; filename="codigo-fim-fotos.pdf"'},
+    )
+
+
+@router.get("/take-photo-code-label.pdf")
+async def take_photo_code_label(
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """PDF para imprimir o código de TIRAR foto como CODE128 + QR (bipa p/ bater uma foto)."""
+    from services.app_config_service import get_config
+
+    code = await get_config(db, _TAKE_PHOTO_KEY)
+    pdf = _render_code_label_pdf(
+        "TIRAR FOTO — Separação",
+        "Com o quadro de fotos ligado, bipe este código para bater uma foto.",
+        code,
+    )
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="codigo-tirar-foto.pdf"'},
+    )
+
+
+@router.post("/test-codes.pdf")
+async def test_codes_pdf(
+    body: dict,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """⚠️ TEMPORÁRIO (teste do dono) — folha de QR por SKU dos pedidos + TIRAR foto + FIM fotos.
+    Para remover depois: apagar esta rota, `services/test_codes_service.py` e o botão no front."""
+    from services.app_config_service import get_config
+    from services.test_codes_service import render_test_codes
+
+    order_ids = body.get("order_ids") or []
+    if not order_ids:
+        raise HTTPException(status_code=422, detail="Informe order_ids")
+    if len(order_ids) > 200:
+        raise HTTPException(status_code=422, detail="Máximo de 200 pedidos por folha de teste")
+
+    q = select(Order).where(Order.id.in_(order_ids))
+    wh = _order_warehouse_clause(current_user)
+    if wh is not None:
+        q = q.where(wh)
+    orders = (await db.execute(q)).scalars().all()
+    if not orders:
+        raise HTTPException(status_code=404, detail="Nenhum pedido acessível")
+
+    units: list[dict] = []
+    for order in orders:
+        units.extend(await _expand_order(db, order))
+    rows = ps.consolidate(units)
+
+    items: list[dict] = []
+    for r in rows:
+        code = (r.get("sku") or r.get("ean") or "").strip()  # bipagem casa por SKU OU EAN
+        if code:
+            items.append({"code": code, "label": r.get("title") or ""})
+    items.append({"code": await get_config(db, _TAKE_PHOTO_KEY), "label": "TIRAR FOTO"})
+    items.append({"code": await get_config(db, _FINISH_CODE_KEY), "label": "FIM DAS FOTOS"})
+
+    pdf = render_test_codes(items, title=f"Códigos de teste — {len(orders)} pedido(s)")
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="codigos-teste.pdf"'},
     )
 
 

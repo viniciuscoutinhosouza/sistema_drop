@@ -62,6 +62,21 @@ def _barcode_png(value: str, kind: str = "code128") -> bytes | None:
         return None
 
 
+def _qr_png(value: str) -> bytes | None:
+    """Renderiza um QR Code como PNG em memoria. Retorna None se vazio ou se o qrcode falhar.
+    Ponto unico reusado pela Separacao (finish-code / take-photo / folha de teste)."""
+    if not value:
+        return None
+    try:
+        import qrcode as _qrcode
+
+        buf = io.BytesIO()
+        _qrcode.make(str(value)).save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
 def _draw_barcode(c: canvas.Canvas, x: float, y: float, w: float, h: float, png: bytes | None):
     if not png:
         return

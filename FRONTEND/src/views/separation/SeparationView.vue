@@ -55,6 +55,10 @@
           <button class="btn btn-sm btn-outline-info mr-2" :disabled="!selected.size" @click="printList">
             <i class="fas fa-print mr-1"></i> Imprimir Lista ({{ selected.size }})
           </button>
+          <!-- TEMPORÁRIO (teste): folha de QR por SKU + tirar/fim foto. Remover junto com a rota /test-codes.pdf. -->
+          <button class="btn btn-sm btn-outline-secondary mr-2" :disabled="!selected.size" @click="printTestCodes" title="Folha de QR para teste de bipagem (temporário)">
+            <i class="fas fa-qrcode mr-1"></i> Códigos (teste)
+          </button>
           <div class="btn-group btn-group-sm">
             <button class="btn btn-success dropdown-toggle" data-bs-toggle="dropdown" :disabled="!selected.size">
               <i class="fas fa-plus mr-1"></i> Nova Gaiola
@@ -255,7 +259,7 @@
           <div class="flex-grow-1" style="min-width:280px">
             <label class="small font-weight-bold mb-1 d-block">
               <i class="fas fa-bolt text-warning mr-1"></i>
-              <span v-if="sa.state === 'photos'">FOTOS do pedido #{{ sa.currentOrder }} — bipe o produto p/ fotografar, ou o código <strong>{{ sa.finishCode }}</strong> p/ encerrar</span>
+              <span v-if="sa.state === 'photos'">FOTOS do pedido #{{ sa.currentOrder }} — bipe o produto ou o código <strong>{{ sa.takePhotoCode }}</strong> p/ fotografar, ou <strong>{{ sa.finishCode }}</strong> p/ encerrar</span>
               <span v-else-if="sa.currentOrder">Bipe o PRÓXIMO item do pedido #{{ sa.currentOrder }}</span>
               <span v-else>Bipe um produto para localizar o pedido</span>
             </label>
@@ -264,8 +268,11 @@
                    :disabled="sa.busy" @keyup.enter="onScanAuto" />
             <div v-if="sa.camError" class="text-danger small mt-1">{{ sa.camError }}</div>
             <div class="small text-muted mt-1">
-              Código de fim das fotos: <strong>{{ sa.finishCode || '—' }}</strong>
-              <a href="#" class="ml-2" @click.prevent="printFinishCode"><i class="fas fa-print mr-1"></i>Imprimir código (barras/QR)</a>
+              Tirar foto: <strong>{{ sa.takePhotoCode || '—' }}</strong>
+              <a href="#" class="ml-1" @click.prevent="printTakePhotoCode"><i class="fas fa-print mr-1"></i>Imprimir</a>
+              <span class="mx-2">·</span>
+              Fim das fotos: <strong>{{ sa.finishCode || '—' }}</strong>
+              <a href="#" class="ml-1" @click.prevent="printFinishCode"><i class="fas fa-print mr-1"></i>Imprimir</a>
               <a v-if="isAdmin" href="#" class="ml-2" @click.prevent="fcModal.show = true"><i class="fas fa-cog mr-1"></i>Configurar</a>
             </div>
           </div>
@@ -400,20 +407,24 @@
       </div>
     </div>
 
-    <!-- Modal: configurar código de fim das fotos (admin) -->
+    <!-- Modal: configurar códigos de foto (admin) -->
     <div v-if="fcModal.show" class="modal-backdrop-custom" @click.self="fcModal.show = false">
       <div class="card shadow" style="width:430px">
-        <div class="card-header"><strong><i class="fas fa-cog mr-2"></i>Código de finalização das fotos</strong></div>
+        <div class="card-header"><strong><i class="fas fa-cog mr-2"></i>Códigos de foto (Bipagem automática)</strong></div>
         <div class="card-body">
-          <p class="small text-muted">O operador bipa este código para encerrar as fotos de um pedido (modo Bipagem automática). Vale para todos os galpões.</p>
+          <p class="small text-muted mb-1">No modo Bipagem automática, com o quadro de fotos ligado, bipar <strong>TIRAR foto</strong> bate uma foto; bipar <strong>FIM das fotos</strong> encerra. Valem para todos os galpões e não podem ser iguais.</p>
+          <label class="small font-weight-bold mb-1 mt-2 d-block">Tirar foto
+            <a href="#" class="ml-2 font-weight-normal" @click.prevent="printTakePhotoCode"><i class="fas fa-print mr-1"></i>Imprimir</a>
+          </label>
+          <input v-model="fcModal.takeCode" class="form-control" maxlength="60" placeholder="ex.: TIRAR-FOTO" />
+          <label class="small font-weight-bold mb-1 mt-3 d-block">Fim das fotos
+            <a href="#" class="ml-2 font-weight-normal" @click.prevent="printFinishCode"><i class="fas fa-print mr-1"></i>Imprimir</a>
+          </label>
           <input v-model="fcModal.code" class="form-control" maxlength="60" placeholder="ex.: FIM-FOTOS" />
         </div>
-        <div class="card-footer d-flex justify-content-between">
-          <button class="btn btn-sm btn-outline-secondary" @click="printFinishCode"><i class="fas fa-print mr-1"></i>Imprimir</button>
-          <div>
-            <button class="btn btn-sm btn-secondary mr-1" @click="fcModal.show = false">Cancelar</button>
-            <button class="btn btn-sm btn-primary" :disabled="fcModal.saving" @click="saveFinishCode">Salvar</button>
-          </div>
+        <div class="card-footer d-flex justify-content-end">
+          <button class="btn btn-sm btn-secondary mr-1" @click="fcModal.show = false">Cancelar</button>
+          <button class="btn btn-sm btn-primary" :disabled="fcModal.saving" @click="saveFinishCode">Salvar</button>
         </div>
       </div>
     </div>
@@ -489,10 +500,10 @@ const saVideoEl = ref(null)
 const saCanvasEl = ref(null)
 const sa = reactive({
   code: '', state: 'product', currentOrder: null, buyerName: '', scanned: 0, expected: 0,
-  orderComplete: false, photos: [], finishCode: '', busy: false, camError: '',
+  orderComplete: false, photos: [], finishCode: '', takePhotoCode: '', busy: false, camError: '',
 })
 let saStream = null
-const fcModal = reactive({ show: false, code: '', saving: false })
+const fcModal = reactive({ show: false, code: '', takeCode: '', saving: false })
 
 onMounted(async () => { await Promise.all([loadPending(), loadCarts(), loadLayouts()]) })
 
@@ -582,6 +593,8 @@ function toggleAll() {
 }
 
 async function printList() { await openPdf('/separation/picking-list', 'post', { order_ids: [...selected.value] }) }
+// TEMPORÁRIO (teste do dono): folha de QR por SKU + tirar/fim foto. Remover com a rota /test-codes.pdf.
+async function printTestCodes() { await openPdf('/separation/test-codes.pdf', 'post', { order_ids: [...selected.value] }) }
 
 // ── Emitir NF-e direto na lista (pedido fora de gaiola) ──
 async function emitNfeList(o) {
@@ -886,9 +899,13 @@ onBeforeUnmount(() => { stopCamera(); saStopCamera() })
 // ── Bipagem automática: máquina de estados ──
 async function initScanAuto() {
   resetSaOrder()
-  try { const { data } = await api.get('/separation/config'); sa.finishCode = data.finish_photos_code || 'FIM-FOTOS' }
-  catch { sa.finishCode = 'FIM-FOTOS' }
+  try {
+    const { data } = await api.get('/separation/config')
+    sa.finishCode = data.finish_photos_code || 'FIM-FOTOS'
+    sa.takePhotoCode = data.take_photo_code || 'TIRAR-FOTO'
+  } catch { sa.finishCode = 'FIM-FOTOS'; sa.takePhotoCode = 'TIRAR-FOTO' }
   fcModal.code = sa.finishCode
+  fcModal.takeCode = sa.takePhotoCode
   await nextTick()
   await saStartCamera()
   await nextTick(); scanInputEl.value?.focus()
@@ -912,7 +929,12 @@ async function onScanAuto() {
   sa.code = ''
   if (!code || sa.busy) { await nextTick(); scanInputEl.value?.focus(); return }
   if (sa.state === 'photos') {
-    if (code.toUpperCase() === (sa.finishCode || '').toUpperCase()) await saFinishPhotos()
+    // Normalização igual à da guarda de colisão no backend (strip+upper).
+    const norm = code.toUpperCase()
+    if (norm === (sa.finishCode || '').toUpperCase()) await saFinishPhotos()
+    // O código de TIRAR foto bate uma foto. Explícito a pedido do dono — NÃO é morto:
+    // o `else` abaixo (bipar o próprio produto / QR de teste) é o caminho principal e TAMBÉM captura.
+    else if (norm === (sa.takePhotoCode || '').toUpperCase()) saCapture()
     else saCapture()
     await nextTick(); scanInputEl.value?.focus()
   } else {
@@ -976,14 +998,17 @@ async function printOrderLabelById(orderId) {
   catch { toast.error('Falha ao imprimir a etiqueta') }
 }
 function printFinishCode() { openPdf('/separation/finish-code-label.pdf', 'get') }
+function printTakePhotoCode() { openPdf('/separation/take-photo-code-label.pdf', 'get') }
 async function saveFinishCode() {
   const code = (fcModal.code || '').trim()
-  if (!code) return toast.error('Informe o código')
+  const takeCode = (fcModal.takeCode || '').trim()
+  if (!code || !takeCode) return toast.error('Informe os dois códigos')
   fcModal.saving = true
   try {
-    const { data } = await api.put('/separation/config', { finish_photos_code: code })
+    const { data } = await api.put('/separation/config', { finish_photos_code: code, take_photo_code: takeCode })
     sa.finishCode = data.finish_photos_code
-    toast.success('Código salvo.')
+    sa.takePhotoCode = data.take_photo_code
+    toast.success('Códigos salvos.')
     fcModal.show = false
   } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao salvar') } finally { fcModal.saving = false }
 }

@@ -9,6 +9,7 @@ from models.app_config import AppConfig
 # Defaults por chave (fallback quando a linha não existe).
 _DEFAULTS = {
     "separation.finish_photos_code": "FIM-FOTOS",
+    "separation.take_photo_code": "TIRAR-FOTO",
 }
 
 

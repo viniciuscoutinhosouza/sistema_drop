@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-11-17 — feat(separacao): código QR "TIRAR foto" na bipagem automática + folha de QR por SKU para teste
+
+Dois pedidos do dono na Separação/Carrinho Gaiola (modo Bipagem automática):
+
+**(1) Código de TIRAR foto** (análogo ao `FIM-FOTOS` que encerra): com o quadro de fotos ligado, bipar o
+QR `TIRAR-FOTO` bate uma foto. Nova chave de config global `separation.take_photo_code` (default `TIRAR-FOTO`,
+resolvido no `app_config_service._DEFAULTS` — SEM migration, mesmo padrão do finish code). `GET/PUT
+/separation/config` passam a tratar os DOIS códigos; o PUT (admin-only) barra 422 se ficarem iguais,
+comparando o valor EFETIVO de cada um (campo enviado ou stored/default via `get_config`) — fecha o furo de
+mandar só 1 campo. Novo `GET /separation/take-photo-code-label.pdf` (CODE128+QR p/ imprimir). PDF do label
+refatorado em `_render_code_label_pdf(title, subtitle, code)` reusado por finish e take-photo. Helper
+`services/label_service._qr_png()` extraído (reuso em 3 pontos). Front: painel/modal mostram, editam e imprimem
+os 2 códigos; `onScanAuto` reconhece o take-photo code explicitamente (o bip do próprio produto também captura).
+
+**(2) Folha de QR de TESTE** (⚠️ TEMPORÁRIA — "depois vou excluir"): botão "Códigos (teste)" no header gera
+`POST /separation/test-codes.pdf` com um QR por SKU (code = sku OU ean, casa com `ps.code_matches`) dos pedidos
+selecionados + QR TIRAR-FOTO + QR FIM-FOTOS. Isolada de propósito em `services/test_codes_service.py` (grade A4
+4-col paginada), SEM tocar o `picking_list_service` (compartilhado com o link público). Teto de 200 pedidos
+(anti-DoS). Remoção futura = apagar o módulo + a rota + o botão.
+
+**Auditoria (trio, 0 CRITICAL/HIGH):** quality-guardian LIBERA; consistency-auditor APROVADO (8/8 apontamentos
+do pré-plano endereçados); adr-checker CONFORME (ADR-0005/0020/0026/0038). **Verificado:** py_compile OK,
+`npm run build` OK, pytest 432 passou (2 pré-existentes de test_orders falham, não relacionados), +4 testes novos
+em `test_separation_test_codes.py`, folha de teste renderizou PDF 52KB com paginação. Escopo por galpão e LGPD
+OK (folha expõe só SKU/EAN/título, sem dado do comprador).
+
+---
+
 ## 2026-11-17 — fix(separacao): reconhece etiqueta já impressa fora da gaiola (pedido remanejado) + destrava separação
 
 O dono viu, na gaiola G-20261117-004, vários pedidos ML com a coluna "Etiq." CINZA (não impressa) e o botão

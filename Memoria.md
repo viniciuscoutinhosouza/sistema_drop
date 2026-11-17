@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-11-17 — ESCOL — QR "Tirar foto" na bipagem + folha de QR por SKU (teste) — ✅ AUDITADO, aguardando deploy
+
+**Dois pedidos do dono (Separação / Carrinho Gaiola, modo Bipagem automática):**
+
+**(1) Código de TIRAR foto** — como o `FIM-FOTOS` encerra as fotos, agora existe um QR `TIRAR-FOTO` que, com o
+quadro de fotos ligado, **bate uma foto** ao ser bipado. Config global nova `separation.take_photo_code`
+(default `TIRAR-FOTO`, SEM migration — resolvido no service). O modal de config (admin) agora edita os **dois**
+códigos e **barra os dois iguais** (422). Novo PDF imprimível `take-photo-code-label.pdf`.
+
+**(2) Folha de QR de TESTE** (⚠️ temporária — "depois vou excluir") — botão **"Códigos (teste)"** no cabeçalho
+gera um PDF com um QR por **SKU** dos pedidos marcados + QR TIRAR-FOTO + QR FIM-FOTOS, pra testar a bipagem sem
+o produto físico. Isolada (`services/test_codes_service.py` + rota própria) → apagar depois = 1 módulo + 1 rota
++ 1 botão, sem tocar a lista de picking real.
+
+**Auditoria trio: 0 CRITICAL/HIGH** (quality-guardian LIBERA; consistency-auditor APROVADO; adr-checker
+CONFORME). Verificado: py_compile, `npm run build`, pytest 432 ok (2 pré-existentes falham), +4 testes novos,
+folha renderizou PDF 52KB. **Pendente do dono:** deploy + testar na bancada (imprimir a folha, bipar TIRAR-FOTO
+com o quadro ligado, bipar um SKU, bipar FIM-FOTOS).
+
+---
+
 ## 2026-11-17 — ESCOL — Link externo da gaiola + fix bipagem automática — ✅ EM PRODUÇÃO
 
 **(1) Bug bipagem automática (migration 186):** criar gaiola "Bipagem automática" dava ORA-02290 — a
