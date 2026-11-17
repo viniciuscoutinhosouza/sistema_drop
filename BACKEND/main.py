@@ -81,13 +81,13 @@ from routers import (
     ai_content,
     anuncios,
     auth,
+    bling,
     campaign_ads,
     catalog,
     cfop,
     claims,
     cmig_reports,
     cmigs,
-    bling,
     competitor_analysis,
     credits,
     customer_credits,
@@ -115,6 +115,7 @@ from routers import (
     products,
     profiles,
     public_checkout,
+    public_separation,
     returns,
     sales_report,
     scheduler_monitoring,
@@ -146,6 +147,8 @@ app.include_router(orders.router, prefix=f"{PREFIX}/orders", tags=["Orders"])
 app.include_router(manual_orders.router, prefix=f"{PREFIX}/manual-orders", tags=["ManualOrders"])
 # Checkout público (sem JWT) — acesso só pelo token opaco do pedido (ADR-0033 Fase 3).
 app.include_router(public_checkout.router, prefix=f"{PREFIX}/public", tags=["PublicCheckout"])
+# Link externo da gaiola — SEM JWT (o token da gaiola é a autorização). Escopa a UMA gaiola.
+app.include_router(public_separation.router, prefix=f"{PREFIX}/public/separation", tags=["PublicSeparation"])
 app.include_router(integrations.router, prefix=f"{PREFIX}/accounts", tags=["Accounts"])
 app.include_router(
     listings.router, prefix=f"{PREFIX}/products/{{product_id}}/listings", tags=["Listings"]

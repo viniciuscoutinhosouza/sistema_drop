@@ -22,6 +22,8 @@ class PickingCart(Base):
     separated_at = Column(TIMESTAMP(timezone=True))
     delivered_by = Column(Integer, ForeignKey("users.id"))
     delivered_at = Column(TIMESTAMP(timezone=True))
+    # Link externo (sem login) a ESTA gaiola — galpão que despacha sem acesso ao sistema (migration 187).
+    public_token = Column(String(64), nullable=True)
 
     orders = relationship(
         "PickingCartOrder", back_populates="cart", cascade="all, delete-orphan"

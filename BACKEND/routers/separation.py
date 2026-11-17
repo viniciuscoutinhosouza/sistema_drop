@@ -437,6 +437,8 @@ def _ser_cart(cart: PickingCart) -> dict:
         "created_at": cart.created_at.isoformat() if cart.created_at else None,
         "separated_at": cart.separated_at.isoformat() if cart.separated_at else None,
         "delivered_at": cart.delivered_at.isoformat() if cart.delivered_at else None,
+        "has_public_link": bool(getattr(cart, "public_token", None)),
+        "public_token": getattr(cart, "public_token", None),
     }
 
 
@@ -574,6 +576,56 @@ async def create_cart(
     await db.commit()
     await db.refresh(cart)
     return _ser_cart(cart)
+
+
+async def cart_actor(db: AsyncSession, cart: PickingCart) -> User:
+    """Usuário "ator" de uma gaiola para o LINK EXTERNO: o criador da gaiola (real, escopado ao
+    galpão dela). O roteador público resolve a gaiola por token e reusa as funções autenticadas
+    existentes passando este ator — o escopo passa (criador ∈ galpão) e a auditoria (by_id) atribui
+    ao criador. Carimba `_scope_base_role` como o get_current_user faz."""
+    from sqlalchemy.orm import selectinload as _sel
+
+    u = (
+        await db.execute(
+            select(User).options(_sel(User.user_profile)).where(User.id == cart.created_by)
+        )
+    ).scalar_one_or_none()
+    if not u:
+        raise HTTPException(status_code=500, detail="Gaiola sem criador válido para o link externo")
+    up = getattr(u, "user_profile", None)
+    u._scope_base_role = (up.base_role if up is not None else None) or getattr(u, "role", None)
+    return u
+
+
+@router.post("/carts/{cart_id}/public-link")
+async def generate_cart_public_link(
+    cart_id: int,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gera (ou devolve) o token do LINK EXTERNO desta gaiola — acesso sem login a ESTA gaiola só,
+    para um galpão que despacha mas não tem acesso ao sistema. Idempotente: reusa o token existente."""
+    import secrets
+
+    cart = await _get_cart_scoped(db, cart_id, current_user)
+    if not cart.public_token:
+        cart.public_token = secrets.token_urlsafe(32)
+        await db.commit()
+    return {"cart_id": cart.id, "public_token": cart.public_token,
+            "path": f"/gaiola/{cart.public_token}"}
+
+
+@router.delete("/carts/{cart_id}/public-link")
+async def revoke_cart_public_link(
+    cart_id: int,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoga o link externo da gaiola (invalida o token)."""
+    cart = await _get_cart_scoped(db, cart_id, current_user)
+    cart.public_token = None
+    await db.commit()
+    return {"cart_id": cart.id, "revoked": True}
 
 
 @router.get("/carts/{cart_id}")
