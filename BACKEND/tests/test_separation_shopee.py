@@ -7,6 +7,7 @@ import pytest
 from routers.separation import (
     _is_manual,
     _is_shopee,
+    _marketplace_paid_exempt,
     _order_bucket,
     _shopee_dispatched,
 )
@@ -15,6 +16,18 @@ from services import shopee_dispatch
 
 def _order(platform=None, shipment_id=None, shipment_status=None):
     return SimpleNamespace(platform=platform, shipment_id=shipment_id, shipment_status=shipment_status)
+
+
+# ── Isenção do gate de pagamento da etiqueta (marketplace é pago no marketplace) ──
+# Regressão: o gate de pagamento da etiqueta (cart_labels) deve isentar ML/Shopee (chegam 'pending'
+# no nosso banco) e barrar SÓ venda manual não-paga. Não trocar por _is_manual/_order_bucket (que
+# classificam ML-sem-shipment como 'manual' e re-gateariam ML).
+def test_marketplace_paid_exempt_isenta_ml_e_shopee_barra_manual():
+    assert _marketplace_paid_exempt(_order(platform="mercadolivre", shipment_id=123)) is True
+    assert _marketplace_paid_exempt(_order(platform="mercadolivre")) is True   # ML SEM shipment também é isento
+    assert _marketplace_paid_exempt(_order(platform="shopee")) is True
+    assert _marketplace_paid_exempt(_order(platform="manual")) is False        # venda direta segue no gate
+    assert _marketplace_paid_exempt(_order(platform=None)) is False            # default fail-closed (gate aplica)
 
 
 # ── Classificador de balde (C1): ml / shopee / manual ────────────────────────────

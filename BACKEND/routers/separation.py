@@ -187,6 +187,15 @@ async def _release_own_claim(db: AsyncSession, order: Order) -> None:
     await db.commit()
 
 
+def _marketplace_paid_exempt(order: Order) -> bool:
+    """ML/Shopee são pagos NO MARKETPLACE e chegam com payment_status != 'paid' no nosso banco (o sync
+    não carimba 'paid'). Logo são ISENTOS do gate de pagamento da etiqueta — que vale só p/ venda
+    MANUAL (regra do dono, commit 37dad69). Espelha a isenção de _eligibility_conditions (por
+    PLATAFORMA). NÃO troque por _is_manual/_order_bucket aqui: ambos classificam ML-SEM-shipment como
+    'manual' e re-gateariam esse pedido ML por pagamento (bug)."""
+    return order.platform in ("mercadolivre", "shopee")
+
+
 def _eligibility_conditions() -> list:
     """Condições de elegibilidade de um pedido para a tela de Separação.
 
@@ -1458,8 +1467,10 @@ async def cart_labels(
                    "use a ação 'Etiqueta Shopee', não a etiqueta ML/manual.",
         )
 
-    # Gate de pagamento (regra do dono): a etiqueta só pode ser impressa após o pagamento confirmado.
-    unpaid = [o.id for _, o in targets if (o.payment_status or "") != "paid"]
+    # Gate de pagamento (regra do dono, venda DIRETA/manual): a etiqueta só sai após o pagamento
+    # confirmado. Marketplace (ML/Shopee) é ISENTO — pago no marketplace, chega 'pending' no nosso banco
+    # (ver _marketplace_paid_exempt). Sem a isenção, bloqueava TODO pedido ML na gaiola.
+    unpaid = [o.id for _, o in targets if not _marketplace_paid_exempt(o) and (o.payment_status or "") != "paid"]
     if unpaid:
         raise HTTPException(
             status_code=422,

@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-11-17 — fix(separacao): etiqueta na gaiola isenta marketplace do gate de pagamento (ML/Shopee pagos no marketplace)
+
+O dono não conseguia imprimir etiqueta de pedido ML (#15132 "e alguns outros") em Logística > Separar
+Pedidos — erro 422 "Pague o pedido antes de imprimir a etiqueta" — mas a MESMA etiqueta funcionava em
+Venda > Pedido. Causa-raiz: o gate de pagamento em `cart_labels` (separation.py, adicionado em 2026-10-26
+commit `37dad69` p/ venda DIRETA) exigia `payment_status=="paid"` de **todos** os `targets`, sem isentar
+marketplace. Pedidos ML/Shopee são pagos NO MARKETPLACE e chegam `payment_status='pending'` no nosso banco
+(o sync não carimba 'paid') → **todos os 69 ML `ready_to_ship` eram bloqueados** (produção: 3800 ML pending
+/ 151 paid). O endpoint de Venda>Pedido (`orders.get_order_shipping_label`) não tem esse gate — por isso
+funcionava.
+
+**Correção:** novo helper `_marketplace_paid_exempt(order)` (`platform in ("mercadolivre","shopee")`) e o
+gate passa a `not _marketplace_paid_exempt(o) and payment_status != "paid"` — isenta marketplace, o gate
+vale só p/ venda MANUAL (intenção original). Espelha 1:1 a isenção já existente em `_eligibility_conditions`.
+O helper documenta POR QUE não usar `_is_manual`/`_order_bucket` aqui (ambos classificam ML-sem-shipment
+como 'manual' → re-gateariam ML — armadilha apontada na auditoria). Pré-auditoria (consistency-auditor):
+gate existe em UM único ponto (sem segundo lugar a corrigir); flag `manual_sale_requires_payment` já embutida
+no `payment_status` na criação do pedido → manual segue barrado quando pending. 57 testes separação/label ok.
+**Observação ao dono (pré-existente, fora do fix):** venda manual com custo PG/frete nasce 'pending' mesmo
+com a flag OFF → etiqueta bloqueada até pagar; confirmar se é o desejado.
+
+---
+
 ## 2026-11-17 — fix(separacao): add à gaiola re-consulta ML ao vivo quando shipment_status está defasado + skipped_reasons
 
 O dono não conseguia incluir os pedidos ML **#14517** e **#15132** (conta MIG) na gaiola — erro "não estão
