@@ -114,3 +114,33 @@ replay**. Prever isso "à mão" reproduz a lógica errada.
 Como evitar: prévia honesta = abrir transação, aplicar a mudança de verdade (setar a flag),
 chamar os calculadores puros (`calculate_pg_product_stock` / `calculate_cmig_product_stock`),
 imprimir antes/depois e **dar `rollback`**. Nunca reimplementar o cálculo na prévia.
+
+---
+
+## L-014 — Endereço de marketplace tem UM parser; novo marketplace entra por alias aditivo (NF-e Shopee)
+
+Sintoma: emissão de NF-e própria de pedido Shopee falhava "Destinatário sem código IBGE do
+município" (e, depois, cStat 732 CFOP e cStat 225 schema).
+
+Causa raiz: `services/address_parser.py::parse_buyer_address` (ponto único) só conhecia os campos de
+endereço do ML/manual e ignorava os aliases da **Shopee** (`recipient_address`): logradouro inteiro
+em `full_address`, bairro em `district`, município em `town`, CEP em `zipcode`, **estado por extenso**
+("Minas Gerais") em `state`. A Person nascia com CEP/UF vazios → `ensure_person_ibge` não derivava o
+IBGE → SEFAZ barrava.
+
+Lições:
+1. **Há UM parser de endereço de marketplace** (`parse_buyer_address`). Marketplace novo entra por
+   **alias aditivo NO FINAL** de cada cadeia `or` (o ML/manual tem prioridade; o `or` curto-circuita),
+   **nunca** por um 5º parser nem por bloco `if platform==...` (regra de ouro ADR-0020). O mapa
+   UF-por-extenso (`_UF_POR_NOME`) é importado do parser, não duplicado (o eShip importa dele).
+2. **UF desconhecida → '' (fail-loud), nunca o nome cru** — devolver UF inválida só empurra o erro
+   para a SEFAZ e estoura o `_clip(state, 2)`.
+3. **Limites do schema da NF-e 4.00:** `xLgr/xCpl/xBairro/xMun/nro` = **60 chars**. O `full_address`
+   da Shopee (endereço inteiro numa string) passa de 60 → truncar. E **o pattern de string da NF-e
+   proíbe espaço no início/fim** → fazer `.strip()` DEPOIS de truncar (cortar em 60 pode deixar um
+   espaço no fim → cStat 225). Ver `services/fiscal/sefaz_service.py::_cliente`.
+4. **CFOP é snapshot do rascunho:** se o rascunho nasce sem a UF do destinatário, `suggest_cfop` cai
+   em interestadual (6xxx) e congela errado para comprador do mesmo estado (cStat 732). Ao corrigir a
+   UF de uma Person já criada, **re-emitir reusa o rascunho** — recalcular o CFOP do item antes do
+   re-transmit (`transmit_invoice` reserva número novo; **não dá p/ apagar** o invoice rejeitado — FK
+   dos logs SEFAZ).

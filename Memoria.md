@@ -6,6 +6,37 @@
 
 ---
 
+## 2026-11-17 — ESCOL — NF-e própria de Shopee ponta a ponta: IBGE + CFOP + schema (7/8 autorizadas) — ✅ EM PRODUÇÃO
+
+**Fecha o bloqueio de IBGE da Shopee** (pendente desde 12/11) e **mais 2 camadas fiscais** que surgiram ao
+chegar na SEFAZ. **Resultado: 7/8 pedidos Shopee com NF-e AUTORIZADA (cStat 100)** — primeira emissão própria
+de Shopee provada ponta a ponta em produção.
+
+**(1) IBGE (commit `9b6c4c1`):** `services/address_parser.py` (parser único) ignorava os aliases Shopee →
+Person nascia sem CEP/UF → sem IBGE → SEFAZ barrava. Fix: aliases Shopee ao FINAL de cada cadeia
+(full_address/district/town/zipcode) + `_UF_POR_NOME` (nome por extenso→sigla, "Minas Gerais"→"MG", fallback
+'' fail-loud); eShip passou a IMPORTAR o mapa (dedup); `_upsert_customer_from_order` gate campo-a-campo
+(Person com street mas sem CEP/UF travava). Trio: quality 0 critical, adr CONFORME. 56 testes (3 novos).
+Backfill: 7 Persons ganharam CEP+UF+IBGE.
+
+**(2) CFOP (sem código — rascunho obsoleto):** cStat 732 "CFOP interestadual e idDest<>2". Os rascunhos
+nasceram quando `person.state` era nulo → `suggest_cfop` caiu em 6102 (interestadual) p/ comprador do MESMO
+estado (SP→SP, deveria 5102). Corrigido por script (recalcula CFOP com a UF agora preenchida) + re-transmit
+(`transmit_invoice` reserva número novo; não dá p/ apagar o invoice — FK dos logs SEFAZ).
+
+**(3) Schema xLgr (commits `c7b2f82` + `6b5cfc3`):** cStat 225 "Falha no Schema XML". O `full_address` da
+Shopee vem inteiro no logradouro (>60) e o xLgr da NF-e é máx 60 → truncar. E truncar em 60 deixava ESPAÇO
+no fim ("...Rio de Janeiro, ") — o pattern de string da NF-e proíbe espaço no início/fim → `.strip()` após
+truncar. `_cliente` trunca+strip xLgr/xCpl/xBairro/xMun/nro a 60.
+
+**Autorizadas:** #15168/#15205/#15137/#15154/#15161/#15083/#15568. **Pendente #15559: OVERSELL** (produto 342
+YJQ-055 tem estoque=2/SEM-LOTE=2, mas o pedido é de 3 un) → a alocação FEFO da emissão (ADR-0027) não aloca 3
+de um saldo de 2 → PendingRollbackError. **Não é bug fiscal — é falta de estoque** (o dono decide: repor
+estoque, ajustar o pedido, ou reconciliar). **Follow-up do dono:** validar os DANFEs no painel; resolver o
+#15559. Lição em `docs/lessons-learned.md`.
+
+---
+
 ## 2026-11-17 — ESCOL — Separação: etiqueta "não identificada" em pedido remanejado + esclarecimento NF-e — ✅ EM PRODUÇÃO
 
 **Pedido do dono:** na gaiola G-20261117-004, vários pedidos ML com a coluna "Etiq." CINZA e o botão Separar
