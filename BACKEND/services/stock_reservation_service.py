@@ -545,9 +545,14 @@ async def confirm_dispatch(db: AsyncSession, order: Order) -> None:
 
     # Rastreabilidade (ADR-0027, Fase 3): aloca lotes FEFO dos produtos rastreáveis (order-driven,
     # mesmo gatilho do escalar). Best-effort — o saldo de lote é cache e nunca quebra o despacho.
+    # SAVEPOINT: best-effort — se a alocação falhar no flush, desfaz SÓ ela e limpa o estado da
+    # sessão (não envenena o commit do despacho). Paridade com load_trace_for_invoice (emissão).
+    nested = await db.begin_nested()
     try:
         await allocate_order_lots(db, order)
+        await nested.commit()
     except Exception as exc:
+        await nested.rollback()
         logger.warning("confirm_dispatch: alocação de lote order=%s: %s", order.id, exc)
 
     try:

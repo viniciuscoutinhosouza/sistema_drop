@@ -139,6 +139,27 @@ class AsyncSyncSession:
     def expunge(self, instance):
         self._s.expunge(instance)
 
+    async def begin_nested(self):
+        """SAVEPOINT (transação aninhada). Isola um passo best-effort: se ele falhar no flush, o
+        `rollback()` do savepoint desfaz só esse passo e LIMPA o estado da sessão (sem envenenar a
+        transação externa). Toda op fala com o Oracle pelo `_DB_EXECUTOR` (invariante ADR-0001)."""
+        tx = await self._run(self._s.begin_nested)
+        return _NestedTx(tx, self._run)
+
+
+class _NestedTx:
+    """Savepoint cujo commit/rollback roda no executor dedicado do banco (como todo o resto)."""
+
+    def __init__(self, tx, run):
+        self._tx = tx
+        self._run = run
+
+    async def commit(self):
+        return await self._run(self._tx.commit)
+
+    async def rollback(self):
+        return await self._run(self._tx.rollback)
+
 
 # Keep these aliases for any code that imports them
 AsyncSession = AsyncSyncSession

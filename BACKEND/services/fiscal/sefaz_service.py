@@ -523,10 +523,18 @@ async def load_trace_for_invoice(db: AsyncSession, inv: Invoice, items: list) ->
         # A nota é transmitida ANTES do despacho → as alocações de lote ainda não existem. Aloca
         # FEFO agora (idempotente; o despacho reusa) para a nota sair COM <rastro> (ADR-0027). Sem
         # isto, produto rastreável emitiria a nota sem lote em silêncio. Best-effort.
+        # SAVEPOINT: a alocação é best-effort (só para a nota sair com <rastro>). Se falhar no flush
+        # (ex.: constraint), o rollback do savepoint desfaz SÓ a alocação e limpa o estado da sessão
+        # — antes, um erro aqui envenenava a sessão e derrubava a emissão inteira com
+        # PendingRollbackError (kit nunca emitia). O número reservado (reservar_numero, antes do trace)
+        # fica na transação EXTERNA e não é desfeito.
+        from services.stock_reservation_service import allocate_order_lots
+        nested = await db.begin_nested()
         try:
-            from services.stock_reservation_service import allocate_order_lots
             await allocate_order_lots(db, order)
+            await nested.commit()
         except Exception:
+            await nested.rollback()
             import logging
             logging.getLogger(__name__).warning(
                 "load_trace_for_invoice: alocação FEFO na emissão falhou (inv=%s)", inv.id, exc_info=True
