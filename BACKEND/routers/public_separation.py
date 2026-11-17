@@ -42,6 +42,20 @@ async def _ctx(token: str, db: AsyncSession):
     return cart, actor
 
 
+async def _assert_order_in_cart(cart: PickingCart, order_id: int, db: AsyncSession) -> None:
+    """Anti-IDOR: o token escopa a UMA gaiola — um endpoint por order_id só pode tocar pedido DESTA
+    gaiola (senão, com o ator do galpão, baixaria doc de qualquer pedido do galpão)."""
+    pco = (
+        await db.execute(
+            select(PickingCartOrder.id).where(
+                PickingCartOrder.cart_id == cart.id, PickingCartOrder.order_id == order_id
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if not pco:
+        raise HTTPException(status_code=404, detail="Pedido não está nesta gaiola")
+
+
 @router.get("/{token}")
 async def public_view_cart(token: str, db: AsyncSession = Depends(get_db)):
     """A gaiola + pedidos (igual à tela interna) — reusa separation.get_cart."""
@@ -67,6 +81,7 @@ async def public_picking_list(token: str, db: AsyncSession = Depends(get_db)):
 async def public_shopee_label(token: str, order_id: int, db: AsyncSession = Depends(get_db)):
     """Etiqueta Shopee (gerar = despachar) — reusa separation.cart_shopee_label."""
     cart, actor = await _ctx(token, db)
+    await _assert_order_in_cart(cart, order_id, db)
     return await sep.cart_shopee_label(cart.id, order_id, current_user=actor, db=db)
 
 
@@ -78,6 +93,8 @@ async def public_labels(
 ):
     """Etiquetas ML/manual (PDF/ZPL) — reusa separation.cart_labels."""
     cart, actor = await _ctx(token, db)
+    if order_id is not None:
+        await _assert_order_in_cart(cart, order_id, db)
     return await sep.cart_labels(
         cart.id, account_id=account_id, order_id=order_id, manual=manual,
         layout=layout, fmt=fmt, current_user=actor, db=db,
@@ -99,6 +116,7 @@ async def public_danfe(token: str, order_id: int, db: AsyncSession = Depends(get
     """DANFE (PDF) do pedido p/ impressão no link externo. Shopee → reusa download_order_nfe (inclui
     Invoice Issuer); demais (ML/own) → reusa invoices.download_danfe pela nota do pedido."""
     cart, actor = await _ctx(token, db)
+    await _assert_order_in_cart(cart, order_id, db)
     order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
@@ -115,6 +133,7 @@ async def public_danfe(token: str, order_id: int, db: AsyncSession = Depends(get
 async def public_scan(token: str, order_id: int, body: dict, db: AsyncSession = Depends(get_db)):
     """Bipagem (modo scan) de um item de um pedido — reusa separation.scan_order_item."""
     cart, actor = await _ctx(token, db)
+    await _assert_order_in_cart(cart, order_id, db)
     return await sep.scan_order_item(cart.id, order_id, body, current_user=actor, db=db)
 
 
@@ -132,6 +151,7 @@ async def public_separate(
 ):
     """Separar COM foto (opcional no fluxo externo) — reusa separation.separate_order."""
     cart, actor = await _ctx(token, db)
+    await _assert_order_in_cart(cart, order_id, db)
     return await sep.separate_order(cart.id, order_id, files=files, current_user=actor, db=db)
 
 
