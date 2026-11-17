@@ -7,6 +7,7 @@ import pytest
 from routers.separation import (
     _is_manual,
     _is_shopee,
+    _label_done,
     _marketplace_paid_exempt,
     _order_bucket,
     _shopee_dispatched,
@@ -28,6 +29,30 @@ def test_marketplace_paid_exempt_isenta_ml_e_shopee_barra_manual():
     assert _marketplace_paid_exempt(_order(platform="shopee")) is True
     assert _marketplace_paid_exempt(_order(platform="manual")) is False        # venda direta segue no gate
     assert _marketplace_paid_exempt(_order(platform=None)) is False            # default fail-closed (gate aplica)
+
+
+# ── Etiqueta pronta reconhecida mesmo impressa FORA desta gaiola ──────────────────
+# Regressão: pedido remanejado entre gaiolas (ou etiquetado em Venda>Pedido) tem pco novo com
+# label_printed_at=None, mas o label já existe no pedido (label_cached_at / status). Não pode
+# aparecer como "não impresso" nem travar a separação.
+def _pco(label_printed_at=None):
+    return SimpleNamespace(label_printed_at=label_printed_at)
+
+
+def test_label_done_reconhece_etiqueta_fora_da_gaiola():
+    # marcada NESTA gaiola
+    assert _label_done(_pco("2026-01-01"), SimpleNamespace(label_cached_at=None, status="downloaded")) is True
+    # etiqueta cacheada no pedido (Venda>Pedido) — pco novo
+    assert _label_done(_pco(), SimpleNamespace(label_cached_at="2026-01-01", status="downloaded")) is True
+    # status marca a etapa (gaiola anterior)
+    assert _label_done(_pco(), SimpleNamespace(label_cached_at=None, status="label_printed")) is True
+    assert _label_done(_pco(), SimpleNamespace(label_cached_at=None, status="separated")) is True
+
+
+def test_label_done_falso_quando_nada_impresso():
+    assert _label_done(_pco(), SimpleNamespace(label_cached_at=None, status="downloaded")) is False
+    assert _label_done(_pco(), SimpleNamespace(label_cached_at=None, status="paid")) is False
+    assert _label_done(_pco(), SimpleNamespace(label_cached_at=None, status=None)) is False
 
 
 # ── Classificador de balde (C1): ml / shopee / manual ────────────────────────────

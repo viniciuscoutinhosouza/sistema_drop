@@ -382,6 +382,19 @@ async def _expand_order(db: AsyncSession, order: Order) -> list[dict]:
 
 
 # ── Serialização ──────────────────────────────────────────────────────────────
+def _label_done(pco: PickingCartOrder, order: Order) -> bool:
+    """Etiqueta considerada PRONTA se marcada NESTA gaiola, OU se o pedido já passou pela etapa de
+    etiqueta em outro fluxo (Venda > Pedido ou gaiola anterior). O label do ML é por-shipment, gerado
+    uma vez e cacheado no pedido (`label_cached_at`); `status` label_printed/separated/shipped também
+    marca a etapa. Sem isto, um pedido já etiquetado FORA desta gaiola aparece como "não impresso" e
+    trava a separação só porque o `pco` desta gaiola é novo (ex.: pedido remanejado entre gaiolas)."""
+    if pco.label_printed_at is not None:
+        return True
+    if getattr(order, "label_cached_at", None) is not None:
+        return True
+    return (order.status or "") in ("label_printed", "separated", "shipped")
+
+
 def _ser_order_brief(order: Order, items: list[OrderItem], cmig_name: str | None = None) -> dict:
     return {
         "id": order.id,
@@ -588,7 +601,7 @@ async def get_cart(
         brief["cart_order_id"] = pco.id
         brief["item_status"] = pco.item_status
         brief["account_id"] = order.account_id
-        brief["label_printed"] = pco.label_printed_at is not None
+        brief["label_printed"] = _label_done(pco, order)
         brief["nfe_printed"] = pco.nfe_printed_at is not None
         # progresso de bipagem
         scan_rows = (
@@ -923,7 +936,7 @@ async def scan_locate(
         "expected": expected,
         "scanned": scanned,
         "order_complete": scanned >= expected,
-        "label_printed": pco.label_printed_at is not None,
+        "label_printed": _label_done(pco, order) if order else (pco.label_printed_at is not None),
     }
 
 
@@ -1080,7 +1093,12 @@ async def separate_order(
     ).scalar_one_or_none()
     if not pco:
         raise HTTPException(status_code=404, detail="Pedido não está nesta gaiola")
-    if pco.label_printed_at is None:
+    order = await _load_order_scoped(db, order_id, _order_warehouse_clause(current_user))
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado ou fora do seu galpão")
+    # Etiqueta impressa NESTA gaiola OU em outro fluxo (Venda>Pedido / gaiola anterior) — ver
+    # _label_done. Evita travar a separação de pedido remanejado cujo label já existe.
+    if not _label_done(pco, order):
         raise HTTPException(status_code=422, detail="Imprima a etiqueta antes de separar o pedido.")
     # Enforcement server-side: em scan/scan_auto, só separa (→ NF-e automática) com 100% bipado.
     # No modo manual não há linhas materializadas → no-op. Não confia só no `order_complete` do front.
@@ -1093,7 +1111,6 @@ async def separate_order(
         raise HTTPException(status_code=422, detail=f"Máximo de {_MAX_FOTOS} fotos por pedido.")
     if not gd.configurado():
         raise HTTPException(status_code=503, detail="Google Drive não configurado no servidor.")
-    order = await _load_order_scoped(db, order_id, _order_warehouse_clause(current_user))
 
     salvas = []
     for i, f in enumerate(fotos, start=1):
@@ -1656,7 +1673,7 @@ async def cart_emit_nfe(
             continue
         # ML/manual: a NF-e vem DEPOIS da etiqueta (exige etiqueta impressa). Shopee é o inverso —
         # a etiqueta só sai pós-ship, que exige NF-e validada —, então Shopee NÃO exige etiqueta aqui.
-        if not _is_shopee(order) and pco.label_printed_at is None:
+        if not _is_shopee(order) and not _label_done(pco, order):
             results.append({"order_id": pco.order_id, "skipped": "sem etiqueta impressa"})
             continue
         if order.nfe_key or order.nfe_status in ("authorized", "pending", "in_process"):

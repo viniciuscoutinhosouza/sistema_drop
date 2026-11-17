@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-11-17 — fix(separacao): reconhece etiqueta já impressa fora da gaiola (pedido remanejado) + destrava separação
+
+O dono viu, na gaiola G-20261117-004, vários pedidos ML com a coluna "Etiq." CINZA (não impressa) e o botão
+Separar bloqueado — embora a etiqueta já tivesse sido impressa. Diagnóstico em produção (read-only): 6 ML com
+`order.label_cached_at` setado + `order.status='label_printed'` mas `pco.label_printed_at=None`. Causa: o
+sistema derivava "etiqueta impressa" **só** de `pco.label_printed_at` (marca POR-GAIOLA). Quando o pedido é
+etiquetado em outro fluxo (Venda>Pedido seta `label_cached_at`; ou gaiola anterior seta `status`) e depois
+remanejado p/ outra gaiola, o novo `pco` nasce sem a marca → aparecia "não impresso" e travava a separação
+(gate server-side em `separate_order`).
+
+**Correção:** helper `_label_done(pco, order)` = `pco.label_printed_at` OU `order.label_cached_at` OU
+`order.status in ("label_printed","separated","shipped")`. Aplicado em 4 pontos que olhavam só o `pco`:
+display (2 serializers), gate de SEPARAR (movi o load do `order` p/ antes do gate, com guarda 404 +
+escopo por galpão — reforça segurança) e gate de emitir NF-e na gaiola. As leituras de `pco.label_printed_at`
+em `cart_labels`/`cart_label_jobs` (seleção de lote / evitar re-fetch no ML) foram **mantidas** (semântica
+diferente). +2 testes de regressão. Shopee sem ship segue barrado (não tem label_cached). **NF-e: sem bug** —
+emitidos aparecem azuis ("emitida, não impressa"); só o #16273 (shopee, sem NF-e) fica cinza, como o dono
+relatou.
+
+**Governança:** fechamento consistency-auditor **CONFORME** (0 crítico; 4 gates cobertos, sem 5º esquecido) +
+quality-guardian **LIBERAR** (0 crítico; escopo reforçado, sem efeito em estoque — separar não baixa, ADR-0005).
+58 testes separação/label ok; suíte 430 ok (2 pré-existentes). Emenda operacional da ADR-0005.
+
+---
+
 ## 2026-11-17 — fix(separacao): etiqueta na gaiola isenta marketplace do gate de pagamento (ML/Shopee pagos no marketplace)
 
 O dono não conseguia imprimir etiqueta de pedido ML (#15132 "e alguns outros") em Logística > Separar
