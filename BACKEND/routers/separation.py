@@ -102,6 +102,66 @@ def _shopee_dispatched(order: Order) -> bool:
     return _is_shopee(order) and (order.shipment_status or "") in ("shipped", "delivered")
 
 
+# Mapa status ML → motivo legível (p/ skipped_reasons — "falhar alto, nunca em silêncio").
+_SHIP_STATUS_PT = {
+    "pending": "aguardando processamento no ML",
+    "handling": "em preparação no ML (ainda não liberado p/ envio)",
+    "ready_to_ship": "pronto p/ envio",
+    "shipped": "já despachado no ML",
+    "delivered": "já entregue",
+    "not_delivered": "não entregue",
+    "cancelled": "envio cancelado no ML",
+}
+
+
+def _ml_not_ready_reason(order: Order) -> str:
+    """Motivo legível de por que um pedido ML não pôde entrar na gaiola (status != ready_to_ship)."""
+    st = order.shipment_status
+    if not st:
+        return "o ML ainda não informou o envio — tente novamente em instantes"
+    return f"no ML: {_SHIP_STATUS_PT.get(st, st)} (só entra na gaiola quando ficar 'Pronto p/ Envio')"
+
+
+async def _live_refresh_ml_shipment(db: AsyncSession, order: Order, acc_cache: dict) -> None:
+    """Re-consulta o envio no ML AO VIVO e atualiza o shipment_status LOCAL quando nosso snapshot está
+    atrás do ML (pedido já 'Pronto p/ Envio' no ML mas ainda não sincronizado aqui — fonte de verdade
+    é o ML). Best-effort: qualquer falha do ML mantém o estado atual (degrada ao comportamento antigo).
+    NÃO comita — a mutação fica na sessão e é persistida pelo commit único do caller (atomicidade da
+    montagem da gaiola). NÃO dispara efeito de estoque (contexto não-FULL; o job sync_orders / retorno
+    simbólico — ADR-0019/0022 — cuida do FULL). Espelha get_shipment+get_shipment_costs de
+    _refresh_shipments._process_one (orders.py). TODO: extrair um helper módulo-level compartilhado.
+    """
+    if order.platform != "mercadolivre" or not order.shipment_id:
+        return
+    acc = acc_cache.get(order.account_id)
+    if acc is None:
+        acc = (
+            await db.execute(
+                select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id)
+            )
+        ).scalar_one_or_none()
+        acc_cache[order.account_id] = acc
+    if not acc or not acc.access_token:
+        return
+    from services.webhook_service import _apply_shipment_to_order
+    try:
+        sd = await _ml.get_shipment(
+            acc.access_token, str(order.shipment_id), caller_id=acc.platform_user_id
+        )
+        if not sd:
+            return
+        costs = {}
+        try:
+            costs = await _ml.get_shipment_costs(acc.access_token, str(order.shipment_id))
+        except Exception:
+            pass
+        _apply_shipment_to_order(order, sd, costs)
+    except Exception:
+        pass
+    finally:
+        await asyncio.sleep(0.1)  # pacing p/ rate-limit do ML (espelha _refresh_shipments)
+
+
 async def _claim_own_emission(db: AsyncSession, order: Order) -> bool:
     """Claim atômico anti-duplo-clique para EMISSÃO PRÓPRIA (Shopee/manual): marca nfe_status='pending'
     só se o pedido ainda não tem chave nem emissão em curso. Espelha o claim do ramo ML (a emissão
@@ -591,20 +651,38 @@ async def add_orders_to_cart(
     wh = _order_warehouse_clause(current_user)
     added = []
     skipped = []
+    skipped_reasons: dict = {}   # motivo real por pedido (falhar alto, nunca em silêncio)
+    acc_cache: dict = {}         # cache de MarketplaceAccount por account_id (refresh ao vivo)
     for oid in order_ids:
         q = select(Order).where(Order.id == oid, *_eligibility_conditions())
         if wh is not None:
             q = q.where(wh)
         order = (await db.execute(q)).scalar_one_or_none()
         if not order:
-            skipped.append(oid)  # não pago / inacessível / já em gaiola / FULL / despachado
+            skipped.append(oid)
+            skipped_reasons[oid] = (
+                "não elegível (não pago, já em gaiola, já despachado, FULL ou fora do seu galpão)"
+            )
             continue
         # ML-com-shipment exige "Pronto p/ Envio" (etiqueta do ML). Shopee pode entrar ainda em
         # 'handling' (INVOICE_PENDING — a NF-e é emitida/anexada DENTRO da gaiola) e vira
         # ready_to_ship quando a Shopee valida; o ship_order no despacho revalida. Manual (venda
         # direta) já basta estar pago (elegibilidade) — não tem shipment_status do marketplace.
         if _order_bucket(order) == "ml" and order.shipment_status != "ready_to_ship":
+            # Nosso snapshot pode estar ATRÁS do ML (pedido já 'Pronto p/ Envio' no ML mas ainda não
+            # sincronizado aqui — defasagem do sync). Re-consulta o ML AO VIVO uma vez e reavalia, em
+            # vez de recusar com base em dado velho. Fonte de verdade = ML. (NÃO comita: a mutação é
+            # persistida pelo commit único do fim — atomicidade da montagem.)
+            await _live_refresh_ml_shipment(db, order, acc_cache)
+            if order.shipment_status != "ready_to_ship":
+                skipped.append(oid)
+                skipped_reasons[oid] = _ml_not_ready_reason(order)
+                continue
+        # Pós-refresh: o SELECT de elegibilidade filtrou FULL com valor possivelmente stale; se o ML
+        # revelou FULL agora, barra (FULL não entra na separação — vai direto pelo ML).
+        if order.shipping_mode == "full":
             skipped.append(oid)
+            skipped_reasons[oid] = "pedido FULL — vai direto pelo ML, não entra na separação"
             continue
 
         # Evita violar UNIQUE(cart_id, order_id) em duplo clique / corrida
@@ -617,6 +695,7 @@ async def add_orders_to_cart(
         ).scalar_one_or_none()
         if dup:
             skipped.append(oid)
+            skipped_reasons[oid] = "já está nesta gaiola"
             continue
 
         pco = PickingCartOrder(cart_id=cart.id, order_id=order.id, item_status="pending")
@@ -645,7 +724,7 @@ async def add_orders_to_cart(
         cart.separated_by = None
 
     await db.commit()
-    return {"added": added, "count": len(added), "skipped": skipped}
+    return {"added": added, "count": len(added), "skipped": skipped, "skipped_reasons": skipped_reasons}
 
 
 @router.delete("/carts/{cart_id}/orders/{order_id}", status_code=200)

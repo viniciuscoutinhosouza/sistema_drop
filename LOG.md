@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-11-17 — fix(separacao): add à gaiola re-consulta ML ao vivo quando shipment_status está defasado + skipped_reasons
+
+O dono não conseguia incluir os pedidos ML **#14517** e **#15132** (conta MIG) na gaiola — erro "não estão
+Prontos p/ Envio", embora **estivessem** prontos no ML. Diagnóstico em produção (read-only + ML ao vivo):
+não era bug de lógica, era **defasagem de dados**. O ML retornava `ready_to_ship` há dias (substatus
+`ready_to_print`/`dropped_off`, logística `cross_docking`), mas nosso `shipment_status` só sincronizou às
+03:26 (job `sync_orders` 15min, backlog antigo — pedidos criados 07/11 e 10/11). O gate do add
+(`add_orders_to_cart`, separation.py) exige `shipment_status=="ready_to_ship"` exato p/ bucket "ml"; com
+snapshot velho, recusava — e o front mostrava a mensagem genérica "(não está Pronto p/ Envio?)".
+
+**Correção (não repetir):** quando um pedido ML não está `ready_to_ship` no nosso banco, o add agora
+**re-consulta o ML AO VIVO uma vez** (`_live_refresh_ml_shipment` → `_ml.get_shipment`+`get_shipment_costs`
++`_apply_shipment_to_order`) e reavalia — fonte de verdade = ML. Best-effort (falha do ML mantém o
+comportamento antigo), **sem commit próprio** (persiste no commit único do caller — atomicidade da
+montagem), **pacing** `sleep(0.1)`, e **sem efeito de estoque** (não chama `confirm_dispatch`; FULL revelado
+pós-refresh é barrado — não entra na separação). Também passou a devolver **`skipped_reasons: {id: motivo}`**
+(aditivo) e o front exibe o motivo real nos 2 callers (`newCart` e `addToCart`) — "falhar alto, nunca em
+silêncio". O job de 15 min segue como rede de fundo.
+
+**Governança:** pré-avaliação (consistency-auditor: SEGUIR com 5 ajustes — todos aplicados) + trio de
+fechamento **quality-guardian LIBERAR / consistency-auditor CONFORME / adr-consistency-checker APROVADO**
+(ADR-0005/0019/0022/0020/0026 ok; 0 CRITICAL/HIGH). Verificado: compila, 32 testes separação/picking ok,
+suíte 427 ok (2 pré-existentes), build front ok. Emenda operacional da ADR-0005.
+
+---
+
 ## 2026-11-15 — fix(bling): importar a CATEGORIA do produto (detalhe traz só categoria.id) + modo Criar×NULL
 
 O dono apontou que a importação do Bling **não trazia a categoria** dos produtos. Diagnóstico confirmado

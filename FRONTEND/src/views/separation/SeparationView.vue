@@ -599,7 +599,10 @@ async function newCart(mode) {
     await Promise.all([loadPending(), loadCarts()])
     await openCart(data.id)
     toast.success(`Gaiola ${data.cart_number} criada (${mode === 'scan' ? 'bipagem' : 'manual'})`)
-    if (addRes?.skipped?.length) toast.warning(`${addRes.skipped.length} pedido(s) não adicionado(s): ${addRes.skipped.join(', ')}`)
+    if (addRes?.skipped?.length) {
+      const det = addRes.skipped.map(id => `#${id}: ${addRes.skipped_reasons?.[id] || 'não elegível'}`).join(' · ')
+      toast.warning(`${addRes.skipped.length} pedido(s) não adicionado(s) — ${det}`)
+    }
   } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao criar gaiola') }
 }
 
@@ -611,7 +614,10 @@ async function addToCart(cart) {
   try {
     const { data } = await api.post(`/separation/carts/${cart.id}/orders`, { order_ids: [addModal.order.id] })
     if (data.added?.length) toast.success(`Pedido #${addModal.order.id} adicionado à ${cart.cart_number}`)
-    else toast.warning('Pedido não pôde ser adicionado (não está Pronto p/ Envio?)')
+    else {
+      const motivo = data.skipped_reasons?.[addModal.order.id]
+      toast.warning(motivo ? `Pedido #${addModal.order.id} não adicionado — ${motivo}` : 'Pedido não pôde ser adicionado (não está Pronto p/ Envio?)')
+    }
     addModal.show = false
     await Promise.all([loadPending(), loadCarts()])
     if (activeCart.value?.id === cart.id) await refreshCart()
