@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-11-17 — ESCOL — Separação: etiqueta "não identificada" em pedido remanejado + esclarecimento NF-e — ✅ EM PRODUÇÃO
+
+**Pedido do dono:** na gaiola G-20261117-004, vários pedidos ML com a coluna "Etiq." CINZA e o botão Separar
+bloqueado, embora a etiqueta já tivesse sido impressa; e a NF-e "não identificada" (só o #16273 realmente sem
+NF-e). **Diagnóstico (produção, read-only):** o sistema derivava "etiqueta impressa" **só** de
+`pco.label_printed_at` (marca POR-GAIOLA no PickingCartOrder). 6 ML tinham `order.label_cached_at`+
+`order.status='label_printed'` mas `pco.label_printed_at=None` — foram etiquetados em outro fluxo (Venda>Pedido
+seta `label_cached_at`; ou gaiola anterior seta `status`) e remanejados → o novo `pco` nasce sem a marca.
+
+**Correção (commit `57fdee4`, EM PRODUÇÃO):** helper `_label_done(pco, order)` = `pco.label_printed_at` OU
+`order.label_cached_at` OU `order.status in (label_printed,separated,shipped)`. Aplicado em 4 gates que olhavam
+só o `pco`: display (2 serializers), gate de SEPARAR (load do `order` movido p/ antes do gate, com guarda 404 +
+escopo galpão — reforça segurança) e gate de emitir NF-e na gaiola. `cart_labels`/`cart_label_jobs` (seleção de
+lote / evitar re-fetch no ML) mantidos em `pco.label_printed_at` (semântica diferente). +2 testes.
+
+**NF-e: SEM bug.** Azul = "NF-e emitida (não impressa)"; verde = DANFE impressa; cinza = sem NF-e. Só o #16273
+(shopee, `nfe_status=None`) fica cinza — exatamente o que o dono relatou. Os demais ML estão emitidos (azul).
+
+**Governança:** fechamento consistency-auditor **CONFORME** + quality-guardian **LIBERAR** (0 crítico; escopo
+reforçado, separar não baixa estoque — ADR-0005). Verificado em produção (deploy `57fdee4`, PM2 online, `/docs`
+200) + **prova read-only**: 14/14 ML com `label_done=True`, #16273 corretamente False. 58 testes separação ok;
+suíte 430 ok (2 pré-existentes). **Dono dá F5 → etiquetas ficam verdes e separa normal.**
+
+---
+
 ## 2026-11-17 — ESCOL — Separação: etiqueta ML não imprimia (gate de pagamento bloqueava marketplace) — ✅ EM PRODUÇÃO
 
 **Pedido do dono:** imprimir etiqueta do #15132 "e alguns outros" dá erro em Logística > Separar Pedidos,
