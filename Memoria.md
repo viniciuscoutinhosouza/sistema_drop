@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-11-17 — ESCOL — Separação: etiqueta ML não imprimia (gate de pagamento bloqueava marketplace) — ✅ EM PRODUÇÃO
+
+**Pedido do dono:** imprimir etiqueta do #15132 "e alguns outros" dá erro em Logística > Separar Pedidos,
+mas funciona em Venda > Pedido. **Causa-raiz (confirmada em código + produção):** o endpoint `cart_labels`
+(separação) ganhou em 26/10 (commit `37dad69`, venda direta) um **gate de pagamento** `payment_status=="paid"`
+aplicado a **TODOS** os pedidos. Mas ML/Shopee são pagos NO MARKETPLACE e chegam `payment_status='pending'`
+no nosso banco (ML grava 'pending' fixo no ingest — `webhook_service.py`) → **bloqueava todo ML `ready_to_ship`**
+(69 em produção; ML total: 3800 pending / 151 paid). Venda>Pedido (`orders.get_order_shipping_label`) não tem
+esse gate → por isso funcionava.
+
+**Correção (commit `9ebdaa3`, EM PRODUÇÃO):** helper `_marketplace_paid_exempt(order)` (`platform in
+("mercadolivre","shopee")`) e o gate vira `not _marketplace_paid_exempt(o) and payment_status != "paid"` —
+isenta marketplace, vale **só p/ venda MANUAL** (intenção original). Espelha a isenção de
+`_eligibility_conditions`. Helper documenta POR QUE não usar `_is_manual`/`_order_bucket` (classificam
+ML-sem-shipment como 'manual' → re-gateariam ML). **+teste de regressão** `_marketplace_paid_exempt`.
+
+**Governança:** pré-avaliação (consistency-auditor: SEGUIR — ponto único, sem 2º gate; flag
+`manual_sale_requires_payment` já embutida no `payment_status` na criação) + fechamento quality-guardian
+**LIBERAR** (0 CRITICAL/HIGH, regressão-zero p/ manual, causa-raiz confirmada em código). Verificado em
+produção: deploy (commit no servidor, PM2 online, `/docs` 200) + **prova read-only**: #15132 isento=True →
+BLOQUEADO_PELO_GATE=False. 57 testes separação/label ok (16 no arquivo shopee c/ o novo). **Dono dá F5 e
+imprime.** Follow-up (pré-existente, avisar): venda manual com custo PG/frete nasce 'pending' mesmo com a
+flag OFF → etiqueta bloqueada até pagar; confirmar se é o desejado.
+
+---
+
 ## 2026-11-17 — ESCOL — Separação: pedido ML "Pronto p/ Envio" não entrava na gaiola (defasagem) — ✅ EM PRODUÇÃO
 
 **Pedido do dono:** pedidos ML **#14517** e **#15132** (conta MIG) não entravam na gaiola aberta — erro
