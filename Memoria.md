@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-11-17 — ESCOL — Etiqueta Shopee não gerava (batch_api_all_failed = já criada) — ✅ EM PRODUÇÃO
+
+**Dono:** nota anexada mas etiqueta não gera / não aparece na gaiola — erro `create_shipping_document
+[common.batch_api_all_failed]`. **Causa raiz (reproduzida ao vivo no #16273):** a etiqueta **JÁ estava
+pronta** (`get_shipping_document_result` = status READY), mas `resolve_label_pdf` chamava
+`create_shipping_document` PRIMEIRO e **abortava** no `batch_api_all_failed` — esse erro é a Shopee recusando
+criar a etiqueta **2× (já criada)**, não falha real. Nunca chegava no poll que diria READY e baixaria.
+
+**Fix (commit `a72e771`):** (1) o `create` em `resolve_label_pdf` virou **best-effort** — se falhar (já
+criada/transiente), segue pro poll (fonte da verdade: READY→baixa, FAILED→erro real, PROCESSING→aguarda).
+(2) `_shop_post` passa a **surfacar o `result_list`** (razão real por-item: tracking_number_invalid, etc.)
+em vez da mensagem genérica "please check result_list". `resolve_label_pdf` é PONTO ÚNICO (gaiola/despacho
+`shopee_dispatch`, endpoint `shopee_logistics`, eShip) → cobre todos. **Verificado:** #16273 →
+`resolve_label_pdf` OK, 9934 bytes (ZIP/ZPL). Dono já pode gerar/baixar a etiqueta na gaiola.
+
+---
+
 ## 2026-11-17 — ESCOL — Shopee Invoice Issuer: reconhecer nota + anti-duplicação + download por escopo — ✅ EM PRODUÇÃO
 
 **Dono reportou o #16372 (Shopee):** gaiola não mostra "emitida"; Vendas "emitida MAS não anexada" (Shopee
