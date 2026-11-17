@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-11-17 — ESCOL — Link externo da gaiola + fix bipagem automática — ✅ EM PRODUÇÃO
+
+**(1) Bug bipagem automática (migration 186):** criar gaiola "Bipagem automática" dava ORA-02290 — a
+constraint `ck_cart_mode` (migration 85) só tinha `manual`/`scan`; `scan_auto` foi adicionado no código sem
+atualizar o CHECK. Migration 186 recria com os 3 modos. Aplicada + verificado (cria OK).
+
+**(2) Link externo da gaiola (molde do checkout público ADR-0033, commits `9cd9487`→`69ffdda`):** galpão que
+despacha SEM acesso ao sistema abre UMA gaiola só pelo token. **migration 187** `picking_carts.public_token`
+(unique) + model. **separation.py:** `POST/DELETE /carts/{id}/public-link` (gerar/revogar) + `cart_actor`
+(criador da gaiola, escopado) p/ o roteador público REUSAR as funções existentes. **routers/
+public_separation.py** (SEM JWT, montado em `/public/separation`): wrappers finos token→ator→função de
+separation (get_cart/picking_list/labels/shopee-label/danfe/scan/scan-locate/separate) + **conclude próprio
+SEM foto** (mantém gates scan+etiqueta — requisito do dono). **Front:** botão "Link externo" no header da
+gaiola (gera+copia) + badge do modo corrigido; **PublicSeparationView.vue** (rota pública `/gaiola/:token`,
+fetch sem JWT) espelha a gaiola com os 3 modos — picking list, etiqueta, DANFE, bipagem, fotos (opcional),
+concluir. **Segurança:** token escopa a UMA gaiola; `_assert_order_in_cart` em todo endpoint por-pedido
+(anti-IDOR, lição do dia); `download_order_nfe` já por escopo. **Verificado:** backend ponta a ponta (gerar
+link, abrir por token, picking list PDF), smoke HTTP sem auth 200, build front OK (chunk no dist), rota no
+OpenAPI. **Pendente do dono:** testar o link num celular/galpão real (imprimir, bipar, concluir).
+**Follow-up (não feito):** rate-limit/expiração do token.
+
+---
+
 ## 2026-11-17 — ESCOL — Etiqueta Shopee não gerava (batch_api_all_failed = já criada) — ✅ EM PRODUÇÃO
 
 **Dono:** nota anexada mas etiqueta não gera / não aparece na gaiola — erro `create_shipping_document
