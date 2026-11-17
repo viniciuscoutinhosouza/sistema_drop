@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-11-16 ~21:30 — ESCOL — Desfazer import equivocado do Bling na CMIG Vergina (141) — ✅ FEITO EM PRODUÇÃO
+
+**Pedido do dono:** importou produtos do Bling **errado** para a CMIG Vergina como **produtos CMIG**
+(target=cmig) — pediu p/ excluir. **Feito com cautela (operação destrutiva em produção):** diagnóstico
+read-only ANTES confirmou que os produtos eram exatamente o lote Bling (todos com `bling_product_id`,
+criados hoje) e livres de dependência — **0** espelho FULL, **0** venda, **0** anúncio, **0** estoque; a
+Vergina **não tinha nenhum produto CMIG antes**. Script server-side replicando a lógica do endpoint
+`delete_cmig_product` (respeita espelho FULL, limpa FK de anúncio, cascata p/ variantes/imagens/componentes),
+numa transação (fail-loud). **Excluídos 958** (948 + 10) → CMIG 141 com **0** produtos CMIG.
+
+**Pegadinha:** o job de import **ainda estava rodando** (contagem subia 1→8→… em segundos). Como roda como
+task asyncio **in-process**, **reiniciei o backend** p/ matá-lo (blip 502 de ~6s, depois 200). Pós-restart a
+contagem ficou 0 estável (não cria mais). As **7 categorias** criadas pelo import (galpão 1, vazias) foram
+**MANTIDAS por decisão do dono** (opção A) — serão reaproveitadas (dedup por `bling_category_id`) num reimport
+correto p/ PG. Scripts temporários do servidor removidos. Follow-up menor: possíveis arquivos de imagem órfãos
+se "baixar imagens" estava on (linhas no banco já apagadas; impacto nulo).
+
+---
+
 ## 2026-11-16 18:27 — ESCOL — Importar categoria do produto do Bling (criar x NULL) — ✅ EM PRODUÇÃO
 
 **Pedido do dono:** ler o cadastro de produtos do Bling, rever o import — a **categoria não estava sendo
