@@ -507,7 +507,25 @@ async def picking_list_pdf(
         units.extend(await _expand_order(db, order))
     rows = ps.consolidate(units)
     await _annotate_pick_plan(db, rows)
-    pdf = render_picking_list(rows, title=f"Lista de Separação — {len(orders)} pedido(s)")
+
+    # ⚠️ TEMPORÁRIO (teste do dono): anexa CODE128 por SKU + tirar/fim foto abaixo da lista.
+    test_code_items = None
+    if body.get("include_test_codes"):
+        from services.app_config_service import get_config
+
+        # TIRAR-FOTO e FIM-FOTO primeiro (ficam juntos, mesma página), depois um por SKU.
+        test_code_items = [
+            {"code": await get_config(db, _TAKE_PHOTO_KEY), "label": "TIRAR FOTO"},
+            {"code": await get_config(db, _FINISH_CODE_KEY), "label": "FIM DAS FOTOS"},
+        ]
+        for r in rows:
+            code = (r.get("sku") or r.get("ean") or "").strip()  # bipagem casa por SKU OU EAN
+            if code:
+                test_code_items.append({"code": code, "label": r.get("title") or ""})
+
+    pdf = render_picking_list(
+        rows, title=f"Lista de Separação — {len(orders)} pedido(s)", test_code_items=test_code_items,
+    )
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": 'inline; filename="lista-separacao.pdf"'},
@@ -1125,51 +1143,6 @@ async def take_photo_code_label(
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": 'inline; filename="codigo-tirar-foto.pdf"'},
-    )
-
-
-@router.post("/test-codes.pdf")
-async def test_codes_pdf(
-    body: dict,
-    current_user: User = Depends(require_menu_permission("separacao")),
-    db: AsyncSession = Depends(get_db),
-):
-    """⚠️ TEMPORÁRIO (teste do dono) — folha de QR por SKU dos pedidos + TIRAR foto + FIM fotos.
-    Para remover depois: apagar esta rota, `services/test_codes_service.py` e o botão no front."""
-    from services.app_config_service import get_config
-    from services.test_codes_service import render_test_codes
-
-    order_ids = body.get("order_ids") or []
-    if not order_ids:
-        raise HTTPException(status_code=422, detail="Informe order_ids")
-    if len(order_ids) > 200:
-        raise HTTPException(status_code=422, detail="Máximo de 200 pedidos por folha de teste")
-
-    q = select(Order).where(Order.id.in_(order_ids))
-    wh = _order_warehouse_clause(current_user)
-    if wh is not None:
-        q = q.where(wh)
-    orders = (await db.execute(q)).scalars().all()
-    if not orders:
-        raise HTTPException(status_code=404, detail="Nenhum pedido acessível")
-
-    units: list[dict] = []
-    for order in orders:
-        units.extend(await _expand_order(db, order))
-    rows = ps.consolidate(units)
-
-    items: list[dict] = []
-    for r in rows:
-        code = (r.get("sku") or r.get("ean") or "").strip()  # bipagem casa por SKU OU EAN
-        if code:
-            items.append({"code": code, "label": r.get("title") or ""})
-    items.append({"code": await get_config(db, _TAKE_PHOTO_KEY), "label": "TIRAR FOTO"})
-    items.append({"code": await get_config(db, _FINISH_CODE_KEY), "label": "FIM DAS FOTOS"})
-
-    pdf = render_test_codes(items, title=f"Códigos de teste — {len(orders)} pedido(s)")
-    return Response(
-        content=pdf, media_type="application/pdf",
-        headers={"Content-Disposition": 'inline; filename="codigos-teste.pdf"'},
     )
 
 

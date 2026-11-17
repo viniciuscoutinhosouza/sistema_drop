@@ -55,10 +55,6 @@
           <button class="btn btn-sm btn-outline-info mr-2" :disabled="!selected.size" @click="printList">
             <i class="fas fa-print mr-1"></i> Imprimir Lista ({{ selected.size }})
           </button>
-          <!-- TEMPORÁRIO (teste): folha de QR por SKU + tirar/fim foto. Remover junto com a rota /test-codes.pdf. -->
-          <button class="btn btn-sm btn-outline-secondary mr-2" :disabled="!selected.size" @click="printTestCodes" title="Folha de QR para teste de bipagem (temporário)">
-            <i class="fas fa-qrcode mr-1"></i> Códigos (teste)
-          </button>
           <div class="btn-group btn-group-sm">
             <button class="btn btn-success dropdown-toggle" data-bs-toggle="dropdown" :disabled="!selected.size">
               <i class="fas fa-plus mr-1"></i> Nova Gaiola
@@ -592,9 +588,8 @@ function toggleAll() {
   selected.value = s
 }
 
-async function printList() { await openPdf('/separation/picking-list', 'post', { order_ids: [...selected.value] }) }
-// TEMPORÁRIO (teste do dono): folha de QR por SKU + tirar/fim foto. Remover com a rota /test-codes.pdf.
-async function printTestCodes() { await openPdf('/separation/test-codes.pdf', 'post', { order_ids: [...selected.value] }) }
+// TEMPORÁRIO (teste do dono): include_test_codes anexa CODE128 por SKU + tirar/fim foto abaixo da lista.
+async function printList() { await openPdf('/separation/picking-list', 'post', { order_ids: [...selected.value], include_test_codes: true }) }
 
 // ── Emitir NF-e direto na lista (pedido fora de gaiola) ──
 async function emitNfeList(o) {

@@ -17,10 +17,16 @@ PAGE_W, PAGE_H = A4
 MARGIN = 15 * mm
 
 
-def render_picking_list(rows: list[dict], *, title: str = "Lista de Separação") -> bytes:
+def render_picking_list(
+    rows: list[dict], *, title: str = "Lista de Separação", test_code_items: list[dict] | None = None,
+) -> bytes:
     """`rows`: [{title, sku, ean, qty, pick_plan?, pick_shortage?}] já consolidados. Retorna bytes
     do PDF A4. `pick_plan` (ADR-0039 Fase 2) = [{full_code, take, lot_code?}] renderizado como
-    sub-linha "Endereço (ordem)" sob o item; `pick_shortage` = unidades sem endereço."""
+    sub-linha "Endereço (ordem)" sob o item; `pick_shortage` = unidades sem endereço.
+
+    ⚠️ TEMPORÁRIO (teste do dono): se `test_code_items` ([{code,label}]) vier, desenha uma seção de
+    CODE128 por SKU + tirar/fim foto em novas páginas APÓS a lista. Default None → zero efeito (o link
+    público não passa). Para remover: apagar este parâmetro e a chamada a `draw_code_grid`."""
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
 
@@ -113,6 +119,12 @@ def render_picking_list(rows: list[dict], *, title: str = "Lista de Separação"
     if not rows:
         c.setFont("Helvetica", 10)
         c.drawString(MARGIN, y, "Nenhum item para separar.")
+
+    # ⚠️ TEMPORÁRIO (teste do dono): seção de CODE128 em novas páginas após a lista.
+    if test_code_items:
+        from services.test_codes_service import draw_code_grid
+
+        draw_code_grid(c, test_code_items, title="Códigos de teste (bipagem)", start_new_page=True)
 
     c.save()
     return buf.getvalue()
