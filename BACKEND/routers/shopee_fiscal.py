@@ -70,10 +70,15 @@ async def download_order_nfe(
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
     if order.platform != "shopee":
         raise HTTPException(status_code=400, detail="Endpoint disponível apenas para pedidos Shopee")
-    if order.cmig_id:
-        cmig = (await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))).scalar_one_or_none()
-        if cmig:
-            await assert_cmig_access(cmig, current_user, db)
+    # FAIL-CLOSED: sem CMIG acessível, NEGA (nunca pula o escopo — senão qualquer galpão com o menu
+    # baixaria a NF-e, com PII, de pedido que não é dele — IDOR). cmig ausente/nulo → 403.
+    cmig = (
+        (await db.execute(select(CMIG).where(CMIG.id == order.cmig_id))).scalar_one_or_none()
+        if order.cmig_id else None
+    )
+    if cmig is None:
+        raise HTTPException(status_code=403, detail="Pedido sem CMIG acessível — download negado.")
+    await assert_cmig_access(cmig, current_user, db)
     account = (
         await db.execute(select(MarketplaceAccount).where(MarketplaceAccount.id == order.account_id))
     ).scalar_one_or_none()

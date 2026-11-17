@@ -75,7 +75,7 @@ async def recognize_shopee_invoice(order: Order, token: str, shop_id: int, db: A
     NO-OP (retorna False sem tocar nada) se já existe emissão PRÓPRIA viva (status processing/
     transmitida/authorized) — nunca mascara uma nota própria legítima. Idempotente. Retorna True se
     reconheceu (Shopee já emitiu)."""
-    from models.fiscal import CMIGFiscalConfig, Invoice
+    from models.fiscal import CMIGFiscalConfig, Invoice, InvoiceSefazLog
 
     # Emissão própria viva? então ela é a verdade — não reconhece a da Shopee (anti-mascaramento).
     if order.invoice_id:
@@ -109,14 +109,26 @@ async def recognize_shopee_invoice(order: Order, token: str, shop_id: int, db: A
     if env == "production" and order.nfe_key and order.nfe_status != "authorized":
         order.nfe_status = "authorized"
         changed = True
-    # Descarta o rascunho próprio órfão: só DESVINCULA (deletar arrisca FK sem cascade).
+    # Descarta o rascunho próprio órfão. DELETA o rascunho FRESCO (sem log SEFAZ → não transmitiu;
+    # sem filhos críticos) p/ não contaminar a contagem/soma fiscal da CMIG (o resumo fiscal não
+    # filtra status, então um draft solto inflaria o Financeiro). Se tiver log (transmissão revertida),
+    # não deleta: marca 'cancelled' + zera o total (sai do Financeiro, preserva a FK do log).
     if order.invoice_id:
         draft = (
             await db.execute(select(Invoice).where(Invoice.id == order.invoice_id))
         ).scalar_one_or_none()
         if draft and draft.status == "draft":
+            did = draft.id
             order.invoice_id = None
             changed = True
+            has_log = (
+                await db.execute(select(InvoiceSefazLog.id).where(InvoiceSefazLog.invoice_id == did).limit(1))
+            ).scalar_one_or_none()
+            if has_log:
+                draft.status = "cancelled"
+                draft.total_invoice = 0
+            else:
+                db.delete(draft)  # cascade items/events (ADR fresh draft, sem lote)
     if changed:
         await db.commit()
     return True
