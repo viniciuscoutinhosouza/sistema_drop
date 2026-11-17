@@ -6,6 +6,33 @@
 
 ---
 
+## 2026-11-17 — ESCOL — Separação: pedido ML "Pronto p/ Envio" não entrava na gaiola (defasagem) — ✅ EM PRODUÇÃO
+
+**Pedido do dono:** pedidos ML **#14517** e **#15132** (conta MIG) não entravam na gaiola aberta — erro
+"não estão Prontos p/ Envio", mas **estavam** no ML. **Diagnóstico (produção, read-only + ML ao vivo):** não
+era bug de lógica, era **defasagem de dados**. O ML retornava `ready_to_ship` há DIAS (substatus
+`ready_to_print`/`dropped_off`, logística `cross_docking`); nosso `shipment_status` só sincronizou às **03:26**
+hoje (job `sync_orders` 15min — pedidos criados 07/11 e 10/11, backlog antigo). O gate do add
+(`add_orders_to_cart`) exige `shipment_status=="ready_to_ship"` exato p/ bucket ML → com snapshot velho,
+recusava; o front mostrava a mensagem genérica "(não está Pronto p/ Envio?)". A LISTA é permissiva (mostra o
+pedido), por isso parecia que "devia dar".
+
+**Correção (commit `2164e8a`, EM PRODUÇÃO):** quando um pedido ML não está `ready_to_ship` no nosso banco, o
+add **re-consulta o ML AO VIVO uma vez** (`_live_refresh_ml_shipment`) e reavalia — fonte de verdade = ML.
+Best-effort (falha do ML mantém comportamento antigo), **sem commit próprio** (atomicidade da montagem),
+pacing 0.1s, **sem efeito de estoque** (não chama `confirm_dispatch`; FULL revelado pós-refresh é barrado).
+Passou a devolver **`skipped_reasons` {id: motivo}** e o front mostra o motivo REAL nos 2 callers
+(newCart/addToCart) — "falhar alto". Rede de fundo = job de 15 min (continua).
+
+**Governança:** pré-avaliação (consistency-auditor: SEGUIR + 5 ajustes — todos aplicados) + trio de
+fechamento **quality LIBERAR / consistency CONFORME / adr-checker APROVADO** (ADR-0005/0019/0022/0020/0026).
+Verificado em produção: deploy no servidor (commit `2164e8a`, build ok, PM2 online, `/docs` 200) + **prova
+NÃO-DESTRUTIVA**: forçei `handling` em memória nos 2 pedidos → refresh ao vivo → `ready_to_ship` →
+ADD_PASSARIA=True, sem persistir (banco intacto). Os 2 pedidos já estão ready no banco agora → **dono dá F5 e
+adiciona**. 32 testes separação ok; suíte 427 ok (2 pré-existentes). Emenda operacional da ADR-0005.
+
+---
+
 ## 2026-11-16 ~21:30 — ESCOL — Desfazer import equivocado do Bling na CMIG Vergina (141) — ✅ FEITO EM PRODUÇÃO
 
 **Pedido do dono:** importou produtos do Bling **errado** para a CMIG Vergina como **produtos CMIG**
