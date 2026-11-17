@@ -30,6 +30,12 @@ do pré-plano endereçados); adr-checker CONFORME (ADR-0005/0020/0026/0038). **V
 em `test_separation_test_codes.py`, folha de teste renderizou PDF 52KB com paginação. Escopo por galpão e LGPD
 OK (folha expõe só SKU/EAN/título, sem dado do comprador).
 
+**Deploy verificado (f5c8272):** `/docs`=200, rotas `take-photo-code-label.pdf`/`test-codes.pdf`/`take_photo_code`
+no OpenAPI, chunk novo do SeparationView no dist. Incidente resolvido no deploy: `git stash pop` cego no servidor
+aplicou um stash ANTIGO e colidiu em `tasks/sync_stock.py` (backend não subia, `/docs`=502); corrigido com
+`git checkout HEAD -- tasks/sync_stock.py` (stash antigo preservado). Lição: nunca `git stash pop` às cegas no
+servidor (há 2 stashes antigos lá).
+
 ---
 
 ## 2026-11-17 — fix(separacao): reconhece etiqueta já impressa fora da gaiola (pedido remanejado) + destrava separação

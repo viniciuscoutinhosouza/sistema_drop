@@ -6,7 +6,7 @@
 
 ---
 
-## 2026-11-17 — ESCOL — QR "Tirar foto" na bipagem + folha de QR por SKU (teste) — ✅ AUDITADO, aguardando deploy
+## 2026-11-17 — ESCOL — QR "Tirar foto" na bipagem + folha de QR por SKU (teste) — ✅ EM PRODUÇÃO (commit f5c8272)
 
 **Dois pedidos do dono (Separação / Carrinho Gaiola, modo Bipagem automática):**
 
@@ -22,8 +22,17 @@ o produto físico. Isolada (`services/test_codes_service.py` + rota própria) �
 
 **Auditoria trio: 0 CRITICAL/HIGH** (quality-guardian LIBERA; consistency-auditor APROVADO; adr-checker
 CONFORME). Verificado: py_compile, `npm run build`, pytest 432 ok (2 pré-existentes falham), +4 testes novos,
-folha renderizou PDF 52KB. **Pendente do dono:** deploy + testar na bancada (imprimir a folha, bipar TIRAR-FOTO
-com o quadro ligado, bipar um SKU, bipar FIM-FOTOS).
+folha renderizou PDF 52KB. **Deploy verificado:** servidor em f5c8272, `/docs`=200, rotas
+`take-photo-code-label.pdf`/`test-codes.pdf`/`take_photo_code` no OpenAPI, chunk novo do SeparationView no dist.
+**Pendente do dono:** testar na bancada (imprimir a folha, bipar TIRAR-FOTO com o quadro ligado, bipar um SKU,
+bipar FIM-FOTOS).
+
+⚠️ **Incidente no deploy (resolvido):** `git stash pop` cego no servidor aplicou um STASH ANTIGO não relacionado
+(`stash@{0}: WIP on 5b69f39`) e espalhou marcadores de conflito em `BACKEND/tasks/sync_stock.py` → backend não
+subia (SyntaxError, `/docs`=502). Corrigido com `git checkout HEAD -- BACKEND/tasks/sync_stock.py` (restaura a
+versão committada; stash preservado). **Lição:** há 2 stashes ANTIGOS no servidor (`5b69f39` e
+`deploy-76e5e1f-...2026-05-28`) — NUNCA fazer `git stash pop` às cegas no servidor; o MEMO.md é rotina do repo
+LOCAL, no servidor usar só `git pull` (sem stash de MEMO).
 
 ---
 
