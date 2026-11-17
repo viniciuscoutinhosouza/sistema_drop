@@ -157,13 +157,17 @@ def _cliente(person: Person) -> Cliente:
         indicador, ie = 9, None
     # Limites do schema da NF-e 4.00 (rejeição cStat 225 se estourar): xLgr/xCpl/xBairro/xMun = 60,
     # nro = 60. O `full_address` da Shopee vem inteiro no logradouro (pode passar de 60) — trunca aqui.
-    # O município/UF/CEP autoritativos vão em campos próprios (cMun/UF/CEP), então truncar o xLgr não
-    # perde a informação fiscal relevante.
+    # `.strip()` DEPOIS de truncar: o pattern de string da NF-e PROÍBE espaço no início/fim, e cortar
+    # em 60 pode deixar um espaço no fim (ex.: "...Rio de Janeiro, ") → cStat 225. O município/UF/CEP
+    # autoritativos vão em campos próprios (cMun/UF/CEP), então truncar o xLgr não perde o essencial.
+    def _fld(v, n=60):
+        return (str(v or "")[:n]).strip()
+
     end = Endereco(
-        logradouro=(person.street or "")[:60], numero=(person.address_number or "S/N")[:60],
-        complemento=(person.complement[:60] if person.complement else None),
-        bairro=(person.neighborhood or "")[:60],
-        municipio_ibge=person.ibge_code, municipio_nome=(person.city or "")[:60],
+        logradouro=_fld(person.street), numero=_fld(person.address_number or "S/N"),
+        complemento=(_fld(person.complement) or None),
+        bairro=_fld(person.neighborhood),
+        municipio_ibge=person.ibge_code, municipio_nome=_fld(person.city),
         uf=(person.state or "").upper(), cep=_digits(person.zip_code),
     )
     return Cliente(
