@@ -265,10 +265,9 @@
             <div v-if="sa.camError" class="text-danger small mt-1">{{ sa.camError }}</div>
             <div class="small text-muted mt-1">
               Tirar foto: <strong>{{ sa.takePhotoCode || '—' }}</strong>
-              <a href="#" class="ml-1" @click.prevent="printTakePhotoCode"><i class="fas fa-print mr-1"></i>Imprimir</a>
               <span class="mx-2">·</span>
               Fim das fotos: <strong>{{ sa.finishCode || '—' }}</strong>
-              <a href="#" class="ml-1" @click.prevent="printFinishCode"><i class="fas fa-print mr-1"></i>Imprimir</a>
+              <a href="#" class="ml-2" @click.prevent="printPhotoCodes"><i class="fas fa-print mr-1"></i>Imprimir os dois (mesma página)</a>
               <a v-if="isAdmin" href="#" class="ml-2" @click.prevent="fcModal.show = true"><i class="fas fa-cog mr-1"></i>Configurar</a>
             </div>
           </div>
@@ -994,6 +993,7 @@ async function printOrderLabelById(orderId) {
 }
 function printFinishCode() { openPdf('/separation/finish-code-label.pdf', 'get') }
 function printTakePhotoCode() { openPdf('/separation/take-photo-code-label.pdf', 'get') }
+function printPhotoCodes() { openPdf('/separation/photo-codes-label.pdf', 'get') }  // tirar + fim na mesma página
 async function saveFinishCode() {
   const code = (fcModal.code || '').trim()
   const takeCode = (fcModal.takeCode || '').trim()

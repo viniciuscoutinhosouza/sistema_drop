@@ -74,7 +74,8 @@ async def public_picking_list(token: str, db: AsyncSession = Depends(get_db)):
             )
         ).all()
     ]
-    return await sep.picking_list_pdf({"order_ids": oids}, current_user=actor, db=db)
+    # TEMPORÁRIO (teste do dono): a lista do link externo também traz os códigos abaixo.
+    return await sep.picking_list_pdf({"order_ids": oids, "include_test_codes": True}, current_user=actor, db=db)
 
 
 @router.get("/{token}/orders/{order_id}/shopee-label")

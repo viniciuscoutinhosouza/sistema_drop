@@ -1069,9 +1069,10 @@ async def set_separation_config(
     return {"ok": True, "finish_photos_code": eff_finish, "take_photo_code": eff_take}
 
 
-def _render_code_label_pdf(title: str, subtitle: str, code: str | None) -> bytes:
-    """Página A4 com um código grande em CODE128 + QR (operador bipa da bancada).
-    Ponto único reusado pelos labels de FIM das fotos e de TIRAR foto."""
+def _render_code_label_pdf(blocks: list[tuple[str, str, str | None]]) -> bytes:
+    """Página A4 com um ou mais códigos (CODE128 + QR) empilhados — operador bipa da bancada.
+    `blocks`: [(title, subtitle, code)]. 1 bloco = centralizado; 2+ = divididos em faixas (mesma
+    página). Ponto único reusado por FIM, TIRAR e pelo label combinado dos dois."""
     import io as _io2
 
     from reportlab.lib.pagesizes import A4 as _A4
@@ -1083,24 +1084,32 @@ def _render_code_label_pdf(title: str, subtitle: str, code: str | None) -> bytes
 
     buf = _io2.BytesIO()
     c = _canvas.Canvas(buf, pagesize=_A4)
-    w, _h = _A4
+    w, h = _A4
     cx = w / 2
-    y = 250 * _mm
-    c.setFont("Helvetica-Bold", 16)
-    c.drawCentredString(cx, y, title)
-    c.setFont("Helvetica", 10)
-    c.drawCentredString(cx, y - 7 * _mm, subtitle)
-    c.setFont("Helvetica-Bold", 22)
-    c.drawCentredString(cx, y - 22 * _mm, code or "—")
+    n = max(1, len(blocks))
+    slot = (h - 20 * _mm) / n  # faixa vertical por bloco
 
-    png128 = _barcode_png(code or "", "code128")
-    if png128:
-        c.drawImage(_ImageReader(_io2.BytesIO(png128)), cx - 60 * _mm, y - 55 * _mm,
-                    width=120 * _mm, height=25 * _mm, preserveAspectRatio=True, mask="auto")
-    qr_png = _qr_png(code or "")
-    if qr_png:
-        c.drawImage(_ImageReader(_io2.BytesIO(qr_png)), cx - 25 * _mm, y - 100 * _mm,
-                    width=50 * _mm, height=50 * _mm, preserveAspectRatio=True, mask="auto")
+    for i, (title, subtitle, code) in enumerate(blocks):
+        top = h - 10 * _mm - i * slot  # topo da faixa deste bloco
+        c.setFont("Helvetica-Bold", 15)
+        c.drawCentredString(cx, top - 10 * _mm, title)
+        c.setFont("Helvetica", 9)
+        c.drawCentredString(cx, top - 16 * _mm, subtitle)
+        c.setFont("Helvetica-Bold", 20)
+        c.drawCentredString(cx, top - 28 * _mm, code or "—")
+        png128 = _barcode_png(code or "", "code128")
+        if png128:
+            c.drawImage(_ImageReader(_io2.BytesIO(png128)), cx - 55 * _mm, top - 54 * _mm,
+                        width=110 * _mm, height=22 * _mm, preserveAspectRatio=True, mask="auto")
+        qr_png = _qr_png(code or "")
+        if qr_png:
+            c.drawImage(_ImageReader(_io2.BytesIO(qr_png)), cx - 19 * _mm, top - 95 * _mm,
+                        width=38 * _mm, height=38 * _mm, preserveAspectRatio=True, mask="auto")
+        if i < n - 1:  # linha divisória entre blocos
+            c.setStrokeColorRGB(0.8, 0.8, 0.8)
+            c.setLineWidth(0.5)
+            c.line(20 * _mm, top - slot + 4 * _mm, w - 20 * _mm, top - slot + 4 * _mm)
+            c.setStrokeColorRGB(0, 0, 0)
     c.showPage()
     c.save()
     return buf.getvalue()
@@ -1116,9 +1125,7 @@ async def finish_code_label(
 
     code = await get_config(db, _FINISH_CODE_KEY)
     pdf = _render_code_label_pdf(
-        "FINALIZAR FOTOS — Separação",
-        "Bipe este código para encerrar as fotos do pedido.",
-        code,
+        [("FINALIZAR FOTOS — Separação", "Bipe este código para encerrar as fotos do pedido.", code)]
     )
     return Response(
         content=pdf, media_type="application/pdf",
@@ -1136,13 +1143,31 @@ async def take_photo_code_label(
 
     code = await get_config(db, _TAKE_PHOTO_KEY)
     pdf = _render_code_label_pdf(
-        "TIRAR FOTO — Separação",
-        "Com o quadro de fotos ligado, bipe este código para bater uma foto.",
-        code,
+        [("TIRAR FOTO — Separação", "Com o quadro de fotos ligado, bipe este código para bater uma foto.", code)]
     )
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": 'inline; filename="codigo-tirar-foto.pdf"'},
+    )
+
+
+@router.get("/photo-codes-label.pdf")
+async def photo_codes_label(
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """PDF ÚNICO com TIRAR foto e FIM das fotos na MESMA página (CODE128 + QR cada)."""
+    from services.app_config_service import get_config
+
+    take = await get_config(db, _TAKE_PHOTO_KEY)
+    finish = await get_config(db, _FINISH_CODE_KEY)
+    pdf = _render_code_label_pdf([
+        ("TIRAR FOTO — Separação", "Com o quadro de fotos ligado, bipe para bater uma foto.", take),
+        ("FINALIZAR FOTOS — Separação", "Bipe para encerrar as fotos do pedido.", finish),
+    ])
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="codigos-foto.pdf"'},
     )
 
 
