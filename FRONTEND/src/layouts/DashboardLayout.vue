@@ -15,6 +15,9 @@
     <!-- Footer -->
     <footer class="main-footer">
       <strong>MIG ECOMMERCE</strong> &copy; {{ new Date().getFullYear() }}
+      <a href="https://qz.io/download/" target="_blank" rel="noopener" class="ml-3">
+        <i class="fas fa-print mr-1"></i>Baixar QZ Tray (impressão direta)
+      </a>
       <div class="float-right d-none d-sm-inline-block">
         <b>Versão</b> 1.0.0
       </div>
