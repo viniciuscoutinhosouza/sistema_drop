@@ -45,6 +45,16 @@ class Warehouse(Base):
     pg_requires_prepaid = Column(Boolean, nullable=False, server_default=text("0"))
     manual_sale_requires_payment = Column(Boolean, nullable=False, server_default=text("0"))
     notes = Column(String(2000))
+    # Config de IMPRESSÃO por galpão (migration 188) — Separação/Carrinho Gaiola, modo Bipagem automática.
+    # Nomes de impressora = DEFAULT do galpão (QZ Tray enxerga por nome no PC de despacho); o front faz
+    # override por-máquina via localStorage. Formato/tamanho e auto-ações ao concluir a bipagem.
+    print_label_printer = Column(String(200))
+    print_danfe_printer = Column(String(200))
+    print_label_format = Column(String(10), server_default=text("'pdf'"))       # 'pdf' | 'zpl'
+    print_label_pdf_size = Column(String(10), server_default=text("'10x15'"))    # 'a4' | '10x15'
+    print_auto_label = Column(Boolean, nullable=False, server_default=text("0"))
+    print_auto_danfe = Column(Boolean, nullable=False, server_default=text("0"))
+    print_auto_photo = Column(Boolean, nullable=False, server_default=text("0"))
     # Branding por Galpão (migration 141): logo + até 5 cores de tema (hex #RRGGBB). NULL = padrão MIG.
     logo_url = Column(String(500))
     theme_sidebar = Column(String(7))       # fundo da barra lateral

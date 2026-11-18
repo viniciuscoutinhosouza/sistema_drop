@@ -268,7 +268,10 @@
               <span class="mx-2">·</span>
               Fim das fotos: <strong>{{ sa.finishCode || '—' }}</strong>
               <a href="#" class="ml-2" @click.prevent="printPhotoCodes"><i class="fas fa-print mr-1"></i>Imprimir os dois (mesma página)</a>
-              <a v-if="isAdmin" href="#" class="ml-2" @click.prevent="fcModal.show = true"><i class="fas fa-cog mr-1"></i>Configurar</a>
+              <a v-if="isAdmin" href="#" class="ml-2" @click.prevent="fcModal.show = true"><i class="fas fa-cog mr-1"></i>Configurar códigos</a>
+              <a href="#" class="ml-2" @click.prevent="openPrintConfig"><i class="fas fa-print mr-1"></i>Impressão (QZ)
+                <span class="badge" :class="qz.connected.value ? 'badge-success' : 'badge-secondary'">{{ qz.connected.value ? 'conectado' : 'off' }}</span>
+              </a>
             </div>
           </div>
           <div v-if="sa.currentOrder" class="text-center px-2">
@@ -424,6 +427,78 @@
       </div>
     </div>
 
+    <!-- Modal: configuração de IMPRESSÃO (QZ Tray) por galpão -->
+    <div v-if="pcModal.show" class="modal-backdrop-custom" @click.self="pcModal.show = false">
+      <div class="card shadow" style="width:520px;max-width:95vw">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <strong><i class="fas fa-print mr-2"></i>Impressão direta (QZ Tray)</strong>
+          <span class="badge" :class="qz.connected.value ? 'badge-success' : 'badge-danger'">
+            QZ {{ qz.connected.value ? 'conectado' : 'desconectado' }}
+          </span>
+        </div>
+        <div class="card-body">
+          <p v-if="!qz.connected.value" class="small text-danger mb-2">
+            <i class="fas fa-exclamation-triangle mr-1"></i>Abra o <strong>QZ Tray</strong> no PC de despacho. Sem ele, não dá para listar impressoras nem imprimir direto.
+            <a href="#" @click.prevent="openPrintConfig">Tentar conectar</a>
+          </p>
+          <p class="small text-muted mb-2">A impressora é do PC atual (salva localmente); o resto é o default do galpão.</p>
+
+          <div class="form-row">
+            <div class="form-group col-6">
+              <label class="small font-weight-bold mb-1">Impressora da Etiqueta</label>
+              <select v-model="printConfig.label_printer" class="form-control form-control-sm" @change="savePrintConfig">
+                <option value="">— escolher —</option>
+                <option v-for="p in qz.printers.value" :key="'l'+p" :value="p">{{ p }}</option>
+              </select>
+            </div>
+            <div class="form-group col-6">
+              <label class="small font-weight-bold mb-1">Impressora da DANFE</label>
+              <select v-model="printConfig.danfe_printer" class="form-control form-control-sm" @change="savePrintConfig">
+                <option value="">— escolher —</option>
+                <option v-for="p in qz.printers.value" :key="'d'+p" :value="p">{{ p }}</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col-6">
+              <label class="small font-weight-bold mb-1">Formato da etiqueta</label>
+              <select v-model="printConfig.label_format" class="form-control form-control-sm" @change="savePrintConfig">
+                <option value="pdf">PDF</option>
+                <option value="zpl">ZPL (Zebra térmica)</option>
+              </select>
+            </div>
+            <div class="form-group col-6" v-if="printConfig.label_format === 'pdf'">
+              <label class="small font-weight-bold mb-1">Tamanho do PDF</label>
+              <select v-model="printConfig.label_pdf_size" class="form-control form-control-sm" @change="savePrintConfig">
+                <option value="10x15">10 × 15 cm</option>
+                <option value="a4">A4</option>
+              </select>
+            </div>
+          </div>
+
+          <hr class="my-2" />
+          <label class="small font-weight-bold mb-1 d-block">Automático ao concluir a bipagem de um pedido:</label>
+          <div class="custom-control custom-switch mb-1">
+            <input type="checkbox" class="custom-control-input" id="pc-auto-label" v-model="printConfig.auto_label" @change="savePrintConfig">
+            <label class="custom-control-label small" for="pc-auto-label">Imprimir a <strong>Etiqueta</strong> direto (não vale p/ Shopee — gerar = despachar)</label>
+          </div>
+          <div class="custom-control custom-switch mb-1">
+            <input type="checkbox" class="custom-control-input" id="pc-auto-danfe" v-model="printConfig.auto_danfe" @change="savePrintConfig">
+            <label class="custom-control-label small" for="pc-auto-danfe">Imprimir a <strong>DANFE</strong> direto (só com NF-e autorizada)</label>
+          </div>
+          <div class="custom-control custom-switch mb-1">
+            <input type="checkbox" class="custom-control-input" id="pc-auto-photo" v-model="printConfig.auto_photo" @change="savePrintConfig">
+            <label class="custom-control-label small" for="pc-auto-photo">Tirar a <strong>foto</strong> e concluir automaticamente (hands-free)</label>
+          </div>
+        </div>
+        <div class="card-footer d-flex justify-content-between">
+          <button class="btn btn-sm btn-outline-secondary" :disabled="pcModal.loading" @click="testPrint"><i class="fas fa-vial mr-1"></i>Testar impressão</button>
+          <button class="btn btn-sm btn-primary" @click="pcModal.show = false">Fechar</button>
+        </div>
+      </div>
+    </div>
+
     <SeparationHelpModal v-if="showHelp" @close="showHelp = false" />
   </div>
 </template>
@@ -434,6 +509,7 @@ import { formatDate as fmtBrDate, formatDateTime as fmtBrDateTime } from '@/util
 import { openAndSaveBlobResponse, saveLabelBoth } from '@/utils/download'
 import api from '@/composables/useApi'
 import { useToast } from '@/composables/useToast'
+import { useQz } from '@/composables/useQz'
 import { platformLogo, shippingModeStyle, PLATFORMS } from '@/utils/constants'
 import { useAuthStore } from '@/stores/auth'
 import SeparationHelpModal from '@/components/separation/SeparationHelpModal.vue'
@@ -442,6 +518,17 @@ const toast = useToast()
 const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.user?.role === 'admin')
 const showHelp = ref(false)
+
+// ── Impressão direta (QZ Tray) + config por galpão ──
+const qz = useQz()
+const printConfig = reactive({
+  warehouse_id: null, label_printer: '', danfe_printer: '', label_format: 'pdf',
+  label_pdf_size: '10x15', auto_label: false, auto_danfe: false, auto_photo: false,
+})
+const pcModal = reactive({ show: false, loading: false })
+// Override da impressora por-MÁQUINA (o nome QZ é local do PC; galpão guarda só o default).
+function effLabelPrinter() { return localStorage.getItem('qz_label_printer') || printConfig.label_printer || '' }
+function effDanfePrinter() { return localStorage.getItem('qz_danfe_printer') || printConfig.danfe_printer || '' }
 
 // ── Mapa de shipment_status (igual à Gestão de Pedidos) ──
 const SHIPMENT_MAP = {
@@ -641,11 +728,113 @@ async function openCart(id, { refresh = false } = {}) {
     const { data } = await api.get(`/separation/carts/${id}`)
     activeCart.value = data
     focusFirstBip()
+    if (!refresh && wasId !== id) loadPrintConfig()   // carrega a config de impressão do galpão
     if (data.mode === 'scan_auto') {
       if (!refresh && wasId !== id) await initScanAuto()   // abertura nova → inicia câmera/estado
       else { await nextTick(); scanInputEl.value?.focus() } // refresh → mantém estado
     } else { saStopCamera(); resetSaOrder() }
   } catch { toast.error('Erro ao abrir gaiola') }
+}
+
+// ── Config de impressão (QZ Tray) por galpão ──
+async function loadPrintConfig() {
+  try {
+    const { data } = await api.get('/separation/print-config')
+    Object.assign(printConfig, data)
+  } catch { /* galpão sem config ainda / admin multi-galpão → mantém defaults */ }
+}
+async function openPrintConfig() {
+  pcModal.show = true
+  pcModal.loading = true
+  await loadPrintConfig()
+  try { await qz.listPrinters() } catch { /* QZ offline — dropdown fica vazio, mostra status */ }
+  pcModal.loading = false
+}
+async function savePrintConfig() {
+  // Salva o default no galpão + guarda a impressora escolhida por-máquina (localStorage).
+  try {
+    const { data } = await api.put('/separation/print-config', {
+      label_printer: printConfig.label_printer, danfe_printer: printConfig.danfe_printer,
+      label_format: printConfig.label_format, label_pdf_size: printConfig.label_pdf_size,
+      auto_label: printConfig.auto_label, auto_danfe: printConfig.auto_danfe, auto_photo: printConfig.auto_photo,
+    })
+    Object.assign(printConfig, data)
+    if (printConfig.label_printer) localStorage.setItem('qz_label_printer', printConfig.label_printer)
+    if (printConfig.danfe_printer) localStorage.setItem('qz_danfe_printer', printConfig.danfe_printer)
+  } catch (e) { toast.error(e.response?.data?.detail || 'Erro ao salvar config de impressão') }
+}
+async function testPrint() {
+  // Conteúdo DUMMY — NUNCA um pedido real (evita impressão/despacho acidental).
+  try {
+    const printer = effLabelPrinter()
+    if (!printer) return toast.warning('Escolha a impressora da etiqueta primeiro.')
+    if (printConfig.label_format === 'zpl') {
+      await qz.printRaw(printer, '^XA^CF0,40^FO40,60^FDTESTE QZ - Sistema Drop^FS^FO40,120^BCN,100,Y,N,N^FDTESTE123^FS^XZ')
+    } else {
+      await qz.printHtml(printer, '<div style="font-family:sans-serif"><h3>TESTE QZ — Sistema Drop</h3><p>Impressora da etiqueta OK.</p></div>', printConfig.label_pdf_size)
+    }
+    toast.success('Teste enviado para a impressora.')
+  } catch (e) { toast.error('Falha no teste: ' + (e.message || 'QZ Tray')) }
+}
+
+// ── Auto-impressão direta (QZ) ao concluir a bipagem ──
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onloadend = () => resolve(String(r.result).split(',')[1] || '')
+    r.onerror = reject
+    r.readAsDataURL(blob)
+  })
+}
+async function fetchBase64(url, params) {
+  const resp = await api.get(url, { responseType: 'blob', params: params || undefined })
+  return await blobToBase64(resp.data)
+}
+async function fetchText(url, params) {
+  const resp = await api.get(url, { responseType: 'text', params: params || undefined })
+  return resp.data
+}
+// Imprime a etiqueta no 1º scan. Shopee NUNCA via QZ (gerar etiqueta = despachar — BLOQUEADOR do
+// auditor): cai no fluxo normal por ramo próprio. Sempre busca o PDF (marca label_printed p/ o gate +
+// disponibiliza PDF); se formato=zpl, imprime o ZPL cru.
+async function autoPrintLabel(orderId) {
+  const o = activeCart.value?.orders?.find(x => x.id === orderId)
+  const cartId = activeCart.value.id
+  if (printConfig.auto_label && o?.platform !== 'shopee' && effLabelPrinter()) {
+    try {
+      const pdfB64 = await fetchBase64(`/separation/carts/${cartId}/labels.pdf`, { order_id: orderId, fmt: 'pdf', layout: printConfig.label_pdf_size })
+      if (printConfig.label_format === 'zpl') {
+        const zpl = await fetchText(`/separation/carts/${cartId}/labels.pdf`, { order_id: orderId, fmt: 'zpl2' })
+        await qz.printRaw(effLabelPrinter(), zpl)
+      } else {
+        await qz.printPdfBase64(effLabelPrinter(), pdfB64, printConfig.label_pdf_size)
+      }
+      toast.success('Etiqueta enviada direto para a impressora.')
+      return
+    } catch (e) {
+      toast.error('Etiqueta (QZ) falhou: ' + (e.message || '') + ' — abrindo no modo normal.')
+    }
+  }
+  // Fluxo atual (browser) p/ ML/manual. Shopee cai aqui também, mas labels.pdf falha alto (400) p/
+  // Shopee — a etiqueta Shopee é despachada MANUALMENTE (ação própria), nunca por este caminho auto.
+  await printOrderLabelById(orderId)
+}
+// DANFE ao concluir — só com NF-e AUTORIZADA (falha alto, não imprime em branco). DANFE sempre A4.
+async function autoPrintDanfe(orderId) {
+  if (!printConfig.auto_danfe) return
+  const o = activeCart.value?.orders?.find(x => x.id === orderId)
+  // Nota válida = tem chave/url/autorizada E NÃO está cancelada/rejeitada (não imprime DANFE inválida).
+  const invalid = ['cancelled', 'canceled', 'rejected', 'denied', 'error']
+  const authorized = o && (o.nfe_status === 'authorized' || o.nfe_url || o.nfe_key) && !invalid.includes(o.nfe_status)
+  if (!authorized) { toast.info(`DANFE do #${orderId} não impressa: NF-e ainda não autorizada.`); return }
+  const printer = effDanfePrinter()
+  if (!printer) { toast.warning('Defina a impressora da DANFE na config de impressão.'); return }
+  try {
+    const url = o.platform === 'shopee' ? `/shopee/orders/${orderId}/nfe` : `/separation/orders/${orderId}/danfe`
+    const b64 = await fetchBase64(url, null)
+    await qz.printPdfBase64(printer, b64, 'a4')
+    toast.success('DANFE enviada direto para a impressora.')
+  } catch (e) { toast.error('DANFE (QZ) falhou: ' + (e.message || '')) }
 }
 async function refreshCart() { if (activeCart.value) await openCart(activeCart.value.id, { refresh: true }) }
 
@@ -945,22 +1134,41 @@ async function saLocate(code) {
     if (!sa.currentOrder) {
       sa.currentOrder = data.order_id
       sa.buyerName = data.buyer_name || ''
-      if (!data.label_printed) { toast.info(`Pedido #${data.order_id} — imprimindo etiqueta…`); await printOrderLabelById(data.order_id) }
     }
     sa.state = 'photos'
     await refreshCart()
+    // A etiqueta só LIBERA com 100% bipado (gate _scan_blocks_label). Por isso imprime ao COMPLETAR o
+    // pedido — aí o gate passa e o /separate seguinte não barra. (Antes imprimia no 1º scan → 422 em
+    // pedido multi-item.) Vale p/ QZ (auto_label) e p/ o fluxo normal (browser) via autoPrintLabel.
+    if (sa.orderComplete && !data.label_printed) {
+      toast.info(`Pedido #${sa.currentOrder} — imprimindo etiqueta…`)
+      await autoPrintLabel(sa.currentOrder)
+    }
+    // auto_photo: ao completar, tira 1 foto (exige câmera pronta) e conclui automaticamente (hands-free).
+    if (sa.orderComplete && printConfig.auto_photo) {
+      const ok = await saCapture()
+      if (!ok) { toast.warning('Câmera não pronta — fotografe manualmente e bipe o código de FIM.'); await nextTick(); scanInputEl.value?.focus(); return }
+      await saFinalizeOrder()
+      return
+    }
     toast.success(`Item bipado (${sa.scanned}/${sa.expected}). Fotografe; bipe "${sa.finishCode}" p/ encerrar.`)
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Produto não encontrado na gaiola')
   } finally { sa.busy = false; await nextTick(); scanInputEl.value?.focus() }
 }
+// Resolve true SÓ se capturou um frame VÁLIDO (câmera pronta). Evita foto em branco — que é a
+// prova de separação (LGPD) e, no auto_photo, dispararia separar+NF-e hands-free com imagem vazia.
 function saCapture() {
-  const v = saVideoEl.value, c = saCanvasEl.value
-  if (!v || !c) return
-  const w = v.videoWidth || 640, h = v.videoHeight || 480
-  c.width = w; c.height = h
-  c.getContext('2d').drawImage(v, 0, 0, w, h)
-  c.toBlob(b => { if (b) sa.photos.push({ blob: b, url: URL.createObjectURL(b) }) }, 'image/jpeg', 0.85)
+  return new Promise((resolve) => {
+    const v = saVideoEl.value, c = saCanvasEl.value
+    if (!v || !c || !v.videoWidth || sa.camError) return resolve(false)
+    const w = v.videoWidth, h = v.videoHeight || 480
+    c.width = w; c.height = h
+    c.getContext('2d').drawImage(v, 0, 0, w, h)
+    c.toBlob(b => {
+      if (b) { sa.photos.push({ blob: b, url: URL.createObjectURL(b) }); resolve(true) } else resolve(false)
+    }, 'image/jpeg', 0.85)
+  })
 }
 async function saFinishPhotos() {
   if (sa.orderComplete) await saFinalizeOrder()
@@ -969,20 +1177,22 @@ async function saFinishPhotos() {
 async function saFinalizeOrder() {
   if (!sa.photos.length) { toast.error('Tire ao menos uma foto antes de finalizar.'); return }
   sa.busy = true
+  const orderId = sa.currentOrder
   try {
     const fd = new FormData()
     sa.photos.forEach((p, i) => fd.append('files', p.blob, `foto-${i + 1}.jpg`))
-    await api.post(`/separation/carts/${activeCart.value.id}/orders/${sa.currentOrder}/separate`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+    await api.post(`/separation/carts/${activeCart.value.id}/orders/${orderId}/separate`, fd, { headers: { 'Content-Type': 'multipart/form-data' } })
     try {
-      const { data } = await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, { order_ids: [sa.currentOrder] })
+      const { data } = await api.post(`/separation/carts/${activeCart.value.id}/emit-nfe`, { order_ids: [orderId] })
       const r = (data.results || [])[0]
-      if (r?.error) toast.warning(`Pedido #${sa.currentOrder}: NF-e NÃO emitida — ${r.error}`)
-      else if (r?.already) toast.info(`Pedido #${sa.currentOrder} separado — NF-e já existia.`)
-      else if (r?.skipped) toast.warning(`Pedido #${sa.currentOrder} separado, NF-e pulada: ${r.skipped}`)
-      else toast.success(`Pedido #${sa.currentOrder} separado e NF-e emitida.`)
-    } catch (e) { toast.warning(`Pedido #${sa.currentOrder} separado, mas a NF-e falhou: ${e.response?.data?.detail || ''}`) }
-    resetSaOrder()
+      if (r?.error) toast.warning(`Pedido #${orderId}: NF-e NÃO emitida — ${r.error}`)
+      else if (r?.already) toast.info(`Pedido #${orderId} separado — NF-e já existia.`)
+      else if (r?.skipped) toast.warning(`Pedido #${orderId} separado, NF-e pulada: ${r.skipped}`)
+      else toast.success(`Pedido #${orderId} separado e NF-e emitida.`)
+    } catch (e) { toast.warning(`Pedido #${orderId} separado, mas a NF-e falhou: ${e.response?.data?.detail || ''}`) }
     await refreshCart()
+    await autoPrintDanfe(orderId)   // DANFE direto (QZ), só se NF-e autorizada
+    resetSaOrder()
   } catch (e) {
     toast.error(e.response?.data?.detail || 'Erro ao finalizar a separação')
   } finally { sa.busy = false; await nextTick(); scanInputEl.value?.focus() }

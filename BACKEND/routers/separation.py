@@ -1069,6 +1069,81 @@ async def set_separation_config(
     return {"ok": True, "finish_photos_code": eff_finish, "take_photo_code": eff_take}
 
 
+# ── Config de IMPRESSÃO por GALPÃO (QZ Tray) — migration 188 ───────────────────
+# ATENÇÃO: diferente do /config acima (que é GLOBAL/app_config), estas rotas são WAREHOUSE-SCOPED.
+_PRINT_FORMATS = ("pdf", "zpl")
+_PRINT_SIZES = ("a4", "10x15")
+
+
+def _ser_print_config(wh: Warehouse) -> dict:
+    return {
+        "warehouse_id": wh.id,
+        "warehouse_name": wh.name,
+        "label_printer": wh.print_label_printer,
+        "danfe_printer": wh.print_danfe_printer,
+        "label_format": wh.print_label_format or "pdf",
+        "label_pdf_size": wh.print_label_pdf_size or "10x15",
+        "auto_label": bool(wh.print_auto_label),
+        "auto_danfe": bool(wh.print_auto_danfe),
+        "auto_photo": bool(wh.print_auto_photo),
+    }
+
+
+async def _resolve_print_warehouse(db: AsyncSession, user: User, warehouse_id: int | None) -> Warehouse:
+    """Galpão da config de impressão: operador = o próprio; admin = warehouse_id (ou único), fail-loud."""
+    wh_id = await _resolve_cart_warehouse(db, user, {"warehouse_id": warehouse_id})
+    wh = (await db.execute(select(Warehouse).where(Warehouse.id == wh_id))).scalar_one_or_none()
+    if not wh:
+        raise HTTPException(status_code=404, detail="Galpão não encontrado")
+    return wh
+
+
+@router.get("/print-config")
+async def get_print_config(
+    warehouse_id: int | None = Query(None),
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Config de impressão (QZ Tray) do galpão — DEFAULT para a gaiola (Bipagem automática)."""
+    wh = await _resolve_print_warehouse(db, current_user, warehouse_id)
+    return _ser_print_config(wh)
+
+
+@router.put("/print-config")
+async def set_print_config(
+    body: dict,
+    current_user: User = Depends(require_menu_permission("separacao")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Salva a config de impressão no galpão (auto-save). Nomes de impressora = default do galpão
+    (o front faz override por-máquina). Valida formato/tamanho. Fail-loud em valor inválido."""
+    wh = await _resolve_print_warehouse(db, current_user, body.get("warehouse_id"))
+
+    if "label_format" in body:
+        fmt = (body.get("label_format") or "").strip().lower()
+        if fmt not in _PRINT_FORMATS:
+            raise HTTPException(status_code=422, detail="label_format deve ser 'pdf' ou 'zpl'")
+        wh.print_label_format = fmt
+    if "label_pdf_size" in body:
+        size = (body.get("label_pdf_size") or "").strip().lower()
+        if size not in _PRINT_SIZES:
+            raise HTTPException(status_code=422, detail="label_pdf_size deve ser 'a4' ou '10x15'")
+        wh.print_label_pdf_size = size
+    if "label_printer" in body:
+        wh.print_label_printer = (body.get("label_printer") or "").strip()[:200] or None
+    if "danfe_printer" in body:
+        wh.print_danfe_printer = (body.get("danfe_printer") or "").strip()[:200] or None
+    if "auto_label" in body:
+        wh.print_auto_label = bool(body.get("auto_label"))
+    if "auto_danfe" in body:
+        wh.print_auto_danfe = bool(body.get("auto_danfe"))
+    if "auto_photo" in body:
+        wh.print_auto_photo = bool(body.get("auto_photo"))
+
+    await db.commit()
+    return _ser_print_config(wh)
+
+
 def _render_code_label_pdf(blocks: list[tuple[str, str, str | None]]) -> bytes:
     """Página A4 com um ou mais códigos (CODE128 + QR) empilhados — operador bipa da bancada.
     `blocks`: [(title, subtitle, code)]. 1 bloco = centralizado; 2+ = divididos em faixas (mesma
