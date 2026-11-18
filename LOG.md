@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-11-17 — feat(separacao): impressão direta via QZ Tray + config por galpão (Fase 1)
+
+Pedido do dono: na gaiola (Bipagem automática), definir impressora da Etiqueta e da DANFE, formato
+(ZPL / PDF 10x15 / PDF A4), e marcar o que sai AUTOMÁTICO ao concluir a bipagem (etiqueta / DANFE / foto),
+enviando direto para a impressora. Decisão: **QZ Tray** (agente local, único jeito de mandar ZPL direto).
+
+**Backend:** migration 188 (7 colunas em `warehouses`: impressora etiqueta/danfe, formato, tamanho, 3
+auto-flags). `GET/PUT /separation/print-config` warehouse-scoped (admin exige warehouse_id, fail-loud).
+
+**Frontend:** composable `useQz` (conecta QZ, lista impressoras, imprime ZPL cru + PDF; NÃO loga payload —
+LGPD). Modal "Impressão (QZ)" na gaiola (dropdowns, formato, tamanho, 3 switches, Testar). Impressora com
+override por-máquina (localStorage); resto é default do galpão. Link de download do QZ Tray no rodapé.
+Auto ao concluir: etiqueta impressa ao COMPLETAR o pedido (passa o gate 100%-bipado — corrige multi-item);
+DANFE só com NF-e autorizada (exclui cancelada/rejeitada); foto automática hands-free (exige câmera pronta,
+sem foto em branco). **Shopee NUNCA auto-imprime etiqueta** (gerar = despachar) — guard no front + 400 no
+backend.
+
+**Trio de auditoria: 0 CRITICAL/HIGH.** BLOQUEADOR (auto-despacho Shopee) mitigado; ALTO (timing do
+auto_label multi-item) corrigido. Fase 1 QZ = conexão não-assinada (prompt "permitir+lembrar"). Follow-ups
+Fase 2: assinatura por certificado (silêncio total), permissão dedicada p/ WRITE da config, persistência
+durável PDF+ZPL. Verificado: pytest 436 ok, npm run build ok, migration 188 aplicada em produção (7 colunas).
+
+---
+
 ## 2026-11-17 — feat(separacao): código QR "TIRAR foto" na bipagem automática + folha de QR por SKU para teste
 
 Dois pedidos do dono na Separação/Carrinho Gaiola (modo Bipagem automática):

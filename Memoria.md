@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-11-17 — ESCOL — Impressão direta QZ Tray + config por galpão (Fase 1) — ✅ EM PRODUÇÃO (commit 6ba02b8)
+
+**Dono:** na gaiola (Bipagem automática) quer escolher a impressora da Etiqueta e da DANFE, o formato (ZPL /
+PDF 10×15 / A4), e marcar o que sai AUTOMÁTICO ao concluir a bipagem (etiqueta / DANFE / foto), enviando
+direto p/ a impressora. **Solução: QZ Tray** (agente local no PC de despacho — único jeito de mandar ZPL
+direto/silencioso; o navegador não faz isso sozinho).
+
+**Entregue:** migration 188 (7 colunas em `warehouses`) + `GET/PUT /separation/print-config` (por galpão).
+Front: composable `useQz` + modal "Impressão (QZ)" na gaiola (dropdowns de impressora da lista do QZ, formato,
+tamanho, 3 switches auto, Testar) + **link de download do QZ no rodapé**. Impressora tem override por-PC
+(localStorage); resto é default do galpão. Auto ao concluir: etiqueta ao completar 100% da bipagem; DANFE só
+NF-e autorizada; foto hands-free (câmera pronta). **Shopee NUNCA auto-imprime etiqueta** (gerar=despachar).
+
+**Trio: 0 CRITICAL/HIGH.** Fase 1 = QZ não-assinado (prompt "permitir+lembrar" → silencioso). **Pendente do
+dono:** (1) instalar o QZ Tray (link no rodapé) no PC de despacho e deixar aberto; (2) abrir a gaiola →
+"Impressão (QZ)" → escolher impressoras + formato + auto-ações; (3) no 1º print marcar "lembrar"; (4) testar
+o ciclo real. **Fase 2 (follow-up):** assinatura por certificado (silêncio total), permissão dedicada p/ a
+config, persistência durável PDF+ZPL.
+
+---
+
 ## 2026-11-17 — ESCOL — QR "Tirar foto" na bipagem + folha de QR por SKU (teste) — ✅ EM PRODUÇÃO (commit f5c8272)
 
 **Dois pedidos do dono (Separação / Carrinho Gaiola, modo Bipagem automática):**
