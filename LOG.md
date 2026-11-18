@@ -41,6 +41,11 @@ Lista" já inclui), não num botão separado. CODE128 (1D, laser-friendly) em ve
 na mesma página, depois um por SKU. `render_picking_list(test_code_items=None)` opcional (público inalterado;
 só-lista 2.6KB vs combinado 60KB). Removidos a rota `/test-codes.pdf` e o botão "Códigos (teste)".
 
+**Ajuste (9a762ad):** (a) o dono imprime a lista pelo **link externo** (público) → `public_picking_list` passa
+`include_test_codes=True` (a lista do link externo também traz os códigos). (b) Os dois códigos de foto ficavam
+em "Imprimir" separados → `_render_code_label_pdf` empilha N blocos; novo `GET /separation/photo-codes-label.pdf`
+traz TIRAR+FIM na MESMA página; painel com um único "Imprimir os dois". Endpoints individuais mantidos (modal).
+
 ---
 
 ## 2026-11-17 — fix(separacao): reconhece etiqueta já impressa fora da gaiola (pedido remanejado) + destrava separação

@@ -27,7 +27,13 @@ folha renderizou PDF 52KB. **Deploy verificado:** servidor em f5c8272, `/docs`=2
 **Pendente do dono:** testar na bancada (imprimir a folha, bipar TIRAR-FOTO com o quadro ligado, bipar um SKU,
 bipar FIM-FOTOS).
 
-**Ajuste pedido pelo dono (commit f5dc4a9):** os códigos de teste **não** ficam num botão separado — saem
+**2º ajuste (commit 9a762ad):** (a) o dono imprime a lista pelo **LINK EXTERNO** (público) — o
+`public_picking_list` passou a mandar `include_test_codes=True`, então a lista do link externo também traz os
+códigos abaixo. (b) Na gaiola os dois códigos de foto estavam em dois "Imprimir" separados → `_render_code_label_pdf`
+passou a empilhar vários blocos numa página; novo `GET /separation/photo-codes-label.pdf` traz **TIRAR foto + FIM
+das fotos na MESMA página**; painel agora tem um único "Imprimir os dois". Endpoints individuais mantidos (modal).
+
+**1º ajuste (commit f5dc4a9):** os códigos de teste **não** ficam num botão separado — saem
 **abaixo da própria Lista de Picking** ("Imprimir Lista" já os inclui). Trocado QR por **CODE128** (código de
 barras 1D, compatível com leitor laser de bancada — QR exige imager 2D). **TIRAR-FOTO e FIM-FOTO vêm primeiro,
 juntos na mesma página**, depois um CODE128 por SKU. `render_picking_list` ganhou `test_code_items` opcional
