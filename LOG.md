@@ -36,6 +36,11 @@ aplicou um stash ANTIGO e colidiu em `tasks/sync_stock.py` (backend não subia, 
 `git checkout HEAD -- tasks/sync_stock.py` (stash antigo preservado). Lição: nunca `git stash pop` às cegas no
 servidor (há 2 stashes antigos lá).
 
+**Ajuste (f5dc4a9):** a pedido do dono, os códigos de teste saem **abaixo da própria Lista de Picking** ("Imprimir
+Lista" já inclui), não num botão separado. CODE128 (1D, laser-friendly) em vez de QR; TIRAR-FOTO+FIM-FOTO juntos
+na mesma página, depois um por SKU. `render_picking_list(test_code_items=None)` opcional (público inalterado;
+só-lista 2.6KB vs combinado 60KB). Removidos a rota `/test-codes.pdf` e o botão "Códigos (teste)".
+
 ---
 
 ## 2026-11-17 — fix(separacao): reconhece etiqueta já impressa fora da gaiola (pedido remanejado) + destrava separação

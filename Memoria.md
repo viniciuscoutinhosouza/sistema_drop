@@ -27,7 +27,14 @@ folha renderizou PDF 52KB. **Deploy verificado:** servidor em f5c8272, `/docs`=2
 **Pendente do dono:** testar na bancada (imprimir a folha, bipar TIRAR-FOTO com o quadro ligado, bipar um SKU,
 bipar FIM-FOTOS).
 
-⚠️ **Incidente no deploy (resolvido):** `git stash pop` cego no servidor aplicou um STASH ANTIGO não relacionado
+**Ajuste pedido pelo dono (commit f5dc4a9):** os códigos de teste **não** ficam num botão separado — saem
+**abaixo da própria Lista de Picking** ("Imprimir Lista" já os inclui). Trocado QR por **CODE128** (código de
+barras 1D, compatível com leitor laser de bancada — QR exige imager 2D). **TIRAR-FOTO e FIM-FOTO vêm primeiro,
+juntos na mesma página**, depois um CODE128 por SKU. `render_picking_list` ganhou `test_code_items` opcional
+(default None → zero efeito; link público intacto, provado: só-lista 2.6KB vs combinado 60KB). Rota separada
+`/test-codes.pdf` e botão "Códigos (teste)" removidos.
+
+⚠️ **Incidente no 1º deploy (resolvido):** `git stash pop` cego no servidor aplicou um STASH ANTIGO não relacionado
 (`stash@{0}: WIP on 5b69f39`) e espalhou marcadores de conflito em `BACKEND/tasks/sync_stock.py` → backend não
 subia (SyntaxError, `/docs`=502). Corrigido com `git checkout HEAD -- BACKEND/tasks/sync_stock.py` (restaura a
 versão committada; stash preservado). **Lição:** há 2 stashes ANTIGOS no servidor (`5b69f39` e
